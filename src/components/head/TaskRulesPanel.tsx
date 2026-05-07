@@ -1,0 +1,1084 @@
+"use client";
+
+import { useState, useEffect, useCallback } from "react";
+import PriorityBadge from "@/components/shared/PriorityBadge";
+
+interface MetadataCondition {
+  fieldPath: string;
+  operator: string;
+  value?: any;
+  offsetMinutes?: number;
+}
+
+interface TriggerCondition {
+  statusIn: string[];
+  minutesSinceCreated?: number;
+  minutesSinceStatusUpdated?: number;
+  minutesBeforeAppointment?: number;
+  minutesAfterAppointment?: number;
+  requiresNoPreviousTaskOfType?: boolean;
+  metadataConditions?: MetadataCondition[];
+}
+
+interface SkillTag {
+  id: number;
+  name: string;
+  label: string;
+}
+
+interface TaskType {
+  id: number;
+  name: string;
+  label: string;
+}
+
+interface EscalationChain {
+  id: number;
+  name: string;
+}
+
+interface TaskRule {
+  id: string;
+  name: string;
+  orderType: string;
+  priority: string;
+  slaMinutes: number;
+  isActive: boolean;
+  titleTemplate: string;
+  taskType: { name: string; label: string };
+  requiredSkills: SkillTag[];
+  escalationChain: { id: number; name: string } | null;
+  totalTasksCreated: number;
+  tasksLast24h: number;
+  triggerCondition: TriggerCondition;
+}
+
+const PRIORITIES = ["URGENT", "HIGH", "MEDIUM", "LOW"] as const;
+
+const ORDER_TYPE_COLORS: Record<string, string> = {
+  HOME_SAMPLE: "text-blue-400 bg-blue-500/10 border-blue-500/20",
+  CENTER_VISIT: "text-purple-400 bg-purple-500/10 border-purple-500/20",
+  INJECTION: "text-teal-400 bg-teal-500/10 border-teal-500/20",
+};
+
+const PRIORITY_COLORS: Record<string, string> = {
+  URGENT: "text-red-300 bg-red-500/10 border-red-500/20",
+  HIGH: "text-orange-300 bg-orange-500/10 border-orange-500/20",
+  MEDIUM: "text-amber-300 bg-amber-500/10 border-amber-500/20",
+  LOW: "text-zinc-400 bg-zinc-800 border-zinc-700",
+};
+
+const METADATA_OPERATORS = [
+  "exists", "not_exists", "equals", "not_equals", "contains",
+  "starts_with", "ends_with", ">", ">=", "<", "<="
+];
+
+function fmtSla(mins: number): string {
+  if (mins < 60) return `${mins}m`;
+  if (mins % 60 === 0) return `${mins / 60}h`;
+  return `${Math.floor(mins / 60)}h ${mins % 60}m`;
+}
+
+function fmtOffset(mins: number): string {
+  if (mins < 60) return `${mins} min`;
+  if (mins % 60 === 0) return `${mins / 60} hr`;
+  return `${Math.floor(mins / 60)}h ${mins % 60}m`;
+}
+
+function TriggerBuilder({
+  value = { ...EMPTY_TRIGGER },
+  onChange,
+  metadataFields = [],
+  orderStatuses = [],
+}: {
+  value?: TriggerCondition;
+  onChange: (v: TriggerCondition) => void;
+  metadataFields?: any[];
+  orderStatuses?: string[];
+}) {
+  const [showMetadata, setShowMetadata] = useState(false);
+
+  function toggleStatus(s: string) {
+    const set = new Set(value?.statusIn ?? []);
+    if (set.has(s)) set.delete(s);
+    else set.add(s);
+    onChange({ ...value, statusIn: Array.from(set) });
+  }
+
+  function setNum(field: keyof TriggerCondition, raw: string) {
+    const n = parseInt(raw, 10);
+    const next = { ...value };
+    if (!raw || isNaN(n)) {
+      delete next[field];
+    } else {
+      (next as Record<string, unknown>)[field] = n;
+    }
+    onChange(next);
+  }
+
+  function clearNum(field: keyof TriggerCondition) {
+    const next = { ...value };
+    delete next[field];
+    onChange(next);
+  }
+
+  function addMetadataCondition() {
+    const conditions = value.metadataConditions || [];
+    onChange({
+      ...value,
+      metadataConditions: [...conditions, { fieldPath: "", operator: "exists" }],
+    });
+  }
+
+  function removeMetadataCondition(index: number) {
+    const conditions = (value.metadataConditions || []).filter((_, i) => i !== index);
+    onChange({ ...value, metadataConditions: conditions });
+  }
+
+  function updateMetadataCondition(index: number, updates: Partial<MetadataCondition>) {
+    const conditions = [...(value.metadataConditions || [])];
+    conditions[index] = { ...conditions[index], ...updates };
+    onChange({ ...value, metadataConditions: conditions });
+  }
+
+  return (
+    <div className="space-y-5">
+      <div>
+        <label className="block text-xs font-semibold text-zinc-400 mb-2 uppercase tracking-wider">
+          Fire when order status is
+          <span className="text-red-400 ml-0.5">*</span>
+        </label>
+        <p className="text-[10px] text-zinc-600 mb-2">
+          Select one or more labstack order statuses that will trigger this rule.
+        </p>
+        <div className="flex flex-wrap gap-2">
+          {(orderStatuses.length > 0 ? orderStatuses : []).map((s) => {
+            const active = value?.statusIn?.includes(s) ?? false;
+            return (
+              <button
+                key={s}
+                type="button"
+                onClick={() => toggleStatus(s)}
+                className={`text-[11px] font-mono px-2.5 py-1 rounded-full border transition-all ${
+                  active
+                    ? "bg-blue-600/25 border-blue-500/50 text-blue-300"
+                    : "bg-zinc-800 border-zinc-700 text-zinc-500 hover:border-zinc-500 hover:text-zinc-300"
+                }`}
+              >
+                {active && <span className="mr-1">✓</span>}
+                {s}
+              </button>
+            );
+          })}
+        </div>
+        {value?.statusIn?.length === 0 && (
+          <p className="text-[10px] text-red-400 mt-1.5">At least one status is required.</p>
+        )}
+      </div>
+
+      <div>
+        <label className="block text-xs font-semibold text-zinc-400 mb-2 uppercase tracking-wider">
+          Timing Conditions
+        </label>
+        <p className="text-[10px] text-zinc-600 mb-3">
+          Add one or more time thresholds. The rule fires when ALL enabled conditions are met simultaneously.
+        </p>
+
+        <div className="space-y-3">
+          <TimingRow
+            label="Minutes since order was created"
+            hint="e.g. 60 → fire when the order is at least 60 min old"
+            value={value.minutesSinceCreated}
+            onChange={(v) => v === undefined ? clearNum("minutesSinceCreated") : setNum("minutesSinceCreated", String(v))}
+          />
+
+          <TimingRow
+            label="Minutes since order status last changed"
+            hint="e.g. 120 → fire when order has been in the same status for 2h"
+            value={value.minutesSinceStatusUpdated}
+            onChange={(v) => v === undefined ? clearNum("minutesSinceStatusUpdated") : setNum("minutesSinceStatusUpdated", String(v))}
+          />
+
+          <TimingRow
+            label="Minutes before appointment time"
+            hint="e.g. 30 → fire when appointment is ≤ 30 min away"
+            value={value.minutesBeforeAppointment}
+            onChange={(v) => v === undefined ? clearNum("minutesBeforeAppointment") : setNum("minutesBeforeAppointment", String(v))}
+          />
+
+          <TimingRow
+            label="Minutes after appointment time"
+            hint="e.g. 15 → fire when appointment was 15+ min ago"
+            value={value.minutesAfterAppointment}
+            onChange={(v) => v === undefined ? clearNum("minutesAfterAppointment") : setNum("minutesAfterAppointment", String(v))}
+          />
+        </div>
+      </div>
+
+      <div className="border-t border-zinc-700 pt-5">
+        <button
+          type="button"
+          onClick={() => setShowMetadata(!showMetadata)}
+          className="text-xs font-medium text-blue-400 hover:text-blue-300 flex items-center gap-1"
+        >
+          {showMetadata ? "▼" : "▶"} Metadata Conditions (Advanced)
+        </button>
+
+        {showMetadata && (
+          <div className="mt-4 space-y-3">
+            {(value.metadataConditions || []).map((cond, idx) => (
+              <div key={idx} className="p-3 bg-zinc-800 border border-zinc-700 rounded-lg space-y-2">
+                <div className="grid grid-cols-4 gap-2">
+                  <div>
+                    <label className="text-[10px] text-zinc-400 block mb-1">Field Path</label>
+                    <input
+                      type="text"
+                      value={cond.fieldPath}
+                      onChange={(e) => updateMetadataCondition(idx, { fieldPath: e.target.value })}
+                      placeholder="e.g., patient.age"
+                      className="w-full px-2 py-1.5 bg-zinc-700 border border-zinc-600 rounded text-xs text-white placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-zinc-400 block mb-1">Operator</label>
+                    <select
+                      value={cond.operator}
+                      onChange={(e) => updateMetadataCondition(idx, { operator: e.target.value })}
+                      className="w-full px-2 py-1.5 bg-zinc-700 border border-zinc-600 rounded text-xs text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    >
+                      {METADATA_OPERATORS.map((op) => (
+                        <option key={op} value={op}>{op.replace(/_/g, " ")}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-zinc-400 block mb-1">Value</label>
+                    <input
+                      type="text"
+                      value={cond.value ?? ""}
+                      onChange={(e) => updateMetadataCondition(idx, { value: e.target.value })}
+                      placeholder="Value"
+                      className="w-full px-2 py-1.5 bg-zinc-700 border border-zinc-600 rounded text-xs text-white placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    />
+                  </div>
+                  <div className="flex items-end gap-1">
+                    <button
+                      type="button"
+                      onClick={() => removeMetadataCondition(idx)}
+                      className="px-2 py-1.5 text-zinc-600 hover:text-red-400 text-xs flex-1"
+                      title="Remove"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                </div>
+                {[">", ">=", "<", "<="].includes(cond.operator) && (
+                  <div>
+                    <label className="text-[10px] text-zinc-400 block mb-1">Offset Minutes (optional)</label>
+                    <input
+                      type="number"
+                      value={cond.offsetMinutes ?? ""}
+                      onChange={(e) => updateMetadataCondition(idx, { offsetMinutes: e.target.value ? parseInt(e.target.value) : undefined })}
+                      placeholder="e.g., 30"
+                      className="w-full px-2 py-1.5 bg-zinc-700 border border-zinc-600 rounded text-xs text-white placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    />
+                  </div>
+                )}
+              </div>
+            ))}
+            <button
+              type="button"
+              onClick={addMetadataCondition}
+              className="text-xs text-blue-400 hover:text-blue-300 py-1 flex items-center gap-1"
+            >
+              + Add metadata condition
+            </button>
+          </div>
+        )}
+      </div>
+
+      <div className="border-t border-zinc-700 pt-5">
+        <label className="block text-xs font-semibold text-zinc-400 mb-2 uppercase tracking-wider">
+          Deduplication
+        </label>
+        <label className="flex items-start gap-3 cursor-pointer group">
+          <input
+            type="checkbox"
+            checked={value.requiresNoPreviousTaskOfType === true}
+            onChange={(e) =>
+              onChange({
+                ...value,
+                requiresNoPreviousTaskOfType: e.target.checked ? true : undefined,
+              })
+            }
+            className="mt-0.5 w-4 h-4 rounded border-zinc-600 bg-zinc-800 text-blue-500 cursor-pointer"
+          />
+          <div>
+            <div className="text-sm text-zinc-300 font-medium group-hover:text-white transition-colors">
+              Block if a previous open task of this type exists
+            </div>
+            <div className="text-[10px] text-zinc-600 mt-0.5">
+              Prevents duplicate tasks of the same type for the same order. Recommended for most rules.
+            </div>
+          </div>
+        </label>
+      </div>
+
+      <div className="bg-zinc-800/60 border border-zinc-700 rounded-lg px-3 py-2.5">
+        <div className="text-[10px] text-zinc-500 mb-1 font-semibold uppercase tracking-wider">Trigger summary</div>
+        <p className="text-xs text-zinc-300 leading-relaxed">
+          Fire when order status is{" "}
+          <span className="font-mono text-blue-300">
+            {(value?.statusIn?.length ?? 0) > 0 ? value?.statusIn?.join(" or ") : "—"}
+          </span>
+          {value.minutesSinceCreated !== undefined && (
+            <>, order is at least <span className="font-mono text-amber-300">{fmtOffset(value.minutesSinceCreated)}</span> old</>
+          )}
+          {value.minutesSinceStatusUpdated !== undefined && (
+            <>, status unchanged for <span className="font-mono text-amber-300">{fmtOffset(value.minutesSinceStatusUpdated)}</span></>
+          )}
+          {value.minutesBeforeAppointment !== undefined && (
+            <>, appointment is within <span className="font-mono text-amber-300">{fmtOffset(value.minutesBeforeAppointment)}</span></>
+          )}
+          {value.minutesAfterAppointment !== undefined && (
+            <>, appointment was <span className="font-mono text-amber-300">{fmtOffset(value.minutesAfterAppointment)}</span> ago or more</>
+          )}
+          {(value?.metadataConditions || []).length > 0 && (
+            <>, and <span className="font-mono text-amber-300">{(value?.metadataConditions || []).length} metadata condition(s)</span></>
+          )}
+          {value.requiresNoPreviousTaskOfType && (
+            <>, and no open task of this type exists</>
+          )}
+          .
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function TimingRow({
+  label,
+  hint,
+  value,
+  onChange,
+}: {
+  label: string;
+  hint: string;
+  value: number | undefined;
+  onChange: (v: number | undefined) => void;
+}) {
+  const enabled = value !== undefined;
+  return (
+    <div className={`flex items-start gap-3 p-3 rounded-lg border transition-colors ${
+      enabled ? "bg-zinc-800 border-zinc-600" : "bg-zinc-900 border-zinc-800"
+    }`}>
+      <input
+        type="checkbox"
+        checked={enabled}
+        onChange={(e) => onChange(e.target.checked ? 30 : undefined)}
+        className="mt-0.5 w-4 h-4 rounded border-zinc-600 bg-zinc-800 text-blue-500 cursor-pointer shrink-0"
+      />
+      <div className="flex-1 min-w-0">
+        <div className={`text-xs font-medium mb-0.5 transition-colors ${enabled ? "text-zinc-200" : "text-zinc-500"}`}>
+          {label}
+        </div>
+        <div className="text-[10px] text-zinc-600">{hint}</div>
+      </div>
+      {enabled && (
+        <div className="flex items-center gap-1.5 shrink-0">
+          <input
+            type="number"
+            min={0}
+            value={value}
+            onChange={(e) => onChange(parseInt(e.target.value) || 0)}
+            className="w-20 px-2 py-1.5 bg-zinc-700 border border-zinc-600 rounded-lg text-xs text-white text-right focus:outline-none focus:ring-1 focus:ring-blue-500"
+          />
+          <span className="text-[10px] text-zinc-500">min</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const EMPTY_TRIGGER: TriggerCondition = {
+  statusIn: [],
+  requiresNoPreviousTaskOfType: true,
+  metadataConditions: [],
+};
+
+interface RuleDrawerProps {
+  rule: TaskRule | null;
+  taskTypes: TaskType[];
+  allTags: SkillTag[];
+  chains: EscalationChain[];
+  metadataFields: any[];
+  orderTypes: string[];
+  orderStatuses: string[];
+  onClose: () => void;
+  onSaved: () => void;
+}
+
+function RuleDrawer({ rule, taskTypes, allTags, chains, metadataFields, orderTypes, orderStatuses, onClose, onSaved }: RuleDrawerProps) {
+  const isCreate = rule === null;
+
+  const [form, setForm] = useState({
+    name: rule?.name ?? "",
+    orderType: rule?.orderType ?? "HOME_SAMPLE",
+    taskTypeId: rule ? String(taskTypes.find((t) => t.label === rule.taskType.label)?.id ?? taskTypes[0]?.id ?? "") : String(taskTypes[0]?.id ?? ""),
+    titleTemplate: rule?.titleTemplate ?? "{{patientName}} — ",
+    slaMinutes: rule?.slaMinutes ?? 30,
+    priority: rule?.priority ?? "HIGH",
+    escalationChainId: rule?.escalationChain?.id ? String(rule.escalationChain.id) : "",
+  });
+  const [trigger, setTrigger] = useState<TriggerCondition>(
+    rule?.triggerCondition ?? { ...EMPTY_TRIGGER }
+  );
+  const [skillIds, setSkillIds] = useState<Set<number>>(
+    new Set(rule?.requiredSkills.map((s) => s.id) ?? [])
+  );
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [deleting, setDeleting] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [activeTab, setActiveTab] = useState<"basics" | "trigger" | "assignment">("basics");
+
+  function toggleSkill(id: number) {
+    const next = new Set(skillIds);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    setSkillIds(next);
+  }
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setError("");
+    if (!(trigger?.statusIn?.length ?? 0)) {
+      setError("Trigger condition must have at least one order status selected.");
+      setActiveTab("trigger");
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const payload = {
+        name: form.name,
+        orderType: form.orderType,
+        taskTypeId: Number(form.taskTypeId),
+        titleTemplate: form.titleTemplate,
+        slaMinutes: Number(form.slaMinutes),
+        priority: form.priority,
+        triggerCondition: trigger,
+        escalationChainId: form.escalationChainId ? Number(form.escalationChainId) : null,
+        skillTagIds: Array.from(skillIds),
+      };
+
+      const url = isCreate ? "/api/task-rules" : `/api/task-rules/${rule!.id}`;
+      const method = isCreate ? "POST" : "PATCH";
+
+      const res = await fetch(url, {
+        method,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) { setError(data.error ?? "Save failed"); return; }
+      onSaved();
+      onClose();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function deleteRule() {
+    if (!rule) return;
+    setDeleting(true);
+    try {
+      const res = await fetch(`/api/task-rules/${rule.id}`, { method: "DELETE" });
+      const data = await res.json();
+      if (!res.ok) { setError(data.error ?? "Delete failed"); setConfirmDelete(false); return; }
+      onSaved();
+      onClose();
+    } finally {
+      setDeleting(false);
+    }
+  }
+
+  const TABS = [
+    { key: "basics", label: "Basics" },
+    { key: "trigger", label: "Trigger Condition" },
+    { key: "assignment", label: "Assignment & Escalation" },
+  ] as const;
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end">
+      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative w-full max-w-lg bg-zinc-900 border-l border-zinc-800 h-full flex flex-col shadow-2xl overflow-hidden">
+        <div className="px-6 pt-5 pb-0 border-b border-zinc-800">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h2 className="text-sm font-semibold text-white">
+                {isCreate ? "Create Task Rule" : "Edit Task Rule"}
+              </h2>
+              {!isCreate && (
+                <p className="text-[10px] text-zinc-600 mt-0.5 font-mono">{rule!.id}</p>
+              )}
+            </div>
+            <button onClick={onClose} className="p-1.5 rounded-lg text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 transition-colors">
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+
+          <div className="flex gap-0">
+            {TABS.map((tab) => (
+              <button
+                key={tab.key}
+                type="button"
+                onClick={() => setActiveTab(tab.key)}
+                className={`px-4 py-2 text-xs font-medium border-b-2 transition-colors ${
+                  activeTab === tab.key
+                    ? "border-blue-500 text-blue-400"
+                    : "border-transparent text-zinc-500 hover:text-zinc-300"
+                }`}
+              >
+                {tab.label}
+                {tab.key === "trigger" && trigger?.statusIn?.length === 0 && (
+                  <span className="ml-1 w-1.5 h-1.5 rounded-full bg-red-500 inline-block align-middle" />
+                )}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <form id="rule-form" onSubmit={submit} className="flex-1 overflow-y-auto">
+          <div className="px-6 py-5">
+            {activeTab === "basics" && (
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-xs text-zinc-400 mb-1.5 font-medium">
+                    Rule Name <span className="text-red-400">*</span>
+                  </label>
+                  <input
+                    required
+                    type="text"
+                    value={form.name}
+                    onChange={(e) => setForm({ ...form, name: e.target.value })}
+                    placeholder="e.g. HSC: Confirm Sample Collected"
+                    className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-white placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs text-zinc-400 mb-1.5 font-medium">
+                      Order Type <span className="text-red-400">*</span>
+                    </label>
+                    <select
+                      value={form.orderType}
+                      onChange={(e) => setForm({ ...form, orderType: e.target.value })}
+                      className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    >
+                      {(orderTypes.length > 0 ? orderTypes : []).map((t) => (
+                        <option key={t} value={t}>{t.replace(/_/g, " ")}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs text-zinc-400 mb-1.5 font-medium">
+                      Task Type <span className="text-red-400">*</span>
+                    </label>
+                    <select
+                      value={form.taskTypeId}
+                      onChange={(e) => setForm({ ...form, taskTypeId: e.target.value })}
+                      className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    >
+                      {taskTypes.map((t) => (
+                        <option key={t.id} value={t.id}>{t.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs text-zinc-400 mb-1.5 font-medium">
+                    Task Title Template <span className="text-red-400">*</span>
+                  </label>
+                  <input
+                    required
+                    type="text"
+                    value={form.titleTemplate}
+                    onChange={(e) => setForm({ ...form, titleTemplate: e.target.value })}
+                    placeholder="e.g. {{patientName}} — Confirm Sample Collected"
+                    className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-white placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  />
+                  <p className="text-[10px] text-zinc-600 mt-1">
+                    Available variables:{" "}
+                    {["{{patientName}}", "{{orderId}}", "{{storeName}}", "{{labName}}", "{{phleboName}}"].map((v) => (
+                      <code
+                        key={v}
+                        onClick={() => setForm({ ...form, titleTemplate: form.titleTemplate + v })}
+                        className="cursor-pointer text-zinc-400 hover:text-blue-400 mr-1 transition-colors"
+                        title="Click to insert"
+                      >
+                        {v}
+                      </code>
+                    ))}
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs text-zinc-400 mb-1.5 font-medium">
+                      Priority <span className="text-red-400">*</span>
+                    </label>
+                    <select
+                      value={form.priority}
+                      onChange={(e) => setForm({ ...form, priority: e.target.value })}
+                      className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    >
+                      {PRIORITIES.map((p) => (
+                        <option key={p} value={p}>{p}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs text-zinc-400 mb-1.5 font-medium">
+                      SLA (minutes) <span className="text-red-400">*</span>
+                    </label>
+                    <div className="relative">
+                      <input
+                        required
+                        type="number"
+                        min={1}
+                        value={form.slaMinutes}
+                        onChange={(e) => setForm({ ...form, slaMinutes: parseInt(e.target.value) || 30 })}
+                        className="w-full px-3 py-2 pr-16 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      />
+                      <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[10px] text-zinc-500 font-mono">
+                        = {fmtSla(form.slaMinutes)}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {activeTab === "trigger" && (
+              <TriggerBuilder value={trigger} onChange={setTrigger} metadataFields={metadataFields} orderStatuses={orderStatuses} />
+            )}
+
+            {activeTab === "assignment" && (
+              <div className="space-y-6">
+                <div>
+                  <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wider">
+                    Required Skills
+                  </label>
+                  <p className="text-[10px] text-zinc-600 mb-3">
+                    Only agents with ALL selected skills will be considered for assignment.
+                  </p>
+                  {allTags.length === 0 ? (
+                    <p className="text-xs text-zinc-600">No skill tags defined. Create them in the Team section.</p>
+                  ) : (
+                    <div className="flex flex-wrap gap-2">
+                      {allTags.map((tag) => {
+                        const has = skillIds.has(tag.id);
+                        return (
+                          <button
+                            key={tag.id}
+                            type="button"
+                            onClick={() => toggleSkill(tag.id)}
+                            className={`text-xs px-3 py-1.5 rounded-full border transition-colors font-medium ${
+                              has
+                                ? "bg-blue-600/20 border-blue-500/40 text-blue-300 hover:bg-red-500/20 hover:border-red-500/40 hover:text-red-300"
+                                : "bg-zinc-800 border-zinc-700 text-zinc-500 hover:border-zinc-500 hover:text-zinc-300"
+                            }`}
+                          >
+                            {has ? "✓ " : "+ "}{tag.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wider">
+                    Escalation Chain
+                  </label>
+                  <p className="text-[10px] text-zinc-600 mb-3">
+                    When a task from this rule breaches SLA, which escalation chain should fire?
+                  </p>
+                  <select
+                    value={form.escalationChainId}
+                    onChange={(e) => setForm({ ...form, escalationChainId: e.target.value })}
+                    className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  >
+                    <option value="">— No escalation chain —</option>
+                    {chains.map((c) => (
+                      <option key={c.id} value={c.id}>{c.name}</option>
+                    ))}
+                  </select>
+                  {chains.length === 0 && (
+                    <p className="text-[10px] text-zinc-600 mt-1.5">No chains defined. Create them in the Escalations section.</p>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        </form>
+
+        <div className="px-6 py-4 border-t border-zinc-800 flex items-center gap-2">
+          {!isCreate && (
+            <div className="mr-auto">
+              {!confirmDelete ? (
+                <button
+                  type="button"
+                  onClick={() => setConfirmDelete(true)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-zinc-600 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors"
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                  </svg>
+                  Delete Rule
+                </button>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <button onClick={deleteRule} disabled={deleting} className="px-3 py-1.5 bg-red-600 hover:bg-red-500 text-white text-xs font-medium rounded-lg disabled:opacity-50 transition-colors">
+                    {deleting ? "Deleting..." : "Confirm Delete"}
+                  </button>
+                  <button onClick={() => setConfirmDelete(false)} className="text-xs text-zinc-500 hover:text-zinc-300 px-2 transition-colors">Cancel</button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {error && (
+            <p className="text-xs text-red-400 flex-1">{error}</p>
+          )}
+
+          <button type="button" onClick={onClose} className="px-4 py-2 text-xs text-zinc-400 hover:text-zinc-200 transition-colors">
+            Cancel
+          </button>
+          <button
+            type="submit"
+            form="rule-form"
+            disabled={saving}
+            className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium rounded-lg disabled:opacity-50 transition-colors"
+          >
+            {saving ? "Saving..." : isCreate ? "Create Rule" : "Save Changes"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TriggerSummary({ cond }: { cond: TriggerCondition }) {
+  const parts: string[] = [];
+  if ((cond?.statusIn?.length ?? 0) > 0) parts.push(`Status: ${cond?.statusIn?.join(" | ")}`);
+  if (cond?.minutesSinceCreated !== undefined) parts.push(`Order age ≥ ${fmtOffset(cond.minutesSinceCreated)}`);
+  if (cond?.minutesSinceStatusUpdated !== undefined) parts.push(`Status unchanged ≥ ${fmtOffset(cond.minutesSinceStatusUpdated)}`);
+  if (cond?.minutesBeforeAppointment !== undefined) parts.push(`Appt within ${fmtOffset(cond.minutesBeforeAppointment)}`);
+  if (cond?.minutesAfterAppointment !== undefined) parts.push(`${fmtOffset(cond.minutesAfterAppointment)} post-appt`);
+  if (cond?.requiresNoPreviousTaskOfType) parts.push("No duplicate");
+  if ((cond?.metadataConditions || []).length > 0) parts.push(`${(cond?.metadataConditions || []).length} metadata condition(s)`);
+
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {parts.map((p) => (
+        <span key={p} className="text-[10px] bg-zinc-800 border border-zinc-700 text-zinc-400 px-2 py-0.5 rounded font-mono">
+          {p}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+export default function TaskRulesPanel() {
+  const [rules, setRules] = useState<TaskRule[]>([]);
+  const [taskTypes, setTaskTypes] = useState<TaskType[]>([]);
+  const [allTags, setAllTags] = useState<SkillTag[]>([]);
+  const [chains, setChains] = useState<EscalationChain[]>([]);
+  const [metadataFields, setMetadataFields] = useState<any[]>([]);
+  const [orderTypes, setOrderTypes] = useState<string[]>([]);
+  const [orderStatuses, setOrderStatuses] = useState<string[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState<string | null>(null);
+  const [drawerRule, setDrawerRule] = useState<TaskRule | "create" | null>(null);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  const fetchAll = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [rulesRes, typesRes, tagsRes, chainsRes, fieldsRes, orderTypesRes, orderStatusesRes] = await Promise.all([
+        fetch("/api/task-rules"),
+        fetch("/api/task-types"),
+        fetch("/api/skill-tags"),
+        fetch("/api/escalations"),
+        fetch("/api/task-rules/metadata-fields"),
+        fetch("/api/order-types"),
+        fetch("/api/order-statuses"),
+      ]);
+
+      // Check response status
+      if (!rulesRes.ok) {
+        const err = await rulesRes.json();
+        console.error("Failed to fetch task rules - Status:", rulesRes.status, "Error:", err);
+        setRules([]);
+      } else {
+        const rulesData = await rulesRes.json();
+        console.log("Task rules response:", rulesData);
+        setRules(rulesData.rules ?? rulesData ?? []);
+      }
+
+      if (typesRes.ok) {
+        const typesData = await typesRes.json();
+        setTaskTypes(typesData.types ?? []);
+      }
+
+      if (tagsRes.ok) {
+        const tagsData = await tagsRes.json();
+        setAllTags(tagsData.tags ?? []);
+      }
+
+      if (chainsRes.ok) {
+        const chainsData = await chainsRes.json();
+        setChains(chainsData.chains ?? []);
+      }
+
+      if (fieldsRes.ok) {
+        const fieldsData = await fieldsRes.json();
+        setMetadataFields(fieldsData.fields ?? []);
+      }
+
+      if (orderTypesRes.ok) {
+        const orderTypesData = await orderTypesRes.json();
+        setOrderTypes(orderTypesData.orderTypes ?? []);
+      }
+
+      if (orderStatusesRes.ok) {
+        const orderStatusesData = await orderStatusesRes.json();
+        setOrderStatuses(orderStatusesData.statuses ?? []);
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { fetchAll(); }, [fetchAll]);
+
+  async function toggleActive(rule: TaskRule) {
+    setSaving(rule.id);
+    try {
+      const res = await fetch(`/api/task-rules/${rule.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ isActive: !rule.isActive }),
+      });
+      if (res.ok) {
+        setRules((prev) => prev.map((r) => r.id === rule.id ? { ...r, isActive: !r.isActive } : r));
+      }
+    } finally {
+      setSaving(null);
+    }
+  }
+
+  const activeCount = rules.filter((r) => r.isActive).length;
+  const grouped = rules.reduce((acc, r) => {
+    acc[r.orderType] = acc[r.orderType] ?? [];
+    acc[r.orderType].push(r);
+    return acc;
+  }, {} as Record<string, TaskRule[]>);
+
+  const drawerRuleObj = drawerRule === "create" ? null : drawerRule;
+
+  return (
+    <div className="space-y-6 px-6 py-4">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div>
+          <h2 className="text-base font-semibold text-white">Task Rules</h2>
+          <p className="text-xs text-zinc-500 mt-0.5">
+            {activeCount} of {rules.length} rules active — controls what tasks the engine auto-creates
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={fetchAll}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-zinc-900 border border-zinc-700 rounded-lg text-xs text-zinc-400 hover:text-zinc-200 hover:border-zinc-600 transition-colors"
+          >
+            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+            Refresh
+          </button>
+          <button
+            onClick={() => setDrawerRule("create")}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium rounded-lg transition-colors"
+          >
+            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+            </svg>
+            New Rule
+          </button>
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="flex items-center justify-center py-16">
+          <div className="w-5 h-5 border-2 border-zinc-700 border-t-blue-500 rounded-full animate-spin" />
+        </div>
+      ) : rules.length === 0 ? (
+        <div className="flex flex-col items-center justify-center py-20 text-center">
+          <svg className="w-10 h-10 text-zinc-800 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+          </svg>
+          <p className="text-sm text-zinc-600 font-medium">No task rules yet</p>
+          <button
+            onClick={() => setDrawerRule("create")}
+            className="mt-3 text-xs text-blue-400 hover:text-blue-300 transition-colors"
+          >
+            Create your first rule →
+          </button>
+        </div>
+      ) : (
+        <div className="space-y-6">
+          {Object.entries(grouped).map(([orderType, typeRules]) => (
+            <div key={orderType}>
+              <div className="flex items-center gap-2 mb-3">
+                <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-semibold border ${ORDER_TYPE_COLORS[orderType] ?? "text-zinc-400 bg-zinc-800 border-zinc-700"}`}>
+                  {orderType.replace(/_/g, " ")}
+                </span>
+                <span className="text-xs text-zinc-600">{typeRules.length} rules</span>
+              </div>
+
+              <div className="space-y-2">
+                {typeRules.map((rule) => {
+                  const isSaving = saving === rule.id;
+                  const isExpanded = expandedId === rule.id;
+
+                  return (
+                    <div
+                      key={rule.id}
+                      className={`bg-zinc-900 border rounded-xl overflow-hidden transition-all ${
+                        rule.isActive ? "border-zinc-700" : "border-zinc-800 opacity-60"
+                      }`}
+                    >
+                      <div className="px-4 py-3.5 flex items-center gap-3">
+                        <button
+                          onClick={() => toggleActive(rule)}
+                          disabled={isSaving}
+                          className={`relative shrink-0 w-9 h-5 rounded-full transition-colors focus:outline-none ${
+                            rule.isActive ? "bg-blue-600" : "bg-zinc-700"
+                          } ${isSaving ? "opacity-50" : ""}`}
+                          title={rule.isActive ? "Disable" : "Enable"}
+                        >
+                          <div className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${
+                            rule.isActive ? "translate-x-4" : "translate-x-0.5"
+                          }`} />
+                        </button>
+
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="text-xs font-medium text-zinc-200">{rule.name}</span>
+                            <span className="text-[10px] text-zinc-500 bg-zinc-800 px-1.5 py-0.5 rounded">
+                              {rule.taskType.label}
+                            </span>
+                          </div>
+                        </div>
+
+                        <span className={`shrink-0 text-[10px] font-semibold px-2 py-0.5 rounded-full border ${PRIORITY_COLORS[rule.priority] ?? ""}`}>
+                          {rule.priority}
+                        </span>
+
+                        <span className="shrink-0 text-xs text-zinc-500 font-mono w-10 text-right">
+                          {fmtSla(rule.slaMinutes)}
+                        </span>
+
+                        <button
+                          onClick={() => setDrawerRule(rule)}
+                          className="shrink-0 p-1.5 rounded-lg text-zinc-600 hover:text-zinc-300 hover:bg-zinc-800 transition-colors"
+                          title="Edit rule"
+                        >
+                          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                          </svg>
+                        </button>
+
+                        <div className="flex items-center gap-2.5 shrink-0 pl-2 border-l border-zinc-800">
+                          <div className="text-center">
+                            <div className="text-xs font-semibold text-zinc-300">{rule.tasksLast24h}</div>
+                            <div className="text-[9px] text-zinc-600">24h</div>
+                          </div>
+                          <div className="text-center">
+                            <div className="text-xs font-semibold text-zinc-500">{rule.totalTasksCreated}</div>
+                            <div className="text-[9px] text-zinc-600">total</div>
+                          </div>
+                          <button
+                            onClick={() => setExpandedId(isExpanded ? null : rule.id)}
+                            className="p-1 text-zinc-600 hover:text-zinc-400 transition-colors"
+                          >
+                            <svg className={`w-3.5 h-3.5 transition-transform ${isExpanded ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                            </svg>
+                          </button>
+                        </div>
+                      </div>
+
+                      {isExpanded && (
+                        <div className="border-t border-zinc-800 px-4 py-3 bg-zinc-900/50 space-y-3">
+                          <div>
+                            <div className="text-[10px] text-zinc-600 mb-2 font-semibold uppercase tracking-wider">Trigger Conditions</div>
+                            <TriggerSummary cond={rule.triggerCondition} />
+                          </div>
+                          <div className="flex items-start gap-6 text-xs">
+                            <div>
+                              <div className="text-[10px] text-zinc-600 mb-1 font-semibold uppercase tracking-wider">Skills</div>
+                              {rule.requiredSkills.length === 0 ? (
+                                <span className="text-zinc-600">Any agent</span>
+                              ) : (
+                                <div className="flex flex-wrap gap-1">
+                                  {rule.requiredSkills.map((s) => (
+                                    <span key={s.name} className="text-[10px] bg-zinc-800 border border-zinc-700 text-zinc-400 px-1.5 py-0.5 rounded">{s.label}</span>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                            <div>
+                              <div className="text-[10px] text-zinc-600 mb-1 font-semibold uppercase tracking-wider">Escalation</div>
+                              <span className="text-zinc-400">
+                                {rule.escalationChain?.name ?? <span className="text-zinc-600">None</span>}
+                              </span>
+                            </div>
+                            <div className="ml-auto">
+                              <div className="text-[10px] text-zinc-600 mb-1 font-semibold uppercase tracking-wider">Title Template</div>
+                              <code className="text-[10px] text-zinc-400 font-mono">{rule.titleTemplate}</code>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {drawerRule !== null && (
+        <RuleDrawer
+          rule={drawerRuleObj}
+          taskTypes={taskTypes}
+          allTags={allTags}
+          chains={chains}
+          metadataFields={metadataFields}
+          orderTypes={orderTypes}
+          orderStatuses={orderStatuses}
+          onClose={() => setDrawerRule(null)}
+          onSaved={fetchAll}
+        />
+      )}
+    </div>
+  );
+}

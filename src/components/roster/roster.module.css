@@ -1,0 +1,489 @@
+/* Roster Components Styles */
+
+/* Shared Styles */
+.errorBanner {
+  padding: 12px 16px;
+  background-color: #FFEBEE;
+  color: #C62828;
+  border-left: 4px solid #F44336;
+  border-radius: 4px;
+  margin-bottom: 16px;
+  font-size: 14px;
+}
+
+.successBanner {
+  padding: 12px 16px;
+  background-color: #E8F5E9;
+  color: #2E7D32;
+  border-left: 4px solid #4CAF50;
+  border-radius: 4px;
+  margin-bottom: 16px;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.loading {
+  padding: 32px;
+  text-align: center;
+  color: #757575;
+  font-size: 16px;
+}
+
+/* ScheduleTab Styles */
+.scheduleTab {
+  padding: 0;
+  background: transparent;
+  border-radius: 0;
+}
+
+.scheduleTab h3 {
+  margin: 0 0 12px 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: #E5E7EB;
+}
+
+.scheduleDays {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.daySection {
+  border: 1px solid #3F3F46;
+  border-radius: 6px;
+  padding: 12px;
+  background: #27272A;
+}
+
+.dayHeader {
+  margin-bottom: 10px;
+}
+
+.dayToggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+  color: #E5E7EB;
+  cursor: pointer;
+}
+
+.dayToggle input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
+  accent-color: #2563EB;
+}
+
+.dayContent {
+  background: transparent;
+  padding: 8px 0;
+  border-radius: 0;
+  margin-top: 10px;
+}
+
+.timeGroup {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.timeInput {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.timeInput label {
+  font-size: 11px;
+  font-weight: 500;
+  color: #A1A1AA;
+}
+
+.timeInput input {
+  padding: 8px 10px;
+  border: 1px solid #52525B;
+  border-radius: 4px;
+  font-size: 13px;
+  background: #3F3F46;
+  color: #FAFAFA;
+  color-scheme: dark;
+}
+
+.timeInput input:focus {
+  outline: none;
+  border-color: #2563EB;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.1);
+}
+
+/* Style time input picker - webkit browsers */
+.timeInput input[type="time"]::-webkit-calendar-picker-indicator {
+  filter: invert(1) brightness(0.8);
+  cursor: pointer;
+}
+
+.breakGroup {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #3F3F46;
+}
+
+.breakGroup label {
+  font-size: 11px;
+  font-weight: 500;
+  color: #A1A1AA;
+  display: block;
+  margin-bottom: 8px;
+}
+
+/* Save button removed - saving is now handled by parent component */
+
+/* DailyRosterPage Styles */
+.dailyRosterPage {
+  padding: 20px;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.header {
+  margin-bottom: 24px;
+}
+
+.header h1 {
+  margin: 0 0 8px 0;
+  font-size: 28px;
+  font-weight: 600;
+  color: #212121;
+}
+
+.header p {
+  margin: 0;
+  font-size: 14px;
+  color: #757575;
+}
+
+.dateSelector {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  margin-bottom: 24px;
+  padding: 16px;
+  background: #F5F5F5;
+  border-radius: 8px;
+}
+
+.dateSelector button {
+  padding: 8px 16px;
+  background-color: #1976D2;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background-color 0.3s;
+}
+
+.dateSelector button:hover {
+  background-color: #1565C0;
+}
+
+.dateDisplay {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.dateInput {
+  padding: 8px 12px;
+  border: 1px solid #BDBDBD;
+  border-radius: 4px;
+  font-size: 14px;
+}
+
+.dateName {
+  font-weight: 500;
+  color: #212121;
+  min-width: 160px;
+}
+
+.rosterList {
+  display: grid;
+  gap: 16px;
+}
+
+.emptyState {
+  padding: 40px;
+  text-align: center;
+  color: #757575;
+  background: #F5F5F5;
+  border-radius: 8px;
+}
+
+.rosterCard {
+  border: 1px solid #E0E0E0;
+  border-radius: 8px;
+  background: white;
+  overflow: hidden;
+  transition: box-shadow 0.3s;
+}
+
+.rosterCard:hover {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.cardHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  padding: 16px;
+  border-bottom: 1px solid #E0E0E0;
+  background: #F5F5F5;
+}
+
+.memberInfo h3 {
+  margin: 0 0 4px 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: #212121;
+}
+
+.role {
+  display: inline-block;
+  margin-right: 12px;
+  padding: 2px 8px;
+  background-color: #E3F2FD;
+  color: #1976D2;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.email {
+  display: block;
+  color: #757575;
+  font-size: 12px;
+  margin-top: 4px;
+}
+
+.statusBadge {
+  padding: 8px 16px;
+  border-radius: 20px;
+  color: white;
+  font-weight: 500;
+  font-size: 13px;
+  text-align: center;
+  min-width: 80px;
+}
+
+.cardContent {
+  padding: 16px;
+}
+
+.label {
+  margin: 0 0 8px 0;
+  font-size: 14px;
+  font-weight: 500;
+  color: #212121;
+}
+
+.note {
+  margin: 0;
+  font-size: 13px;
+  color: #757575;
+  font-style: italic;
+}
+
+.exceptionInfo {
+  padding: 8px;
+  background-color: #FFF3E0;
+  border-left: 4px solid #FF9800;
+  border-radius: 4px;
+}
+
+.scheduleInfo p {
+  margin: 4px 0;
+}
+
+.cardActions {
+  display: flex;
+  gap: 8px;
+  padding: 16px;
+  border-top: 1px solid #E0E0E0;
+}
+
+.actionBtn {
+  flex: 1;
+  padding: 8px 12px;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity 0.3s;
+}
+
+.actionBtn:hover {
+  opacity: 0.9;
+}
+
+/* ExceptionDialog Styles */
+.dialogOverlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.dialog {
+  background: white;
+  border-radius: 8px;
+  max-width: 400px;
+  width: 90%;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+}
+
+.dialogHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px;
+  border-bottom: 1px solid #E0E0E0;
+}
+
+.dialogHeader h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: #212121;
+}
+
+.closeBtn {
+  background: none;
+  border: none;
+  font-size: 24px;
+  cursor: pointer;
+  color: #757575;
+  transition: color 0.3s;
+}
+
+.closeBtn:hover {
+  color: #212121;
+}
+
+.dialogContent {
+  padding: 16px;
+}
+
+.memberDetails {
+  margin-bottom: 16px;
+  padding: 12px;
+  background-color: #F5F5F5;
+  border-radius: 4px;
+}
+
+.memberDetails p {
+  margin: 4px 0;
+  font-size: 13px;
+}
+
+.formGroup {
+  margin-bottom: 16px;
+}
+
+.formGroup label {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  color: #212121;
+}
+
+.textarea {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid #BDBDBD;
+  border-radius: 4px;
+  font-size: 14px;
+  font-family: inherit;
+  resize: vertical;
+}
+
+.dialogActions {
+  display: flex;
+  gap: 8px;
+  padding: 16px;
+  border-top: 1px solid #E0E0E0;
+  justify-content: flex-end;
+}
+
+.cancelBtn {
+  padding: 8px 16px;
+  background-color: #E0E0E0;
+  color: #212121;
+  border: none;
+  border-radius: 4px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.3s;
+}
+
+.cancelBtn:hover:not(:disabled) {
+  background-color: #BDBDBD;
+}
+
+.submitBtn {
+  padding: 8px 16px;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity 0.3s;
+}
+
+.submitBtn:hover:not(:disabled) {
+  opacity: 0.9;
+}
+
+.submitBtn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+  .timeGroup {
+    grid-template-columns: 1fr;
+  }
+
+  .dateSelector {
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .cardHeader {
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .cardActions {
+    flex-direction: column;
+  }
+
+  .actionBtn {
+    width: 100%;
+  }
+}

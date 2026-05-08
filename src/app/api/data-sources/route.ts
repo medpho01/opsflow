@@ -142,8 +142,6 @@ export async function POST(req: NextRequest) {
         primaryKeyField: body.primaryKeyField || "id",
         typeFieldName: body.typeFieldName,
         statusFieldName: body.statusFieldName,
-        typeFieldEnumValues: body.typeFieldEnumValues || null,
-        statusFieldEnumValues: body.statusFieldEnumValues || null,
         queryTemplate: body.queryTemplate,
         metadataFieldMapping: body.metadataFieldMapping,
         pollingIntervalMinutes: body.pollingIntervalMinutes || 5,

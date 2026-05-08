@@ -20,7 +20,7 @@ export async function GET(req: NextRequest) {
     const user = await getSessionFromRequest(req);
 
     // Only authenticated users can view enum values
-    if (!user || ![UserRole.OPS_HEAD, UserRole.STORE_ADMIN].includes(user.role)) {
+    if (!user || (user.role !== UserRole.OPS_HEAD && user.role !== UserRole.STORE_ADMIN)) {
       return NextResponse.json(
         { error: "Unauthorized", code: "FORBIDDEN" },
         { status: 403 }

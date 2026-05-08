@@ -83,11 +83,11 @@ export async function POST(request: NextRequest) {
       create: {
         userId: user.id,
         filterName: name.trim(),
-        filterJson: filters as SavedFilter,
+        filterJson: filters as any,
         usageCount: 1,
       },
       update: {
-        filterJson: filters as SavedFilter,
+        filterJson: filters as any,
         updatedAt: new Date(),
       },
     });

@@ -16,7 +16,7 @@ export async function GET(request: NextRequest) {
   const user = await getSessionFromRequest(request);
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   // Allow OPS_HEAD and STORE_ADMIN to view stores
-  if (![UserRole.OPS_HEAD, UserRole.STORE_ADMIN].includes(user.role)) {
+  if (user.role !== UserRole.OPS_HEAD && user.role !== UserRole.STORE_ADMIN) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/db/client";
 import { getSessionFromRequest } from "@/lib/auth/session";
-import { UserRole } from "@prisma/client";
+import { UserRole, OrderType } from "@prisma/client";
 
 export async function DELETE(
   request: NextRequest,
@@ -14,12 +14,13 @@ export async function DELETE(
     }
 
     // Check authorization
-    if (![UserRole.OPS_HEAD, UserRole.STORE_ADMIN].includes(session.role)) {
+    if (session.role !== UserRole.OPS_HEAD && session.role !== UserRole.STORE_ADMIN) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
-    const { id, orderType } = await params;
+    const { id, orderType: orderTypeStr } = await params;
     const userId = parseInt(id);
+    const orderType = orderTypeStr as OrderType;
 
     // Look up user and get their teamMember
     const user = await prisma.user.findUnique({

@@ -6,9 +6,10 @@ import { getMemberStats } from "@/lib/performance";
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const { id } = await params;
     const session = await getSessionFromRequest(request);
     if (!session) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -31,7 +32,7 @@ export async function GET(
       );
     }
 
-    const teamMemberId = parseInt(params.id);
+    const teamMemberId = parseInt(id);
 
     // Check member exists
     const member = await prisma.teamMember.findUnique({

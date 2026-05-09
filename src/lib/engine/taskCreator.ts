@@ -13,32 +13,19 @@ import { isAvailableNow, getUTCDayOfWeek } from "@/lib/roster/availability";
 import { renderTitleTemplate } from "@/lib/templating/title";
 import { triggerConditionSchema } from "@/lib/validation/task-rules";
 
-// C1.4: Timezone support for SLA calculations
-// All timestamps stored as UTC in database, but calculations use TIMEZONE
-const TIMEZONE = process.env.TIMEZONE || "Asia/Kolkata";
-
-// IST offset: Database stores naive timestamps in IST (UTC+5:30)
-// JavaScript's new Date() interprets them as UTC, creating a 5.5-hour offset
-const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
-
-/**
- * Corrects IST timestamps for JavaScript Date parsing.
- * Database stores naive timestamps in IST, but JavaScript interprets them as UTC.
- * This function subtracts the IST offset to get the correct UTC time.
- *
- * W1.2 — returns null for null/undefined input rather than collapsing to
- * the 1970 epoch. Previously `correctISTTimestamp(null)` produced
- * `new Date(null) - 5.5h ≈ 1969-12-31T18:30Z`, which the engine then
- * treated as a "very old" order and skipped. Order types without an
- * `appointmentTime` (e.g. some pharma orders) were silently dropped.
- *
- * Usage: All timestamp comparisons in rule evaluation must use this.
- */
-function correctISTTimestamp(timestamp: string | Date | null | undefined): Date | null {
-  if (timestamp == null) return null;
-  const parsed = new Date(timestamp);
-  if (isNaN(parsed.getTime())) return null;
-  return new Date(parsed.getTime() - IST_OFFSET_MS);
+// W5 — IST → UTC conversion is now done at the SQL boundary in
+// labstack.ts via `AT TIME ZONE 'Asia/Kolkata'`. The old in-JS shim
+// (`correctISTTimestamp`, IST_OFFSET_MS) is gone — every RawOrder
+// timestamp arrives as a proper UTC Date object. Fields that are null
+// in the source remain null; callers handle that explicitly.
+//
+// Helper: a value is a usable Date iff it's a Date and not Invalid.
+// (Prisma can theoretically hand back a string-shaped Date in edge cases,
+// so we coerce + validate at the boundary just here.)
+function asValidDate(d: Date | string | null | undefined): Date | null {
+  if (d == null) return null;
+  const v = d instanceof Date ? d : new Date(d);
+  return isNaN(v.getTime()) ? null : v;
 }
 
 // ── Comparison helpers for metadata operators ────────────────────────────────
@@ -239,13 +226,14 @@ export function evaluateTrigger(order: RawOrder, cond: TriggerCondition, now: Da
 
   const msPerMin = 60_000;
 
-  // All timestamps must be corrected for IST offset before comparison.
-  // Any of these can legitimately be null (e.g. an order without a scheduled
-  // appointmentTime). When a check needs a timestamp the order doesn't carry,
-  // fail that specific check rather than evaluating against epoch.
-  const createdAt = correctISTTimestamp(order.createdAt);
-  const statusUpdatedAt = correctISTTimestamp(order.statusUpdatedAt);
-  const appointmentTime = correctISTTimestamp(order.appointmentTime);
+  // Timestamps arrive as proper UTC Dates from labstack.ts (W5 — converted
+  // at SELECT via AT TIME ZONE 'Asia/Kolkata'). Any of these can legitimately
+  // be null (e.g. an order without a scheduled appointmentTime). When a check
+  // needs a timestamp the order doesn't carry, fail that specific check
+  // rather than evaluating against epoch.
+  const createdAt = asValidDate(order.createdAt);
+  const statusUpdatedAt = asValidDate(order.statusUpdatedAt);
+  const appointmentTime = asValidDate(order.appointmentTime);
 
   // 2. Age since created
   if (cond.minutesSinceCreated !== undefined) {
@@ -848,12 +836,11 @@ export async function evaluateAndCreateTasks(
     `${entityType}|${ruleId}|${entityId}`;
 
   for (const order of orders) {
-    // Correct for IST timezone offset before any time-based comparison.
     // Orders without an appointmentTime (e.g. some order types that aren't
     // appointment-driven) don't get age-gated — let the rule's own trigger
     // conditions decide whether they're eligible. Previously a null
     // appointmentTime collapsed to 1970 → "very old" → skipped silently.
-    const appointmentTs = correctISTTimestamp(order.appointmentTime);
+    const appointmentTs = asValidDate(order.appointmentTime);
     if (appointmentTs) {
       const ageDays = (now.getTime() - appointmentTs.getTime()) / msPerDay; // +ve = past, -ve = future
 

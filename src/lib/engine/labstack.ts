@@ -3,6 +3,28 @@
  * OpsFlow never writes to these tables directly — all writes go
  * through the LabStack API or are handled by ops agents in the
  * LabStack console.
+ *
+ * W5 — IST → UTC at the SQL boundary.
+ * Labstack stores naive timestamps in IST (TIMESTAMP WITHOUT TIME ZONE,
+ * DB session tz = Asia/Kolkata). Prisma deserialises naive values as if
+ * they were UTC, leaving every Date object 5h30 ahead of reality. The
+ * historical fix (`correctISTTimestamp` in taskCreator.ts) subtracted the
+ * offset in JS — a band-aid that had to be applied at every call site.
+ *
+ * The new fix: cast at SELECT time. `col AT TIME ZONE 'Asia/Kolkata'`
+ * applied to a TIMESTAMP returns a TIMESTAMPTZ that *interprets the input
+ * as IST* and produces the correct UTC instant. Prisma then reads it as a
+ * JS Date pointing at the right wall-clock time. Engines downstream can
+ * just use the value — no per-call shim, no chance of forgetting it.
+ *
+ * Caveat: `to_jsonb(o.*) AS metadata` still embeds the raw naive
+ * timestamps, since to_jsonb sees the column types directly. Authors of
+ * metadataCondition rules that compare timestamp fields should be aware
+ * that those values are still IST-naive strings. This is intentional —
+ * fixing the metadata blob would mean rewriting every key name a rule
+ * author might reference. The top-level fields (createdAt, updatedAt,
+ * statusUpdatedAt, appointmentTime) — the ones the engine itself
+ * reasons about — are the ones we cast.
  */
 import prisma from "@/lib/db/client";
 
@@ -42,13 +64,13 @@ export async function fetchActiveHomeSampleOrders(): Promise<RawOrder[]> {
       o.id,
       o."orderType",
       o."orderStatus",
-      o."appointmentTime",
+      (o."appointmentTime" AT TIME ZONE 'Asia/Kolkata') AS "appointmentTime",
       o."storeId",
       o."labId",
       o."userId",
-      o."createdAt",
-      o."updatedAt",
-      o."statusUpdatedAt",
+      (o."createdAt"       AT TIME ZONE 'Asia/Kolkata') AS "createdAt",
+      (o."updatedAt"       AT TIME ZONE 'Asia/Kolkata') AS "updatedAt",
+      (o."statusUpdatedAt" AT TIME ZONE 'Asia/Kolkata') AS "statusUpdatedAt",
       COALESCE(o."internalNotes", '') AS "internalNotes",
       COALESCE(o.notes, '')           AS notes,
       COALESCE(o."phleboName", '')    AS "phleboName",
@@ -56,13 +78,6 @@ export async function fetchActiveHomeSampleOrders(): Promise<RawOrder[]> {
       u.name                          AS "patientName",
       l."labName"                     AS "labName",
       s."storeName"                   AS "storeName",
-      -- W1.1: populate RawOrder.metadata. Previously the column was typed
-      -- but never selected, so every metadataCondition rule silently never
-      -- fired. to_jsonb(o.*) gives the entire row as JSONB so authors can
-      -- reference any column (top-level or one level into the source JSONB
-      -- columns like rawValues / standardizedValues) via dot-paths, matching
-      -- what /api/data-sources/[id]/metadata-keys surfaces in the editor
-      -- autocomplete.
       to_jsonb(o.*)                   AS metadata
     FROM public."Order" o
     JOIN public."User" u ON u.id = o."userId"
@@ -92,13 +107,13 @@ export async function fetchAllActiveOrders(since?: Date | null): Promise<RawOrde
       o.id,
       o."orderType",
       o."orderStatus",
-      o."appointmentTime",
+      (o."appointmentTime" AT TIME ZONE 'Asia/Kolkata') AS "appointmentTime",
       o."storeId",
       o."labId",
       o."userId",
-      o."createdAt",
-      o."updatedAt",
-      o."statusUpdatedAt",
+      (o."createdAt"        AT TIME ZONE 'Asia/Kolkata') AS "createdAt",
+      (o."updatedAt"        AT TIME ZONE 'Asia/Kolkata') AS "updatedAt",
+      (o."statusUpdatedAt"  AT TIME ZONE 'Asia/Kolkata') AS "statusUpdatedAt",
       COALESCE(o."internalNotes", '') AS "internalNotes",
       COALESCE(o.notes, '')           AS notes,
       COALESCE(o."phleboName", '')    AS "phleboName",
@@ -112,7 +127,10 @@ export async function fetchAllActiveOrders(since?: Date | null): Promise<RawOrde
     LEFT JOIN public."Lab" l ON l.id = o."labId"
     LEFT JOIN public."Store" s ON s.id = o."storeId"
     WHERE o."orderStatus" NOT IN ('CANCELED', 'REPORT_DELIVERED', 'PATIENT_MISSED')
-      AND (o."updatedAt" >= $1 OR o."statusUpdatedAt" >= $1)
+      AND (
+        (o."updatedAt"       AT TIME ZONE 'Asia/Kolkata') >= $1
+        OR (o."statusUpdatedAt" AT TIME ZONE 'Asia/Kolkata') >= $1
+      )
     ORDER BY o."appointmentTime" ASC
       `,
       [since]
@@ -124,13 +142,13 @@ export async function fetchAllActiveOrders(since?: Date | null): Promise<RawOrde
       o.id,
       o."orderType",
       o."orderStatus",
-      o."appointmentTime",
+      (o."appointmentTime" AT TIME ZONE 'Asia/Kolkata') AS "appointmentTime",
       o."storeId",
       o."labId",
       o."userId",
-      o."createdAt",
-      o."updatedAt",
-      o."statusUpdatedAt",
+      (o."createdAt"       AT TIME ZONE 'Asia/Kolkata') AS "createdAt",
+      (o."updatedAt"       AT TIME ZONE 'Asia/Kolkata') AS "updatedAt",
+      (o."statusUpdatedAt" AT TIME ZONE 'Asia/Kolkata') AS "statusUpdatedAt",
       COALESCE(o."internalNotes", '') AS "internalNotes",
       COALESCE(o.notes, '')           AS notes,
       COALESCE(o."phleboName", '')    AS "phleboName",
@@ -138,13 +156,6 @@ export async function fetchAllActiveOrders(since?: Date | null): Promise<RawOrde
       u.name                          AS "patientName",
       l."labName"                     AS "labName",
       s."storeName"                   AS "storeName",
-      -- W1.1: populate RawOrder.metadata. Previously the column was typed
-      -- but never selected, so every metadataCondition rule silently never
-      -- fired. to_jsonb(o.*) gives the entire row as JSONB so authors can
-      -- reference any column (top-level or one level into the source JSONB
-      -- columns like rawValues / standardizedValues) via dot-paths, matching
-      -- what /api/data-sources/[id]/metadata-keys surfaces in the editor
-      -- autocomplete.
       to_jsonb(o.*)                   AS metadata
     FROM public."Order" o
     JOIN public."User" u ON u.id = o."userId"

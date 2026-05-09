@@ -97,10 +97,28 @@ function fmtSla(mins: number): string {
   return `${Math.floor(mins / 60)}h ${mins % 60}m`;
 }
 
+// W4.3 — compact rendering of a sample value inside the autocomplete dropdown.
+// Browsers truncate <option> labels; keep them short and readable.
+function formatSampleForOption(v: unknown): string {
+  if (v === null || v === undefined) return "—";
+  const s = typeof v === "string" ? v : JSON.stringify(v);
+  return s.length > 40 ? s.slice(0, 40) + "…" : s;
+}
+
 function fmtOffset(mins: number): string {
   if (mins < 60) return `${mins} min`;
   if (mins % 60 === 0) return `${mins / 60} hr`;
   return `${Math.floor(mins / 60)}h ${mins % 60}m`;
+}
+
+// W4.3 — observed metadata keys (from /api/data-sources/[id]/metadata-keys).
+// Drives the autocomplete on the Field Path input so authors can't typo a
+// field that doesn't exist on the source.
+interface SourceKey {
+  path: string;
+  type: "string" | "number" | "boolean" | "timestamp" | "object" | "array" | "null";
+  sampleValue: unknown;
+  observedIn: number;
 }
 
 function TriggerBuilder({
@@ -108,11 +126,13 @@ function TriggerBuilder({
   onChange,
   metadataFields = [],
   orderStatuses = [],
+  sourceKeys = [],
 }: {
   value?: TriggerCondition;
   onChange: (v: TriggerCondition) => void;
   metadataFields?: any[];
   orderStatuses?: string[];
+  sourceKeys?: SourceKey[];
 }) {
   const [showMetadata, setShowMetadata] = useState(false);
 
@@ -248,14 +268,47 @@ function TriggerBuilder({
               <div key={idx} className="p-3 bg-zinc-800 border border-zinc-700 rounded-lg space-y-2">
                 <div className="grid grid-cols-4 gap-2">
                   <div>
-                    <label className="text-[10px] text-zinc-400 block mb-1">Field Path</label>
-                    <input
-                      type="text"
-                      value={cond.fieldPath}
-                      onChange={(e) => updateMetadataCondition(idx, { fieldPath: e.target.value })}
-                      placeholder="e.g., patient.age"
-                      className="w-full px-2 py-1.5 bg-zinc-700 border border-zinc-600 rounded text-xs text-white placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                    />
+                    {/* W4.3 — autocomplete from observed source keys. The <datalist>
+                       gives the input native combobox behaviour (free-text + dropdown
+                       suggestions); a green check appears when the typed path matches
+                       an observed key. Catches typos that previously silently no-op'd. */}
+                    {(() => {
+                      const matched = sourceKeys.find((k) => k.path === cond.fieldPath);
+                      return (
+                        <>
+                          <label className="text-[10px] text-zinc-400 mb-1 flex items-center justify-between">
+                            <span>Field Path</span>
+                            {cond.fieldPath && (
+                              matched
+                                ? <span className="text-emerald-400 normal-case">✓ {matched.type}</span>
+                                : <span className="text-amber-400 normal-case" title="Field not observed in recent orders">⚠ not seen</span>
+                            )}
+                          </label>
+                          <input
+                            type="text"
+                            list={`mdkeys-${idx}`}
+                            value={cond.fieldPath}
+                            onChange={(e) => updateMetadataCondition(idx, { fieldPath: e.target.value })}
+                            placeholder={sourceKeys.length > 0 ? "Pick or type a path…" : "e.g., patient.age"}
+                            className="w-full px-2 py-1.5 bg-zinc-700 border border-zinc-600 rounded text-xs text-white placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                          />
+                          {sourceKeys.length > 0 && (
+                            <datalist id={`mdkeys-${idx}`}>
+                              {sourceKeys.map((k) => (
+                                <option key={k.path} value={k.path}>
+                                  {`${k.type} · seen ${k.observedIn}× · e.g. ${formatSampleForOption(k.sampleValue)}`}
+                                </option>
+                              ))}
+                            </datalist>
+                          )}
+                          {matched?.sampleValue !== undefined && matched?.sampleValue !== null && (
+                            <div className="text-[9px] text-zinc-600 mt-0.5 truncate" title={String(matched.sampleValue)}>
+                              e.g. {formatSampleForOption(matched.sampleValue)}
+                            </div>
+                          )}
+                        </>
+                      );
+                    })()}
                   </div>
                   <div>
                     <label className="text-[10px] text-zinc-400 block mb-1">Operator</label>
@@ -476,6 +529,8 @@ function RuleDrawer({ rule, allTags, chains, metadataFields, orderStatuses, onCl
   const [availableTypes, setAvailableTypes] = useState<string[]>([]);
   const [availableStatuses, setAvailableStatuses] = useState<string[]>([]);
   const [loadingEnums, setLoadingEnums] = useState(false);
+  // W4.3 — observed metadata keys from the chosen source (last 25 rows).
+  const [sourceKeys, setSourceKeys] = useState<SourceKey[]>([]);
   const [allowedTypes, setAllowedTypes] = useState<string[]>(rule?.allowedTypes ?? []);
   const [allowedStatuses, setAllowedStatuses] = useState<string[]>(rule?.allowedStatuses ?? []);
   const [assignmentStrategy, setAssignmentStrategy] = useState<string>(rule?.assignmentStrategy ?? "default");
@@ -509,6 +564,7 @@ function RuleDrawer({ rule, allTags, chains, metadataFields, orderStatuses, onCl
     if (!selectedSource) {
       setAvailableTypes([]);
       setAvailableStatuses([]);
+      setSourceKeys([]);
       return;
     }
     // Strip schema prefix (public."Table" → "Table") then strip surrounding quotes ("Table" → Table)
@@ -517,9 +573,12 @@ function RuleDrawer({ rule, allTags, chains, metadataFields, orderStatuses, onCl
     Promise.all([
       fetch(`/api/data-sources/column-enums?table=${encodeURIComponent(table)}&column=${encodeURIComponent(selectedSource.typeFieldName)}`).then((r) => r.ok ? r.json() : { values: [] }),
       fetch(`/api/data-sources/column-enums?table=${encodeURIComponent(table)}&column=${encodeURIComponent(selectedSource.statusFieldName)}`).then((r) => r.ok ? r.json() : { values: [] }),
-    ]).then(([typeData, statusData]) => {
+      // W4.3 — observed metadata-key autocomplete data
+      fetch(`/api/data-sources/${selectedSource.id}/metadata-keys?sample=25`).then((r) => r.ok ? r.json() : { keys: [] }),
+    ]).then(([typeData, statusData, keysData]) => {
       setAvailableTypes(typeData.values ?? []);
       setAvailableStatuses(statusData.values ?? []);
+      setSourceKeys(keysData.keys ?? []);
     }).finally(() => setLoadingEnums(false));
   }, [selectedSource]);
 
@@ -815,6 +874,7 @@ function RuleDrawer({ rule, allTags, chains, metadataFields, orderStatuses, onCl
                   value={trigger}
                   onChange={setTrigger}
                   metadataFields={metadataFields}
+                  sourceKeys={sourceKeys}
                   orderStatuses={availableStatuses.length > 0 ? availableStatuses : orderStatuses}
                 />
               </>

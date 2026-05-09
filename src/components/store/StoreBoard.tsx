@@ -179,8 +179,12 @@ export default function StoreBoard({ user }: StoreBoardProps) {
 
   return (
     <div className="p-8 space-y-8">
-      {/* Sticky Header Section */}
-      <div className="sticky top-0 bg-zinc-950 z-10 -mx-8 px-8 pt-8 pb-6 space-y-8">
+      {/* Sticky Header Section.
+          z-30 (not z-10) so the store-selector dropdown panel — which lives
+          inside this wrapper — out-stacks the table's sticky <thead> below.
+          Both are position:sticky elements; same z-index would let the later
+          DOM node (the table) win the stacking and clip the dropdown. */}
+      <div className="sticky top-0 bg-zinc-950 z-30 -mx-8 px-8 pt-8 pb-6 space-y-8">
         {/* Header with Store Selector */}
         <div className="flex items-start justify-between">
         <div>

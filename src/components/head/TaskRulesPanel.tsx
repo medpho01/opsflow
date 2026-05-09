@@ -39,6 +39,7 @@ interface DataSource {
   typeFieldName: string;
   statusFieldName: string;
   isActive: boolean;
+  pollingIntervalMinutes: number;
 }
 
 interface SourceScope {
@@ -536,20 +537,30 @@ function RuleDrawer({ rule, allTags, chains, metadataFields, orderStatuses, onCl
     setAllowedStatuses([]);
   }
 
-  async function submit(e: React.FormEvent) {
+  async function submit(e: React.FormEvent, opts?: { asDraft?: boolean }) {
     e.preventDefault();
     setError("");
-    if (!(trigger?.statusIn?.length ?? 0)) {
-      setError("Select at least one status in the Trigger tab.");
-      setActiveTab("trigger");
-      return;
-    }
 
-    // Validate source is selected
+    // Validate source is selected (must be first — every other field's
+    // validity depends on it)
     if (!dataSourceId) {
       setError("Please select a data source first.");
       setActiveTab("source");
       return;
+    }
+
+    // Drafts skip the "must have at least one status" requirement so the
+    // author can save partial work and come back to it. The API still
+    // requires statusIn on save (to keep the data shape valid) — for drafts
+    // we send a placeholder that the engine won't match (empty array isn't
+    // allowed by the schema).
+    const isDraft = opts?.asDraft === true;
+    if (!isDraft) {
+      if (!(trigger?.statusIn?.length ?? 0)) {
+        setError("Select at least one status in the Trigger tab.");
+        setActiveTab("trigger");
+        return;
+      }
     }
 
     setSaving(true);
@@ -559,13 +570,15 @@ function RuleDrawer({ rule, allTags, chains, metadataFields, orderStatuses, onCl
         titleTemplate: form.titleTemplate,
         slaMinutes: Number(form.slaMinutes),
         priority: form.priority,
-        pollingIntervalMinutes: Number(form.pollingIntervalMinutes),
-        triggerCondition: trigger,
+        // pollingIntervalMinutes intentionally omitted on save — it lives on
+        // the data source. Kept in form state for display only.
+        triggerCondition: trigger?.statusIn?.length ? trigger : { ...trigger, statusIn: ["__DRAFT__"] },
         escalationChainId: form.escalationChainId ? Number(form.escalationChainId) : null,
         skillTagIds: Array.from(skillIds),
         dataSourceId: dataSourceId || null,
         allowedTypes,
         allowedStatuses,
+        isDraft,
       };
 
       const url = isCreate ? "/api/task-rules" : `/api/task-rules/${rule!.id}`;
@@ -577,7 +590,12 @@ function RuleDrawer({ rule, allTags, chains, metadataFields, orderStatuses, onCl
         body: JSON.stringify(payload),
       });
       const data = await res.json();
-      if (!res.ok) { setError(data.error ?? "Save failed"); return; }
+      if (!res.ok) {
+        // zod gives us per-field reasons — show the first one if available
+        const r = data.details?.reason ? ` (${data.details.field}: ${data.details.reason})` : "";
+        setError((data.error ?? "Save failed") + r);
+        return;
+      }
       onSaved();
       onClose();
     } finally {
@@ -628,29 +646,45 @@ function RuleDrawer({ rule, allTags, chains, metadataFields, orderStatuses, onCl
           </div>
 
           <div className="flex gap-0">
-            {TABS.map((tab) => (
-              <button
-                key={tab.key}
-                type="button"
-                onClick={() => setActiveTab(tab.key)}
-                className={`px-4 py-2 text-xs font-medium border-b-2 transition-colors ${
-                  activeTab === tab.key
-                    ? "border-blue-500 text-blue-400"
-                    : "border-transparent text-zinc-500 hover:text-zinc-300"
-                }`}
-              >
-                {tab.label}
-                {tab.key === "source" && !dataSourceId && (
-                  <span className="ml-1 w-1.5 h-1.5 rounded-full bg-red-500 inline-block align-middle" title="Required" />
-                )}
-                {tab.key === "source" && dataSourceId && (
-                  <span className="ml-1 w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block align-middle" />
-                )}
-                {tab.key === "trigger" && trigger?.statusIn?.length === 0 && (
-                  <span className="ml-1 w-1.5 h-1.5 rounded-full bg-amber-500 inline-block align-middle" />
-                )}
-              </button>
-            ))}
+            {TABS.map((tab) => {
+              // W3.1: Trigger / Basics / Assignment are useless until a Source
+              // is picked (statuses+types come from the source). Disable the
+              // tab buttons rather than showing a low-fidelity dead-end.
+              const isLocked = tab.key !== "source" && !dataSourceId;
+              const isActive = activeTab === tab.key;
+              return (
+                <button
+                  key={tab.key}
+                  type="button"
+                  onClick={() => !isLocked && setActiveTab(tab.key)}
+                  disabled={isLocked}
+                  title={isLocked ? "Pick a data source first" : undefined}
+                  className={`px-4 py-2 text-xs font-medium border-b-2 transition-colors ${
+                    isActive
+                      ? "border-blue-500 text-blue-400"
+                      : isLocked
+                        ? "border-transparent text-zinc-700 cursor-not-allowed"
+                        : "border-transparent text-zinc-500 hover:text-zinc-300"
+                  }`}
+                >
+                  {tab.label}
+                  {isLocked && (
+                    <svg className="ml-1 w-3 h-3 inline-block align-middle" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                    </svg>
+                  )}
+                  {tab.key === "source" && !dataSourceId && !isLocked && (
+                    <span className="ml-1 w-1.5 h-1.5 rounded-full bg-red-500 inline-block align-middle" title="Required" />
+                  )}
+                  {tab.key === "source" && dataSourceId && (
+                    <span className="ml-1 w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block align-middle" />
+                  )}
+                  {tab.key === "trigger" && !isLocked && trigger?.statusIn?.length === 0 && (
+                    <span className="ml-1 w-1.5 h-1.5 rounded-full bg-amber-500 inline-block align-middle" />
+                  )}
+                </button>
+              );
+            })}
           </div>
         </div>
 
@@ -674,15 +708,21 @@ function RuleDrawer({ rule, allTags, chains, metadataFields, orderStatuses, onCl
 
                 <div>
                   <label className="block text-xs text-zinc-400 mb-1.5 font-medium">
-                    Polling Interval (min)
+                    Polling Interval
                   </label>
-                  <input
-                    type="number"
-                    min={1}
-                    value={form.pollingIntervalMinutes}
-                    onChange={(e) => setForm({ ...form, pollingIntervalMinutes: Number(e.target.value) })}
-                    className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
-                  />
+                  {/*
+                    W3.3 — The polling cadence is a property of the data source,
+                    not the rule. Showing the source's value as read-only here
+                    so authors aren't misled into thinking the rule overrides it.
+                  */}
+                  <div className="px-3 py-2 bg-zinc-800/50 border border-zinc-700 rounded-lg text-sm text-zinc-400 flex items-center justify-between">
+                    <span>
+                      Every <span className="text-zinc-200 font-medium">{selectedSource?.pollingIntervalMinutes ?? "—"} min</span>
+                    </span>
+                    <span className="text-[10px] text-zinc-600">
+                      governed by data source
+                    </span>
+                  </div>
                 </div>
 
                 <div>
@@ -979,6 +1019,23 @@ function RuleDrawer({ rule, allTags, chains, metadataFields, orderStatuses, onCl
           <button type="button" onClick={onClose} className="px-4 py-2 text-xs text-zinc-400 hover:text-zinc-200 transition-colors">
             Cancel
           </button>
+          {/*
+            W3.2 — Save-as-Draft. The rule lands inactive (won't fire) but
+            persisted, so authors can step away and resume. The API skips
+            the per-source status-validation for drafts so partial work
+            (no source-specific status picked yet) can still save.
+          */}
+          {isCreate && (
+            <button
+              type="button"
+              onClick={(e) => submit(e as unknown as React.FormEvent, { asDraft: true })}
+              disabled={saving || !dataSourceId}
+              title={!dataSourceId ? "Pick a data source first" : "Save inactive draft — won't fire until activated"}
+              className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-medium rounded-lg disabled:opacity-50 transition-colors"
+            >
+              {saving ? "Saving…" : "Save as Draft"}
+            </button>
+          )}
           <button
             type="submit"
             form="rule-form"
@@ -1261,6 +1318,16 @@ export default function TaskRulesPanel() {
                             <div className="text-[10px] text-zinc-600 mb-2 font-semibold uppercase tracking-wider">Trigger Conditions</div>
                             <TriggerSummary cond={rule.triggerCondition} />
                           </div>
+
+                          {/* W3.4 — Recent fires: last 10 tasks this rule created. Lazy fetch on expand. */}
+                          <div>
+                            <div className="text-[10px] text-zinc-600 mb-2 font-semibold uppercase tracking-wider flex items-center justify-between">
+                              <span>Recent fires</span>
+                              <span className="text-zinc-700 normal-case font-normal">last 10</span>
+                            </div>
+                            <RecentFiresPanel ruleId={rule.id} />
+                          </div>
+
                           <div className="flex items-start gap-6 text-xs">
                             <div>
                               <div className="text-[10px] text-zinc-600 mb-1 font-semibold uppercase tracking-wider">Skills</div>
@@ -1309,4 +1376,86 @@ export default function TaskRulesPanel() {
       )}
     </div>
   );
+}
+
+// ── Recent fires panel (W3.4) ────────────────────────────────────────────────
+// Lazily fetches /api/task-rules/{id}/recent-fires when the user expands a
+// rule card, so the rule list never pays for it on first paint.
+function RecentFiresPanel({ ruleId }: { ruleId: string }) {
+  const [fires, setFires] = useState<Array<{
+    taskId: number;
+    entityId: number;
+    title: string;
+    status: string;
+    createdAt: string;
+    isArchived: boolean;
+    assignedToName: string | null;
+  }> | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    fetch(`/api/task-rules/${ruleId}/recent-fires?limit=10`)
+      .then((r) => r.ok ? r.json() : Promise.reject(`HTTP ${r.status}`))
+      .then((d) => { if (!cancelled) setFires(d.fires ?? []); })
+      .catch((e) => { if (!cancelled) setError(String(e)); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [ruleId]);
+
+  if (loading) {
+    return (
+      <div className="text-[11px] text-zinc-600 italic">Loading recent fires…</div>
+    );
+  }
+  if (error) {
+    return <div className="text-[11px] text-red-400">Failed to load: {error}</div>;
+  }
+  if (!fires || fires.length === 0) {
+    return <div className="text-[11px] text-zinc-600">No tasks created yet.</div>;
+  }
+
+  return (
+    <div className="space-y-1">
+      {fires.map((f) => (
+        <div key={f.taskId} className="flex items-center gap-2 text-[11px] text-zinc-400 hover:text-zinc-200 transition-colors">
+          <span className={`shrink-0 w-1.5 h-1.5 rounded-full ${statusDot(f.status)}`} title={f.status} />
+          <span className="font-mono text-[10px] text-zinc-600 shrink-0">#{f.entityId}</span>
+          <span className="truncate">{f.title}</span>
+          <span className="ml-auto shrink-0 text-[10px] text-zinc-600">{relativeTime(f.createdAt)}</span>
+          {f.assignedToName && (
+            <span className="shrink-0 text-[10px] text-zinc-500">→ {f.assignedToName}</span>
+          )}
+          {f.isArchived && (
+            <span className="shrink-0 text-[9px] text-zinc-700">archived</span>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function statusDot(status: string): string {
+  switch (status) {
+    case "COMPLETED": return "bg-emerald-500";
+    case "ASSIGNED":
+    case "IN_PROGRESS": return "bg-blue-500";
+    case "BLOCKED":
+    case "BREACHED": return "bg-red-500";
+    case "CANCELLED": return "bg-zinc-600";
+    default: return "bg-zinc-500";
+  }
+}
+
+function relativeTime(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime();
+  const m = Math.floor(diff / 60000);
+  if (m < 1) return "just now";
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
 }

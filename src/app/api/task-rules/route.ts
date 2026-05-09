@@ -97,18 +97,21 @@ export async function POST(request: NextRequest) {
 
     // Validate status values against the SOURCE's enum (not just LabstackOrderStatus).
     // Previously POST skipped this check entirely; PATCH applied it. They're now consistent.
-    const statusValidation = await validateStatusesAgainstSource(
-      parsed.dataSourceId,
-      parsed.triggerCondition.statusIn
-    );
-    if (!statusValidation.valid) {
-      return NextResponse.json({
-        error: "Invalid order status in triggerCondition.statusIn",
-        code: "VALIDATION_ERROR",
-        invalidStatuses: statusValidation.invalidStatuses,
-        validStatuses: statusValidation.validStatuses ?? getValidOrderStatuses(),
-        requestId,
-      }, { status: 400 });
+    // Skipped for drafts — authors may save partial work with a placeholder status.
+    if (!parsed.isDraft) {
+      const statusValidation = await validateStatusesAgainstSource(
+        parsed.dataSourceId,
+        parsed.triggerCondition.statusIn
+      );
+      if (!statusValidation.valid) {
+        return NextResponse.json({
+          error: "Invalid order status in triggerCondition.statusIn",
+          code: "VALIDATION_ERROR",
+          invalidStatuses: statusValidation.invalidStatuses,
+          validStatuses: statusValidation.validStatuses ?? getValidOrderStatuses(),
+          requestId,
+        }, { status: 400 });
+      }
     }
 
     // Resolve task type — use provided id if supplied, otherwise auto-default to first available

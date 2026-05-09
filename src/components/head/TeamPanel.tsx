@@ -798,6 +798,10 @@ export default function TeamPanel() {
             don't have to bounce to Analytics) */}
         {!loading && members.length > 0 && <LeaderboardPanel />}
 
+        {/* W5 — Weekly heatmap (agents × days). Shows scheduled coverage and exceptions
+            in one view; flags coverage gaps and low-coverage days. */}
+        {!loading && members.length > 0 && <WeeklyHeatmap />}
+
         {/* Roster + Capacity Analytics */}
         {!loading && members.length > 0 && (() => {
           // W3 — team-wide capacity summary so heads can balance load at a glance.
@@ -1224,6 +1228,207 @@ export function LeaderboardPanel() {
                 })}
               </tbody>
             </table>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Weekly Heatmap (W5) ──────────────────────────────────────────────────────
+// Agents × 7-day grid. Each cell tells you whether that agent is working,
+// off, on exception, or unscheduled for that date — at a glance. Day-level
+// conflict flags (low coverage / everyone off) light up the column header
+// red so the head spots gaps without scanning every cell.
+type HeatCell = {
+  status: "WORKING" | "OFF" | "EXCEPTION" | "UNSCHEDULED";
+  shift?: { start: string; end: string; breakStart: string | null; breakEnd: string | null };
+  exception?: { kind: string; note?: string };
+};
+
+type HeatDay = {
+  date: string;
+  dayOfWeek: number;
+  dayName: string;
+  totals: { working: number; off: number; exception: number; unscheduled: number };
+  lowCoverage: boolean;
+  everyoneOff: boolean;
+};
+
+type HeatAgent = { userId: number; name: string; role: string; cells: HeatCell[] };
+
+export function WeeklyHeatmap() {
+  const [open, setOpen] = useState(false);
+  // weekStart = the Monday of the displayed week. null = "this week".
+  const [weekOffset, setWeekOffset] = useState(0); // -1 = last week, 0 = this, +1 = next, ...
+  const [data, setData] = useState<{ weekStart: string; weekEnd: string; minCoverage: number; days: HeatDay[]; agents: HeatAgent[] } | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Compute the displayed Monday from `weekOffset`
+  const displayedWeekStart = (() => {
+    const now = new Date();
+    const today = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()));
+    const dow = today.getUTCDay();
+    const offsetToMon = (dow + 6) % 7;
+    const monday = new Date(today);
+    monday.setUTCDate(monday.getUTCDate() - offsetToMon + weekOffset * 7);
+    return monday.toISOString().slice(0, 10);
+  })();
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    setLoading(true); setError(null);
+    fetch(`/api/team/heatmap?weekStart=${displayedWeekStart}`)
+      .then((r) => r.ok ? r.json() : Promise.reject(`HTTP ${r.status}`))
+      .then((d) => { if (!cancelled) setData(d); })
+      .catch((e) => { if (!cancelled) setError(String(e)); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [open, displayedWeekStart]);
+
+  return (
+    <div className="mb-5 border border-zinc-800 rounded-lg bg-zinc-900/40">
+      <button
+        onClick={() => setOpen(!open)}
+        className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-zinc-800/40 transition-colors"
+      >
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-semibold text-white">Weekly heatmap</span>
+          <span className="text-[10px] text-zinc-500">agents × days, with coverage warnings</span>
+        </div>
+        <svg className={`w-4 h-4 text-zinc-500 transition-transform ${open ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+
+      {open && (
+        <div className="border-t border-zinc-800 p-4 space-y-3">
+          {/* Week navigator */}
+          <div className="flex items-center justify-between text-xs">
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setWeekOffset((w) => w - 1)}
+                className="px-2 py-1 rounded bg-zinc-800 text-zinc-400 hover:text-white transition-colors"
+                title="Previous week"
+              >
+                ‹
+              </button>
+              <span className="text-zinc-300 font-medium px-2">
+                {data ? `${data.weekStart} → ${data.weekEnd}` : displayedWeekStart}
+              </span>
+              <button
+                onClick={() => setWeekOffset((w) => w + 1)}
+                className="px-2 py-1 rounded bg-zinc-800 text-zinc-400 hover:text-white transition-colors"
+                title="Next week"
+              >
+                ›
+              </button>
+              <button
+                onClick={() => setWeekOffset(0)}
+                className="px-2 py-1 rounded bg-zinc-800 text-zinc-400 hover:text-white transition-colors text-[10px]"
+                title="This week"
+              >
+                Today
+              </button>
+            </div>
+            {/* Legend */}
+            <div className="flex items-center gap-3 text-[10px] text-zinc-500">
+              <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded bg-emerald-600" /> Working</span>
+              <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded bg-zinc-700" /> Off</span>
+              <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded bg-amber-600" /> Exception</span>
+              <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded border border-zinc-700" /> Unscheduled</span>
+            </div>
+          </div>
+
+          {loading ? (
+            <div className="text-[11px] text-zinc-600 italic py-4 text-center">Loading…</div>
+          ) : error ? (
+            <div className="text-[11px] text-red-400 py-4 text-center">Failed: {error}</div>
+          ) : !data || data.agents.length === 0 ? (
+            <div className="text-[11px] text-zinc-600 py-4 text-center">No agents to show.</div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-[11px] border-separate" style={{ borderSpacing: "2px" }}>
+                <thead>
+                  <tr>
+                    <th className="text-left text-[10px] text-zinc-600 uppercase tracking-wider px-2 py-1 sticky left-0 bg-zinc-900/40 z-10">Agent</th>
+                    {data.days.map((day) => {
+                      const flagged = day.everyoneOff || day.lowCoverage;
+                      return (
+                        <th
+                          key={day.date}
+                          className={`text-center text-[10px] px-2 py-1 ${flagged ? "text-red-400" : "text-zinc-500"}`}
+                          title={
+                            day.everyoneOff ? "Coverage gap — no agent working this day" :
+                            day.lowCoverage ? `Low coverage — only ${day.totals.working} working` :
+                            `${day.totals.working} working`
+                          }
+                        >
+                          <div className="font-semibold">{day.dayName}</div>
+                          <div className="text-[9px] font-normal">{day.date.slice(5)}</div>
+                          <div className="text-[9px] font-mono mt-0.5">
+                            {flagged && "⚠ "}
+                            <span className={day.totals.working === 0 ? "text-red-400" : "text-emerald-400"}>{day.totals.working}</span>
+                            <span className="text-zinc-700">/</span>
+                            <span className="text-zinc-500">{data.agents.length}</span>
+                          </div>
+                        </th>
+                      );
+                    })}
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.agents.map((a) => (
+                    <tr key={a.userId}>
+                      <td className="text-zinc-300 text-[11px] px-2 py-1.5 sticky left-0 bg-zinc-900/40 z-10 whitespace-nowrap">
+                        {a.name}
+                      </td>
+                      {a.cells.map((cell, idx) => {
+                        const cls =
+                          cell.status === "WORKING"  ? "bg-emerald-600/40 text-emerald-200 border-emerald-700/40" :
+                          cell.status === "OFF"      ? "bg-zinc-800 text-zinc-600 border-zinc-700/40" :
+                          cell.status === "EXCEPTION" ? "bg-amber-600/40 text-amber-200 border-amber-700/40" :
+                          "bg-transparent text-zinc-700 border-zinc-800 border-dashed";
+                        const tooltip =
+                          cell.status === "WORKING" && cell.shift ? `${cell.shift.start}–${cell.shift.end}${cell.shift.breakStart ? ` (break ${cell.shift.breakStart}–${cell.shift.breakEnd})` : ""}${cell.exception ? ` · exception: ${cell.exception.kind}` : ""}` :
+                          cell.status === "EXCEPTION" && cell.exception ? `${cell.exception.kind}${cell.exception.note ? `: ${cell.exception.note}` : ""}` :
+                          cell.status === "OFF" ? "Off" :
+                          "Unscheduled — no shift defined";
+                        const label =
+                          cell.status === "WORKING" && cell.shift ? cell.shift.start.slice(0, 5) :
+                          cell.status === "EXCEPTION" && cell.exception ? cell.exception.kind.slice(0, 4) :
+                          cell.status === "OFF" ? "·" :
+                          "—";
+                        return (
+                          <td
+                            key={idx}
+                            className={`text-center text-[10px] px-2 py-1.5 border rounded ${cls}`}
+                            title={tooltip}
+                          >
+                            {label}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+
+              {/* Conflict summary */}
+              {data.days.some((d) => d.everyoneOff || d.lowCoverage) && (
+                <div className="mt-3 px-3 py-2 rounded bg-red-950/40 border border-red-900/40 text-[11px] text-red-300">
+                  <strong>Coverage warnings:</strong>{" "}
+                  {data.days.filter((d) => d.everyoneOff || d.lowCoverage).map((d, i, arr) => (
+                    <span key={d.date}>
+                      {d.dayName} {d.date.slice(5)} ({d.everyoneOff ? "no agents" : `only ${d.totals.working}`})
+                      {i < arr.length - 1 && ", "}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
           )}
         </div>
       )}

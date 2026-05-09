@@ -50,8 +50,15 @@ interface Alert {
   task: { id: number; title: string; entityId: number } | null;
 }
 
+interface SourceStat {
+  sourceId: string;
+  displayName: string;
+  openTasks: number;
+}
+
 interface DashboardData {
   stats: Stats;
+  sourceStats: SourceStat[];
   riskItems: RiskItem[];
   team: TeamMember[];
   recentAlerts: Alert[];
@@ -133,7 +140,7 @@ export default function HeadCommandCenter() {
     );
   }
 
-  const { stats, riskItems, team, recentAlerts, lastPollAt } = data;
+  const { stats, sourceStats = [], riskItems, team, recentAlerts, lastPollAt } = data;
   const visibleAlerts = recentAlerts.filter((a) => !dismissedAlerts.has(a.id));
 
   return (
@@ -188,6 +195,27 @@ export default function HeadCommandCenter() {
           ))}
         </div>
 
+        {/* ── Per-source breakdown ── */}
+        {sourceStats.length > 0 && (
+          <div className="flex flex-wrap gap-2 items-center">
+            <span className="text-[10px] text-zinc-600 uppercase tracking-wider font-semibold mr-1">Sources</span>
+            {sourceStats.map((s) => (
+              <div
+                key={s.sourceId}
+                className="flex items-center gap-2 bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-1.5"
+              >
+                <svg className="w-3 h-3 text-emerald-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4" />
+                </svg>
+                <span className="text-xs text-zinc-300">{s.displayName}</span>
+                <span className={`text-xs font-semibold ${s.openTasks > 0 ? "text-blue-400" : "text-zinc-600"}`}>
+                  {s.openTasks} open
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+
         <div className="grid grid-cols-3 gap-5">
           {/* ── Risk Zone ── */}
           <div className="col-span-2">
@@ -225,9 +253,14 @@ export default function HeadCommandCenter() {
                           <div className="text-sm font-medium text-zinc-100 leading-snug line-clamp-1 mb-0.5">
                             {item.title}
                           </div>
-                          <div className="flex items-center gap-1.5">
+                          <div className="flex items-center gap-1.5 flex-wrap">
                             <PriorityBadge priority={item.priority} />
                             <span className="text-[10px] text-zinc-600">#{item.entityId}</span>
+                            {item.orderType && item.orderType !== "MANUAL" && (
+                              <span className="text-[10px] text-zinc-500 bg-zinc-800 px-1.5 py-0.5 rounded font-mono">
+                                {item.orderType.replace(/_/g, " ")}
+                              </span>
+                            )}
                           </div>
                         </td>
                         <td className="px-3 py-3">
@@ -296,11 +329,21 @@ export default function HeadCommandCenter() {
                       className="bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2.5 flex items-start justify-between gap-2"
                     >
                       <div className="flex-1 min-w-0">
-                        <p className={`text-xs font-medium ${ALERT_TYPE_COLORS[alert.type] ?? "text-zinc-400"}`}>
-                          {alert.type.replace("_", " ")}
-                        </p>
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <p className={`text-xs font-medium ${ALERT_TYPE_COLORS[alert.type] ?? "text-zinc-400"}`}>
+                            {alert.type?.replace(/_/g, " ") ?? "ALERT"}
+                          </p>
+                          {alert.task && (
+                            <span className="text-[10px] text-zinc-600 font-mono">
+                              #{alert.task.entityId}
+                            </span>
+                          )}
+                        </div>
                         <p className="text-xs text-zinc-400 mt-0.5 line-clamp-2">{alert.message}</p>
-                        <p className="text-[10px] text-zinc-600 mt-1">
+                        {alert.task && (
+                          <p className="text-[10px] text-zinc-600 mt-0.5 truncate">{alert.task.title}</p>
+                        )}
+                        <p className="text-[10px] text-zinc-700 mt-0.5">
                           {new Date(alert.createdAt).toLocaleTimeString("en-IN")}
                         </p>
                       </div>

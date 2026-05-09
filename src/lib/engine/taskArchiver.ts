@@ -31,7 +31,7 @@ export async function archiveOldTasks(): Promise<void> {
     console.log(`[TaskArchiver] Cutoff date: ${cutoffDateStr}`);
 
     const result = await prisma.$executeRaw`
-      UPDATE taskos."tasks"
+      UPDATE "tasks"
       SET "isArchived" = true
       WHERE "isArchived" = false
       AND ("metadata"->>'appointmentTime')::timestamp < ${cutoffDateStr}::timestamp
@@ -40,8 +40,8 @@ export async function archiveOldTasks(): Promise<void> {
     console.log(`[TaskArchiver] Archived ${result} old tasks`);
 
     // Log archive action for audit trail
-    if (result.count > 0) {
-      await logArchiveAction(result.count, cutoffDate);
+    if (result > 0) {
+      await logArchiveAction(result, cutoffDate);
     }
   } catch (err) {
     console.error("[TaskArchiver] Error archiving tasks:", err);

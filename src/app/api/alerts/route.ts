@@ -13,7 +13,7 @@ export async function GET(request: NextRequest) {
     if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     const alerts = await prisma.alert.findMany({
-      where: { isRead: false },
+      where: { status: "PENDING" },
       orderBy: { createdAt: "desc" },
       take: 50,
     });
@@ -38,13 +38,13 @@ export async function PATCH(request: NextRequest) {
 
     if (markAll) {
       await prisma.alert.updateMany({
-        where: { isRead: false },
-        data: { isRead: true, readAt: new Date() },
+        where: { status: "PENDING" },
+        data: { status: "ACKNOWLEDGED", acknowledgedAt: new Date() },
       });
     } else if (Array.isArray(ids) && ids.length > 0) {
       await prisma.alert.updateMany({
         where: { id: { in: ids } },
-        data: { isRead: true, readAt: new Date() },
+        data: { status: "ACKNOWLEDGED", acknowledgedAt: new Date() },
       });
     } else {
       return NextResponse.json({ error: "Provide ids array or markAll: true" }, { status: 400 });

@@ -89,7 +89,7 @@ export async function seedCampsDataSource() {
       create: {
         id: "camps-setup-rule",
         name: "Camp Setup - New Registration",
-        orderType: "HOME_SAMPLE", // Using existing enum, but this could be extended
+        dataSourceId: campsSource.id,
         taskTypeId: taskType.id,
         titleTemplate: "Set up camp: {campName} in {location}",
         slaMinutes: 240, // 4 hours to set up
@@ -135,7 +135,7 @@ export async function seedCampsDataSource() {
       create: {
         id: "camps-resources-rule",
         name: "Camp Resources - Verification",
-        orderType: "HOME_SAMPLE",
+        dataSourceId: campsSource.id,
         taskTypeId: taskType.id,
         titleTemplate: "Verify resources for camp: {campName}",
         slaMinutes: 180, // 3 hours
@@ -181,7 +181,7 @@ export async function seedCampsDataSource() {
       create: {
         id: "camps-reporting-rule",
         name: "Camp Reporting - Post Event",
-        orderType: "HOME_SAMPLE",
+        dataSourceId: campsSource.id,
         taskTypeId: taskType.id,
         titleTemplate: "Report results from: {campName}",
         slaMinutes: 360, // 6 hours after camp ends

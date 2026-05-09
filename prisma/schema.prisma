@@ -39,20 +39,35 @@ enum TaskRuleTriggerType {
   TIME        // Create task only when time conditions are met
 }
 
-enum OrderType {
-  HOME_SAMPLE
-  CENTER_VISIT
-  INJECTION
+enum AssignmentMode {
+  ROUND_ROBIN
+  LOAD_BALANCED
+  PRIORITY_ONLY
 }
 
 enum AlertType {
   SLA_WARNING
-  SLA_BREACH
-  UNASSIGNED_TASK
+  SLA_URGENT
+  SLA_BREACHED
+  TASK_UNASSIGNED
   ESCALATION
   AGENT_AT_CAPACITY
   ORDER_STUCK
+  SKILL_GAP
   DAILY_SUMMARY
+}
+
+enum AlertChannel {
+  IN_APP
+  EMAIL
+  SMS
+}
+
+enum AlertStatus {
+  PENDING
+  SENT
+  ACKNOWLEDGED
+  DISMISSED
 }
 
 enum RosterStatus {
@@ -86,6 +101,7 @@ model User {
   ruleAudits             TaskRuleAudit[]     // P4: who changed rules
   dataSourcesCreated     DataSource[]        @relation("DataSourceCreatedBy")
   ruleSourceScopesCreated TaskRuleSourceScope[] @relation("RuleSourceScopeCreatedBy")
+  alerts                 Alert[]
 
   @@map("users")
 }
@@ -124,19 +140,22 @@ model UserSavedFilter {
 // ─────────────────────────────────────────────
 
 model TeamMember {
-  id                 Int      @id @default(autoincrement())
-  userId             Int      @unique
-  maxConcurrentTasks Int      @default(5)
-  isActive           Boolean  @default(true)
-  createdAt          DateTime @default(now())
-  updatedAt          DateTime @updatedAt
+  id                 Int            @id @default(autoincrement())
+  userId             Int            @unique
+  maxConcurrentTasks Int            @default(5)
+  isActive           Boolean        @default(true)
+  autoAssignEnabled  Boolean        @default(true)
+  assignmentPriority Int            @default(5)
+  assignmentMode     AssignmentMode @default(ROUND_ROBIN)
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
 
   user               User                        @relation(fields: [userId], references: [id], onDelete: Cascade)
   skills             TeamMemberSkill[]
   storeAssignments   StoreAssignment[]
   dailyRosters       DailyRoster[]
   assignedTasks      Task[]
-  orderTypes         TeamMemberOrderType[]       @relation("memberOrderTypes")
+  capabilities       TeamMemberCapability[]
   weeklySchedules    WeeklySchedule[]
   rosterExceptions   RosterException[]
 
@@ -193,25 +212,25 @@ model DailyRoster {
 }
 
 // ─────────────────────────────────────────────
-// TEAM MEMBER - ORDER TYPE ALLOCATION
+// TEAM MEMBER CAPABILITIES (data source handling)
 // ─────────────────────────────────────────────
 
-model TeamMemberOrderType {
-  id               Int      @id @default(autoincrement())
-  teamMemberId     Int
-  orderType        OrderType
-  assignedAt       DateTime @default(now())
-  assignedBy       Int?
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+model TeamMemberCapability {
+  id           Int      @id @default(autoincrement())
+  teamMemberId Int
+  dataSourceId String
+  assignedAt   DateTime @default(now())
+  assignedBy   Int?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
-  teamMember       TeamMember @relation("memberOrderTypes", fields: [teamMemberId], references: [id], onDelete: Cascade)
+  teamMember   TeamMember @relation(fields: [teamMemberId], references: [id], onDelete: Cascade)
+  dataSource   DataSource @relation(fields: [dataSourceId], references: [id], onDelete: Cascade)
 
-  @@unique([teamMemberId, orderType])
+  @@unique([teamMemberId, dataSourceId])
   @@index([teamMemberId])
-  @@index([orderType])
-  @@index([assignedAt])
-  @@map("team_member_order_types")
+  @@index([dataSourceId])
+  @@map("team_member_capabilities")
 }
 
 // ─────────────────────────────────────────────
@@ -219,14 +238,14 @@ model TeamMemberOrderType {
 // ─────────────────────────────────────────────
 
 model RoundRobinState {
-  id                    String    @id @default(cuid())
-  orderType             OrderType
+  id                    String   @id @default(cuid())
+  dataSourceId          String
   lastAssignedMemberId  Int?
-  lastUpdatedAt         DateTime  @updatedAt
-  createdAt             DateTime  @default(now())
+  lastUpdatedAt         DateTime @updatedAt
+  createdAt             DateTime @default(now())
 
-  @@unique([orderType])
-  @@index([orderType])
+  @@unique([dataSourceId])
+  @@index([dataSourceId])
   @@map("round_robin_states")
 }
 
@@ -313,20 +332,24 @@ model ChecklistTemplate {
 // ─────────────────────────────────────────────
 
 model TaskRule {
-  id                String                  @id @default(cuid())
-  name              String
-  orderType         OrderType
-  taskTypeId        Int
-  titleTemplate     String
-  slaMinutes        Int
-  priority          TaskPriority
-  triggerType       TaskRuleTriggerType     @default(TIME)  // STATUS or TIME
-  triggerCondition  Json
-  isActive          Boolean                 @default(true)
-  escalationChainId Int?
-  createdAt         DateTime                @default(now())
-  updatedAt         DateTime                @updatedAt
+  id                     String              @id @default(cuid())
+  name                   String
+  dataSourceId           String
+  allowedTypes           Json                @default("[]")
+  allowedStatuses        Json                @default("[]")
+  pollingIntervalMinutes Int                 @default(15)
+  taskTypeId             Int
+  titleTemplate          String
+  slaMinutes             Int
+  priority               TaskPriority
+  triggerType            TaskRuleTriggerType @default(TIME)
+  triggerCondition       Json
+  isActive               Boolean             @default(true)
+  escalationChainId      Int?
+  createdAt              DateTime            @default(now())
+  updatedAt              DateTime            @updatedAt
 
+  dataSource      DataSource       @relation(fields: [dataSourceId], references: [id])
   taskType        TaskType         @relation(fields: [taskTypeId], references: [id])
   escalationChain EscalationChain? @relation(fields: [escalationChainId], references: [id])
   requiredSkills  TaskRuleSkill[]
@@ -377,7 +400,7 @@ model Task {
   entityType      String       // "ORDER"
   entityId        Int
   storeId         Int?
-  orderType       OrderType
+  orderType       String
   priority        TaskPriority
   status          TaskStatus   @default(CREATED)
   assignedToId    Int?
@@ -507,21 +530,26 @@ model EscalationLevel {
 // ─────────────────────────────────────────────
 
 model Alert {
-  id        Int       @id @default(autoincrement())
-  taskId    Int?
-  type      AlertType?
-  message   String
-  storeId   Int?
-  isRead    Boolean   @default(false)
-  readAt    DateTime?
-  isSent    Boolean   @default(false)
-  metadata  Json?
-  createdAt DateTime  @default(now())
+  id            Int          @id @default(autoincrement())
+  alertType     AlertType
+  severity      TaskPriority
+  entityType    String?
+  entityId      Int?
+  taskId        Int?
+  userId        Int?
+  message       String
+  metadata      Json?
+  channel       AlertChannel @default(IN_APP)
+  status        AlertStatus  @default(PENDING)
+  acknowledgedAt DateTime?
+  sentAt        DateTime?
+  createdAt     DateTime     @default(now())
 
   task Task? @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
 
   @@index([taskId])
-  @@index([isRead])
+  @@index([userId, status])
   @@map("alerts")
 }
 
@@ -544,10 +572,19 @@ model PollingLog {
 }
 
 model SlaBreachLog {
-  id        Int      @id @default(autoincrement())
-  taskId    Int
-  breachedAt DateTime
-  createdAt DateTime @default(now())
+  id            Int       @id @default(autoincrement())
+  taskId        Int
+  taskRuleId    String
+  entityType    String
+  entityId      Int
+  assignedToId  Int?
+  slaDeadline   DateTime
+  breachedAt    DateTime
+  breachMinutes Int
+  rootCauseTag  String?
+  resolvedAt    DateTime?
+  notes         String?
+  createdAt     DateTime  @default(now())
 
   @@map("sla_breach_logs")
 }
@@ -616,6 +653,8 @@ model DataSource {
   // Relations
   pollingLogs        DataSourcePollingLog[]
   ruleScopes         TaskRuleSourceScope[]
+  capabilities       TeamMemberCapability[]
+  taskRules          TaskRule[]
 
   @@index([sourceId])
   @@index([isActive])

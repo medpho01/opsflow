@@ -26,26 +26,42 @@ interface SkillTag {
   label: string;
 }
 
-interface TaskType {
-  id: number;
-  name: string;
-  label: string;
-}
-
 interface EscalationChain {
   id: number;
   name: string;
 }
 
+interface DataSource {
+  id: string;
+  sourceId: string;
+  displayName: string;
+  tableReference: string;
+  typeFieldName: string;
+  statusFieldName: string;
+  isActive: boolean;
+}
+
+interface SourceScope {
+  id: number;
+  dataSourceId: string;
+  dataSource: { id: string; displayName: string; sourceId: string };
+  allowedTypes: string[];
+  allowedStatuses: string[];
+  assignmentStrategy: string;
+}
+
 interface TaskRule {
   id: string;
   name: string;
-  orderType: string;
+  dataSourceId: string;
+  dataSource: { id: string; sourceId: string; displayName: string } | null;
+  allowedTypes: string[];
+  allowedStatuses: string[];
+  pollingIntervalMinutes: number;
   priority: string;
   slaMinutes: number;
   isActive: boolean;
   titleTemplate: string;
-  taskType: { name: string; label: string };
   requiredSkills: SkillTag[];
   escalationChain: { id: number; name: string } | null;
   totalTasksCreated: number;
@@ -408,26 +424,31 @@ const EMPTY_TRIGGER: TriggerCondition = {
 
 interface RuleDrawerProps {
   rule: TaskRule | null;
-  taskTypes: TaskType[];
   allTags: SkillTag[];
   chains: EscalationChain[];
   metadataFields: any[];
-  orderTypes: string[];
   orderStatuses: string[];
   onClose: () => void;
   onSaved: () => void;
 }
 
-function RuleDrawer({ rule, taskTypes, allTags, chains, metadataFields, orderTypes, orderStatuses, onClose, onSaved }: RuleDrawerProps) {
+const ASSIGNMENT_STRATEGIES = [
+  { value: "default",        label: "Default (Least Loaded)" },
+  { value: "round_robin",    label: "Round Robin" },
+  { value: "store_affinity", label: "Store Affinity" },
+  { value: "skill_based",    label: "Skill Based" },
+  { value: "least_loaded",   label: "Least Loaded" },
+];
+
+function RuleDrawer({ rule, allTags, chains, metadataFields, orderStatuses, onClose, onSaved }: RuleDrawerProps) {
   const isCreate = rule === null;
 
   const [form, setForm] = useState({
     name: rule?.name ?? "",
-    orderType: rule?.orderType ?? "HOME_SAMPLE",
-    taskTypeId: rule ? String(taskTypes.find((t) => t.label === rule.taskType.label)?.id ?? taskTypes[0]?.id ?? "") : String(taskTypes[0]?.id ?? ""),
     titleTemplate: rule?.titleTemplate ?? "{{patientName}} — ",
     slaMinutes: rule?.slaMinutes ?? 30,
     priority: rule?.priority ?? "HIGH",
+    pollingIntervalMinutes: rule?.pollingIntervalMinutes ?? 15,
     escalationChainId: rule?.escalationChain?.id ? String(rule.escalationChain.id) : "",
   });
   const [trigger, setTrigger] = useState<TriggerCondition>(
@@ -436,11 +457,61 @@ function RuleDrawer({ rule, taskTypes, allTags, chains, metadataFields, orderTyp
   const [skillIds, setSkillIds] = useState<Set<number>>(
     new Set(rule?.requiredSkills.map((s) => s.id) ?? [])
   );
+
+  // Data source state
+  const [dataSources, setDataSources] = useState<DataSource[]>([]);
+  const [loadingSources, setLoadingSources] = useState(false);
+  const [dataSourceId, setDataSourceId] = useState<string>(rule?.dataSourceId ?? "");
+  const [selectedSource, setSelectedSource] = useState<DataSource | null>(null);
+  const [availableTypes, setAvailableTypes] = useState<string[]>([]);
+  const [availableStatuses, setAvailableStatuses] = useState<string[]>([]);
+  const [loadingEnums, setLoadingEnums] = useState(false);
+  const [allowedTypes, setAllowedTypes] = useState<string[]>(rule?.allowedTypes ?? []);
+  const [allowedStatuses, setAllowedStatuses] = useState<string[]>(rule?.allowedStatuses ?? []);
+  const [assignmentStrategy, setAssignmentStrategy] = useState<string>("default");
+
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [deleting, setDeleting] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const [activeTab, setActiveTab] = useState<"basics" | "trigger" | "assignment">("basics");
+  const [activeTab, setActiveTab] = useState<"source" | "trigger" | "basics" | "assignment">("source");
+
+  // Load data sources immediately on mount
+  useEffect(() => {
+    setLoadingSources(true);
+    fetch("/api/data-sources")
+      .then((r) => r.ok ? r.json() : { dataSources: [] })
+      .then((d) => {
+        const active: DataSource[] = (d.dataSources ?? []).filter((s: DataSource) => s.isActive);
+        setDataSources(active);
+        // Pre-select existing source if editing
+        if (dataSourceId) {
+          const found = active.find((s) => s.id === dataSourceId) ?? null;
+          setSelectedSource(found);
+        }
+      })
+      .finally(() => setLoadingSources(false));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Load entity types & statuses when source is selected
+  useEffect(() => {
+    if (!selectedSource) {
+      setAvailableTypes([]);
+      setAvailableStatuses([]);
+      return;
+    }
+    // Strip schema prefix (public."Table" → "Table") then strip surrounding quotes ("Table" → Table)
+    const table = selectedSource.tableReference.replace(/^.*\./, "").replace(/^"(.+)"$/, "$1");
+    setLoadingEnums(true);
+    Promise.all([
+      fetch(`/api/data-sources/column-enums?table=${encodeURIComponent(table)}&column=${encodeURIComponent(selectedSource.typeFieldName)}`).then((r) => r.ok ? r.json() : { values: [] }),
+      fetch(`/api/data-sources/column-enums?table=${encodeURIComponent(table)}&column=${encodeURIComponent(selectedSource.statusFieldName)}`).then((r) => r.ok ? r.json() : { values: [] }),
+    ]).then(([typeData, statusData]) => {
+      setAvailableTypes(typeData.values ?? []);
+      setAvailableStatuses(statusData.values ?? []);
+    }).finally(() => setLoadingEnums(false));
+  }, [selectedSource]);
 
   function toggleSkill(id: number) {
     const next = new Set(skillIds);
@@ -449,27 +520,52 @@ function RuleDrawer({ rule, taskTypes, allTags, chains, metadataFields, orderTyp
     setSkillIds(next);
   }
 
+  function toggleType(type: string) {
+    setAllowedTypes((prev) => prev.includes(type) ? prev.filter((t) => t !== type) : [...prev, type]);
+  }
+
+  function toggleStatus(status: string) {
+    setAllowedStatuses((prev) => prev.includes(status) ? prev.filter((s) => s !== status) : [...prev, status]);
+  }
+
+  function handleSourceSelect(id: string) {
+    setDataSourceId(id);
+    const src = dataSources.find((s) => s.id === id) ?? null;
+    setSelectedSource(src);
+    setAllowedTypes([]);
+    setAllowedStatuses([]);
+  }
+
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setError("");
     if (!(trigger?.statusIn?.length ?? 0)) {
-      setError("Trigger condition must have at least one order status selected.");
+      setError("Select at least one status in the Trigger tab.");
       setActiveTab("trigger");
+      return;
+    }
+
+    // Validate source is selected
+    if (!dataSourceId) {
+      setError("Please select a data source first.");
+      setActiveTab("source");
       return;
     }
 
     setSaving(true);
     try {
-      const payload = {
+      const payload: Record<string, unknown> = {
         name: form.name,
-        orderType: form.orderType,
-        taskTypeId: Number(form.taskTypeId),
         titleTemplate: form.titleTemplate,
         slaMinutes: Number(form.slaMinutes),
         priority: form.priority,
+        pollingIntervalMinutes: Number(form.pollingIntervalMinutes),
         triggerCondition: trigger,
         escalationChainId: form.escalationChainId ? Number(form.escalationChainId) : null,
         skillTagIds: Array.from(skillIds),
+        dataSourceId: dataSourceId || null,
+        allowedTypes,
+        allowedStatuses,
       };
 
       const url = isCreate ? "/api/task-rules" : `/api/task-rules/${rule!.id}`;
@@ -504,9 +600,10 @@ function RuleDrawer({ rule, taskTypes, allTags, chains, metadataFields, orderTyp
   }
 
   const TABS = [
-    { key: "basics", label: "Basics" },
-    { key: "trigger", label: "Trigger Condition" },
-    { key: "assignment", label: "Assignment & Escalation" },
+    { key: "source",      label: "Data Source" },
+    { key: "trigger",     label: "Trigger" },
+    { key: "basics",      label: "Basics" },
+    { key: "assignment",  label: "Assignment" },
   ] as const;
 
   return (
@@ -543,8 +640,14 @@ function RuleDrawer({ rule, taskTypes, allTags, chains, metadataFields, orderTyp
                 }`}
               >
                 {tab.label}
+                {tab.key === "source" && !dataSourceId && (
+                  <span className="ml-1 w-1.5 h-1.5 rounded-full bg-red-500 inline-block align-middle" title="Required" />
+                )}
+                {tab.key === "source" && dataSourceId && (
+                  <span className="ml-1 w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block align-middle" />
+                )}
                 {tab.key === "trigger" && trigger?.statusIn?.length === 0 && (
-                  <span className="ml-1 w-1.5 h-1.5 rounded-full bg-red-500 inline-block align-middle" />
+                  <span className="ml-1 w-1.5 h-1.5 rounded-full bg-amber-500 inline-block align-middle" />
                 )}
               </button>
             ))}
@@ -569,35 +672,17 @@ function RuleDrawer({ rule, taskTypes, allTags, chains, metadataFields, orderTyp
                   />
                 </div>
 
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-xs text-zinc-400 mb-1.5 font-medium">
-                      Order Type <span className="text-red-400">*</span>
-                    </label>
-                    <select
-                      value={form.orderType}
-                      onChange={(e) => setForm({ ...form, orderType: e.target.value })}
-                      className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
-                    >
-                      {(orderTypes.length > 0 ? orderTypes : []).map((t) => (
-                        <option key={t} value={t}>{t.replace(/_/g, " ")}</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-xs text-zinc-400 mb-1.5 font-medium">
-                      Task Type <span className="text-red-400">*</span>
-                    </label>
-                    <select
-                      value={form.taskTypeId}
-                      onChange={(e) => setForm({ ...form, taskTypeId: e.target.value })}
-                      className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
-                    >
-                      {taskTypes.map((t) => (
-                        <option key={t.id} value={t.id}>{t.label}</option>
-                      ))}
-                    </select>
-                  </div>
+                <div>
+                  <label className="block text-xs text-zinc-400 mb-1.5 font-medium">
+                    Polling Interval (min)
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    value={form.pollingIntervalMinutes}
+                    onChange={(e) => setForm({ ...form, pollingIntervalMinutes: Number(e.target.value) })}
+                    className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  />
                 </div>
 
                 <div>
@@ -665,11 +750,46 @@ function RuleDrawer({ rule, taskTypes, allTags, chains, metadataFields, orderTyp
             )}
 
             {activeTab === "trigger" && (
-              <TriggerBuilder value={trigger} onChange={setTrigger} metadataFields={metadataFields} orderStatuses={orderStatuses} />
+              <>
+                {!dataSourceId && (
+                  <div className="mb-4 flex items-center gap-2 px-3 py-2 bg-amber-500/10 border border-amber-500/30 rounded-lg">
+                    <svg className="w-3.5 h-3.5 text-amber-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                    </svg>
+                    <p className="text-xs text-amber-400">
+                      Select a data source first — the status list will be loaded from your source's schema.
+                    </p>
+                  </div>
+                )}
+                <TriggerBuilder
+                  value={trigger}
+                  onChange={setTrigger}
+                  metadataFields={metadataFields}
+                  orderStatuses={availableStatuses.length > 0 ? availableStatuses : orderStatuses}
+                />
+              </>
             )}
 
             {activeTab === "assignment" && (
               <div className="space-y-6">
+                <div>
+                  <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wider">
+                    Assignment Strategy
+                  </label>
+                  <p className="text-[10px] text-zinc-600 mb-3">
+                    How tasks created by this rule are distributed among eligible agents.
+                  </p>
+                  <select
+                    value={assignmentStrategy}
+                    onChange={(e) => setAssignmentStrategy(e.target.value)}
+                    className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  >
+                    {ASSIGNMENT_STRATEGIES.map((s) => (
+                      <option key={s.value} value={s.value}>{s.label}</option>
+                    ))}
+                  </select>
+                </div>
+
                 <div>
                   <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wider">
                     Required Skills
@@ -707,7 +827,7 @@ function RuleDrawer({ rule, taskTypes, allTags, chains, metadataFields, orderTyp
                     Escalation Chain
                   </label>
                   <p className="text-[10px] text-zinc-600 mb-3">
-                    When a task from this rule breaches SLA, which escalation chain should fire?
+                    When a task from this rule breaches SLA, which chain should fire?
                   </p>
                   <select
                     value={form.escalationChainId}
@@ -723,6 +843,105 @@ function RuleDrawer({ rule, taskTypes, allTags, chains, metadataFields, orderTyp
                     <p className="text-[10px] text-zinc-600 mt-1.5">No chains defined. Create them in the Escalations section.</p>
                   )}
                 </div>
+              </div>
+            )}
+
+            {activeTab === "source" && (
+              <div className="space-y-5">
+                {/* Step instruction */}
+                <div className="flex items-start gap-3 px-3 py-3 bg-blue-600/10 border border-blue-700/30 rounded-lg">
+                  <svg className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  <p className="text-[11px] text-blue-300 leading-relaxed">
+                    Start by picking the data source this rule monitors. The entity types and statuses below are loaded directly from that source's schema.
+                  </p>
+                </div>
+
+                {/* Data source picker */}
+                <div>
+                  <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wider">
+                    Data Source <span className="text-red-400 normal-case font-normal ml-1">required</span>
+                  </label>
+                  {loadingSources ? (
+                    <div className="text-zinc-500 text-xs py-2">Loading sources…</div>
+                  ) : dataSources.length === 0 ? (
+                    <div className="px-3 py-2 bg-amber-500/10 border border-amber-500/30 rounded-lg text-xs text-amber-400">
+                      No active data sources found. Register one in the Data Sources panel first.
+                    </div>
+                  ) : (
+                    <select
+                      value={dataSourceId}
+                      onChange={(e) => handleSourceSelect(e.target.value)}
+                      className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    >
+                      <option value="">— Select a data source —</option>
+                      {dataSources.map((s) => (
+                        <option key={s.id} value={s.id}>{s.displayName} ({s.sourceId})</option>
+                      ))}
+                    </select>
+                  )}
+
+                  {selectedSource && (
+                    <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-zinc-500">
+                      <span>Table: <code className="bg-zinc-800 px-1 rounded text-zinc-400">{selectedSource.tableReference}</code></span>
+                      <span>Type field: <code className="bg-zinc-800 px-1 rounded text-zinc-400">{selectedSource.typeFieldName}</code></span>
+                      <span>Status field: <code className="bg-zinc-800 px-1 rounded text-zinc-400">{selectedSource.statusFieldName}</code></span>
+                    </div>
+                  )}
+                </div>
+
+                {selectedSource && (
+                  <>
+                    {/* Entity type filter */}
+                    <div>
+                      <label className="block text-xs font-semibold text-zinc-400 mb-1 uppercase tracking-wider">
+                        Filter by Entity Type
+                      </label>
+                      <p className="text-[10px] text-zinc-600 mb-2">Only process entities of these types. Leave empty to match all.</p>
+                      {loadingEnums ? (
+                        <div className="text-zinc-500 text-xs">Loading…</div>
+                      ) : availableTypes.length === 0 ? (
+                        <div className="text-zinc-600 text-xs italic">No enum values found — all types will match</div>
+                      ) : (
+                        <div className="flex flex-wrap gap-2">
+                          {availableTypes.map((type) => (
+                            <button
+                              key={type}
+                              type="button"
+                              onClick={() => toggleType(type)}
+                              className={`text-xs px-3 py-1.5 rounded-full border transition-colors font-medium ${
+                                allowedTypes.includes(type)
+                                  ? "bg-blue-600/25 border-blue-500/50 text-blue-300"
+                                  : "bg-zinc-800 border-zinc-700 text-zinc-500 hover:border-blue-500/40 hover:text-zinc-300"
+                              }`}
+                            >
+                              {allowedTypes.includes(type) && <span className="mr-1">✓</span>}
+                              {type}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                      {allowedTypes.length === 0 && availableTypes.length > 0 && (
+                        <p className="text-[10px] text-zinc-500 mt-1.5">All entity types will be evaluated</p>
+                      )}
+                    </div>
+
+                    {/* Next step nudge */}
+                    <div className="pt-2 flex justify-end">
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab("trigger")}
+                        className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-blue-400 hover:text-blue-300 hover:bg-blue-500/10 rounded-lg transition-colors"
+                      >
+                        Next: Configure Trigger
+                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                        </svg>
+                      </button>
+                    </div>
+                  </>
+                )}
               </div>
             )}
           </div>
@@ -797,11 +1016,9 @@ function TriggerSummary({ cond }: { cond: TriggerCondition }) {
 
 export default function TaskRulesPanel() {
   const [rules, setRules] = useState<TaskRule[]>([]);
-  const [taskTypes, setTaskTypes] = useState<TaskType[]>([]);
   const [allTags, setAllTags] = useState<SkillTag[]>([]);
   const [chains, setChains] = useState<EscalationChain[]>([]);
   const [metadataFields, setMetadataFields] = useState<any[]>([]);
-  const [orderTypes, setOrderTypes] = useState<string[]>([]);
   const [orderStatuses, setOrderStatuses] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState<string | null>(null);
@@ -811,13 +1028,11 @@ export default function TaskRulesPanel() {
   const fetchAll = useCallback(async () => {
     setLoading(true);
     try {
-      const [rulesRes, typesRes, tagsRes, chainsRes, fieldsRes, orderTypesRes, orderStatusesRes] = await Promise.all([
+      const [rulesRes, tagsRes, chainsRes, fieldsRes, orderStatusesRes] = await Promise.all([
         fetch("/api/task-rules"),
-        fetch("/api/task-types"),
         fetch("/api/skill-tags"),
         fetch("/api/escalations"),
         fetch("/api/task-rules/metadata-fields"),
-        fetch("/api/order-types"),
         fetch("/api/order-statuses"),
       ]);
 
@@ -829,12 +1044,8 @@ export default function TaskRulesPanel() {
       } else {
         const rulesData = await rulesRes.json();
         console.log("Task rules response:", rulesData);
-        setRules(rulesData.rules ?? rulesData ?? []);
-      }
-
-      if (typesRes.ok) {
-        const typesData = await typesRes.json();
-        setTaskTypes(typesData.types ?? []);
+        const fetchedRules = (rulesData.rules ?? rulesData ?? []) as TaskRule[];
+        setRules(fetchedRules);
       }
 
       if (tagsRes.ok) {
@@ -850,11 +1061,6 @@ export default function TaskRulesPanel() {
       if (fieldsRes.ok) {
         const fieldsData = await fieldsRes.json();
         setMetadataFields(fieldsData.fields ?? []);
-      }
-
-      if (orderTypesRes.ok) {
-        const orderTypesData = await orderTypesRes.json();
-        setOrderTypes(orderTypesData.orderTypes ?? []);
       }
 
       if (orderStatusesRes.ok) {
@@ -885,9 +1091,11 @@ export default function TaskRulesPanel() {
   }
 
   const activeCount = rules.filter((r) => r.isActive).length;
+  // Group rules by data source display name
   const grouped = rules.reduce((acc, r) => {
-    acc[r.orderType] = acc[r.orderType] ?? [];
-    acc[r.orderType].push(r);
+    const groupKey = r.dataSource?.displayName ?? r.dataSourceId ?? "Unknown Source";
+    acc[groupKey] = acc[groupKey] ?? [];
+    acc[groupKey].push(r);
     return acc;
   }, {} as Record<string, TaskRule[]>);
 
@@ -943,11 +1151,11 @@ export default function TaskRulesPanel() {
         </div>
       ) : (
         <div className="space-y-6">
-          {Object.entries(grouped).map(([orderType, typeRules]) => (
-            <div key={orderType}>
+          {Object.entries(grouped).map(([sourceLabel, typeRules]) => (
+            <div key={sourceLabel}>
               <div className="flex items-center gap-2 mb-3">
-                <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-semibold border ${ORDER_TYPE_COLORS[orderType] ?? "text-zinc-400 bg-zinc-800 border-zinc-700"}`}>
-                  {orderType.replace(/_/g, " ")}
+                <span className="px-2.5 py-0.5 rounded-full text-[10px] font-semibold border text-blue-300 bg-blue-600/10 border-blue-700/40">
+                  {sourceLabel}
                 </span>
                 <span className="text-xs text-zinc-600">{typeRules.length} rules</span>
               </div>
@@ -981,9 +1189,14 @@ export default function TaskRulesPanel() {
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2 flex-wrap">
                             <span className="text-xs font-medium text-zinc-200">{rule.name}</span>
-                            <span className="text-[10px] text-zinc-500 bg-zinc-800 px-1.5 py-0.5 rounded">
-                              {rule.taskType.label}
-                            </span>
+                            {rule.dataSource && (
+                              <span className="text-[10px] text-emerald-400 bg-emerald-900/20 border border-emerald-700/30 px-1.5 py-0.5 rounded-full flex items-center gap-0.5">
+                                <svg className="w-2.5 h-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                  <path strokeLinecap="round" strokeLinejoin="round" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4" />
+                                </svg>
+                                {rule.dataSource.displayName}
+                              </span>
+                            )}
                           </div>
                         </div>
 
@@ -1027,6 +1240,23 @@ export default function TaskRulesPanel() {
 
                       {isExpanded && (
                         <div className="border-t border-zinc-800 px-4 py-3 bg-zinc-900/50 space-y-3">
+                          {/* Data source info */}
+                          {rule.dataSource && (
+                            <div className="flex flex-wrap gap-1.5">
+                              <span className="flex items-center gap-1 text-[10px] bg-emerald-900/30 border border-emerald-700/40 text-emerald-400 px-2 py-0.5 rounded-full">
+                                <svg className="w-2.5 h-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                  <path strokeLinecap="round" strokeLinejoin="round" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4" />
+                                </svg>
+                                {rule.dataSource.displayName}
+                                {rule.allowedTypes.length > 0 && (
+                                  <span className="text-emerald-600">· {rule.allowedTypes.join(", ")}</span>
+                                )}
+                                {rule.allowedStatuses.length > 0 && (
+                                  <span className="text-emerald-600">· {rule.allowedStatuses.join(", ")}</span>
+                                )}
+                              </span>
+                            </div>
+                          )}
                           <div>
                             <div className="text-[10px] text-zinc-600 mb-2 font-semibold uppercase tracking-wider">Trigger Conditions</div>
                             <TriggerSummary cond={rule.triggerCondition} />
@@ -1069,11 +1299,9 @@ export default function TaskRulesPanel() {
       {drawerRule !== null && (
         <RuleDrawer
           rule={drawerRuleObj}
-          taskTypes={taskTypes}
           allTags={allTags}
           chains={chains}
           metadataFields={metadataFields}
-          orderTypes={orderTypes}
           orderStatuses={orderStatuses}
           onClose={() => setDrawerRule(null)}
           onSaved={fetchAll}

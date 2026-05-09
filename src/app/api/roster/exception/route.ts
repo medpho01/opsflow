@@ -25,7 +25,10 @@ export async function GET(request: NextRequest) {
   const startStr = searchParams.get("start");
   const endStr = searchParams.get("end");
 
-  let where: any = {};
+  const whereClause: {
+    teamMemberId?: number;
+    date?: { gte?: Date; lte?: Date };
+  } = {};
 
   // If userId provided, filter to that user
   if (userIdStr) {
@@ -41,24 +44,24 @@ export async function GET(request: NextRequest) {
     if (!teamMember) {
       return NextResponse.json({ error: "Team member not found" }, { status: 404 });
     }
-    where.teamMemberId = teamMember.id;
+    whereClause.teamMemberId = teamMember.id;
   }
 
   // Filter by date range if provided
   if (startStr || endStr) {
-    where.date = {};
+    whereClause.date = {};
     if (startStr) {
       const start = parseDateParam(startStr);
-      if (start) where.date.gte = start;
+      if (start) whereClause.date.gte = start;
     }
     if (endStr) {
       const end = parseDateParam(endStr);
-      if (end) where.date.lte = end;
+      if (end) whereClause.date!.lte = end;
     }
   }
 
   const exceptions = await prisma.rosterException.findMany({
-    where,
+    where: whereClause,
     orderBy: [{ date: "desc" }, { teamMemberId: "asc" }],
     include: { teamMember: { include: { user: { select: { name: true, email: true } } } } },
   });

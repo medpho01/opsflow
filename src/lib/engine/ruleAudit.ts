@@ -23,8 +23,8 @@ export async function logRuleAudit(entry: AuditLogEntry): Promise<void> {
         ruleId: entry.ruleId,
         changedById: entry.changedById,
         action: entry.action,
-        changesSummary: entry.changesSummary || null,
-        metadata: entry.metadata || null,
+        changesSummary: entry.changesSummary ?? undefined,
+        metadata: entry.metadata ?? undefined,
       },
     });
   } catch (err) {

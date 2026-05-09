@@ -20,17 +20,19 @@ export async function GET(request: NextRequest) {
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   try {
-    const filters = await prisma.userSavedFilter.findMany({
-      where: { userId: user.id },
-      select: {
-        id: true,
-        filterName: true,
-        filterJson: true,
-        createdAt: true,
-        usageCount: true,
-      },
-      orderBy: { usageCount: "desc" },
-    });
+    // TODO: Uncomment when user_saved_filters table is created
+    // const filters = await prisma.userSavedFilter.findMany({
+    //   where: { userId: user.id },
+    //   select: {
+    //     id: true,
+    //     filterName: true,
+    //     filterJson: true,
+    //     createdAt: true,
+    //     usageCount: true,
+    //   },
+    //   orderBy: { usageCount: "desc" },
+    // });
+    const filters: any[] = [];
 
     return NextResponse.json({
       filters: filters.map((f) => ({

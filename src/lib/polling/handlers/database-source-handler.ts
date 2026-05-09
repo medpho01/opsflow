@@ -24,6 +24,11 @@ export interface DatabaseSourceConfig {
   metadataFieldMapping?: Record<string, string>; // Maps output names to DB column names
 }
 
+/** Double-quote a PostgreSQL identifier (table or column name) */
+function qi(ident: string): string {
+  return `"${ident.replace(/"/g, '""')}"`;
+}
+
 export class DatabaseSourceHandler implements ISourceHandler {
   private config: DatabaseSourceConfig;
 
@@ -137,7 +142,7 @@ export class DatabaseSourceHandler implements ISourceHandler {
         const updateQuery = `
           UPDATE ${this.config.tableReference}
           SET updated_at = NOW()
-          WHERE ${this.config.primaryKeyField} = ${Number(sourceEntityId)}
+          WHERE ${qi(this.config.primaryKeyField)} = ${Number(sourceEntityId)}
         `;
 
         await prisma.$executeRawUnsafe(updateQuery);
@@ -197,16 +202,16 @@ export class DatabaseSourceHandler implements ISourceHandler {
     try {
       // Fetch distinct type and status values
       const typesQuery = `
-        SELECT DISTINCT ${this.config.typeFieldName} as type
+        SELECT DISTINCT ${qi(this.config.typeFieldName)} as type
         FROM ${this.config.tableReference}
-        WHERE ${this.config.typeFieldName} IS NOT NULL
+        WHERE ${qi(this.config.typeFieldName)} IS NOT NULL
         LIMIT 100
       `;
 
       const statusesQuery = `
-        SELECT DISTINCT ${this.config.statusFieldName} as status
+        SELECT DISTINCT ${qi(this.config.statusFieldName)} as status
         FROM ${this.config.tableReference}
-        WHERE ${this.config.statusFieldName} IS NOT NULL
+        WHERE ${qi(this.config.statusFieldName)} IS NOT NULL
         LIMIT 100
       `;
 

@@ -453,7 +453,7 @@ export default function AllTasksBoard() {
                     <PriorityBadge priority={task.priority} />
                   </td>
                   <td className="px-4 py-3 text-sm">
-                    <SlaCountdown slaDeadline={task.slaDeadline} breachedAt={task.slaBreachedAt} />
+                    <SlaCountdown deadline={task.slaDeadline} />
                   </td>
                   <td className="px-4 py-3 text-sm">{task.assignedTo?.name || "-"}</td>
 

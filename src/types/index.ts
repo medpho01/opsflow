@@ -1,6 +1,6 @@
-import { UserRole, TaskStatus, TaskPriority, OrderType, AlertType } from "@prisma/client";
+import { UserRole, TaskStatus, TaskPriority, AlertType } from "@prisma/client";
 
-export type { UserRole, TaskStatus, TaskPriority, OrderType, AlertType };
+export type { UserRole, TaskStatus, TaskPriority, AlertType };
 
 // ── Labstack Order Status Enum ────────────────────────────────────
 // These are the valid Labstack order statuses (source of truth from Labstack schema)
@@ -113,7 +113,10 @@ export interface TriggerCondition {
 export interface TaskRuleWithRelations {
   id: string;
   name: string;
-  orderType: OrderType;
+  dataSourceId: string;
+  allowedTypes: string[];
+  allowedStatuses: string[];
+  pollingIntervalMinutes: number;
   taskTypeId: number;
   titleTemplate: string;
   slaMinutes: number;
@@ -133,7 +136,8 @@ export interface CreateTaskPayload {
   entityType: string;
   entityId: number;
   storeId: number | null;
-  orderType: OrderType;
+  orderType: string;
+  dataSourceId: string;
   priority: TaskPriority;
   slaDeadline: Date;
   metadata: Record<string, unknown>;
@@ -147,7 +151,7 @@ export interface RiskItem {
   priority: TaskPriority;
   status: TaskStatus;
   entityId: number;
-  orderType: OrderType;
+  orderType: string;
   storeId: number | null;
   slaDeadline: Date;
   slaBreachedAt: Date | null;
@@ -167,11 +171,12 @@ export interface TeamMemberStatus {
   storeIds: number[];
 }
 
-// ── Teams Feature: Order Type Assignments ──────────────────────────
-export interface TeamMemberOrderType {
+// ── Teams Feature: Data Source Capabilities ──────────────────────────
+export interface TeamMemberCapability {
   id?: number;
   teamMemberId: number;
-  orderType: OrderType;
+  dataSourceId: string;
+  dataSource?: { id: string; sourceId: string; displayName: string };
   assignedAt: Date;
   assignedBy?: number;
 }
@@ -187,8 +192,8 @@ export interface TeamMemberWithOrderTypes {
   maxConcurrentTasks: number;
   isActive: boolean;
   createdAt: Date;
-  orderTypes: TeamMemberOrderType[];
-  orderTypeCount: number;
+  capabilities: TeamMemberCapability[];
+  capabilityCount: number;
   skills: Array<{ id: number; name: string; label: string }>;
   skillCount: number;
   stores: number[];
@@ -226,7 +231,7 @@ export interface MemberPerformanceStats {
 
 export interface OrderTypeOption {
   id: number;
-  name: OrderType;
+  name: string;
   label: string;
   description: string;
 }

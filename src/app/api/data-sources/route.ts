@@ -8,7 +8,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getSessionFromRequest } from "@/lib/auth/session";
 import { UserRole } from "@prisma/client";
 import prisma from "@/lib/db/client";
-import { RegisterDataSourceRequest, RegisterDataSourceResponse, ValidationResult } from "@/types/multi-source";
+import { RegisterDataSourceRequest, RegisterDataSourceResponse } from "@/types/multi-source";
 
 /**
  * GET /api/data-sources

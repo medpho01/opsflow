@@ -9,6 +9,12 @@ interface Store {
   city?: string | null;
 }
 
+interface DataSource {
+  id: string;
+  sourceId: string;
+  displayName: string;
+}
+
 interface TeamMember {
   id: number;
   userId: number;
@@ -22,14 +28,14 @@ interface TeamMember {
   storeId: number;
   stores: number[];
   storeCount: number;
-  orderTypes: { orderType: string; assignedAt: string }[];
-  orderTypeCount: number;
+  capabilities: { dataSourceId: string; dataSource?: DataSource; assignedAt: string }[];
+  capabilityCount: number;
   teamMember?: {
     id: number;
     maxConcurrentTasks: number;
     storeAssignments: { storeId: number }[];
     dailyRosters: { status: string; date: string; updatedAt: string }[];
-    orderTypes?: { orderType: string; assignedAt: string }[];
+    capabilities?: { dataSourceId: string; dataSource?: DataSource; assignedAt: string }[];
     skills?: Array<{ skillTag: { id: number; name: string; label: string } }>;
   };
   dailyRosters?: { status: string; date: string; updatedAt: string }[];
@@ -51,13 +57,15 @@ function EditDrawer({
   stores,
   onClose,
   onSaved,
+  onDeleted,
 }: {
   member: TeamMember;
   stores: Store[];
   onClose: () => void;
   onSaved: () => void;
+  onDeleted: () => void;
 }) {
-  const [activeTab, setActiveTab] = useState<"profile" | "order-types" | "stores" | "schedule">("profile");
+  const [activeTab, setActiveTab] = useState<"profile" | "sources" | "stores" | "schedule">("profile");
   const [form, setForm] = useState({
     name: member.name,
     email: member.email,
@@ -70,23 +78,34 @@ function EditDrawer({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+  const [deleteConfirm, setDeleteConfirm] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   const [assignedStoreIds, setAssignedStoreIds] = useState<Set<number>>(
     new Set(member.stores ?? [])
   );
-  const [assignedOrderTypes, setAssignedOrderTypes] = useState<Set<string>>(
-    new Set(member.orderTypes?.map((ot) => ot.orderType) ?? [])
+  const [assignedCapabilities, setAssignedCapabilities] = useState<Set<string>>(
+    new Set(member.capabilities?.map((c) => c.dataSourceId) ?? [])
   );
+  const [allSources, setAllSources] = useState<DataSource[]>([]);
 
   const [currentSchedule, setCurrentSchedule] = useState<any[]>([]);
+
+  // Fetch available data sources for Sources tab
+  useEffect(() => {
+    fetch("/api/data-sources")
+      .then((r) => r.json())
+      .then((d) => { if (d.dataSources) setAllSources(d.dataSources); })
+      .catch(() => {});
+  }, []);
 
   // Sync state when member prop changes (e.g., after API refresh)
   useEffect(() => {
     setAssignedStoreIds(new Set(member.stores ?? []));
-    setAssignedOrderTypes(
-      new Set(member.orderTypes?.map((ot) => ot.orderType) ?? [])
+    setAssignedCapabilities(
+      new Set(member.capabilities?.map((c) => c.dataSourceId) ?? [])
     );
-  }, [member.userId, member.stores, member.orderTypes]);
+  }, [member.userId, member.stores, member.capabilities]);
 
   // Auto-dismiss success message after 2.5 seconds
   useEffect(() => {
@@ -119,52 +138,36 @@ function EditDrawer({
       const data = await res.json();
       if (!res.ok) { setError(data.error ?? "Profile save failed"); return; }
 
-      // 2. Save store assignments (get current, then sync)
-      if (member.stores && member.stores.length > 0) {
-        const currentStores = new Set(member.stores);
-        const toAdd = Array.from(assignedStoreIds).filter(id => !currentStores.has(id));
-        const toRemove = Array.from(currentStores).filter(id => !assignedStoreIds.has(id));
-
-        for (const storeId of toAdd) {
-          const storeRes = await fetch(`/api/team/${member.userId}/stores`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ storeId }),
-          });
-          if (!storeRes.ok) { setError("Failed to add store"); return; }
-        }
-
-        for (const storeId of toRemove) {
-          const storeRes = await fetch(`/api/team/${member.userId}/stores`, {
-            method: "DELETE",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ storeId }),
-          });
-          if (!storeRes.ok) { setError("Failed to remove store"); return; }
-        }
+      // 2. Save store assignments — single PUT replaces entire set atomically
+      {
+        const storeRes = await fetch(`/api/team/${member.userId}/stores`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ storeIds: Array.from(assignedStoreIds) }),
+        });
+        if (!storeRes.ok) { setError("Failed to save store assignments"); return; }
       }
 
-      // 3. Save order type assignments (get current, then sync)
-      if (member.orderTypes && member.orderTypes.length > 0) {
-        const currentOrderTypes = new Set(member.orderTypes.map(ot => ot.orderType));
-        const toAdd = Array.from(assignedOrderTypes).filter(ot => !currentOrderTypes.has(ot));
-        const toRemove = Array.from(currentOrderTypes).filter(ot => !assignedOrderTypes.has(ot));
+      // 3. Save data source capability assignments (sync)
+      {
+        const currentCaps = new Set(member.capabilities?.map(c => c.dataSourceId) ?? []);
+        const toAdd = Array.from(assignedCapabilities).filter(id => !currentCaps.has(id));
+        const toRemove = Array.from(currentCaps).filter(id => !assignedCapabilities.has(id));
 
-        for (const orderType of toAdd) {
-          const otRes = await fetch(`/api/team/${member.userId}/order-types`, {
+        for (const dataSourceId of toAdd) {
+          const capRes = await fetch(`/api/team/${member.userId}/order-types`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ orderType }),
+            body: JSON.stringify({ dataSourceId }),
           });
-          if (!otRes.ok) { setError("Failed to add order type"); return; }
+          if (!capRes.ok) { setError("Failed to add data source"); return; }
         }
 
-        for (const orderType of toRemove) {
-          const otRes = await fetch(`/api/team/${member.userId}/order-types/${orderType}`, {
+        for (const dataSourceId of toRemove) {
+          const capRes = await fetch(`/api/team/${member.userId}/order-types/${dataSourceId}`, {
             method: "DELETE",
-            headers: { "Content-Type": "application/json" },
           });
-          if (!otRes.ok) { setError("Failed to remove order type"); return; }
+          if (!capRes.ok) { setError("Failed to remove data source"); return; }
         }
       }
 
@@ -190,6 +193,45 @@ function EditDrawer({
     }
   }
 
+  // ── Quick deactivate (no drawer close, just toggles isActive) ───
+  async function deactivateAccount() {
+    setError(""); setSaving(true);
+    try {
+      const res = await fetch(`/api/team/${member.userId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ isActive: false }),
+      });
+      const data = await res.json();
+      if (!res.ok) { setError(data.error ?? "Failed to deactivate"); return; }
+      setForm((f) => ({ ...f, isActive: false }));
+      setSuccess("Account deactivated");
+      onSaved();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  // ── Permanent delete ─────────────────────────────────────────
+  async function deleteMember() {
+    setDeleting(true); setError("");
+    let deleted = false;
+    try {
+      const res = await fetch(`/api/team/${member.userId}`, { method: "DELETE" });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error ?? "Delete failed");
+        setDeleteConfirm(false);
+        return;
+      }
+      deleted = true;
+    } finally {
+      setDeleting(false);
+    }
+    // Call onDeleted AFTER finally so state is clean before unmount
+    if (deleted) onDeleted();
+  }
+
   // ── Store assignment toggle (draft only, no API call) ────────
   function toggleStore(storeId: number, has: boolean) {
     const newSet = new Set(assignedStoreIds);
@@ -199,13 +241,13 @@ function EditDrawer({
     // Changes will be saved when "Save Changes" button is clicked
   }
 
-  // ── Order type toggle (draft only, no API call) ──────────────
-  function toggleOrderType(orderType: string) {
-    const has = assignedOrderTypes.has(orderType);
-    const newSet = new Set(assignedOrderTypes);
-    if (has) newSet.delete(orderType);
-    else newSet.add(orderType);
-    setAssignedOrderTypes(newSet);
+  // ── Capability toggle (draft only, no API call) ──────────────
+  function toggleCapability(dataSourceId: string) {
+    const has = assignedCapabilities.has(dataSourceId);
+    const newSet = new Set(assignedCapabilities);
+    if (has) newSet.delete(dataSourceId);
+    else newSet.add(dataSourceId);
+    setAssignedCapabilities(newSet);
     // Changes will be saved when "Save Changes" button is clicked
   }
 
@@ -248,7 +290,7 @@ function EditDrawer({
         <div className="px-4 py-3 border-b border-zinc-800 flex gap-2 overflow-x-auto bg-zinc-800/30">
           {[
             { id: "profile", label: "Profile" },
-            { id: "order-types", label: "Order Types" },
+            { id: "sources", label: "Sources" },
             { id: "stores", label: "Stores" },
             { id: "schedule", label: "Schedule" },
           ].map((tab) => (
@@ -349,37 +391,122 @@ function EditDrawer({
                 </div>
               </div>
 
+              {/* Danger Zone */}
+              <div className="border border-red-500/20 rounded-lg p-4 bg-red-500/5">
+                <h3 className="text-xs font-semibold text-red-400/80 uppercase tracking-wider mb-3">Danger Zone</h3>
+                <div className="space-y-2">
+                  {/* Deactivate — only show if currently active */}
+                  {form.isActive && (
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <div className="text-xs font-medium text-zinc-300">Deactivate Account</div>
+                        <div className="text-[10px] text-zinc-500">Block login without deleting data</div>
+                      </div>
+                      <button
+                        onClick={deactivateAccount}
+                        disabled={saving}
+                        className="px-3 py-1.5 text-xs bg-zinc-800 hover:bg-amber-500/20 text-amber-400 border border-amber-500/30 rounded-lg transition-colors disabled:opacity-50"
+                      >
+                        Deactivate
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Delete */}
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="text-xs font-medium text-zinc-300">Delete Member</div>
+                      <div className="text-[10px] text-zinc-500">Permanently remove account and all data</div>
+                    </div>
+                    {deleteConfirm ? (
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[10px] text-red-400">Sure?</span>
+                        <button
+                          onClick={deleteMember}
+                          disabled={deleting}
+                          className="px-2.5 py-1 text-xs bg-red-600 hover:bg-red-500 text-white rounded transition-colors disabled:opacity-50"
+                        >
+                          {deleting ? "Deleting…" : "Yes, Delete"}
+                        </button>
+                        <button
+                          onClick={() => setDeleteConfirm(false)}
+                          disabled={deleting}
+                          className="px-2.5 py-1 text-xs bg-zinc-700 hover:bg-zinc-600 text-zinc-300 rounded transition-colors"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => setDeleteConfirm(true)}
+                        className="px-3 py-1.5 text-xs bg-zinc-800 hover:bg-red-500/20 text-red-400 border border-red-500/30 rounded-lg transition-colors"
+                      >
+                        Delete
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+
             </>
           )}
 
           {/* ORDER TYPES TAB */}
-          {activeTab === "order-types" && (
+          {activeTab === "sources" && (
             <div>
-              <h3 className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-3">Order Types</h3>
-              <p className="text-xs text-zinc-500 mb-4">Select which order types this team member can handle</p>
-              <div className="flex flex-wrap gap-2">
-                {["HOME_SAMPLE", "CENTER_VISIT", "INJECTION"].map((orderType) => (
-                  <button
-                    key={orderType}
-                    onClick={() => toggleOrderType(orderType)}
-                    className={`text-xs px-2.5 py-1 rounded-full border transition-colors font-medium ${
-                      assignedOrderTypes.has(orderType)
-                        ? "bg-green-600/20 border-green-500/40 text-green-300 hover:bg-red-500/20 hover:border-red-500/40 hover:text-red-300"
-                        : "bg-zinc-800 border-zinc-700 text-zinc-500 hover:border-zinc-600 hover:text-zinc-300"
-                    }`}
-                  >
-                    {assignedOrderTypes.has(orderType) ? "✓ " : "+ "}{orderType}
-                  </button>
-                ))}
-              </div>
+              <h3 className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-3">Data Sources</h3>
+              <p className="text-xs text-zinc-500 mb-4">Select which data sources this member can handle tasks from</p>
+              {allSources.length === 0 ? (
+                <p className="text-xs text-zinc-600">No data sources configured</p>
+              ) : (
+                <div className="flex flex-wrap gap-2">
+                  {allSources.map((source) => (
+                    <button
+                      key={source.id}
+                      onClick={() => toggleCapability(source.id)}
+                      className={`text-xs px-2.5 py-1 rounded-full border transition-colors font-medium ${
+                        assignedCapabilities.has(source.id)
+                          ? "bg-green-600/20 border-green-500/40 text-green-300 hover:bg-red-500/20 hover:border-red-500/40 hover:text-red-300"
+                          : "bg-zinc-800 border-zinc-700 text-zinc-500 hover:border-zinc-600 hover:text-zinc-300"
+                      }`}
+                    >
+                      {assignedCapabilities.has(source.id) ? "✓ " : "+ "}{source.displayName}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           )}
 
           {/* STORES TAB */}
           {activeTab === "stores" && (
             <div>
-              <h3 className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-3">Store Access</h3>
-              <p className="text-xs text-zinc-500 mb-4">Assign this team member to stores</p>
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">Store Access</h3>
+                {stores.length > 0 && (
+                  <button
+                    onClick={() => {
+                      const allSelected = stores.every((s) => assignedStoreIds.has(s.id));
+                      if (allSelected) {
+                        setAssignedStoreIds(new Set());
+                      } else {
+                        setAssignedStoreIds(new Set(stores.map((s) => s.id)));
+                      }
+                    }}
+                    className="text-[11px] text-blue-400 hover:text-blue-300 transition-colors"
+                  >
+                    {stores.every((s) => assignedStoreIds.has(s.id)) ? "Deselect All" : "Select All"}
+                  </button>
+                )}
+              </div>
+              <p className="text-xs text-zinc-500 mb-4">
+                Assign this team member to stores
+                {stores.length > 0 && (
+                  <span className="ml-1.5 text-zinc-600">
+                    ({assignedStoreIds.size}/{stores.length} selected)
+                  </span>
+                )}
+              </p>
               {stores.length === 0 ? (
                 <p className="text-xs text-zinc-600">No stores configured yet</p>
               ) : (
@@ -890,6 +1017,7 @@ export default function TeamPanel() {
           stores={stores}
           onClose={() => setEditMember(null)}
           onSaved={onSaved}
+          onDeleted={() => { setEditMember(null); fetchAll(); }}
         />
       )}
     </div>

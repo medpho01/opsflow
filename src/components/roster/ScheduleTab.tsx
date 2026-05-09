@@ -1,8 +1,6 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-import { validateSchedule } from "@/lib/roster/utils";
-import styles from "./roster.module.css";
 
 interface ScheduleDay {
   dayOfWeek: number;
@@ -13,11 +11,6 @@ interface ScheduleDay {
   breakEnd?: string;
 }
 
-interface CopyDialogState {
-  isOpen: boolean;
-  targetDay: number | null;
-}
-
 interface ScheduleTabProps {
   userId: number;
   onSaved?: () => void;
@@ -26,264 +19,218 @@ interface ScheduleTabProps {
 
 const DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
-export default function ScheduleTab({ userId, onSaved, onScheduleChange }: ScheduleTabProps) {
+const DEFAULT_SCHEDULE: ScheduleDay[] = Array.from({ length: 7 }, (_, i) => ({
+  dayOfWeek: i,
+  isWorking: i >= 1 && i <= 5, // Mon–Fri working by default
+  startTime: "09:00",
+  endTime: "18:00",
+}));
+
+function TimeInput({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-1">
+      <label className="text-[10px] font-medium text-zinc-500 uppercase tracking-wide">{label}</label>
+      <input
+        type="time"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="w-full px-2 py-1.5 bg-zinc-800 border border-zinc-700 rounded text-xs text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+      />
+    </div>
+  );
+}
+
+export default function ScheduleTab({ userId, onScheduleChange }: ScheduleTabProps) {
   const [schedule, setSchedule] = useState<ScheduleDay[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState(false);
-  const [copyDialog, setCopyDialog] = useState<CopyDialogState>({ isOpen: false, targetDay: null });
+  const [copyFromDay, setCopyFromDay] = useState<number | null>(null);
 
-  // Load existing schedule on mount
   useEffect(() => {
     const fetchSchedule = async () => {
       try {
-        console.log("Fetching schedule for userId:", userId);
         const res = await fetch(`/api/roster/schedule/${userId}`);
-        console.log("GET response status:", res.status);
         if (!res.ok) throw new Error("Failed to load schedule");
         const data = await res.json();
-        console.log("Schedule data loaded:", data);
-        setSchedule(data.schedule || []);
+        const loaded: ScheduleDay[] = data.schedule ?? [];
+        // Ensure all 7 days exist
+        const merged = Array.from({ length: 7 }, (_, i) => {
+          const existing = loaded.find((d) => d.dayOfWeek === i);
+          return existing ?? { dayOfWeek: i, isWorking: false };
+        });
+        setSchedule(merged);
       } catch (err) {
-        console.error("Schedule load error:", err);
         setError(err instanceof Error ? err.message : "Error loading schedule");
+        setSchedule(DEFAULT_SCHEDULE);
       } finally {
         setLoading(false);
       }
     };
-
     fetchSchedule();
   }, [userId]);
 
-  // Notify parent of schedule changes
+  // Propagate changes to parent (TeamPanel saves on "Save Changes")
   useEffect(() => {
-    if (schedule.length > 0) {
-      onScheduleChange?.(schedule);
-    }
+    if (schedule.length > 0) onScheduleChange?.(schedule);
   }, [schedule, onScheduleChange]);
 
-  const handleDayChange = (dayOfWeek: number, field: keyof ScheduleDay, value: any) => {
-    setSchedule((prev) => {
-      const updated = [...prev];
-      const dayIndex = updated.findIndex((d) => d.dayOfWeek === dayOfWeek);
-      if (dayIndex >= 0) {
-        updated[dayIndex] = { ...updated[dayIndex], [field]: value };
-      }
-      return updated;
-    });
+  const updateDay = (dayOfWeek: number, patch: Partial<ScheduleDay>) => {
+    setSchedule((prev) =>
+      prev.map((d) => (d.dayOfWeek === dayOfWeek ? { ...d, ...patch } : d))
+    );
     setError(null);
-    setSuccess(false);
   };
 
-  // Copy schedule from one day to another
-  const handleCopySchedule = (fromDayOfWeek: number, toDayOfWeek: number) => {
-    setSchedule((prev) => {
-      const fromDay = prev.find((d) => d.dayOfWeek === fromDayOfWeek);
-      const toDay = prev.find((d) => d.dayOfWeek === toDayOfWeek);
-
-      if (!fromDay || !toDay) return prev;
-
-      const updated = [...prev];
-      const toIndex = updated.findIndex((d) => d.dayOfWeek === toDayOfWeek);
-
-      if (toIndex >= 0) {
-        updated[toIndex] = {
-          dayOfWeek: toDayOfWeek,
-          isWorking: fromDay.isWorking,
-          startTime: fromDay.startTime,
-          endTime: fromDay.endTime,
-          breakStart: fromDay.breakStart,
-          breakEnd: fromDay.breakEnd,
-        };
-      }
-
-      return updated;
+  const copyTo = (fromDow: number, toDow: number) => {
+    const src = schedule.find((d) => d.dayOfWeek === fromDow);
+    if (!src) return;
+    updateDay(toDow, {
+      isWorking: src.isWorking,
+      startTime: src.startTime,
+      endTime: src.endTime,
+      breakStart: src.breakStart,
+      breakEnd: src.breakEnd,
     });
-
-    setCopyDialog({ isOpen: false, targetDay: null });
-    setSuccess(false);
+    setCopyFromDay(null);
   };
 
-  // Saving is now handled by parent component (TeamPanel)
-
-  if (loading) return <div className={styles.loading}>Loading schedule...</div>;
-
-  console.log("ScheduleTab render - schedule:", schedule);
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-12 text-zinc-500 text-sm">
+        Loading schedule…
+      </div>
+    );
+  }
 
   return (
-    <div className={styles.scheduleTab}>
-      <h3>Weekly Schedule</h3>
-      <p style={{ fontSize: "12px", color: "#A1A1AA", margin: "0 0 16px 0" }}>
-        Configure working hours and breaks. Changes will be saved when you click "Save Changes" at the bottom of this form.
+    <div className="space-y-1 pb-2">
+      <p className="text-xs text-zinc-500 pb-3">
+        Configure working hours for each day. Click <span className="text-zinc-300">Save Changes</span> below to persist.
       </p>
 
-      {error && <div className={styles.errorBanner}>{error}</div>}
-      {success && <div className={styles.successBanner}>✓ Schedule saved successfully</div>}
+      {error && (
+        <div className="mb-3 px-3 py-2 bg-red-500/10 border border-red-500/20 rounded-lg text-xs text-red-400">
+          {error}
+        </div>
+      )}
 
-      <div className={styles.scheduleDays}>
-        {schedule.length === 0 ? (
-          <div className={styles.errorBanner}>No schedule data loaded</div>
-        ) : (
-          schedule.map((day) => (
-          <div key={day.dayOfWeek} className={styles.daySection}>
-            <div className={styles.dayHeader}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <label className={styles.dayToggle}>
-                  <input
-                    type="checkbox"
-                    checked={day.isWorking}
-                    onChange={(e) => handleDayChange(day.dayOfWeek, "isWorking", e.target.checked)}
-                  />
-                  <span>{DAYS[day.dayOfWeek]}</span>
-                </label>
-                {day.isWorking && (
-                  <button
-                    onClick={() => setCopyDialog({ isOpen: true, targetDay: day.dayOfWeek })}
-                    style={{
-                      fontSize: "12px",
-                      padding: "4px 8px",
-                      background: "#2563EB",
-                      color: "#FAFAFA",
-                      border: "none",
-                      borderRadius: "4px",
-                      cursor: "pointer",
-                    }}
-                  >
-                    Copy From
-                  </button>
-                )}
+      {schedule.map((day) => (
+        <div
+          key={day.dayOfWeek}
+          className={`rounded-lg border transition-colors ${
+            day.isWorking
+              ? "border-zinc-700 bg-zinc-800/50"
+              : "border-zinc-800 bg-zinc-900/30"
+          }`}
+        >
+          {/* Day header */}
+          <div className="flex items-center justify-between px-3 py-2.5">
+            <label className="flex items-center gap-2.5 cursor-pointer select-none">
+              <div className="relative">
+                <input
+                  type="checkbox"
+                  className="sr-only"
+                  checked={day.isWorking}
+                  onChange={(e) => updateDay(day.dayOfWeek, { isWorking: e.target.checked })}
+                />
+                <div
+                  className={`w-8 h-4 rounded-full transition-colors ${
+                    day.isWorking ? "bg-blue-600" : "bg-zinc-700"
+                  }`}
+                />
+                <div
+                  className={`absolute top-0.5 left-0.5 w-3 h-3 rounded-full bg-white transition-transform ${
+                    day.isWorking ? "translate-x-4" : "translate-x-0"
+                  }`}
+                />
               </div>
-            </div>
+              <span className={`text-xs font-medium ${day.isWorking ? "text-white" : "text-zinc-500"}`}>
+                {DAYS[day.dayOfWeek]}
+              </span>
+            </label>
 
             {day.isWorking && (
-              <div className={styles.dayContent}>
-                <div className={styles.timeGroup}>
-                  <div className={styles.timeInput}>
-                    <label>Start Time</label>
-                    <input
-                      type="time"
-                      value={day.startTime || ""}
-                      onChange={(e) => handleDayChange(day.dayOfWeek, "startTime", e.target.value)}
-                      placeholder="HH:MM"
-                    />
-                  </div>
-                  <div className={styles.timeInput}>
-                    <label>End Time</label>
-                    <input
-                      type="time"
-                      value={day.endTime || ""}
-                      onChange={(e) => handleDayChange(day.dayOfWeek, "endTime", e.target.value)}
-                      placeholder="HH:MM"
-                    />
-                  </div>
-                </div>
-
-                <div className={styles.breakGroup}>
-                  <label>Break (Optional)</label>
-                  <div className={styles.timeGroup}>
-                    <div className={styles.timeInput}>
-                      <label>Break Start</label>
-                      <input
-                        type="time"
-                        value={day.breakStart || ""}
-                        onChange={(e) => handleDayChange(day.dayOfWeek, "breakStart", e.target.value)}
-                        placeholder="HH:MM"
-                      />
-                    </div>
-                    <div className={styles.timeInput}>
-                      <label>Break End</label>
-                      <input
-                        type="time"
-                        value={day.breakEnd || ""}
-                        onChange={(e) => handleDayChange(day.dayOfWeek, "breakEnd", e.target.value)}
-                        placeholder="HH:MM"
-                      />
-                    </div>
-                  </div>
-                </div>
+              <div className="flex items-center gap-2">
+                {day.startTime && day.endTime && (
+                  <span className="text-[10px] text-zinc-500 font-mono">
+                    {day.startTime}–{day.endTime}
+                  </span>
+                )}
+                <button
+                  onClick={() => setCopyFromDay(copyFromDay === day.dayOfWeek ? null : day.dayOfWeek)}
+                  className="text-[10px] px-2 py-1 rounded text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700 transition-colors"
+                >
+                  Copy from…
+                </button>
               </div>
             )}
           </div>
-          ))
-        )}
-      </div>
 
-      <p style={{ fontSize: "12px", color: "#71717A", marginTop: "16px", fontStyle: "italic" }}>
-        Changes will be saved when you click the "Save Changes" button at the bottom of the form.
-      </p>
-
-      {/* Copy Dialog */}
-      {copyDialog.isOpen && copyDialog.targetDay !== null && (
-        <div style={{
-          position: "fixed",
-          inset: 0,
-          backgroundColor: "rgba(0, 0, 0, 0.5)",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          zIndex: 1000,
-        }}>
-          <div style={{
-            background: "#27272A",
-            borderRadius: "8px",
-            padding: "24px",
-            maxWidth: "400px",
-            width: "90%",
-            border: "1px solid #3F3F46",
-          }}>
-            <h3 style={{ margin: "0 0 16px 0", color: "#E5E7EB", fontSize: "18px" }}>
-              Copy from which day?
-            </h3>
-            <p style={{ margin: "0 0 16px 0", color: "#A1A1AA", fontSize: "13px" }}>
-              Select a day to copy the schedule to {DAYS[copyDialog.targetDay]}:
-            </p>
-            <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginBottom: "20px" }}>
+          {/* Copy-from picker */}
+          {copyFromDay === day.dayOfWeek && (
+            <div className="px-3 pb-2.5 flex flex-wrap gap-1.5">
               {schedule
-                .filter((d) => d.isWorking && d.dayOfWeek !== copyDialog.targetDay)
-                .map((day) => (
+                .filter((d) => d.isWorking && d.dayOfWeek !== day.dayOfWeek)
+                .map((src) => (
                   <button
-                    key={day.dayOfWeek}
-                    onClick={() => handleCopySchedule(day.dayOfWeek, copyDialog.targetDay!)}
-                    style={{
-                      padding: "10px 12px",
-                      background: "#3F3F46",
-                      color: "#E5E7EB",
-                      border: "1px solid #52525B",
-                      borderRadius: "4px",
-                      cursor: "pointer",
-                      textAlign: "left",
-                      fontSize: "13px",
-                      transition: "background-color 0.2s",
-                    }}
-                    onMouseEnter={(e) => {
-                      (e.target as HTMLButtonElement).style.background = "#52525B";
-                    }}
-                    onMouseLeave={(e) => {
-                      (e.target as HTMLButtonElement).style.background = "#3F3F46";
-                    }}
+                    key={src.dayOfWeek}
+                    onClick={() => copyTo(src.dayOfWeek, day.dayOfWeek)}
+                    className="text-[10px] px-2.5 py-1 bg-zinc-700 hover:bg-zinc-600 text-zinc-200 rounded transition-colors"
                   >
-                    {DAYS[day.dayOfWeek]} ({day.startTime} - {day.endTime})
+                    {DAYS[src.dayOfWeek]}
                   </button>
                 ))}
+              {schedule.filter((d) => d.isWorking && d.dayOfWeek !== day.dayOfWeek).length === 0 && (
+                <span className="text-[10px] text-zinc-600">No other working days to copy from</span>
+              )}
             </div>
-            <button
-              onClick={() => setCopyDialog({ isOpen: false, targetDay: null })}
-              style={{
-                width: "100%",
-                padding: "10px 12px",
-                background: "#52525B",
-                color: "#E5E7EB",
-                border: "none",
-                borderRadius: "4px",
-                cursor: "pointer",
-                fontSize: "13px",
-              }}
-            >
-              Cancel
-            </button>
-          </div>
+          )}
+
+          {/* Time inputs */}
+          {day.isWorking && (
+            <div className="px-3 pb-3 space-y-3">
+              <div className="grid grid-cols-2 gap-2">
+                <TimeInput
+                  label="Start"
+                  value={day.startTime ?? ""}
+                  onChange={(v) => updateDay(day.dayOfWeek, { startTime: v })}
+                />
+                <TimeInput
+                  label="End"
+                  value={day.endTime ?? ""}
+                  onChange={(v) => updateDay(day.dayOfWeek, { endTime: v })}
+                />
+              </div>
+
+              <div>
+                <p className="text-[10px] font-medium text-zinc-600 uppercase tracking-wide mb-1.5">
+                  Break <span className="normal-case text-zinc-700">(optional)</span>
+                </p>
+                <div className="grid grid-cols-2 gap-2">
+                  <TimeInput
+                    label="Break start"
+                    value={day.breakStart ?? ""}
+                    onChange={(v) => updateDay(day.dayOfWeek, { breakStart: v || undefined })}
+                  />
+                  <TimeInput
+                    label="Break end"
+                    value={day.breakEnd ?? ""}
+                    onChange={(v) => updateDay(day.dayOfWeek, { breakEnd: v || undefined })}
+                  />
+                </div>
+              </div>
+            </div>
+          )}
         </div>
-      )}
+      ))}
     </div>
   );
 }

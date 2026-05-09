@@ -97,19 +97,23 @@ export async function PUT(
       );
     }
 
-    // Update only allowed fields
+    // Update allowed fields — sourceId and tableReference are immutable (polling identity)
     const updatedDataSource = await prisma.dataSource.update({
       where: { id },
       data: {
-        displayName: body.displayName ?? existingSource.displayName,
-        description: body.description ?? existingSource.description,
-        pollingIntervalMinutes:
-          body.pollingIntervalMinutes ?? existingSource.pollingIntervalMinutes,
-        isActive: body.isActive ?? existingSource.isActive,
-        syncStrategy: body.syncStrategy ?? existingSource.syncStrategy,
-        syncEndpoint: body.syncEndpoint ?? existingSource.syncEndpoint,
-        backfillEnabled: body.backfillEnabled ?? existingSource.backfillEnabled,
-        backfillDays: body.backfillDays ?? existingSource.backfillDays,
+        displayName:            body.displayName            ?? existingSource.displayName,
+        description:            body.description            ?? existingSource.description,
+        pollingIntervalMinutes: body.pollingIntervalMinutes ?? existingSource.pollingIntervalMinutes,
+        isActive:               body.isActive               ?? existingSource.isActive,
+        syncStrategy:           body.syncStrategy           ?? existingSource.syncStrategy,
+        syncEndpoint:           body.syncEndpoint           ?? existingSource.syncEndpoint,
+        backfillEnabled:        body.backfillEnabled        ?? existingSource.backfillEnabled,
+        backfillDays:           body.backfillDays           ?? existingSource.backfillDays,
+        // Field mappings — editable after creation
+        typeFieldName:          body.typeFieldName          ?? existingSource.typeFieldName,
+        statusFieldName:        body.statusFieldName        ?? existingSource.statusFieldName,
+        primaryKeyField:        body.primaryKeyField        ?? existingSource.primaryKeyField,
+        queryTemplate:          body.queryTemplate          ?? existingSource.queryTemplate,
         updatedAt: new Date(),
       },
     });

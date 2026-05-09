@@ -66,14 +66,18 @@ function buildOrderBy(sortBy: SortField, sortOrder: SortOrder): Array<Record<str
         : [{ createdAt: "desc" }];
 
     case "appointmentTime":
-      // Appointment date: sort by appointment time, then by priority as tiebreaker
+      // Appointment date: most imminent first (asc) — what needs attention now.
+      // Tiebreakers: SLA deadline (most urgent first), then priority.
+      // Tasks with NULL appointmentTime sort to the end on asc by default in Prisma.
       return sortOrder === "asc"
         ? [
             { appointmentTime: "asc" },
+            { slaDeadline: "asc" },
             { priority: "desc" },
           ]
         : [
             { appointmentTime: "desc" },
+            { slaDeadline: "asc" },
             { priority: "desc" },
           ];
 
@@ -136,8 +140,11 @@ export async function GET(request: NextRequest) {
   const slaRiskOnlyParam = searchParams.get("slaRiskOnly");
   const sourceParam = searchParams.get("source");
   const sourceTypeParam = searchParams.get("sourceType");
-  const sortByParam = searchParams.get("sortBy") ?? "priority";
-  const sortOrderParam = searchParams.get("sortOrder") ?? "desc";
+  const dataSourceIdParam = searchParams.get("dataSourceId");
+  // Default sort: most imminent appointment first — surfaces tasks that
+  // need attention now ahead of tasks for far-future appointments.
+  const sortByParam = searchParams.get("sortBy") ?? "appointmentTime";
+  const sortOrderParam = searchParams.get("sortOrder") ?? "asc";
   const page = Math.max(1, parseInt(searchParams.get("page") ?? "1", 10));
   const limit = Math.min(50, Math.max(1, parseInt(searchParams.get("limit") ?? "20", 10)));
 
@@ -181,6 +188,11 @@ export async function GET(request: NextRequest) {
   // Parse source type filter (comma-separated)
   const sourceTypeFilter = sourceTypeParam
     ? sourceTypeParam.split(",").filter((st) => st.length > 0)
+    : undefined;
+
+  // Parse data-source ID filter (comma-separated CUIDs from data_sources.id)
+  const dataSourceIdFilter = dataSourceIdParam
+    ? dataSourceIdParam.split(",").filter((id) => id.length > 0)
     : undefined;
 
   // Parse assignee IDs filter (comma-separated)
@@ -232,6 +244,10 @@ export async function GET(request: NextRequest) {
   if (orderId) where.entityId = parseInt(orderId, 10);
   if (sourceFilter?.length) where.source = { in: sourceFilter };
   if (sourceTypeFilter?.length) where.sourceType = { in: sourceTypeFilter };
+  // Filter by data source via taskRule relation
+  if (dataSourceIdFilter?.length) {
+    where.taskRule = { dataSourceId: { in: dataSourceIdFilter } };
+  }
 
   // Date range filtering
   if (dateFromFilter || dateToFilter) {
@@ -250,6 +266,12 @@ export async function GET(request: NextRequest) {
         assignedTo: { select: { id: true, name: true } },
         checklistItems: { orderBy: { stepOrder: "asc" } },
         taskType: { select: { name: true, label: true } },
+        taskRule: {
+          select: {
+            dataSourceId: true,
+            dataSource: { select: { id: true, sourceId: true, displayName: true } },
+          },
+        },
       },
       orderBy,
       skip: (page - 1) * limit,
@@ -327,14 +349,26 @@ export async function GET(request: NextRequest) {
       },
     };
 
+    // Flatten the data source info onto the top of the task for easy UI access
+    const dataSource = task.taskRule?.dataSource
+      ? {
+          id: task.taskRule.dataSource.id,
+          sourceId: task.taskRule.dataSource.sourceId,
+          displayName: task.taskRule.dataSource.displayName,
+        }
+      : null;
+
     return {
       ...task,
+      // sourceEntityId is a BigInt in the DB — convert to string so JSON.stringify doesn't throw
+      sourceEntityId: task.sourceEntityId != null ? task.sourceEntityId.toString() : null,
       slaStatus,
       minutesRemaining: Math.max(0, minutesRemaining),
       assignmentMethod,
       assignmentRuleId,
       slaContext,
       aging,
+      dataSource,
     };
   });
 
@@ -357,6 +391,7 @@ export async function GET(request: NextRequest) {
   if (slaRiskOnly) appliedFilters.slaRiskOnly = true;
   if (sourceFilter?.length) appliedFilters.source = sourceFilter;
   if (sourceTypeFilter?.length) appliedFilters.sourceType = sourceTypeFilter;
+  if (dataSourceIdFilter?.length) appliedFilters.dataSourceId = dataSourceIdFilter;
 
   const filterCount = Object.keys(appliedFilters).length;
 
@@ -391,18 +426,23 @@ export async function POST(request: NextRequest) {
   }
 
   // Ensure the MANUAL sentinel task rule exists
+  // For the MANUAL sentinel we need a valid dataSourceId — use any existing source
+  const anySource = await prisma.dataSource.findFirst({ select: { id: true } });
+  if (!anySource) {
+    return NextResponse.json({ error: "No data sources configured" }, { status: 500 });
+  }
   const manualRule = await prisma.taskRule.upsert({
     where: { id: "MANUAL" },
     create: {
       id: "MANUAL",
       name: "Manual Task",
-      orderType: "HOME_SAMPLE",
+      dataSourceId: anySource.id,
       taskTypeId: parseInt(taskTypeId, 10),
       titleTemplate: "{title}",
       slaMinutes: 60,
       priority: TaskPriority.MEDIUM,
       triggerCondition: {},
-      isActive: true,
+      isActive: false,
     },
     update: {},
   });
@@ -476,7 +516,7 @@ export async function POST(request: NextRequest) {
       entityType: "ORDER",
       entityId: Number(entityId),
       storeId: storeId ? Number(storeId) : null,
-      orderType: "HOME_SAMPLE",
+      orderType: "MANUAL",
       priority,
       status: resolvedAssigneeId ? TaskStatus.ASSIGNED : TaskStatus.CREATED,
       assignedToId: resolvedAssigneeId,

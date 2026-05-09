@@ -26,6 +26,7 @@ export async function GET(request: NextRequest) {
     teamStatus,
     recentAlerts,
     lastPoll,
+    sourceStats,
   ] = await Promise.all([
     // Active labstack orders count
     fetchAllActiveOrders().then((o) => o.length).catch(() => 0),
@@ -121,7 +122,7 @@ export async function GET(request: NextRequest) {
 
     // Recent unread alerts
     prisma.alert.findMany({
-      where: { isRead: false },
+      where: { status: "PENDING" },
       orderBy: { createdAt: "desc" },
       take: 10,
       include: { task: { select: { id: true, title: true, entityId: true } } },
@@ -129,6 +130,29 @@ export async function GET(request: NextRequest) {
 
     // Last poll log
     prisma.pollingLog.findFirst({ orderBy: { startedAt: "desc" } }),
+
+    // Per-source open task counts: walk DataSource → TaskRule[] → tasks.
+    // (The legacy TaskRuleSourceScope join table is unused; rules now FK
+    // directly to dataSources via TaskRule.dataSourceId.)
+    prisma.dataSource.findMany({
+      where: { isActive: true },
+      select: {
+        id: true,
+        sourceId: true,
+        displayName: true,
+        taskRules: {
+          select: {
+            _count: {
+              select: {
+                tasks: {
+                  where: { isArchived: false, status: { notIn: [TaskStatus.COMPLETED, TaskStatus.CANCELLED] } },
+                },
+              },
+            },
+          },
+        },
+      },
+    }),
   ]);
 
   const now2 = new Date();
@@ -164,6 +188,16 @@ export async function GET(request: NextRequest) {
     storeIds: u.teamMember?.storeAssignments.map((a) => a.storeId) ?? [],
   }));
 
+  // Shape per-source stats — sum open-task counts across all rules tied to the source.
+  const shapedSourceStats = sourceStats.map((ds) => ({
+    sourceId: ds.sourceId,
+    displayName: ds.displayName,
+    openTasks: ds.taskRules.reduce(
+      (sum, rule) => sum + (rule._count?.tasks ?? 0),
+      0
+    ),
+  }));
+
   return NextResponse.json({
     stats: {
       activeOrders,
@@ -175,6 +209,7 @@ export async function GET(request: NextRequest) {
       completedToday: totalDoneToday,
       breachedToday: totalBreachedToday,
     },
+    sourceStats: shapedSourceStats,
     riskItems,
     team,
     recentAlerts,

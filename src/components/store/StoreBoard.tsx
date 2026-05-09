@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import SlaCountdown from "@/components/shared/SlaCountdown";
 import PriorityBadge from "@/components/shared/PriorityBadge";
 import StatusBadge from "@/components/shared/StatusBadge";
@@ -18,6 +18,7 @@ interface Task {
   completedAt: string | null;
   assignedTo: { id: number; name: string } | null;
   taskType: { label: string } | null;
+  dataSource?: { id: string; displayName: string } | null;
 }
 
 interface StoreStats {
@@ -52,8 +53,21 @@ export default function StoreBoard({ user }: StoreBoardProps) {
   const [orderIdFilter, setOrderIdFilter] = useState("");
   const [stores, setStores] = useState<Store[]>([]);
   const [storesLoading, setStoresLoading] = useState(true);
+  const [storeDropdownOpen, setStoreDropdownOpen] = useState(false);
+  const storeDropdownRef = useRef<HTMLDivElement>(null);
 
   const storeId = selectedStoreId; // allow manual selection
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (storeDropdownRef.current && !storeDropdownRef.current.contains(e.target as Node)) {
+        setStoreDropdownOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
 
   // Fetch stores on mount
   useEffect(() => {
@@ -82,7 +96,7 @@ export default function StoreBoard({ user }: StoreBoardProps) {
         params.set("status", sf);
       }
     }
-    if (storeId && user.role === "STORE_ADMIN") params.set("storeId", storeId.toString());
+    if (storeId) params.set("storeId", storeId.toString());
     if (orderIdFilter) params.set("orderId", orderIdFilter);
     // Include sort parameters for deep linking and state persistence
     params.set("sortBy", sortBy);
@@ -106,7 +120,7 @@ export default function StoreBoard({ user }: StoreBoardProps) {
   }, [page, statusFilter, buildQuery]);
 
   const fetchStats = useCallback(async () => {
-    const storeQuery = storeId && user.role === "STORE_ADMIN" ? `?storeId=${storeId}` : "";
+    const storeQuery = storeId ? `?storeId=${storeId}` : "";
     const [openRes, breachedRes, completedRes] = await Promise.all([
       fetch(`/api/tasks?status=CREATED,ASSIGNED,IN_PROGRESS,BLOCKED${storeQuery ? "&" + storeQuery.slice(1) : ""}&limit=1`),
       fetch(`/api/tasks?status=BREACHED${storeQuery ? "&" + storeQuery.slice(1) : ""}&limit=1`),
@@ -163,11 +177,6 @@ export default function StoreBoard({ user }: StoreBoardProps) {
     { label: "Completed", value: "COMPLETED" },
   ];
 
-  const getStoreName = (id: number | null) => {
-    if (!id) return "Select Store";
-    return stores.find((s) => s.id === id)?.storeName ?? `Store #${id}`;
-  };
-
   return (
     <div className="p-8 space-y-8">
       {/* Sticky Header Section */}
@@ -182,24 +191,67 @@ export default function StoreBoard({ user }: StoreBoardProps) {
               : "Store-level task breakdown"}
           </p>
         </div>
-        <div className="flex items-center gap-3">
-          <select
-            value={selectedStoreId ?? ""}
-            onChange={(e) => {
-              const val = e.target.value ? Number(e.target.value) : null;
-              setSelectedStoreId(val);
-              setPage(1); // reset pagination
-            }}
+        <div className="relative" ref={storeDropdownRef}>
+          <button
+            onClick={() => !storesLoading && setStoreDropdownOpen((o) => !o)}
             disabled={storesLoading}
-            className="px-4 py-2.5 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-white hover:bg-zinc-700 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:opacity-50 cursor-pointer"
+            className="flex items-center gap-2 px-4 py-2.5 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-white hover:bg-zinc-700 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 cursor-pointer min-w-[160px]"
           >
-            <option value="">Select Store</option>
-            {stores.map((store) => (
-              <option key={store.id} value={store.id}>
-                {store.storeName}
-              </option>
-            ))}
-          </select>
+            <svg className="w-3.5 h-3.5 text-zinc-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
+            </svg>
+            <span className="flex-1 text-left truncate">
+              {storesLoading ? "Loading…" : (selectedStoreId ? stores.find((s) => s.id === selectedStoreId)?.storeName ?? `Store #${selectedStoreId}` : "All Stores")}
+            </span>
+            <svg className={`w-3.5 h-3.5 text-zinc-400 shrink-0 transition-transform ${storeDropdownOpen ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+            </svg>
+          </button>
+
+          {storeDropdownOpen && (
+            <div className="absolute top-full right-0 mt-1.5 bg-zinc-900 border border-zinc-700 rounded-lg shadow-xl z-50 min-w-[220px] max-h-72 overflow-y-auto py-1">
+              {/* All Stores option */}
+              <button
+                onClick={() => { setSelectedStoreId(null); setPage(1); setStoreDropdownOpen(false); }}
+                className={`w-full flex items-center gap-2.5 px-3.5 py-2 text-sm transition-colors ${
+                  selectedStoreId === null
+                    ? "bg-blue-600/20 text-blue-400"
+                    : "text-zinc-300 hover:bg-zinc-800 hover:text-white"
+                }`}
+              >
+                {selectedStoreId === null && (
+                  <svg className="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                  </svg>
+                )}
+                <span className={selectedStoreId === null ? "" : "ml-6"}>All Stores</span>
+              </button>
+
+              {stores.length > 0 && <div className="my-1 border-t border-zinc-800" />}
+
+              {stores.map((store) => (
+                <button
+                  key={store.id}
+                  onClick={() => { setSelectedStoreId(store.id); setPage(1); setStoreDropdownOpen(false); }}
+                  className={`w-full flex items-center gap-2.5 px-3.5 py-2 text-sm transition-colors ${
+                    selectedStoreId === store.id
+                      ? "bg-blue-600/20 text-blue-400"
+                      : "text-zinc-300 hover:bg-zinc-800 hover:text-white"
+                  }`}
+                >
+                  {selectedStoreId === store.id ? (
+                    <svg className="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                    </svg>
+                  ) : (
+                    <span className="w-3.5 h-3.5 shrink-0" />
+                  )}
+                  <span className="truncate">{store.storeName}</span>
+                  {store.city && <span className="ml-auto text-xs text-zinc-500 shrink-0">{store.city}</span>}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 
@@ -254,6 +306,7 @@ export default function StoreBoard({ user }: StoreBoardProps) {
               <thead className="sticky top-0 z-10 bg-zinc-950 border-b border-zinc-800">
                 <tr>
                   <th className="px-4 py-3 text-left text-xs font-semibold text-zinc-100">Task</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-zinc-100">Data Source</th>
                   <th className="px-4 py-3 text-left text-xs font-semibold text-zinc-100">Status</th>
                   <th className="px-4 py-3 text-left text-xs font-semibold text-zinc-100">Priority</th>
                   <th className="px-4 py-3 text-left text-xs font-semibold text-zinc-100">SLA</th>
@@ -267,6 +320,15 @@ export default function StoreBoard({ user }: StoreBoardProps) {
                     <td className="px-4 py-3 text-sm">
                       <div className="font-medium text-zinc-100">{task.title}</div>
                       <div className="text-xs text-zinc-500 mt-0.5">Order #{task.entityId}</div>
+                    </td>
+                    <td className="px-4 py-3 text-sm">
+                      {task.dataSource ? (
+                        <span className="inline-block px-2 py-0.5 text-xs rounded bg-zinc-800 text-zinc-200 border border-zinc-700">
+                          {task.dataSource.displayName}
+                        </span>
+                      ) : (
+                        <span className="text-zinc-500 text-xs">—</span>
+                      )}
                     </td>
                     <td className="px-4 py-3 text-sm">
                       <StatusBadge status={task.status as never} />

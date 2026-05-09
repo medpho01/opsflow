@@ -36,10 +36,23 @@ export async function GET(request: NextRequest) {
 
     console.log(`[ArchiveAPI] Fetching archive stats and tasks (page ${page}, limit ${limit})...`);
 
-    const stats = await prisma.$queryRaw`
-      SELECT * FROM taskos."v_archive_stats";
+    // Compute archive stats directly (the v_archive_stats view was removed).
+    // Returns the same shape the UI expects: rows with { category, count, percentage }.
+    const statsRaw = await prisma.$queryRaw<
+      Array<{ active_count: bigint; archived_count: bigint }>
+    >`
+      SELECT
+        COUNT(*) FILTER (WHERE "isArchived" = false) AS active_count,
+        COUNT(*) FILTER (WHERE "isArchived" = true)  AS archived_count
+      FROM taskos."tasks";
     `;
-    console.log("[ArchiveAPI] Stats query result:", stats);
+    const activeCount = Number(statsRaw[0]?.active_count ?? 0);
+    const archivedCount = Number(statsRaw[0]?.archived_count ?? 0);
+    const totalAll = activeCount + archivedCount;
+    const stats = [
+      { category: "Active Tasks",   count: activeCount,   percentage: totalAll > 0 ? (activeCount / totalAll) * 100 : 0 },
+      { category: "Archived Tasks", count: archivedCount, percentage: totalAll > 0 ? (archivedCount / totalAll) * 100 : 0 },
+    ];
 
     // Get total count of archived tasks
     const countResult = await prisma.$queryRaw`
@@ -67,6 +80,8 @@ export async function GET(request: NextRequest) {
         t."metadata",
         (SELECT "name" FROM taskos."task_types" WHERE "id" = t."taskTypeId") as "taskTypeName",
         (SELECT "label" FROM taskos."task_types" WHERE "id" = t."taskTypeId") as "taskTypeLabel",
+        (SELECT ds."displayName" FROM taskos."task_rules" tr LEFT JOIN taskos."data_sources" ds ON ds."id" = tr."dataSourceId" WHERE tr."id" = t."taskRuleId") as "dataSourceName",
+        (SELECT tr."dataSourceId" FROM taskos."task_rules" tr WHERE tr."id" = t."taskRuleId") as "dataSourceId",
         EXTRACT(DAY FROM NOW() - COALESCE((t."metadata"->>'appointmentTime')::timestamp, t."createdAt")) as "daysSinceAppointment"
       FROM taskos."tasks" t
       WHERE t."isArchived" = true
@@ -99,6 +114,9 @@ export async function GET(request: NextRequest) {
         name: t.taskTypeName || "N/A",
         label: t.taskTypeLabel || "N/A"
       },
+      dataSource: t.dataSourceId
+        ? { id: t.dataSourceId, displayName: t.dataSourceName || t.dataSourceId }
+        : null,
       daysSinceAppointment: t.daysSinceAppointment != null
         ? Math.floor(Number(t.daysSinceAppointment))
         : 0,

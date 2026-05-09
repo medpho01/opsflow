@@ -1,5 +1,6 @@
 /**
  * PATCH /api/team/:id — update a team member (name, phone, isActive, maxConcurrentTasks)
+ * DELETE /api/team/:id — permanently delete a team member
  * OPS_HEAD only.
  */
 import { NextRequest, NextResponse } from "next/server";
@@ -67,8 +68,42 @@ export async function PATCH(
 
   const updated = await prisma.user.findUnique({
     where: { id: targetId },
-    include: { teamMember: { include: { storeAssignments: true, orderTypes: true } } },
+    include: { teamMember: { include: { storeAssignments: true, capabilities: { include: { dataSource: { select: { id: true, sourceId: true, displayName: true } } } } } } },
   });
 
   return NextResponse.json({ user: updated });
+}
+
+export async function DELETE(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const user = await getSessionFromRequest(request);
+  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (user.role !== UserRole.OPS_HEAD) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+
+  const { id } = await params;
+  const targetId = parseInt(id, 10);
+  if (isNaN(targetId)) return NextResponse.json({ error: "Invalid ID" }, { status: 400 });
+
+  // Prevent self-deletion
+  if (targetId === user.id) {
+    return NextResponse.json({ error: "You cannot delete your own account" }, { status: 400 });
+  }
+
+  const target = await prisma.user.findUnique({ where: { id: targetId } });
+  if (!target) return NextResponse.json({ error: "User not found" }, { status: 404 });
+
+  // Null out task assignments before deleting (safety net; schema already handles this via SetNull)
+  await prisma.task.updateMany({
+    where: { assignedToId: targetId },
+    data: { assignedToId: null, teamMemberId: null, assignedAt: null, assignmentMethod: null },
+  });
+
+  // Delete the user — cascades to sessions, teamMember, storeAssignments, schedules, etc.
+  await prisma.user.delete({ where: { id: targetId } });
+
+  return NextResponse.json({ success: true });
 }

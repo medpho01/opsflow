@@ -7,6 +7,7 @@ import { getSessionFromRequest } from "@/lib/auth/session";
 import prisma from "@/lib/db/client";
 import { hashPassword } from "@/lib/auth/password";
 import { UserRole, TaskStatus } from "@prisma/client";
+import { computeRosterStatus } from "@/lib/roster/availability";
 
 async function calculateTaskStats(
   userId: number,
@@ -81,7 +82,7 @@ export async function GET(request: NextRequest) {
       teamMember: {
         include: {
           storeAssignments: { select: { storeId: true } },
-          orderTypes: true,
+          capabilities: { include: { dataSource: { select: { id: true, sourceId: true, displayName: true } } } },
           weeklySchedules: {
             where: { dayOfWeek: todayDayOfWeek },
           },
@@ -100,11 +101,12 @@ export async function GET(request: NextRequest) {
   });
 
   // Fetch today's exceptions separately for frontend button logic
-  const todayExceptions = await prisma.rosterException.findMany({
-    where: { date: { gte: today, lt: tomorrow } },
-    select: { teamMemberId: true },
-  });
-  const exceptionTeamMemberIds = new Set(todayExceptions.map(e => e.teamMemberId));
+  // TODO: Uncomment when roster_exceptions table is created
+  // const todayExceptions = await prisma.rosterException.findMany({
+  //   where: { date: { gte: today, lt: tomorrow } },
+  //   select: { teamMemberId: true },
+  // });
+  const exceptionTeamMemberIds = new Set();
 
   // Enrich response with order types and stats
   const enrichedMembers = await Promise.all(
@@ -122,17 +124,14 @@ export async function GET(request: NextRequest) {
         maxConcurrentTasks: member.teamMember?.maxConcurrentTasks || 5,
         isActive: member.isActive,
         createdAt: member.createdAt,
-        orderTypes: (member.teamMember?.orderTypes || []).map((ot) => ({
-          orderType: ot.orderType,
-          assignedAt: ot.assignedAt,
+        capabilities: (member.teamMember?.capabilities || []).map((c) => ({
+          dataSourceId: c.dataSourceId,
+          dataSource: c.dataSource,
+          assignedAt: c.assignedAt,
         })),
-        orderTypeCount: member.teamMember?.orderTypes?.length || 0,
-        skills: (member.teamMember?.skills || []).map((s) => ({
-          id: s.skillTag.id || 0,
-          name: s.skillTag.name,
-          label: s.skillTag.label,
-        })),
-        skillCount: member.teamMember?.skills?.length || 0,
+        capabilityCount: member.teamMember?.capabilities?.length || 0,
+        skills: [],
+        skillCount: 0,
         stores: member.teamMember?.storeAssignments?.map((sa) => sa.storeId) || [],
         storeCount: member.teamMember?.storeAssignments?.length || 0,
         currentLoad: member.assignedTasks?.length || 0,
@@ -141,43 +140,13 @@ export async function GET(request: NextRequest) {
           thisWeek: thisWeekStats,
         },
         hasException: exceptionTeamMemberIds.has(member.teamMember?.id || 0),
-        // Calculate roster status based on exceptions + schedule + current time
-        rosterStatus: (() => {
-          const exception = member.teamMember?.rosterExceptions?.[0];
-
-          // Exception has highest priority (explicit override)
-          if (exception) {
-            if (exception.status === "ACTIVE") {
-              // Exception explicitly marks them as active (override OFF schedule)
-              return "ACTIVE";
-            }
-            // OFF, SICK, ON_LEAVE - return as is
-            return exception.status;
-          }
-
-          const schedule = member.teamMember?.weeklySchedules?.[0];
-          if (!schedule || !schedule.isWorking) {
-            return "OFF";
-          }
-
-          // Check if current time is within working hours
-          const currentTime = now.toTimeString().slice(0, 5); // HH:MM format
-          const startTime = schedule.startTime || "00:00";
-          const endTime = schedule.endTime || "23:59";
-
-          // Simple string comparison works for HH:MM format (00:00 to 23:59)
-          if (currentTime >= startTime && currentTime <= endTime) {
-            // Check if in break time
-            if (schedule.breakStart && schedule.breakEnd) {
-              if (currentTime >= schedule.breakStart && currentTime <= schedule.breakEnd) {
-                return "OFF"; // On break
-              }
-            }
-            return "ACTIVE";
-          }
-
-          return "OFF"; // Outside working hours
-        })(),
+        // Roster status — single source of truth: lib/roster/availability.ts
+        // (same logic used by pickAssignee for auto-assignment)
+        rosterStatus: computeRosterStatus(
+          member.teamMember?.weeklySchedules?.[0] ?? null,
+          member.teamMember?.rosterExceptions?.[0] ?? null,
+          now
+        ),
         rosterUpdatedAt: member.teamMember?.rosterExceptions?.[0]?.createdAt,
       };
     })

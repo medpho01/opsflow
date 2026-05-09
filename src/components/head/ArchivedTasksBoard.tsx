@@ -19,6 +19,7 @@ interface Task {
   slaBreachedAt: string | null;
   assignedTo: { id: number; name: string } | null;
   taskType: { name: string; label: string };
+  dataSource?: { id: string; displayName: string } | null;
   metadata: Record<string, unknown>;
 }
 
@@ -108,6 +109,9 @@ export default function ArchivedTasksBoard() {
                   Type
                 </th>
                 <th className="text-left text-[10px] font-semibold text-zinc-500 uppercase tracking-wider px-4 py-3">
+                  Data Source
+                </th>
+                <th className="text-left text-[10px] font-semibold text-zinc-500 uppercase tracking-wider px-4 py-3">
                   Status
                 </th>
                 <th className="text-left text-[10px] font-semibold text-zinc-500 uppercase tracking-wider px-4 py-3">
@@ -127,7 +131,7 @@ export default function ArchivedTasksBoard() {
             <tbody className="divide-y divide-zinc-800/60">
               {tasks.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="px-4 py-10 text-center text-sm text-zinc-600">
+                  <td colSpan={8} className="px-4 py-10 text-center text-sm text-zinc-600">
                     No archived tasks
                   </td>
                 </tr>
@@ -144,6 +148,15 @@ export default function ArchivedTasksBoard() {
                       <span className="text-xs text-zinc-400">
                         {task.taskType?.label || "N/A"}
                       </span>
+                    </td>
+                    <td className="px-4 py-3">
+                      {task.dataSource ? (
+                        <span className="inline-block px-2 py-0.5 text-xs rounded bg-zinc-800 text-zinc-200 border border-zinc-700">
+                          {task.dataSource.displayName}
+                        </span>
+                      ) : (
+                        <span className="text-zinc-600 text-xs">—</span>
+                      )}
                     </td>
                     <td className="px-4 py-3">
                       <StatusBadge status={task.status} />

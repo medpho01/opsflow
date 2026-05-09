@@ -1,9 +1,14 @@
+/**
+ * GET  /api/team/:id/order-types — list data source capabilities for a team member
+ * POST /api/team/:id/order-types — assign a data source capability to a team member
+ *
+ * Note: This endpoint retains the "order-types" URL path for backward compatibility
+ * but now operates on TeamMemberCapability (data source assignments) instead of OrderType enum.
+ */
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/db/client";
 import { getSessionFromRequest } from "@/lib/auth/session";
 import { UserRole } from "@prisma/client";
-
-const VALID_ORDER_TYPES = ["HOME_SAMPLE", "CENTER_VISIT", "INJECTION"];
 
 export async function GET(
   request: NextRequest,
@@ -18,10 +23,19 @@ export async function GET(
     const { id } = await params;
     const userId = parseInt(id);
 
-    // Look up user first
     const user = await prisma.user.findUnique({
       where: { id: userId },
-      include: { teamMember: { include: { orderTypes: true } } },
+      include: {
+        teamMember: {
+          include: {
+            capabilities: {
+              include: {
+                dataSource: { select: { id: true, sourceId: true, displayName: true } },
+              },
+            },
+          },
+        },
+      },
     });
 
     if (!user || !user.teamMember) {
@@ -33,14 +47,17 @@ export async function GET(
     return NextResponse.json({
       teamMemberId: member.id,
       memberName: user.name || "Unknown",
-      orderTypes: member.orderTypes,
+      capabilities: member.capabilities.map((c) => ({
+        id: c.id,
+        dataSourceId: c.dataSourceId,
+        dataSource: c.dataSource,
+        assignedAt: c.assignedAt,
+        assignedBy: c.assignedBy,
+      })),
     });
   } catch (error) {
-    console.error("[ORDER_TYPES_GET]", error);
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+    console.error("[CAPABILITIES_GET]", error);
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }
 
@@ -54,32 +71,21 @@ export async function POST(
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    // Check authorization
-    if (![UserRole.OPS_HEAD, UserRole.STORE_ADMIN].includes(session.role)) {
+    if (session.role !== UserRole.OPS_HEAD && session.role !== UserRole.STORE_ADMIN) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
-    const { orderType } = await request.json();
+    const body = await request.json();
+    // Accept either dataSourceId (new) or orderType (legacy field name)
+    const dataSourceId = body.dataSourceId ?? body.orderType;
 
-    // Validate order type
-    if (!orderType || !VALID_ORDER_TYPES.includes(orderType)) {
-      return NextResponse.json(
-        {
-          error: "Invalid order type",
-          code: "INVALID_ORDER_TYPE",
-          details: {
-            validTypes: VALID_ORDER_TYPES,
-            provided: orderType,
-          },
-        },
-        { status: 400 }
-      );
+    if (!dataSourceId) {
+      return NextResponse.json({ error: "dataSourceId is required" }, { status: 400 });
     }
 
     const { id } = await params;
     const userId = parseInt(id);
 
-    // Look up user and get their teamMember
     const user = await prisma.user.findUnique({
       where: { id: userId },
       include: { teamMember: true },
@@ -89,59 +95,45 @@ export async function POST(
       return NextResponse.json({ error: "Member not found" }, { status: 404 });
     }
 
-    const member = user.teamMember;
-    const teamMemberId = member.id;
+    // Validate data source exists
+    const dataSource = await prisma.dataSource.findUnique({ where: { id: dataSourceId } });
+    if (!dataSource) {
+      return NextResponse.json({ error: "Data source not found" }, { status: 404 });
+    }
+
+    const teamMemberId = user.teamMember.id;
 
     // Check for duplicate
-    const existing = await prisma.teamMemberOrderType.findUnique({
-      where: {
-        teamMemberId_orderType: {
-          teamMemberId,
-          orderType,
-        },
-      },
+    const existing = await prisma.teamMemberCapability.findUnique({
+      where: { teamMemberId_dataSourceId: { teamMemberId, dataSourceId } },
     });
 
     if (existing) {
       return NextResponse.json(
-        {
-          error: "Order type already assigned to this member",
-          code: "DUPLICATE_ASSIGNMENT",
-          details: {
-            teamMemberId,
-            orderType,
-            assignedAt: existing.assignedAt,
-          },
-        },
+        { error: "Data source already assigned to this member", code: "DUPLICATE_ASSIGNMENT" },
         { status: 409 }
       );
     }
 
-    // Create assignment
-    const assignment = await prisma.teamMemberOrderType.create({
-      data: {
-        teamMemberId,
-        orderType,
-        assignedBy: session.userId,
-      },
+    const capability = await prisma.teamMemberCapability.create({
+      data: { teamMemberId, dataSourceId, assignedBy: session.id },
+      include: { dataSource: { select: { id: true, sourceId: true, displayName: true } } },
     });
 
     return NextResponse.json(
       {
-        id: assignment.id,
+        id: capability.id,
         teamMemberId,
-        memberName: user?.name || "Unknown",
-        orderType,
-        assignedAt: assignment.assignedAt,
-        assignedBy: assignment.assignedBy,
+        memberName: user.name || "Unknown",
+        dataSourceId,
+        dataSource: capability.dataSource,
+        assignedAt: capability.assignedAt,
+        assignedBy: capability.assignedBy,
       },
       { status: 201 }
     );
   } catch (error) {
-    console.error("[ORDER_TYPES_POST]", error);
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+    console.error("[CAPABILITIES_POST]", error);
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }

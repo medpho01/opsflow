@@ -29,6 +29,13 @@ export async function GET(request: NextRequest) {
       orderBy: { name: "asc" },
     });
 
+    // Fetch all active data sources for the data-source filter
+    const dataSources = await prisma.dataSource.findMany({
+      where: { isActive: true },
+      select: { id: true, sourceId: true, displayName: true },
+      orderBy: { displayName: "asc" },
+    });
+
     // All valid task statuses
     const statuses = [
       "CREATED",
@@ -58,6 +65,7 @@ export async function GET(request: NextRequest) {
         id: agent.id,
         name: agent.name,
       })),
+      dataSources,
       dateRangePresets,
     };
 

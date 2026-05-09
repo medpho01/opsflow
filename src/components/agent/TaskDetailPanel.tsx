@@ -312,7 +312,8 @@ export default function TaskDetailPanel({ task, onUpdate }: TaskDetailPanelProps
           </div>
         </div>
 
-        {/* Phase 2 Feature 7: SLA Timeline Context */}
+        {/* Phase 2 Feature 7: SLA Timeline Context - Not yet implemented */}
+        {/* Uncomment when Phase 2 features are added
         {displayedTask.slaContext && (
           <SLADisplay
             slaContext={displayedTask.slaContext as any}
@@ -320,6 +321,7 @@ export default function TaskDetailPanel({ task, onUpdate }: TaskDetailPanelProps
             mode="expanded"
           />
         )}
+        */}
 
         {/* Phase 2: Assignment Audit Trail */}
         <AssignmentAuditTrail

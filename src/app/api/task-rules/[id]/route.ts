@@ -5,8 +5,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSessionFromRequest } from "@/lib/auth/session";
 import prisma from "@/lib/db/client";
-import { UserRole, TaskPriority, OrderType } from "@prisma/client";
-import { validateTriggerConditionStatuses, getValidOrderStatuses, MetadataOperator } from "@/types";
+import { UserRole, TaskPriority } from "@prisma/client";
+import { MetadataOperator, validateTriggerConditionStatuses, getValidOrderStatuses } from "@/types";
 import { logRuleAudit } from "@/lib/engine/ruleAudit";
 
 export async function PATCH(
@@ -30,8 +30,8 @@ export async function PATCH(
   const body = await request.json();
   const {
     isActive, slaMinutes, priority, name, titleTemplate,
-    orderType, taskTypeId, triggerCondition, escalationChainId,
-    skillTagIds,
+    dataSourceId, allowedTypes, allowedStatuses, pollingIntervalMinutes,
+    triggerCondition, escalationChainId, skillTagIds,
   } = body;
 
   const updates: Record<string, unknown> = {};
@@ -48,17 +48,17 @@ export async function PATCH(
     updates.titleTemplate = titleTemplate.trim();
   }
 
-  if (orderType !== undefined) {
-    if (!Object.values(OrderType).includes(orderType)) {
-      return NextResponse.json({ error: `Invalid orderType: ${orderType}` }, { status: 400 });
-    }
-    updates.orderType = orderType;
+  if (dataSourceId !== undefined) {
+    const ds = await prisma.dataSource.findUnique({ where: { id: dataSourceId } });
+    if (!ds) return NextResponse.json({ error: "Data source not found" }, { status: 404 });
+    updates.dataSourceId = dataSourceId;
   }
-
-  if (taskTypeId !== undefined) {
-    const tt = await prisma.taskType.findUnique({ where: { id: Number(taskTypeId) } });
-    if (!tt) return NextResponse.json({ error: "Task type not found" }, { status: 404 });
-    updates.taskTypeId = Number(taskTypeId);
+  if (allowedTypes !== undefined) updates.allowedTypes = allowedTypes;
+  if (allowedStatuses !== undefined) updates.allowedStatuses = allowedStatuses;
+  if (pollingIntervalMinutes !== undefined) {
+    const mins = Number(pollingIntervalMinutes);
+    if (isNaN(mins) || mins < 1) return NextResponse.json({ error: "pollingIntervalMinutes must be >= 1" }, { status: 400 });
+    updates.pollingIntervalMinutes = mins;
   }
 
   if (slaMinutes !== undefined) {
@@ -135,12 +135,14 @@ export async function PATCH(
 
   // Skill tags — full replace when provided
   const hasSkillUpdate = Array.isArray(skillTagIds);
+  // Source scope — upsert/delete when dataSourceId key is present in body
+  const hasSourceScopeUpdate = "dataSourceId" in body;
 
-  if (Object.keys(updates).length === 0 && !hasSkillUpdate) {
+  if (Object.keys(updates).length === 0 && !hasSkillUpdate && !hasSourceScopeUpdate) {
     return NextResponse.json({ error: "Nothing to update" }, { status: 400 });
   }
 
-  // Run skill update + field update in a transaction
+  // Run skill update + field update + source scope in a transaction
   const updated = await prisma.$transaction(async (tx) => {
     if (hasSkillUpdate) {
       await tx.taskRuleSkill.deleteMany({ where: { taskRuleId: id } });
@@ -159,6 +161,7 @@ export async function PATCH(
           taskType: { select: { name: true, label: true } },
           requiredSkills: { include: { skillTag: { select: { id: true, name: true, label: true } } } },
           escalationChain: { select: { id: true, name: true } },
+          dataSource: { select: { id: true, sourceId: true, displayName: true } },
         },
       });
     }
@@ -169,6 +172,7 @@ export async function PATCH(
         taskType: { select: { name: true, label: true } },
         requiredSkills: { include: { skillTag: { select: { id: true, name: true, label: true } } } },
         escalationChain: { select: { id: true, name: true } },
+        dataSource: { select: { id: true, sourceId: true, displayName: true } },
       },
     });
   });
@@ -193,8 +197,8 @@ export async function PATCH(
     if (updates.priority !== undefined) {
       changesSummary.priority = { before: rule.priority, after: updates.priority };
     }
-    if (updates.orderType !== undefined) {
-      changesSummary.orderType = { before: rule.orderType, after: updates.orderType };
+    if (updates.dataSourceId !== undefined) {
+      changesSummary.dataSourceId = { before: rule.dataSourceId, after: updates.dataSourceId };
     }
     if (updates.triggerCondition !== undefined) {
       changesSummary.triggerCondition = { before: rule.triggerCondition, after: updates.triggerCondition };

@@ -42,8 +42,12 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    // Validate table and column names (prevent SQL injection)
-    if (!/^[a-zA-Z0-9_]+$/.test(table) || !/^[a-zA-Z0-9_]+$/.test(column)) {
+    // Strip surrounding double-quotes (PostgreSQL quoted identifiers like "Appointment")
+    const tableClean = table.replace(/^"(.+)"$/, "$1");
+    const columnClean = column.replace(/^"(.+)"$/, "$1");
+
+    // Validate names after stripping quotes (prevent SQL injection)
+    if (!/^[a-zA-Z0-9_]+$/.test(tableClean) || !/^[a-zA-Z0-9_]+$/.test(columnClean)) {
       return NextResponse.json(
         {
           error: "Invalid table or column name",
@@ -70,8 +74,8 @@ export async function GET(req: NextRequest) {
           information_schema.columns
         WHERE
           table_schema = 'public'
-          AND table_name = ${table}
-          AND column_name = ${column}
+          AND table_name = ${tableClean}
+          AND column_name = ${columnClean}
         LIMIT 1
       `
     );
@@ -111,8 +115,8 @@ export async function GET(req: NextRequest) {
       const values = enumValues.map((row) => row.enumlabel);
 
       return NextResponse.json({
-        column,
-        table,
+        column: columnClean,
+        table: tableClean,
         dataType,
         enumType: udtName,
         values,
@@ -120,10 +124,31 @@ export async function GET(req: NextRequest) {
       });
     }
 
+    // For VARCHAR / TEXT columns, try to fetch distinct values as a fallback
+    // This covers cases where the source uses string columns instead of enums
+    if (dataType === "character varying" || dataType === "text") {
+      try {
+        const distinctValues = await prisma.$queryRawUnsafe<Array<Record<string, string>>>(
+          `SELECT DISTINCT "${columnClean}" as val FROM "${tableClean}" WHERE "${columnClean}" IS NOT NULL ORDER BY "${columnClean}" LIMIT 100`
+        );
+        const values = distinctValues.map((r) => String(r.val)).filter(Boolean);
+        return NextResponse.json({
+          column: columnClean,
+          table: tableClean,
+          dataType,
+          enumType: null,
+          values,
+          found: values.length > 0,
+        });
+      } catch {
+        // Fall through to empty response
+      }
+    }
+
     // Not an enum type, return empty values
     return NextResponse.json({
-      column,
-      table,
+      column: columnClean,
+      table: tableClean,
       dataType,
       enumType: null,
       values: [],

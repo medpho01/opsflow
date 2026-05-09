@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/db/client";
 import { getSessionFromRequest } from "@/lib/auth/session";
-import { UserRole } from "@/types";
+import { UserRole } from "@prisma/client";
 import { getMemberStats } from "@/lib/performance";
 
 export async function GET(
@@ -16,7 +16,7 @@ export async function GET(
     }
 
     // Check authorization
-    if (![UserRole.OPS_HEAD, UserRole.STORE_ADMIN].includes(session.role)) {
+    if (session.role !== UserRole.OPS_HEAD && session.role !== UserRole.STORE_ADMIN) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 

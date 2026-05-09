@@ -30,6 +30,7 @@ export interface RawOrder {
   patientName: string;
   labName: string | null;
   storeName: string | null;
+  metadata?: Record<string, unknown>;
 }
 
 /**

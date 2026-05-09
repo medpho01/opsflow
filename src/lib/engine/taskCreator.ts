@@ -8,7 +8,8 @@
 import prisma from "@/lib/db/client";
 import { RawOrder } from "./labstack";
 import { TaskRuleWithRelations, TriggerCondition, CreateTaskPayload, MetadataCondition, MetadataOperator } from "@/types";
-import { OrderType, TaskStatus, TaskPriority } from "@prisma/client";
+import { TaskStatus, TaskPriority } from "@prisma/client";
+import { isAvailableNow, getUTCDayOfWeek } from "@/lib/roster/availability";
 
 // C1.4: Timezone support for SLA calculations
 // All timestamps stored as UTC in database, but calculations use TIMEZONE
@@ -172,22 +173,19 @@ function evaluateTrigger(order: RawOrder, cond: TriggerCondition, now: Date): bo
   const msPerMin = 60_000;
 
   // All timestamps must be corrected for IST offset before comparison
-  const isDebugOrder = order.id === 46251;
-  const createdAt = correctISTTimestamp(order.createdAt, isDebugOrder);
-  const statusUpdatedAt = correctISTTimestamp(order.statusUpdatedAt, isDebugOrder);
-  const appointmentTime = correctISTTimestamp(order.appointmentTime, isDebugOrder);
+  const createdAt = correctISTTimestamp(order.createdAt);
+  const statusUpdatedAt = correctISTTimestamp(order.statusUpdatedAt);
+  const appointmentTime = correctISTTimestamp(order.appointmentTime);
 
   // 2. Age since created
   if (cond.minutesSinceCreated !== undefined) {
     const ageMin = (now.getTime() - createdAt.getTime()) / msPerMin;
-    if (isDebugOrder) console.log(`[DEBUG-TZ] minutesSinceCreated: createdAt=${createdAt.toISOString()}, now=${now.toISOString()}, ageMin=${ageMin.toFixed(1)}`);
     if (ageMin < cond.minutesSinceCreated) return false;
   }
 
   // 3. Age since last status change
   if (cond.minutesSinceStatusUpdated !== undefined) {
     const staleMin = (now.getTime() - statusUpdatedAt.getTime()) / msPerMin;
-    if (isDebugOrder) console.log(`[DEBUG-TZ] minutesSinceStatusUpdated: statusUpdatedAt=${statusUpdatedAt.toISOString()}, now=${now.toISOString()}, staleMin=${staleMin.toFixed(1)}`);
     if (staleMin < cond.minutesSinceStatusUpdated) return false;
   }
 
@@ -228,50 +226,50 @@ async function isDuplicate(ruleId: string, orderId: number): Promise<boolean> {
 
 // ── Assignment engine ─────────────────────────────────────────────────────────
 
-async function checkOrderTypeAllocations(orderType: OrderType): Promise<boolean> {
-  const count = await prisma.teamMemberOrderType.count({
-    where: { orderType },
+async function checkDataSourceCapabilities(dataSourceId: string): Promise<boolean> {
+  const count = await prisma.teamMemberCapability.count({
+    where: { dataSourceId },
   });
   return count > 0;
 }
 
 async function applyRoundRobin(
-  orderType: OrderType,
+  dataSourceId: string,
   candidates: Array<{ userId: number; teamMemberId: number }>
 ): Promise<number> {
-  // Get current round-robin state
+  // Get current round-robin state for this data source
   let state = await prisma.roundRobinState.findUnique({
-    where: { orderType },
+    where: { dataSourceId },
   });
 
-  const candidateIds = candidates.map((c) => c.userId);
+  // State tracks by teamMemberId — use that for rotation lookup
+  const candidateTeamMemberIds = candidates.map((c) => c.teamMemberId);
 
   // If no state, create it and return first candidate
   if (!state) {
     await prisma.roundRobinState.create({
       data: {
-        orderType,
+        dataSourceId,
         lastAssignedMemberId: candidates[0].teamMemberId,
       },
     });
     return candidates[0].userId;
   }
 
-  // Find next in rotation
-  const currentIndex = candidateIds.indexOf(state.lastAssignedMemberId || -1);
+  // Find next in rotation (compare teamMemberId to teamMemberId)
+  const currentIndex = candidateTeamMemberIds.indexOf(state.lastAssignedMemberId || -1);
   const nextIndex =
-    currentIndex === -1 ? 0 : (currentIndex + 1) % candidateIds.length;
+    currentIndex === -1 ? 0 : (currentIndex + 1) % candidates.length;
 
   // Update state with new selection
   const nextCandidate = candidates[nextIndex];
   await prisma.roundRobinState.upsert({
-    where: { orderType },
+    where: { dataSourceId },
     update: {
       lastAssignedMemberId: nextCandidate.teamMemberId,
-      lastUpdatedAt: new Date(),
     },
     create: {
-      orderType,
+      dataSourceId,
       lastAssignedMemberId: nextCandidate.teamMemberId,
     },
   });
@@ -282,68 +280,89 @@ async function applyRoundRobin(
 async function pickAssignee(
   requiredSkillIds: number[],
   storeId: number | null,
-  orderType: OrderType
+  dataSourceId: string
 ): Promise<number | null> {
   try {
-    // Check if this order type has any allocations
-    const allocationsExist = await checkOrderTypeAllocations(orderType);
+    // Check if this data source has any capability assignments
+    const allocationsExist = await checkDataSourceCapabilities(dataSourceId);
 
-    // Load all agents on today's active roster
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const tomorrow = new Date(today);
-    tomorrow.setDate(tomorrow.getDate() + 1);
+    // Compute today's date range using local-date components (matches /api/team's
+    // logic exactly so rosterStatus in the UI matches what the engine uses).
+    // The server runs in IST; "today" must be the local-day view, anchored as a
+    // UTC midnight so it lines up with PostgreSQL's DATE column representation.
+    const now = new Date();
+    const todayUTC = new Date(
+      Date.UTC(now.getFullYear(), now.getMonth(), now.getDate())
+    );
+    const tomorrowUTC = new Date(todayUTC);
+    tomorrowUTC.setUTCDate(tomorrowUTC.getUTCDate() + 1);
+    const todayDayOfWeek = getUTCDayOfWeek(todayUTC);
 
-    const rosterEntries = await prisma.dailyRoster.findMany({
+    // Load all OPS_AGENT team members matching store + skill filters, with their
+    // weekly schedule for today's day-of-week and any roster exception for today.
+    // Availability is then derived in JS via computeRosterStatus() — same logic
+    // used by GET /api/team for displaying rosterStatus.
+    const candidateMembers = await prisma.teamMember.findMany({
       where: {
-        date: { gte: today, lt: tomorrow },
-        status: { in: ["ACTIVE", "ON_FIELD"] },
-        member: {
-          user: { isActive: true, role: "OPS_AGENT" },
-          ...(storeId !== null
-            ? { storeAssignments: { some: { storeId } } }
-            : {}),
-          ...(requiredSkillIds.length > 0
-            ? { skills: { some: { skillTagId: { in: requiredSkillIds } } } }
-            : {}),
-        },
+        isActive: true,
+        user: { isActive: true, role: "OPS_AGENT" },
+        ...(storeId !== null
+          ? { storeAssignments: { some: { storeId } } }
+          : {}),
+        ...(requiredSkillIds.length > 0
+          ? { skills: { some: { skillTagId: { in: requiredSkillIds } } } }
+          : {}),
       },
       include: {
-        member: {
-          include: {
-            user: { select: { id: true } },
-            orderTypes: true,
-            _count: {
-              select: {
-                assignedTasks: {
-                  where: { status: { notIn: [TaskStatus.COMPLETED, TaskStatus.CANCELLED] } },
-                },
-              },
+        user: { select: { id: true } },
+        capabilities: { select: { dataSourceId: true } },
+        weeklySchedules: { where: { dayOfWeek: todayDayOfWeek } },
+        rosterExceptions: {
+          where: { date: { gte: todayUTC, lt: tomorrowUTC } },
+          take: 1,
+        },
+        _count: {
+          select: {
+            assignedTasks: {
+              where: { status: { notIn: [TaskStatus.COMPLETED, TaskStatus.CANCELLED] } },
             },
           },
         },
       },
-      orderBy: { member: { user: { id: "asc" } } },
+      orderBy: { user: { id: "asc" } },
     });
 
-    if (rosterEntries.length === 0) {
+    if (candidateMembers.length === 0) {
       console.warn(
-        `No eligible members for orderType=${orderType}, skills=${requiredSkillIds.join(",")}`
+        `[pickAssignee] No team members match filters (dataSourceId=${dataSourceId}, storeId=${storeId}, skills=${requiredSkillIds.join(",")})`
       );
       return null;
     }
 
-    // Filter by order type allocation (if allocations exist for this type)
-    let eligibleEntries = rosterEntries;
+    // Filter by current schedule/exception status (must be ACTIVE right now)
+    let eligibleEntries = candidateMembers.filter((m) => {
+      const schedule = m.weeklySchedules[0] ?? null;
+      const exception = m.rosterExceptions[0] ?? null;
+      return isAvailableNow(schedule, exception, now);
+    });
+
+    if (eligibleEntries.length === 0) {
+      console.warn(
+        `[pickAssignee] No members are currently ACTIVE per schedule/exception (dataSourceId=${dataSourceId}, storeId=${storeId})`
+      );
+      return null;
+    }
+
+    // Filter by data source capability (if assignments exist for this source)
     if (allocationsExist) {
-      eligibleEntries = rosterEntries.filter((entry) =>
-        entry.member.orderTypes.some((ot) => ot.orderType === orderType)
+      eligibleEntries = eligibleEntries.filter((m) =>
+        m.capabilities.some((c) => c.dataSourceId === dataSourceId)
       );
 
       if (eligibleEntries.length === 0) {
         console.warn(
-          `No members with orderType ${orderType} assigned`,
-          { orderType, requiredSkillIds, storeId }
+          `[pickAssignee] No ACTIVE members with dataSourceId=${dataSourceId} capability`,
+          { dataSourceId, requiredSkillIds, storeId }
         );
         return null;
       }
@@ -352,7 +371,7 @@ async function pickAssignee(
     // Group by load and pick minimum load group
     const loadGroups = new Map<number, typeof eligibleEntries>();
     for (const entry of eligibleEntries) {
-      const load = entry.member._count.assignedTasks;
+      const load = entry._count.assignedTasks;
       if (!loadGroups.has(load)) {
         loadGroups.set(load, []);
       }
@@ -367,33 +386,26 @@ async function pickAssignee(
     // Apply round-robin if multiple candidates at min load
     if (minLoadMembers.length > 1) {
       const candidates = minLoadMembers.map((m) => ({
-        userId: m.member.user.id,
-        teamMemberId: m.member.id,
+        userId: m.user.id,
+        teamMemberId: m.id,
       }));
-      const selectedUserId = await applyRoundRobin(orderType, candidates);
-      selected = minLoadMembers.find(
-        (m) => m.member.user.id === selectedUserId
-      )!;
+      const selectedUserId = await applyRoundRobin(dataSourceId, candidates);
+      selected = minLoadMembers.find((m) => m.user.id === selectedUserId)!;
     } else {
       selected = minLoadMembers[0];
     }
 
-    console.info(`Task assigned to member ${selected.member.user.id} (load: ${minLoad})`, {
-      orderType,
-      memberId: selected.member.user.id,
+    console.info(`Task assigned to user ${selected.user.id} (load: ${minLoad})`, {
+      dataSourceId,
+      userId: selected.user.id,
       currentLoad: minLoad,
       totalCandidates: eligibleEntries.length,
       usedRoundRobin: minLoadMembers.length > 1,
     });
 
-    return selected.member.user.id;
+    return selected.user.id;
   } catch (error) {
-    console.error(`Error in pickAssignee: ${error}`, {
-      error,
-      orderType,
-      requiredSkillIds,
-      storeId,
-    });
+    console.error(`[pickAssignee] Error storeId=${storeId} dsId=${dataSourceId}:`, error instanceof Error ? error.stack : String(error));
     return null;
   }
 }
@@ -403,7 +415,7 @@ async function pickAssignee(
 async function createTask(payload: CreateTaskPayload): Promise<void> {
   const {
     taskRuleId, taskTypeId, title, entityType, entityId,
-    storeId, orderType, priority, slaDeadline, metadata, checklistSteps,
+    storeId, orderType, dataSourceId, priority, slaDeadline, metadata, checklistSteps,
   } = payload;
 
   // Fetch required skills for this rule
@@ -413,7 +425,7 @@ async function createTask(payload: CreateTaskPayload): Promise<void> {
   });
   const skillIds = ruleSkills.map((r) => r.skillTagId);
 
-  const assigneeId = await pickAssignee(skillIds, storeId, orderType);
+  const assigneeId = await pickAssignee(skillIds, storeId, dataSourceId);
 
   const now = new Date();
   const task = await prisma.task.create({
@@ -479,21 +491,35 @@ export async function evaluateAndCreateTasks(
   let skipped = 0;
   const msPerDay = 24 * 60 * 60 * 1000;
   const maxOrderAgeDays = 10;
+  // Don't create tasks for orders whose appointment is far in the future —
+  // they don't need attention yet and would clutter the active queue.
+  // Tasks become eligible once the appointment is within this window.
+  const maxOrderFutureDays = 3;
 
   for (const order of orders) {
-    // Skip very old orders (appointment 10+ days past) - prevent creating tasks for stale orders
-    // Correct for IST timezone offset before calculation
+    // Correct for IST timezone offset before any time-based comparison.
     const appointmentMs = correctISTTimestamp(order.appointmentTime).getTime();
-    const daysOld = (now.getTime() - appointmentMs) / msPerDay;
-    if (daysOld > maxOrderAgeDays) {
+    const ageDays = (now.getTime() - appointmentMs) / msPerDay; // +ve = past, -ve = future
+
+    // Skip very old orders (appointment 10+ days in the past)
+    if (ageDays > maxOrderAgeDays) {
+      skipped++;
+      continue;
+    }
+
+    // Skip far-future orders — agents don't need to act on these yet.
+    // Negative ageDays means appointment is in the future; flip the sign.
+    if (-ageDays > maxOrderFutureDays) {
       skipped++;
       continue;
     }
 
     for (const rule of rules) {
-      // Order type guard
-      if (rule.orderType !== order.orderType) {
-        continue;
+      // Filter by allowed types (if any are specified)
+      if (Array.isArray(rule.allowedTypes) && rule.allowedTypes.length > 0) {
+        if (!rule.allowedTypes.includes(order.orderType)) {
+          continue;
+        }
       }
 
       if (!rule.isActive) {
@@ -523,10 +549,6 @@ export async function evaluateAndCreateTasks(
         shouldCreate = evaluateTrigger(order, cond, now);
       }
 
-      if (order.id === 46251 && rule.id === 'hsc_r4_confirm_collected') {
-        console.log(`[DEBUG] Order ${order.id}, Rule ${rule.id}: shouldCreate=${shouldCreate}`);
-      }
-
       if (!shouldCreate) {
         skipped++;
         continue;
@@ -535,9 +557,6 @@ export async function evaluateAndCreateTasks(
       // Deduplication: prevent creating multiple tasks for the same (ruleId, orderId)
       const isDup = await isDuplicate(rule.id, order.id);
       if (isDup) {
-        if (order.id === 46251 && rule.id === 'hsc_r4_confirm_collected') {
-          console.log(`[DEBUG] Order ${order.id}, Rule ${rule.id}: DUPLICATE - not creating`);
-        }
         skipped++;
         continue;
       }
@@ -558,7 +577,8 @@ export async function evaluateAndCreateTasks(
         entityType: "ORDER",
         entityId: order.id,
         storeId: order.storeId,
-        orderType: order.orderType as OrderType,
+        orderType: order.orderType,
+        dataSourceId: rule.dataSourceId,
         priority: rule.priority,
         slaDeadline,
         metadata: {
@@ -611,11 +631,7 @@ export async function loadActiveRules(): Promise<TaskRuleWithRelations[]> {
     triggerCondition: r.triggerCondition as unknown as TriggerCondition,
   })) as TaskRuleWithRelations[];
 
-  // Debug logging
-  const rule5 = mapped.find(r => r.id === 'hsc_r5_sample_handover');
-  if (rule5) {
-    console.log(`[DEBUG-RULES] R5 loaded. triggerCondition:`, JSON.stringify(rule5.triggerCondition));
-  }
+
 
   return mapped;
 }

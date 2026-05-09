@@ -1,7 +1,7 @@
 /**
  * Rule Matcher
- * Determines which task rules apply to a source entity
- * Handles source-aware matching with type/status filtering
+ * Determines which task rules apply to a source entity.
+ * Queries TaskRule directly — rules now own their dataSourceId, allowedTypes, and allowedStatuses.
  */
 
 import prisma from "@/lib/db/client";
@@ -10,66 +10,65 @@ import { SourceEntity } from "@/types/multi-source";
 export interface RuleMatchResult {
   taskRuleId: string;
   ruleName: string;
-  ruleScopeId: string;
   priority: string;
-  slaMinutesOverride?: number;
+  slaMinutes: number;
   assignmentStrategy: string;
-  assignmentStrategyConfig?: Record<string, unknown>;
 }
 
 /**
- * Find matching task rules for a source entity
+ * Find all active task rules that match this source entity.
+ * Matching logic:
+ *   - Rule.dataSourceId matches the source
+ *   - Rule.allowedTypes is empty (any type) OR includes entity.type
+ *   - Rule.allowedStatuses is empty (any status) OR includes entity.status
  */
 export async function findMatchingRules(
   sourceId: string,
   entity: SourceEntity
 ): Promise<RuleMatchResult[]> {
   try {
-    // Find all active task rule source scopes for this source
-    const ruleScopes = await prisma.taskRuleSourceScope.findMany({
+    // Load data source to get its DB id
+    const dataSource = await prisma.dataSource.findFirst({
+      where: { sourceId, isActive: true },
+      select: { id: true },
+    });
+
+    if (!dataSource) {
+      return [];
+    }
+
+    // Find all active rules for this data source
+    const rules = await prisma.taskRule.findMany({
       where: {
-        dataSourceId: sourceId,
+        dataSourceId: dataSource.id,
         isActive: true,
+        id: { not: "MANUAL" },
       },
       include: {
-        taskRule: {
-          include: {
-            taskType: true,
-          },
-        },
+        taskType: true,
       },
     });
 
     const matches: RuleMatchResult[] = [];
 
-    for (const scope of ruleScopes) {
-      // Parse allowed types and statuses from JSON
-      const allowedTypes = Array.isArray(scope.allowedTypes)
-        ? scope.allowedTypes
-        : (scope.allowedTypes as any)?.value || [];
-      const allowedStatuses = Array.isArray(scope.allowedStatuses)
-        ? scope.allowedStatuses
-        : (scope.allowedStatuses as any)?.value || [];
+    for (const rule of rules) {
+      const allowedTypes = Array.isArray(rule.allowedTypes)
+        ? (rule.allowedTypes as string[])
+        : [];
+      const allowedStatuses = Array.isArray(rule.allowedStatuses)
+        ? (rule.allowedStatuses as string[])
+        : [];
 
-      // Check if entity type matches
-      const typeMatches =
-        allowedTypes.length === 0 || allowedTypes.includes(entity.type);
+      const typeMatches = allowedTypes.length === 0 || allowedTypes.includes(entity.type);
+      const statusMatches = allowedStatuses.length === 0 || allowedStatuses.includes(entity.status);
 
-      // Check if entity status matches
-      const statusMatches =
-        allowedStatuses.length === 0 ||
-        allowedStatuses.includes(entity.status);
-
-      // If both type and status match, this is a matching rule
       if (typeMatches && statusMatches) {
         matches.push({
-          taskRuleId: scope.taskRule.id,
-          ruleName: scope.taskRule.name,
-          ruleScopeId: scope.id,
-          priority: scope.taskRule.priority,
-          slaMinutesOverride: scope.slaMinutesOverride || undefined,
-          assignmentStrategy: scope.assignmentStrategy,
-          assignmentStrategyConfig: scope.assignmentStrategyConfig as any,
+          taskRuleId: rule.id,
+          ruleName: rule.name,
+          priority: rule.priority,
+          slaMinutes: rule.slaMinutes,
+          assignmentStrategy: "round_robin", // default; extendable
         });
       }
     }
@@ -85,24 +84,20 @@ export async function findMatchingRules(
 }
 
 /**
- * Check if entity matches rule scope filters
+ * Check if entity matches rule filters
  */
 export function entityMatchesRuleScope(
   entity: SourceEntity,
   allowedTypes: string[],
   allowedStatuses: string[]
 ): boolean {
-  const typeMatches =
-    allowedTypes.length === 0 || allowedTypes.includes(entity.type);
-  const statusMatches =
-    allowedStatuses.length === 0 || allowedStatuses.includes(entity.status);
-
+  const typeMatches = allowedTypes.length === 0 || allowedTypes.includes(entity.type);
+  const statusMatches = allowedStatuses.length === 0 || allowedStatuses.includes(entity.status);
   return typeMatches && statusMatches;
 }
 
 /**
  * Get the highest priority matching rule
- * Returns first matching rule (rules should be ordered by priority)
  */
 export async function getHighestPriorityRule(
   sourceId: string,
@@ -120,11 +115,8 @@ export async function getAllMatchingRulesSorted(
   entity: SourceEntity
 ): Promise<RuleMatchResult[]> {
   const matches = await findMatchingRules(sourceId, entity);
-
-  // Sort by priority: URGENT > HIGH > MEDIUM > LOW
   const priorityOrder = { URGENT: 0, HIGH: 1, MEDIUM: 2, LOW: 3 };
   const sortOrder = (priority: string) =>
     priorityOrder[priority as keyof typeof priorityOrder] ?? 999;
-
   return matches.sort((a, b) => sortOrder(a.priority) - sortOrder(b.priority));
 }

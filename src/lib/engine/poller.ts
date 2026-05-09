@@ -10,7 +10,8 @@
  *
  * Start it once via startPoller() from the app server entry point.
  */
-import cron from "node-cron";
+// node-cron imported dynamically below — webpackIgnore prevents webpack
+// from bundling its ESM files which use node:crypto/path/url.
 import prisma from "@/lib/db/client";
 import { fetchAllActiveOrders } from "./labstack";
 import { evaluateAndCreateTasks, loadActiveRules, archiveObsoleteTasks } from "./taskCreator";
@@ -136,11 +137,12 @@ export async function runPollCycle(): Promise<void> {
 
 // ── Scheduler ────────────────────────────────────────────────────────────────
 
-let scheduledTask: ReturnType<typeof cron.schedule> | null = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let scheduledTask: any | null = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let dailySummaryTask: any | null = null;
 
-let dailySummaryTask: ReturnType<typeof cron.schedule> | null = null;
-
-export function startPoller(): void {
+export async function startPoller(): Promise<void> {
   if (scheduledTask) {
     console.log("[Poller] Already started.");
     return;
@@ -148,8 +150,11 @@ export function startPoller(): void {
 
   console.log(`[Poller] Starting with cron expression: "${CRON_EXPRESSION}" (~${POLLING_INTERVAL_MS / 60000} min)`);
 
-  // Run once immediately on startup
-  runPollCycle().catch((e) => console.error("[Poller] Initial run error:", e));
+  const cron = (await import(/* webpackIgnore: true */ "node-cron")).default;
+
+  // NOTE: Immediate startup run intentionally removed — it fired on every
+  // hot-reload in dev, hammering the DB. The cron schedule handles the first
+  // run at the next interval tick.
 
   scheduledTask = cron.schedule(CRON_EXPRESSION, () => {
     runPollCycle().catch((e) => console.error("[Poller] Scheduled run error:", e));

@@ -99,6 +99,16 @@ const navItems: NavItem[] = [
     ),
   },
   {
+    label: "Data Sources",
+    href: "/head/data-sources",
+    roles: ["OPS_HEAD"],
+    icon: (
+      <svg className="w-4.5 h-4.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.75}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M4 7a2 2 0 012-2h12a2 2 0 012 2v1a2 2 0 01-2 2H6a2 2 0 01-2-2V7zm0 6a2 2 0 012-2h12a2 2 0 012 2v1a2 2 0 01-2 2H6a2 2 0 01-2-2v-1zm0 6a2 2 0 012-2h12a2 2 0 012 2v1a2 2 0 01-2 2H6a2 2 0 01-2-2v-1z" />
+      </svg>
+    ),
+  },
+  {
     label: "Engine",
     href: "/head/engine",
     roles: ["OPS_HEAD"],

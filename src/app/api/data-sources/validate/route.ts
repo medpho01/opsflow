@@ -34,6 +34,12 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // Normalise to bare table name — strip schema prefix and quotes
+    // Handles both "Appointment" and 'public."Appointment"' formats
+    const bareTableName = tableReference
+      .replace(/^[^."]+\."?/, "") // strip schema prefix e.g. public."
+      .replace(/"$/, "");          // strip trailing quote
+
     // Validate table exists and has required columns
     const tableInfo = await prisma.$queryRaw<
       Array<{
@@ -45,7 +51,7 @@ export async function POST(req: NextRequest) {
         SELECT column_name, data_type
         FROM information_schema.columns
         WHERE table_schema = 'public'
-        AND table_name = ${tableReference}
+        AND table_name = ${bareTableName}
         AND column_name IN (${Prisma.raw(
           [primaryKeyField, typeFieldName, statusFieldName]
             .map((col) => `'${col}'`)
@@ -58,7 +64,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         {
           ok: false,
-          message: `Table "${tableReference}" not found or columns don't exist`,
+          message: `Table "${bareTableName}" not found or columns don't exist`,
         },
         { status: 200 }
       );

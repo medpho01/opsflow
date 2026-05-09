@@ -56,11 +56,11 @@ export async function sendDailySummary(): Promise<void> {
 
   await prisma.alert.create({
     data: {
-      type: AlertType.DAILY_SUMMARY,
+      alertType: AlertType.DAILY_SUMMARY,
+      severity: "MEDIUM",
       message: alertMessage,
-      storeId: null,
-      isRead: false,
-      isSent: false,
+      channel: "IN_APP",
+      status: "PENDING",
       metadata: {
         date: dayStart.toISOString().split("T")[0],
         createdToday,

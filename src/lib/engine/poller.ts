@@ -14,7 +14,7 @@
 // from bundling its ESM files which use node:crypto/path/url.
 import prisma from "@/lib/db/client";
 import { fetchAllActiveOrders } from "./labstack";
-import { evaluateAndCreateTasks, loadActiveRules, archiveObsoleteTasks } from "./taskCreator";
+import { evaluateAndCreateTasks, loadActiveRules } from "./taskCreator";
 import { runSourceHealthWatcher } from "./sourceHealthWatcher";
 import { runSlaWatcher } from "./slaWatcher";
 import { sendDailySummary } from "./dailySummary";
@@ -164,13 +164,9 @@ export async function runPollCycle(): Promise<void> {
       const result = await evaluateAndCreateTasks(orders, rules);
       tasksCreated = result.created;
       console.log(`[Poller] Tasks created: ${result.created}, skipped: ${result.skipped}`);
-
-      // 3b. Archive obsolete tasks (hybrid approach)
-      const archived = await archiveObsoleteTasks(orders, rules);
-      if (archived > 0) {
-        console.log(`[Poller] Tasks archived: ${archived}`);
-      }
     }
+    // W3 — archive duplicate removed. `archiveOldTasks` runs nightly via
+    // archiveScheduler.ts; the per-cycle copy was an O(N) duplicate.
 
     // 4. SLA watcher
     await runSlaWatcher();

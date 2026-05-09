@@ -993,61 +993,16 @@ export async function loadActiveRules(): Promise<TaskRuleWithRelations[]> {
   return mapped;
 }
 
-// ── Archive obsolete tasks ────────────────────────────────────────────────────
-
-/**
- * Archive tasks for very old orders only
- *
- * Archive Criteria:
- * - Order appointment is 10+ days in the past
- *
- * NOTE: We do NOT archive based on status condition changes.
- * If an order transitions between statuses (e.g., ORDER_SCHEDULED → PHLEBO_ASSIGNED),
- * existing tasks remain active for audit trail and historical reference.
- * Manual archival is available via the API if needed.
- */
-export async function archiveObsoleteTasks(
-  orders: RawOrder[],
-  rules: TaskRuleWithRelations[]
-): Promise<number> {
-  const now = new Date();
-  let archived = 0;
-  const msPerDay = 24 * 60 * 60 * 1000;
-  const maxOrderAgeDays = 10;
-
-  for (const order of orders) {
-    // Check if appointment is very old (10+ days) - archive all tasks for very old orders.
-    // Orders with no appointmentTime can't age-out via this rule; their tasks
-    // archive only when the rule's trigger says so. (W1.2 — was crashing on
-    // null appointmentTime by collapsing to the 1970 epoch.)
-    const appointmentTs = correctISTTimestamp(order.appointmentTime);
-    if (!appointmentTs) continue;
-    const daysOld = (now.getTime() - appointmentTs.getTime()) / msPerDay;
-    const isVeryOldOrder = daysOld > maxOrderAgeDays;
-
-    // Get all non-completed tasks for this order
-    const tasks = await prisma.task.findMany({
-      where: {
-        entityId: order.id,
-        status: { notIn: [TaskStatus.COMPLETED, TaskStatus.CANCELLED] },
-        isArchived: false,
-      },
-      include: { taskRule: { select: { id: true, triggerType: true, triggerCondition: true } } },
-    });
-
-    for (const task of tasks) {
-      // Only archive tasks for very old orders (appointment 10+ days past)
-      // Do NOT archive based on status condition changes - those are legitimate task transitions
-      if (isVeryOldOrder) {
-        await prisma.task.update({
-          where: { id: task.id },
-          data: { isArchived: true },
-        });
-        archived++;
-        console.log(`[TaskArchiver] Archived task ${task.id} (order: ${order.id}, reason: old order (${daysOld.toFixed(1)} days old))`);
-      }
-    }
-  }
-
-  return archived;
-}
+// ── Archive obsolete tasks (DEPRECATED — see W3) ─────────────────────────────
+//
+// `archiveObsoleteTasks` used to run inside every poll cycle, looping orders
+// and querying tasks per order to archive those whose orders were >10 days
+// old. The audit flagged it as a duplicate of `archiveOldTasks`
+// (lib/engine/taskArchiver.ts) which does the same job in a single SQL
+// UPDATE on a nightly cron. Two implementations of one job, the per-cycle
+// one being O(N×M) for free.
+//
+// W3 — the per-cycle path is removed. `archiveOldTasks` (nightly at 02:00)
+// is the single source of truth. If a fresh-archive case ever needs to run
+// during a cycle, call `archiveOldTasks()` directly from the poller — it's
+// already a single statement.

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import ScheduleTab from "@/components/roster/ScheduleTab";
 
 interface Store {
@@ -41,6 +41,125 @@ interface TeamMember {
   dailyRosters?: { status: string; date: string; updatedAt: string }[];
   rosterStatus?: string;
   hasException?: boolean;
+}
+
+// ── Store filter dropdown ─────────────────────────────────────────────────
+// Replaces the native <select> in the Team header so the popover matches
+// the rest of the app (dark zinc bg, blue ring, custom panel) instead of
+// rendering with the OS-native select chrome. Searchable because the
+// stores list is ~80 entries long.
+function StoreFilterDropdown({
+  stores,
+  value,
+  onChange,
+}: {
+  stores: { id: number; storeName: string; city?: string | null }[];
+  value: number | null;
+  onChange: (v: number | null) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  // Outside-click closes the popover. Mousedown rather than click so a click
+  // inside the popover doesn't race against the outside-click teardown.
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
+
+  // Esc to close
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open]);
+
+  const selected = value !== null ? stores.find((s) => s.id === value) : null;
+  const lc = search.trim().toLowerCase();
+  const filtered = lc
+    ? stores.filter((s) => (s.storeName ?? "").toLowerCase().includes(lc) || (s.city ?? "").toLowerCase().includes(lc))
+    : stores;
+
+  return (
+    <div ref={wrapRef} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="flex items-center gap-2 px-3 py-1.5 bg-zinc-900 border border-zinc-700 text-zinc-300 text-xs rounded-lg hover:bg-zinc-800 transition-colors min-w-[10rem] justify-between"
+        title={selected ? `Filtered to ${selected.storeName}` : "Filter team to one store"}
+      >
+        <span className="truncate">{selected ? selected.storeName : "All stores"}</span>
+        <svg className={`w-3 h-3 text-zinc-500 transition-transform ${open ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+
+      {open && (
+        <div className="absolute right-0 top-full mt-1 w-72 bg-zinc-900 border border-zinc-700 rounded-lg shadow-2xl z-50 overflow-hidden">
+          <div className="p-2 border-b border-zinc-800">
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search stores…"
+              autoFocus
+              className="w-full px-2 py-1.5 bg-zinc-800 border border-zinc-700 rounded text-xs text-white placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+          </div>
+          <div className="max-h-64 overflow-y-auto py-1">
+            <button
+              type="button"
+              onClick={() => { onChange(null); setOpen(false); setSearch(""); }}
+              className={`w-full text-left px-3 py-1.5 text-xs flex items-center justify-between hover:bg-zinc-800 transition-colors ${value === null ? "text-blue-400" : "text-zinc-300"}`}
+            >
+              <span>All stores</span>
+              {value === null && <span className="text-blue-500">✓</span>}
+            </button>
+            <div className="border-t border-zinc-800/60 my-1" />
+            {filtered.length === 0 ? (
+              <div className="px-3 py-2 text-[11px] text-zinc-600 italic">No stores match "{search}"</div>
+            ) : (
+              filtered.map((s) => (
+                <button
+                  key={s.id}
+                  type="button"
+                  onClick={() => { onChange(s.id); setOpen(false); setSearch(""); }}
+                  className={`w-full text-left px-3 py-1.5 text-xs flex items-center justify-between hover:bg-zinc-800 transition-colors ${value === s.id ? "text-blue-400" : "text-zinc-300"}`}
+                >
+                  <span className="truncate">
+                    {s.storeName}
+                    {s.city && <span className="text-zinc-600 ml-1.5">· {s.city}</span>}
+                  </span>
+                  {value === s.id && <span className="text-blue-500 ml-2">✓</span>}
+                </button>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Date helpers ──────────────────────────────────────────────────────────
+// Heatmaps render lots of dates inline; format DD/MM for column labels and
+// DD/MM/YYYY for range headers. Both work on ISO YYYY-MM-DD strings (which
+// is what the API returns) so there's no Date-object timezone surprise.
+function fmtDdMm(iso: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
+  return m ? `${m[3]}/${m[2]}` : iso;
+}
+function fmtDdMmYyyy(iso: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : iso;
 }
 
 const roleLabel: Record<string, string> = { OPS_AGENT: "Ops Agent", STORE_ADMIN: "Store Admin" };
@@ -760,27 +879,15 @@ export default function TeamPanel() {
           </p>
         </div>
         <div className="flex items-center gap-3">
-          {/* W2 — store-first lens */}
-          <select
-            value={storeFilter ?? ""}
-            onChange={(e) => setStoreFilter(e.target.value ? Number(e.target.value) : null)}
-            className="px-3 py-1.5 bg-zinc-900 border border-zinc-700 text-zinc-300 text-xs rounded-lg hover:bg-zinc-800 focus:outline-none focus:ring-1 focus:ring-blue-500"
-            title="Filter team to one store"
-          >
-            <option value="">All stores</option>
-            {stores.map((s) => (
-              <option key={s.id} value={s.id}>{s.storeName ?? `Store #${s.id}`}</option>
-            ))}
-          </select>
-          {storeFilter !== null && (
-            <button
-              onClick={() => setStoreFilter(null)}
-              className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
-              title="Clear store filter"
-            >
-              Clear
-            </button>
-          )}
+          {/* W2 — store-first lens. Custom dropdown matches the rest of the app
+              (the previous native <select> rendered with OS-native chrome which
+              looked out-of-place against the dark theme). Searchable because the
+              store list is long. */}
+          <StoreFilterDropdown
+            stores={stores}
+            value={storeFilter}
+            onChange={setStoreFilter}
+          />
           <button
             onClick={() => setShowAddForm(!showAddForm)}
             className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium rounded-lg transition-colors"
@@ -1321,7 +1428,7 @@ export function WeeklyHeatmap() {
                 ‹
               </button>
               <span className="text-zinc-300 font-medium px-2">
-                {data ? `${data.weekStart} → ${data.weekEnd}` : displayedWeekStart}
+                {data ? `${fmtDdMmYyyy(data.weekStart)} → ${fmtDdMmYyyy(data.weekEnd)}` : fmtDdMmYyyy(displayedWeekStart)}
                 {weekOffset === 0 && <span className="text-[9px] text-emerald-500 ml-2 uppercase tracking-wider">this week</span>}
                 {weekOffset < 0 && <span className="text-[9px] text-zinc-600 ml-2">{weekOffset}w ago</span>}
                 {weekOffset > 0 && <span className="text-[9px] text-zinc-600 ml-2">+{weekOffset}w</span>}
@@ -1376,7 +1483,7 @@ export function WeeklyHeatmap() {
                           }
                         >
                           <div className="font-semibold">{day.dayName}</div>
-                          <div className="text-[9px] font-normal">{day.date.slice(5)}</div>
+                          <div className="text-[9px] font-normal">{fmtDdMm(day.date)}</div>
                           <div className="text-[9px] font-mono mt-0.5">
                             {flagged && "⚠ "}
                             <span className={day.totals.working === 0 ? "text-red-400" : "text-emerald-400"}>{day.totals.working}</span>
@@ -1437,7 +1544,7 @@ export function WeeklyHeatmap() {
                   <strong>Coverage warnings:</strong>{" "}
                   {data.days.filter((d) => d.everyoneOff || d.lowCoverage).map((d, i, arr) => (
                     <span key={d.date}>
-                      {d.dayName} {d.date.slice(5)} ({d.everyoneOff ? "no agents" : `only ${d.totals.working}`})
+                      {d.dayName} {fmtDdMm(d.date)} ({d.everyoneOff ? "no agents" : `only ${d.totals.working}`})
                       {i < arr.length - 1 && ", "}
                     </span>
                   ))}
@@ -1543,7 +1650,7 @@ export function CoverageHeatmap() {
             <div className="flex items-center gap-1">
               <button onClick={() => setWeekOffset((w) => w - 1)} className="px-2 py-1 rounded bg-zinc-800 text-zinc-400 hover:text-white transition-colors" title="Previous week">‹</button>
               <span className="text-zinc-300 font-medium px-2">
-                {data ? `${data.weekStart} → ${data.weekEnd}` : displayedWeekStart}
+                {data ? `${fmtDdMmYyyy(data.weekStart)} → ${fmtDdMmYyyy(data.weekEnd)}` : fmtDdMmYyyy(displayedWeekStart)}
                 {weekOffset === 0 && <span className="text-[9px] text-emerald-500 ml-2 uppercase tracking-wider">this week</span>}
                 {weekOffset < 0 && <span className="text-[9px] text-zinc-600 ml-2">{weekOffset}w ago</span>}
                 {weekOffset > 0 && <span className="text-[9px] text-zinc-600 ml-2">+{weekOffset}w</span>}
@@ -1635,7 +1742,7 @@ export function CoverageHeatmap() {
                       {data.days.map((day, i) => (
                         <th key={i} className="text-center px-2 py-1 text-zinc-500 min-w-[3rem]">
                           <div className="font-semibold">{day}</div>
-                          <div className="text-[9px] font-normal">{data.dates[i].slice(5)}</div>
+                          <div className="text-[9px] font-normal">{fmtDdMm(data.dates[i])}</div>
                         </th>
                       ))}
                     </tr>

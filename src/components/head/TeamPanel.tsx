@@ -577,11 +577,16 @@ export default function TeamPanel() {
   const [selectedForException, setSelectedForException] = useState<{ member: TeamMember; action: "leave" | "sick" | "off" } | null>(null);
   const [exceptionNote, setExceptionNote] = useState("");
   const [exceptionLoading, setExceptionLoading] = useState(false);
+  // W2 — store-first lens. `null` = "All stores" (no filter).
+  const [storeFilter, setStoreFilter] = useState<number | null>(null);
 
   const fetchAll = useCallback(async () => {
     try {
+      const teamUrl = storeFilter !== null
+        ? `/api/team?storeId=${storeFilter}`
+        : "/api/team";
       const [teamRes, storeRes] = await Promise.all([
-        fetch("/api/team"),
+        fetch(teamUrl),
         fetch("/api/stores"),
       ]);
       const [teamData, storeData] = await Promise.all([
@@ -593,7 +598,7 @@ export default function TeamPanel() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [storeFilter]);
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
 
@@ -750,9 +755,32 @@ export default function TeamPanel() {
       <div className="px-6 pt-5 pb-4 border-b border-zinc-800 flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-base font-semibold text-white">Team</h1>
-          <p className="text-xs text-zinc-500 mt-0.5">{members.length} members</p>
+          <p className="text-xs text-zinc-500 mt-0.5">
+            {members.length} {storeFilter !== null ? "members at this store" : "members"}
+          </p>
         </div>
         <div className="flex items-center gap-3">
+          {/* W2 — store-first lens */}
+          <select
+            value={storeFilter ?? ""}
+            onChange={(e) => setStoreFilter(e.target.value ? Number(e.target.value) : null)}
+            className="px-3 py-1.5 bg-zinc-900 border border-zinc-700 text-zinc-300 text-xs rounded-lg hover:bg-zinc-800 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            title="Filter team to one store"
+          >
+            <option value="">All stores</option>
+            {stores.map((s) => (
+              <option key={s.id} value={s.id}>{s.storeName ?? `Store #${s.id}`}</option>
+            ))}
+          </select>
+          {storeFilter !== null && (
+            <button
+              onClick={() => setStoreFilter(null)}
+              className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
+              title="Clear store filter"
+            >
+              Clear
+            </button>
+          )}
           <button
             onClick={() => setShowAddForm(!showAddForm)}
             className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium rounded-lg transition-colors"
@@ -766,20 +794,48 @@ export default function TeamPanel() {
       </div>
 
       <div className="flex-1 overflow-auto px-6 py-5">
-        {/* Roster Analytics */}
-        {!loading && members.length > 0 && (
-          <div className="grid grid-cols-2 gap-2 mb-5">
-            {[
-              { label: "Active", status: "ACTIVE", color: "bg-green-600/20 border-green-600/30 text-green-400", count: members.filter((m) => m.rosterStatus === "ACTIVE").length },
-              { label: "Off", status: "OFF", color: "bg-zinc-600/20 border-zinc-600/30 text-zinc-400", count: members.filter((m) => m.rosterStatus === "OFF").length },
-            ].map((item) => (
-              <div key={item.status} className={`${item.color} border rounded-lg p-3 text-center`}>
-                <div className="text-xl font-semibold">{item.count}</div>
-                <div className="text-xs mt-1">{item.label}</div>
+        {/* Roster + Capacity Analytics */}
+        {!loading && members.length > 0 && (() => {
+          // W3 — team-wide capacity summary so heads can balance load at a glance.
+          const activeMembers = members.filter((m) => m.rosterStatus === "ACTIVE");
+          const totalLoad = members.reduce((sum, m) => sum + (m.currentLoad ?? 0), 0);
+          const totalCapacity = activeMembers.reduce((sum, m) => sum + (m.maxConcurrentTasks ?? 5), 0);
+          const utilization = totalCapacity > 0 ? Math.round((totalLoad / totalCapacity) * 100) : 0;
+          const nearCapacity = members.filter((m) => {
+            const cap = m.maxConcurrentTasks ?? 5;
+            return cap > 0 && (m.currentLoad ?? 0) / cap >= 0.8;
+          }).length;
+
+          return (
+            <div className="grid grid-cols-4 gap-2 mb-5">
+              <div className="bg-green-600/20 border border-green-600/30 text-green-400 rounded-lg p-3 text-center">
+                <div className="text-xl font-semibold">{activeMembers.length}</div>
+                <div className="text-xs mt-1">Active now</div>
               </div>
-            ))}
-          </div>
-        )}
+              <div className="bg-zinc-600/20 border border-zinc-600/30 text-zinc-400 rounded-lg p-3 text-center">
+                <div className="text-xl font-semibold">
+                  {members.filter((m) => m.rosterStatus === "OFF").length}
+                </div>
+                <div className="text-xs mt-1">Off</div>
+              </div>
+              <div className={`${
+                utilization >= 80 ? "bg-red-600/20 border-red-600/30 text-red-400" :
+                utilization >= 60 ? "bg-amber-600/20 border-amber-600/30 text-amber-400" :
+                "bg-blue-600/20 border-blue-600/30 text-blue-400"
+              } border rounded-lg p-3 text-center`} title={`${totalLoad} open tasks across ${totalCapacity} active capacity`}>
+                <div className="text-xl font-semibold">{utilization}%</div>
+                <div className="text-xs mt-1">Team utilization</div>
+                <div className="text-[10px] opacity-70 mt-0.5">{totalLoad} / {totalCapacity}</div>
+              </div>
+              <div className={`${
+                nearCapacity > 0 ? "bg-amber-600/20 border-amber-600/30 text-amber-400" : "bg-zinc-600/20 border-zinc-600/30 text-zinc-400"
+              } border rounded-lg p-3 text-center`} title="Members at ≥80% of their max-concurrent-tasks">
+                <div className="text-xl font-semibold">{nearCapacity}</div>
+                <div className="text-xs mt-1">Near capacity</div>
+              </div>
+            </div>
+          );
+        })()}
 
         {/* Add member form */}
         {showAddForm && (

@@ -55,6 +55,10 @@ enum AlertType {
   ORDER_STUCK
   SKILL_GAP
   DAILY_SUMMARY
+  // Emitted by lib/engine/sourceHealthWatcher when a data source has been
+  // failing, silent, or producing zero rows for too long. Resolved when
+  // health recovers.
+  SOURCE_HEALTH
 }
 
 enum AlertChannel {

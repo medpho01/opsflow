@@ -9,6 +9,16 @@ import { NextRequest, NextResponse } from "next/server";
 import { getSessionFromRequest } from "@/lib/auth/session";
 import { UserRole } from "@prisma/client";
 import prisma from "@/lib/db/client";
+import {
+  isValidSqlIdentifier,
+  isValidPollingInterval,
+  isValidBackfillDays,
+  isReadOnlyQueryTemplate,
+  POLLING_INTERVAL_MIN,
+  POLLING_INTERVAL_MAX,
+  validationError,
+} from "@/lib/validation/data-sources";
+import { newRequestId, logAndBuildErrorBody } from "@/lib/observability/request-id";
 
 /**
  * GET /api/data-sources/{id}
@@ -18,13 +28,14 @@ export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const requestId = newRequestId();
+
   try {
     const user = await getSessionFromRequest(req);
 
-    // Only OPS_HEAD can view data sources
     if (!user || user.role !== UserRole.OPS_HEAD) {
       return NextResponse.json(
-        { error: "Unauthorized", code: "FORBIDDEN" },
+        { error: "Unauthorized", code: "FORBIDDEN", requestId },
         { status: 403 }
       );
     }
@@ -44,20 +55,21 @@ export async function GET(
 
     if (!dataSource) {
       return NextResponse.json(
-        { error: "Data source not found", code: "NOT_FOUND" },
+        { error: "Data source not found", code: "NOT_FOUND", requestId },
         { status: 404 }
       );
     }
 
     return NextResponse.json(dataSource);
   } catch (error) {
-    console.error("[DataSourceDetailAPI] GET error:", error);
     return NextResponse.json(
-      {
-        error: "Failed to fetch data source",
+      logAndBuildErrorBody({
+        requestId,
+        scope: "DataSourceDetailAPI.GET",
         code: "FETCH_ERROR",
-        details: error instanceof Error ? error.message : undefined,
-      },
+        userMessage: "Failed to fetch data source",
+        error,
+      }),
       { status: 500 }
     );
   }
@@ -71,13 +83,14 @@ export async function PUT(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const requestId = newRequestId();
+
   try {
     const user = await getSessionFromRequest(req);
 
-    // Only OPS_HEAD can update data sources
     if (!user || user.role !== UserRole.OPS_HEAD) {
       return NextResponse.json(
-        { error: "Unauthorized", code: "FORBIDDEN" },
+        { error: "Unauthorized", code: "FORBIDDEN", requestId },
         { status: 403 }
       );
     }
@@ -85,16 +98,44 @@ export async function PUT(
     const { id } = await params;
     const body = await req.json();
 
-    // Check if data source exists
     const existingSource = await prisma.dataSource.findUnique({
       where: { id },
     });
 
     if (!existingSource) {
       return NextResponse.json(
-        { error: "Data source not found", code: "NOT_FOUND" },
+        { error: "Data source not found", code: "NOT_FOUND", requestId },
         { status: 404 }
       );
+    }
+
+    // ─── Field-shape validation (only when caller is changing the field) ──
+    // Each writable field is checked iff present in the body — preserves the
+    // partial-update semantic but prevents PUT from being a back door around
+    // the POST-time guards.
+    if (body.primaryKeyField !== undefined && !isValidSqlIdentifier(body.primaryKeyField)) {
+      return NextResponse.json({ ...validationError("primaryKeyField", "must be a valid SQL column identifier"), requestId }, { status: 400 });
+    }
+    if (body.typeFieldName !== undefined && !isValidSqlIdentifier(body.typeFieldName)) {
+      return NextResponse.json({ ...validationError("typeFieldName", "must be a valid SQL column identifier"), requestId }, { status: 400 });
+    }
+    if (body.statusFieldName !== undefined && !isValidSqlIdentifier(body.statusFieldName)) {
+      return NextResponse.json({ ...validationError("statusFieldName", "must be a valid SQL column identifier"), requestId }, { status: 400 });
+    }
+    if (body.queryTemplate !== undefined && !isReadOnlyQueryTemplate(body.queryTemplate)) {
+      return NextResponse.json({ ...validationError("queryTemplate", "must be a single read-only query starting with SELECT or WITH; INSERT/UPDATE/DELETE/DDL not allowed"), requestId }, { status: 400 });
+    }
+    if (body.pollingIntervalMinutes !== undefined && !isValidPollingInterval(body.pollingIntervalMinutes)) {
+      return NextResponse.json({ ...validationError("pollingIntervalMinutes", `must be an integer between ${POLLING_INTERVAL_MIN} and ${POLLING_INTERVAL_MAX}`), requestId }, { status: 400 });
+    }
+    if (body.backfillEnabled !== undefined && typeof body.backfillEnabled !== "boolean") {
+      return NextResponse.json({ ...validationError("backfillEnabled", "must be a boolean"), requestId }, { status: 400 });
+    }
+    if (body.backfillDays !== undefined && !isValidBackfillDays(body.backfillDays)) {
+      return NextResponse.json({ ...validationError("backfillDays", "must be an integer between 0 and 365"), requestId }, { status: 400 });
+    }
+    if (body.isActive !== undefined && typeof body.isActive !== "boolean") {
+      return NextResponse.json({ ...validationError("isActive", "must be a boolean"), requestId }, { status: 400 });
     }
 
     // Update allowed fields — sourceId and tableReference are immutable (polling identity)
@@ -120,13 +161,14 @@ export async function PUT(
 
     return NextResponse.json(updatedDataSource);
   } catch (error) {
-    console.error("[DataSourceDetailAPI] PUT error:", error);
     return NextResponse.json(
-      {
-        error: "Failed to update data source",
+      logAndBuildErrorBody({
+        requestId,
+        scope: "DataSourceDetailAPI.PUT",
         code: "UPDATE_ERROR",
-        details: error instanceof Error ? error.message : undefined,
-      },
+        userMessage: "Failed to update data source",
+        error,
+      }),
       { status: 500 }
     );
   }
@@ -140,32 +182,32 @@ export async function DELETE(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const requestId = newRequestId();
+
   try {
     const user = await getSessionFromRequest(req);
 
-    // Only OPS_HEAD can delete data sources
     if (!user || user.role !== UserRole.OPS_HEAD) {
       return NextResponse.json(
-        { error: "Unauthorized", code: "FORBIDDEN" },
+        { error: "Unauthorized", code: "FORBIDDEN", requestId },
         { status: 403 }
       );
     }
 
     const { id } = await params;
 
-    // Check if data source exists
     const existingSource = await prisma.dataSource.findUnique({
       where: { id },
     });
 
     if (!existingSource) {
       return NextResponse.json(
-        { error: "Data source not found", code: "NOT_FOUND" },
+        { error: "Data source not found", code: "NOT_FOUND", requestId },
         { status: 404 }
       );
     }
 
-    // Soft delete - mark as inactive
+    // Soft delete — mark inactive; rule scopes & polling logs preserved.
     const updatedDataSource = await prisma.dataSource.update({
       where: { id },
       data: {
@@ -180,13 +222,14 @@ export async function DELETE(
       dataSource: updatedDataSource,
     });
   } catch (error) {
-    console.error("[DataSourceDetailAPI] DELETE error:", error);
     return NextResponse.json(
-      {
-        error: "Failed to delete data source",
+      logAndBuildErrorBody({
+        requestId,
+        scope: "DataSourceDetailAPI.DELETE",
         code: "DELETE_ERROR",
-        details: error instanceof Error ? error.message : undefined,
-      },
+        userMessage: "Failed to delete data source",
+        error,
+      }),
       { status: 500 }
     );
   }

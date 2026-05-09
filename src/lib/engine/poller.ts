@@ -15,6 +15,7 @@
 import prisma from "@/lib/db/client";
 import { fetchAllActiveOrders } from "./labstack";
 import { evaluateAndCreateTasks, loadActiveRules, archiveObsoleteTasks } from "./taskCreator";
+import { runSourceHealthWatcher } from "./sourceHealthWatcher";
 import { runSlaWatcher } from "./slaWatcher";
 import { sendDailySummary } from "./dailySummary";
 
@@ -105,6 +106,15 @@ export async function runPollCycle(): Promise<void> {
     // 4. SLA watcher
     await runSlaWatcher();
     console.log("[Poller] SLA watcher completed");
+
+    // 5. Source-health watcher — emits/resolves SOURCE_HEALTH alerts based on
+    // recent polling activity. Wrapped in try so a failure here doesn't mark
+    // the whole cycle as ERROR (the polling work has already succeeded).
+    try {
+      await runSourceHealthWatcher();
+    } catch (healthErr) {
+      console.error("[Poller] Source-health watcher failed (non-fatal):", healthErr);
+    }
   } catch (err) {
     status = "ERROR";
     errorMessage = err instanceof Error ? err.message : String(err);

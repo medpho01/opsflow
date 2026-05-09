@@ -28,6 +28,16 @@ interface PollingStatus {
   totalPolls: number;
   successfulPolls: number;
   failedPolls: number;
+  health?: {
+    isHealthy: boolean;
+    openAlerts: Array<{
+      id: number;
+      severity: string;
+      message: string;
+      createdAt: string;
+      metadata: { condition?: string; threshold?: string; observed?: string } | null;
+    }>;
+  };
 }
 
 interface Table { name: string; label: string }
@@ -97,6 +107,7 @@ export function DataSourcesManager() {
   const [testing, setTesting] = useState<string | null>(null);
   const [polling, setPolling] = useState<string | null>(null);
   const testTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const [previewSource, setPreviewSource] = useState<DataSource | null>(null);
 
   useEffect(() => { loadAll(); }, []);
   // Clear timers on unmount
@@ -235,11 +246,17 @@ export function DataSourcesManager() {
               isPolling={polling === source.id}
               onEdit={() => openEdit(source)}
               onTest={() => handleTest(source)}
+              onPreview={() => setPreviewSource(source)}
               onManualPoll={() => handleManualPoll(source)}
               onDeactivate={() => handleDeactivate(source)}
             />
           ))}
         </div>
+      )}
+
+      {/* Preview modal — opens when user clicks Preview on a source card */}
+      {previewSource && (
+        <PreviewModal source={previewSource} onClose={() => setPreviewSource(null)} />
       )}
 
       {/* Slide-in Drawer — matches TeamPanel max-w-md */}
@@ -279,7 +296,7 @@ export function DataSourcesManager() {
 // ── Source Card ───────────────────────────────────────────────────────────────
 function SourceCard({
   source, status, testResult, isTesting, isPolling,
-  onEdit, onTest, onManualPoll, onDeactivate,
+  onEdit, onTest, onPreview, onManualPoll, onDeactivate,
 }: {
   source: DataSource;
   status?: PollingStatus;
@@ -288,6 +305,7 @@ function SourceCard({
   isPolling: boolean;
   onEdit: () => void;
   onTest: () => void;
+  onPreview: () => void;
   onManualPoll: () => void;
   onDeactivate: () => void;
 }) {
@@ -299,8 +317,23 @@ function SourceCard({
     <div className="border border-zinc-700 rounded-lg bg-zinc-900 overflow-hidden">
       {/* Main row */}
       <div className="flex items-center gap-4 px-4 py-3">
-        {/* Status dot */}
-        <div className={`w-2 h-2 rounded-full flex-shrink-0 ${source.isActive ? "bg-emerald-500" : "bg-zinc-600"}`} />
+        {/* Status dot — green when active and healthy, amber when degraded, grey when inactive */}
+        <div
+          className={`w-2 h-2 rounded-full flex-shrink-0 ${
+            !source.isActive
+              ? "bg-zinc-600"
+              : status?.health && !status.health.isHealthy
+                ? "bg-amber-500"
+                : "bg-emerald-500"
+          }`}
+          title={
+            !source.isActive
+              ? "Inactive"
+              : status?.health && !status.health.isHealthy
+                ? `Health degraded: ${status.health.openAlerts.length} open alert(s)`
+                : "Healthy"
+          }
+        />
 
         {/* Name + meta */}
         <div className="flex-1 min-w-0">
@@ -350,6 +383,13 @@ function SourceCard({
             {isTesting ? "Testing…" : "Test"}
           </button>
           <button
+            onClick={onPreview}
+            className="p-1.5 rounded text-zinc-400 hover:text-white hover:bg-zinc-700 transition-colors text-[11px] font-medium px-2"
+            title="Preview last 10 rows"
+          >
+            Preview
+          </button>
+          <button
             onClick={onManualPoll}
             disabled={isPolling}
             className="p-1.5 rounded text-zinc-400 hover:text-white hover:bg-zinc-700 disabled:opacity-40 transition-colors"
@@ -387,6 +427,25 @@ function SourceCard({
           <span>{testResult.message}</span>
         </div>
       )}
+
+      {/* Health-alert banner — one row per open SOURCE_HEALTH alert. */}
+      {status?.health && !status.health.isHealthy && status.health.openAlerts.map((alert) => (
+        <div
+          key={alert.id}
+          className="flex items-start gap-2 text-xs px-4 py-2 border-t bg-amber-950/60 text-amber-300 border-amber-900"
+        >
+          <span className="font-semibold">⚠</span>
+          <div className="flex-1">
+            <div>{alert.message}</div>
+            {alert.metadata?.threshold && (
+              <div className="text-[10px] text-amber-400/70 mt-0.5">
+                threshold: {alert.metadata.threshold} · observed: {alert.metadata.observed}
+              </div>
+            )}
+          </div>
+          <span className="text-[10px] uppercase tracking-wider opacity-70">{alert.metadata?.condition}</span>
+        </div>
+      ))}
 
       {/* Expanded detail */}
       {expanded && (
@@ -703,4 +762,173 @@ function SourceForm({
       </div>
     </form>
   );
+}
+
+// ── Preview Modal ─────────────────────────────────────────────────────────────
+// Shows the last N rows from the source's underlying table so the head can
+// sanity-check what the polling engine sees. Read-only.
+function PreviewModal({
+  source,
+  onClose,
+}: {
+  source: DataSource;
+  onClose: () => void;
+}) {
+  const [data, setData] = useState<{
+    rows: Array<Record<string, unknown>>;
+    columns: Array<{ column_name: string; data_type: string }>;
+    meta: { rowCount: number; orderedBy: string | null; orderedDesc: boolean; limit: number };
+  } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [limit, setLimit] = useState(10);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const res = await fetch(`/api/data-sources/${source.id}/preview?limit=${limit}`);
+        const body = await res.json();
+        if (cancelled) return;
+        if (!res.ok) {
+          setError(body?.error || `Failed (${res.status})`);
+        } else {
+          setData(body);
+        }
+      } catch (e) {
+        if (!cancelled) setError(e instanceof Error ? e.message : "Network error");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [source.id, limit]);
+
+  // Close on Escape
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60" onClick={onClose}>
+      <div
+        className="w-full max-w-6xl max-h-[90vh] bg-zinc-900 border border-zinc-700 rounded-xl shadow-2xl flex flex-col overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-zinc-700">
+          <div className="min-w-0">
+            <h3 className="text-sm font-semibold text-white truncate">
+              Preview · {source.displayName}
+            </h3>
+            <div className="flex items-center gap-2 mt-0.5">
+              <code className="text-[10px] bg-zinc-800 text-zinc-400 px-1.5 py-0.5 rounded">
+                {source.tableReference}
+              </code>
+              {data?.meta.orderedBy && (
+                <span className="text-[10px] text-zinc-500">
+                  · ordered by <code className="text-zinc-400">{data.meta.orderedBy}</code> {data.meta.orderedDesc ? "DESC" : ""}
+                </span>
+              )}
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <label className="text-[11px] text-zinc-500">Rows:</label>
+            <select
+              value={limit}
+              onChange={(e) => setLimit(Number(e.target.value))}
+              className="text-[11px] bg-zinc-800 border border-zinc-700 text-zinc-300 rounded px-1.5 py-1"
+            >
+              <option value={10}>10</option>
+              <option value={25}>25</option>
+              <option value={50}>50</option>
+            </select>
+            <button
+              onClick={onClose}
+              className="p-1.5 rounded-md text-zinc-400 hover:text-white hover:bg-zinc-700 transition-colors"
+            >
+              <IconClose />
+            </button>
+          </div>
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-auto">
+          {loading ? (
+            <div className="flex items-center justify-center py-16 text-zinc-400 gap-3">
+              <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+              <span className="text-sm">Fetching preview…</span>
+            </div>
+          ) : error ? (
+            <div className="px-5 py-8 text-center">
+              <div className="text-sm text-red-400">{error}</div>
+              <div className="text-xs text-zinc-500 mt-2">Could not load preview from {source.tableReference}</div>
+            </div>
+          ) : !data || data.rows.length === 0 ? (
+            <div className="px-5 py-8 text-center text-sm text-zinc-500">
+              No rows in {source.tableReference}.
+            </div>
+          ) : (
+            <table className="w-full text-[11px]">
+              <thead className="sticky top-0 bg-zinc-950 border-b border-zinc-800">
+                <tr>
+                  {data.columns.map((c) => (
+                    <th
+                      key={c.column_name}
+                      className="text-left px-3 py-2 font-semibold text-zinc-300 whitespace-nowrap"
+                      title={c.data_type}
+                    >
+                      <div>{c.column_name}</div>
+                      <div className="text-[9px] text-zinc-600 font-normal mt-0.5">{c.data_type}</div>
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {data.rows.map((row, i) => (
+                  <tr key={i} className="border-b border-zinc-800/60 hover:bg-zinc-800/40">
+                    {data.columns.map((c) => (
+                      <td key={c.column_name} className="px-3 py-2 text-zinc-300 align-top">
+                        {renderPreviewCell(row[c.column_name])}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+
+        {/* Footer */}
+        {data && (
+          <div className="px-5 py-2 border-t border-zinc-800 text-[11px] text-zinc-500">
+            Showing {data.meta.rowCount} of {data.meta.limit} requested · live data from {source.tableReference}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function renderPreviewCell(value: unknown): string {
+  if (value === null || value === undefined) return "—";
+  if (typeof value === "boolean") return value ? "true" : "false";
+  if (typeof value === "string") {
+    // Truncate long strings to keep the table scannable
+    return value.length > 80 ? value.slice(0, 80) + "…" : value;
+  }
+  if (typeof value === "number" || typeof value === "bigint") return String(value);
+  if (value instanceof Date) return value.toISOString();
+  // Object/array — show a compact JSON snippet
+  try {
+    const json = JSON.stringify(value);
+    return json.length > 80 ? json.slice(0, 80) + "…" : json;
+  } catch {
+    return "[object]";
+  }
 }

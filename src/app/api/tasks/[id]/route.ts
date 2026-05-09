@@ -6,7 +6,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { getSessionFromRequest } from "@/lib/auth/session";
 import prisma from "@/lib/db/client";
 import { TaskStatus, UserRole } from "@prisma/client";
-import { appendOrderNote } from "@/lib/engine/labstack";
+// Labstack is treated as a strictly read-only source — no writebacks.
+// (Previously this route called appendOrderNote() on task completion; that
+// path has been removed. Task completion is recorded in taskos.task_history
+// only; the labstack Order row is left untouched.)
 
 export async function GET(
   request: NextRequest,
@@ -88,31 +91,9 @@ export async function PATCH(
       },
     });
 
-    // Write note back to labstack if completing.
-    // appendOrderNote retries internally; we surface a non-fatal failure on
-    // the task's own metadata so the operator can see the labstack writeback
-    // didn't land (instead of it being silently swallowed in console.error).
-    if (status === TaskStatus.COMPLETED && task.entityType === "ORDER") {
-      const completionNote = `Task completed by ${user.name}: ${task.title}${historyNote ? ` — ${historyNote}` : ""}`;
-      const result = await appendOrderNote(task.entityId, completionNote);
-      if (!result.ok) {
-        console.error(`[TaskPatch] appendOrderNote failed after ${result.attempts} attempts: ${result.error}`);
-        // Stash the failure on the task's metadata so operators can spot it
-        // when reviewing the task. Non-fatal — the task itself completed.
-        const existingMd = (task.metadata as Record<string, unknown> | null) ?? {};
-        await prisma.task.update({
-          where: { id: task.id },
-          data: {
-            metadata: {
-              ...existingMd,
-              labstackWritebackFailed: true,
-              labstackWritebackError: result.error,
-              labstackWritebackAttempts: result.attempts,
-            },
-          },
-        });
-      }
-    }
+    // (Removed) labstack writeback on COMPLETED. OpsFlow no longer mutates
+    // the labstack Order row — task completion is recorded entirely in
+    // taskos.task_history above. Labstack is read-only from OpsFlow.
   }
 
   // ── Checklist item toggle ─────────────────────────────────────────

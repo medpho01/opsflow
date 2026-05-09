@@ -1,8 +1,13 @@
 /**
  * Read-only queries against the labstack public schema.
- * OpsFlow never writes to these tables directly — all writes go
- * through the LabStack API or are handled by ops agents in the
- * LabStack console.
+ *
+ * Hard rule: OpsFlow MUST NOT write to the labstack schema. Earlier
+ * versions of this file exported an `appendOrderNote()` helper that
+ * UPDATEd public."Order".internalNotes on task completion; that path has
+ * been removed entirely. Labstack is the source of truth, OpsFlow
+ * observes it, and any operational annotations live on the OpsFlow side
+ * (taskos.task_history). If you need to record something about an order,
+ * record it in taskos — never reach into labstack.
  *
  * W5 — IST → UTC at the SQL boundary.
  * Labstack stores naive timestamps in IST (TIMESTAMP WITHOUT TIME ZONE,
@@ -166,55 +171,8 @@ export async function fetchAllActiveOrders(since?: Date | null): Promise<RawOrde
   `);
 }
 
-/**
- * Write a completion note back to labstack Order.internalNotes.
- * This is the only write OpsFlow makes to the labstack schema.
- *
- * W1.4 — retries with exponential backoff. The previous implementation
- * was a single `$executeRawUnsafe` whose error path was caught upstream
- * (in `tasks/[id]/route.ts`) and only logged — so a transient labstack
- * blip silently dropped the note from the patient's order. Three attempts
- * (immediate, 200ms, 1s) handle most blips; persistent failures throw so
- * the caller can surface them rather than swallow.
- */
-export interface AppendOrderNoteResult {
-  ok: boolean;
-  attempts: number;
-  error?: string;
-}
-
-export async function appendOrderNote(
-  orderId: number,
-  note: string,
-  opts: { maxAttempts?: number } = {}
-): Promise<AppendOrderNoteResult> {
-  const maxAttempts = opts.maxAttempts ?? 3;
-  const timestamp = new Date().toISOString();
-  const entry = `[OpsFlow ${timestamp}] ${note}`;
-
-  let lastErr: unknown = null;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      await prisma.$executeRawUnsafe(
-        `UPDATE public."Order"
-         SET "internalNotes" = COALESCE("internalNotes", '') || E'\n' || $1,
-             "updatedAt"     = NOW()
-         WHERE id = $2`,
-        entry,
-        orderId
-      );
-      return { ok: true, attempts: attempt };
-    } catch (err) {
-      lastErr = err;
-      // Backoff: 0ms, 200ms, 1000ms — short total budget, three chances.
-      if (attempt < maxAttempts) {
-        const backoff = attempt === 1 ? 200 : 1000;
-        await new Promise((resolve) => setTimeout(resolve, backoff));
-      }
-    }
-  }
-
-  const message = lastErr instanceof Error ? lastErr.message : String(lastErr);
-  console.error(`[appendOrderNote] order=${orderId} failed after ${maxAttempts} attempts:`, lastErr);
-  return { ok: false, attempts: maxAttempts, error: message };
-}
+// (Removed) appendOrderNote — used to UPDATE public."Order".internalNotes
+// on task completion. Labstack is now strictly read-only from OpsFlow's
+// side; task completion is logged in taskos.task_history only. If you find
+// yourself wanting to write to labstack, the answer is "don't" — record
+// the equivalent fact on the OpsFlow task or task_history instead.

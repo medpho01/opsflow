@@ -568,18 +568,20 @@ model Alert {
 // ─────────────────────────────────────────────
 
 model PollingLog {
-  id           Int      @id @default(autoincrement())
-  startedAt    DateTime
-  finishedAt   DateTime?
+  id           Int       @id @default(autoincrement())
+  // W5 — TIMESTAMPTZ so `new Date()` round-trips cleanly. The DB session
+  // tz is IST; naive timestamp columns silently shift values by +5:30.
+  startedAt    DateTime  @db.Timestamptz(3)
+  finishedAt   DateTime? @db.Timestamptz(3)
   durationMs   Int?
-  ordersFound  Int      @default(0)
-  tasksCreated Int      @default(0)
-  status       String   @default("SUCCESS") // "SUCCESS" | "ERROR"
+  ordersFound  Int       @default(0)
+  tasksCreated Int       @default(0)
+  status       String    @default("SUCCESS") // "SUCCESS" | "ERROR"
   errorMessage String?
   // W4 — per-cycle observability. Stores `{ perRule: RuleCycleStats[] }` so
   // operators can see which rules fired vs skipped without grepping logs.
   metadata     Json?
-  createdAt    DateTime @default(now())
+  createdAt    DateTime  @default(now()) @db.Timestamptz(3)
 
   @@map("polling_logs")
 }

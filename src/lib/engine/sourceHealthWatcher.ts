@@ -27,6 +27,17 @@
 import prisma from "@/lib/db/client";
 import { AlertStatus, TaskPriority } from "@prisma/client";
 
+// ── IST timezone correction ─────────────────────────────────────────────────
+// The DB stores polling_logs.startedAt as TIMESTAMP without timezone, in IST
+// (DB session tz = Asia/Kolkata). Prisma reads naive timestamps as UTC, so
+// every value is +5:30 ahead of real UTC. Subtract the offset to get a JS
+// Date that reflects actual wall-clock UTC, matching how `new Date()` behaves.
+// (Same scar as lib/engine/taskCreator.correctISTTimestamp.)
+const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+function fromNaiveIst(d: Date): Date {
+  return new Date(d.getTime() - IST_OFFSET_MS);
+}
+
 // ── Tunables (env-overridable) ───────────────────────────────────────────────
 const STALE_MULTIPLIER     = Number(process.env.SOURCE_HEALTH_STALE_MULTIPLIER ?? 3);
 const NO_ROWS_HOURS        = Number(process.env.SOURCE_HEALTH_NO_ROWS_HOURS ?? 24);
@@ -120,7 +131,7 @@ async function evaluateSourceHealth(source: SourceForHealthCheck): Promise<Condi
   const staleAfterMinutes = STALE_MULTIPLIER * source.pollingIntervalMinutes;
   const lastSuccess = recentPolls.find((p) => p.status === "SUCCESS");
   const minutesSinceSuccess = lastSuccess
-    ? Math.floor((now.getTime() - lastSuccess.startedAt.getTime()) / 60_000)
+    ? Math.floor((now.getTime() - fromNaiveIst(lastSuccess.startedAt).getTime()) / 60_000)
     : Number.POSITIVE_INFINITY;
 
   if (minutesSinceSuccess > staleAfterMinutes) {
@@ -142,7 +153,7 @@ async function evaluateSourceHealth(source: SourceForHealthCheck): Promise<Condi
   // SUCCESS poll has run in the window; otherwise STALE_POLLS already covers it.
   const windowStart = new Date(now.getTime() - NO_ROWS_HOURS * 60 * 60_000);
   const successInWindow = recentPolls.filter(
-    (p) => p.status === "SUCCESS" && p.startedAt >= windowStart
+    (p) => p.status === "SUCCESS" && fromNaiveIst(p.startedAt) >= windowStart
   );
   if (successInWindow.length > 0 && successInWindow.every((p) => p.ordersFound === 0)) {
     failing.push({

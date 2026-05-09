@@ -1411,6 +1411,10 @@ export default function TaskRulesPanel() {
                             <TriggerSummary cond={rule.triggerCondition} />
                           </div>
 
+                          {/* W5.1 — Rule metrics. Sits above Recent fires so the
+                              author sees aggregate health before drilling into examples. */}
+                          <RuleMetricsPanel ruleId={rule.id} />
+
                           {/* W3.4 — Recent fires: last 10 tasks this rule created. Lazy fetch on expand. */}
                           <div>
                             <div className="text-[10px] text-zinc-600 mb-2 font-semibold uppercase tracking-wider flex items-center justify-between">
@@ -1550,4 +1554,125 @@ function relativeTime(iso: string): string {
   const h = Math.floor(m / 60);
   if (h < 24) return `${h}h ago`;
   return `${Math.floor(h / 24)}d ago`;
+}
+
+// ── Rule metrics panel (W5.1) ───────────────────────────────────────────────
+// Per-rule operational stats. Fetches /api/task-rules/{id}/metrics?range=7d
+// when the user expands the card. Surfaces:
+//   - completion / cancellation / breach rates (cancellation == false-positive proxy)
+//   - average minutes-to-complete
+//   - a tiny sparkline of fires-per-day so the author can see "is this rule
+//     trending up or down" at a glance.
+function RuleMetricsPanel({ ruleId }: { ruleId: string }) {
+  const [range, setRange] = useState<"24h" | "7d" | "30d">("7d");
+  const [data, setData] = useState<{
+    totals: { fires: number; completed: number; cancelled: number; breached: number; active: number };
+    ratios: { completionRate: number; cancelRate: number; breachRate: number };
+    avgMinutesToComplete: number | null;
+    firesByDay: Array<{ day: string; count: number }>;
+  } | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    fetch(`/api/task-rules/${ruleId}/metrics?range=${range}`)
+      .then((r) => r.ok ? r.json() : Promise.reject(`HTTP ${r.status}`))
+      .then((d) => { if (!cancelled) setData(d); })
+      .catch((e) => { if (!cancelled) setError(String(e)); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [ruleId, range]);
+
+  return (
+    <div>
+      <div className="text-[10px] text-zinc-600 mb-2 font-semibold uppercase tracking-wider flex items-center justify-between">
+        <span>Metrics</span>
+        <div className="flex gap-1 normal-case font-normal">
+          {(["24h", "7d", "30d"] as const).map((r) => (
+            <button
+              key={r}
+              onClick={() => setRange(r)}
+              className={`text-[10px] px-1.5 py-0.5 rounded transition-colors ${
+                range === r ? "bg-blue-600/30 text-blue-300" : "text-zinc-600 hover:text-zinc-400"
+              }`}
+            >
+              {r}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="text-[11px] text-zinc-600 italic">Loading metrics…</div>
+      ) : error ? (
+        <div className="text-[11px] text-red-400">Failed to load: {error}</div>
+      ) : !data || data.totals.fires === 0 ? (
+        <div className="text-[11px] text-zinc-600">No fires in the last {range}.</div>
+      ) : (
+        <div className="space-y-2">
+          {/* Totals + ratio chips */}
+          <div className="grid grid-cols-5 gap-2 text-[10px]">
+            <Stat label="Fires"     value={data.totals.fires}     />
+            <Stat label="Done"      value={data.totals.completed} hint={`${data.ratios.completionRate}%`} valueClass="text-emerald-400" />
+            <Stat label="Cancelled" value={data.totals.cancelled} hint={`${data.ratios.cancelRate}%`}     valueClass={data.ratios.cancelRate > 20 ? "text-amber-400" : "text-zinc-400"} title={data.ratios.cancelRate > 20 ? "False-positive rate is high — consider tightening the trigger" : undefined} />
+            <Stat label="Breached"  value={data.totals.breached}  hint={`${data.ratios.breachRate}%`}     valueClass={data.totals.breached > 0 ? "text-red-400" : "text-zinc-400"} />
+            <Stat label="Open"      value={data.totals.active}    valueClass="text-blue-400" />
+          </div>
+
+          <div className="flex items-center gap-3 text-[10px] text-zinc-500">
+            {data.avgMinutesToComplete != null && (
+              <span>Avg time to complete: <span className="text-zinc-300">{fmtAvgMins(data.avgMinutesToComplete)}</span></span>
+            )}
+          </div>
+
+          {/* Sparkline — bars normalised to the largest day's count */}
+          {data.firesByDay.length > 1 && (
+            <div className="pt-1">
+              <div className="text-[9px] text-zinc-700 mb-1 uppercase tracking-wider">Fires per day</div>
+              <div className="flex items-end gap-0.5 h-8">
+                {(() => {
+                  const max = Math.max(...data.firesByDay.map((d) => d.count));
+                  return data.firesByDay.map((d) => (
+                    <div
+                      key={d.day}
+                      className="flex-1 bg-blue-500/40 hover:bg-blue-500/70 transition-colors rounded-t"
+                      style={{ height: max > 0 ? `${(d.count / max) * 100}%` : "0%", minHeight: "2px" }}
+                      title={`${d.day}: ${d.count}`}
+                    />
+                  ));
+                })()}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Stat({ label, value, hint, valueClass = "text-zinc-300", title }: {
+  label: string;
+  value: number;
+  hint?: string;
+  valueClass?: string;
+  title?: string;
+}) {
+  return (
+    <div className="bg-zinc-800/40 rounded px-2 py-1.5" title={title}>
+      <div className={`text-xs font-semibold ${valueClass}`}>{value}</div>
+      <div className="text-[9px] text-zinc-600 leading-tight">
+        {label}{hint && <span className="ml-1 text-zinc-700">{hint}</span>}
+      </div>
+    </div>
+  );
+}
+
+function fmtAvgMins(mins: number): string {
+  if (mins < 60) return `${mins.toFixed(1)} min`;
+  const h = Math.floor(mins / 60);
+  const m = Math.round(mins - h * 60);
+  return m === 0 ? `${h}h` : `${h}h ${m}m`;
 }

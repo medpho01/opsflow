@@ -88,12 +88,30 @@ export async function PATCH(
       },
     });
 
-    // Write note back to labstack if completing
+    // Write note back to labstack if completing.
+    // appendOrderNote retries internally; we surface a non-fatal failure on
+    // the task's own metadata so the operator can see the labstack writeback
+    // didn't land (instead of it being silently swallowed in console.error).
     if (status === TaskStatus.COMPLETED && task.entityType === "ORDER") {
       const completionNote = `Task completed by ${user.name}: ${task.title}${historyNote ? ` — ${historyNote}` : ""}`;
-      await appendOrderNote(task.entityId, completionNote).catch((e) =>
-        console.error("[TaskPatch] appendOrderNote failed:", e)
-      );
+      const result = await appendOrderNote(task.entityId, completionNote);
+      if (!result.ok) {
+        console.error(`[TaskPatch] appendOrderNote failed after ${result.attempts} attempts: ${result.error}`);
+        // Stash the failure on the task's metadata so operators can spot it
+        // when reviewing the task. Non-fatal — the task itself completed.
+        const existingMd = (task.metadata as Record<string, unknown> | null) ?? {};
+        await prisma.task.update({
+          where: { id: task.id },
+          data: {
+            metadata: {
+              ...existingMd,
+              labstackWritebackFailed: true,
+              labstackWritebackError: result.error,
+              labstackWritebackAttempts: result.attempts,
+            },
+          },
+        });
+      }
     }
   }
 

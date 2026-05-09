@@ -26,15 +26,19 @@ const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
  * Database stores naive timestamps in IST, but JavaScript interprets them as UTC.
  * This function subtracts the IST offset to get the correct UTC time.
  *
+ * W1.2 — returns null for null/undefined input rather than collapsing to
+ * the 1970 epoch. Previously `correctISTTimestamp(null)` produced
+ * `new Date(null) - 5.5h ≈ 1969-12-31T18:30Z`, which the engine then
+ * treated as a "very old" order and skipped. Order types without an
+ * `appointmentTime` (e.g. some pharma orders) were silently dropped.
+ *
  * Usage: All timestamp comparisons in rule evaluation must use this.
  */
-function correctISTTimestamp(timestamp: string | Date, debug: boolean = false): Date {
+function correctISTTimestamp(timestamp: string | Date | null | undefined): Date | null {
+  if (timestamp == null) return null;
   const parsed = new Date(timestamp);
-  const corrected = new Date(parsed.getTime() - IST_OFFSET_MS);
-  if (debug) {
-    console.log(`[DEBUG-TZ] Input: ${timestamp}, Parsed: ${parsed.toISOString()}, Corrected: ${corrected.toISOString()}`);
-  }
-  return corrected;
+  if (isNaN(parsed.getTime())) return null;
+  return new Date(parsed.getTime() - IST_OFFSET_MS);
 }
 
 // ── Comparison helpers for metadata operators ────────────────────────────────
@@ -235,13 +239,19 @@ export function evaluateTrigger(order: RawOrder, cond: TriggerCondition, now: Da
 
   const msPerMin = 60_000;
 
-  // All timestamps must be corrected for IST offset before comparison
+  // All timestamps must be corrected for IST offset before comparison.
+  // Any of these can legitimately be null (e.g. an order without a scheduled
+  // appointmentTime). When a check needs a timestamp the order doesn't carry,
+  // fail that specific check rather than evaluating against epoch.
   const createdAt = correctISTTimestamp(order.createdAt);
   const statusUpdatedAt = correctISTTimestamp(order.statusUpdatedAt);
   const appointmentTime = correctISTTimestamp(order.appointmentTime);
 
   // 2. Age since created
   if (cond.minutesSinceCreated !== undefined) {
+    if (!createdAt) {
+      return { matches: false, failedCheck: "minutesSinceCreated", reason: "order has no createdAt" };
+    }
     const ageMin = (now.getTime() - createdAt.getTime()) / msPerMin;
     if (ageMin < cond.minutesSinceCreated) {
       return {
@@ -254,6 +264,9 @@ export function evaluateTrigger(order: RawOrder, cond: TriggerCondition, now: Da
 
   // 3. Age since last status change
   if (cond.minutesSinceStatusUpdated !== undefined) {
+    if (!statusUpdatedAt) {
+      return { matches: false, failedCheck: "minutesSinceStatusUpdated", reason: "order has no statusUpdatedAt" };
+    }
     const staleMin = (now.getTime() - statusUpdatedAt.getTime()) / msPerMin;
     if (staleMin < cond.minutesSinceStatusUpdated) {
       return {
@@ -266,6 +279,9 @@ export function evaluateTrigger(order: RawOrder, cond: TriggerCondition, now: Da
 
   // 4. Time before appointment
   if (cond.minutesBeforeAppointment !== undefined) {
+    if (!appointmentTime) {
+      return { matches: false, failedCheck: "minutesBeforeAppointment", reason: "order has no appointmentTime" };
+    }
     const minBefore = (appointmentTime.getTime() - now.getTime()) / msPerMin;
     if (minBefore > cond.minutesBeforeAppointment) {
       return {
@@ -285,6 +301,9 @@ export function evaluateTrigger(order: RawOrder, cond: TriggerCondition, now: Da
 
   // 5. Time after appointment
   if (cond.minutesAfterAppointment !== undefined) {
+    if (!appointmentTime) {
+      return { matches: false, failedCheck: "minutesAfterAppointment", reason: "order has no appointmentTime" };
+    }
     const minAfter = (now.getTime() - appointmentTime.getTime()) / msPerMin;
     if (minAfter < cond.minutesAfterAppointment) {
       return {
@@ -313,11 +332,26 @@ export function evaluateTrigger(order: RawOrder, cond: TriggerCondition, now: Da
 
 // ── Deduplication ─────────────────────────────────────────────────────────────
 
-async function isDuplicate(ruleId: string, orderId: number): Promise<boolean> {
+/**
+ * W1.6 — dedup key is (entityType, taskRuleId, entityId), not just
+ * (taskRuleId, entityId). Today every task has entityType="ORDER" so the
+ * old key was effectively unique, but the moment a non-Order entity
+ * (Appointment, Camp, …) arrives with the same numeric id, the previous
+ * check would falsely report duplicate and silently skip the new task.
+ *
+ * Defaults entityType to "ORDER" so existing call sites don't have to
+ * change all at once.
+ */
+async function isDuplicate(
+  ruleId: string,
+  entityId: number,
+  entityType: string = "ORDER"
+): Promise<boolean> {
   const existing = await prisma.task.findFirst({
     where: {
       taskRuleId: ruleId,
-      entityId: orderId,
+      entityType,
+      entityId,
       isArchived: false,
     },
     select: { id: true },
@@ -393,12 +427,22 @@ function leastLoaded<T extends { _count: { assignedTasks: number } }>(entries: T
   return entries.filter((e) => e._count.assignedTasks === minLoad);
 }
 
+// W1.3 — pickAssignee returns a discriminated outcome instead of `number | null`.
+// `null` previously hid two very different situations:
+//   1. genuine "no eligible candidates" (off-hours, no capability) — expected
+//   2. the function caught an exception — an actual bug, but silent
+// The caller can now distinguish them and surface (1) as a normal task
+// state vs (2) as an alertable engine failure.
+export type PickAssigneeOutcome =
+  | { ok: true;  userId: number }
+  | { ok: false; reason: "no_candidates" | "no_capability" | "no_active_roster" | "error"; detail?: string };
+
 async function pickAssignee(
   requiredSkillIds: number[],
   storeId: number | null,
   dataSourceId: string,
   strategy: AssignmentStrategy = "default"
-): Promise<number | null> {
+): Promise<PickAssigneeOutcome> {
   try {
     // Check if this data source has any capability assignments
     const allocationsExist = await checkDataSourceCapabilities(dataSourceId);
@@ -456,10 +500,9 @@ async function pickAssignee(
     });
 
     if (candidateMembers.length === 0) {
-      console.warn(
-        `[pickAssignee] No team members match filters (dataSourceId=${dataSourceId}, storeId=${storeId}, skills=${requiredSkillIds.join(",")})`
-      );
-      return null;
+      const detail = `No team members match filters (dataSourceId=${dataSourceId}, storeId=${storeId}, skills=${requiredSkillIds.join(",")})`;
+      console.warn(`[pickAssignee] ${detail}`);
+      return { ok: false, reason: "no_candidates", detail };
     }
 
     // Filter by current schedule/exception status (must be ACTIVE right now)
@@ -470,10 +513,9 @@ async function pickAssignee(
     });
 
     if (eligibleEntries.length === 0) {
-      console.warn(
-        `[pickAssignee] No members are currently ACTIVE per schedule/exception (dataSourceId=${dataSourceId}, storeId=${storeId})`
-      );
-      return null;
+      const detail = `No members are currently ACTIVE per schedule/exception (dataSourceId=${dataSourceId}, storeId=${storeId})`;
+      console.warn(`[pickAssignee] ${detail}`);
+      return { ok: false, reason: "no_active_roster", detail };
     }
 
     // Filter by data source capability (if assignments exist for this source)
@@ -483,11 +525,9 @@ async function pickAssignee(
       );
 
       if (eligibleEntries.length === 0) {
-        console.warn(
-          `[pickAssignee] No ACTIVE members with dataSourceId=${dataSourceId} capability`,
-          { dataSourceId, requiredSkillIds, storeId }
-        );
-        return null;
+        const detail = `No ACTIVE members with dataSourceId=${dataSourceId} capability`;
+        console.warn(`[pickAssignee] ${detail}`, { dataSourceId, requiredSkillIds, storeId });
+        return { ok: false, reason: "no_capability", detail };
       }
     }
 
@@ -579,10 +619,11 @@ async function pickAssignee(
       preferredPool: preferred.length,
     });
 
-    return selected.user.id;
+    return { ok: true, userId: selected.user.id };
   } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
     console.error(`[pickAssignee] Error storeId=${storeId} dsId=${dataSourceId}:`, error instanceof Error ? error.stack : String(error));
-    return null;
+    return { ok: false, reason: "error", detail };
   }
 }
 
@@ -595,6 +636,16 @@ async function createTask(payload: CreateTaskPayload): Promise<void> {
     assignmentStrategy,
   } = payload;
 
+  // W1.9 — defence in depth on SLA deadline. The API already bounds
+  // slaMinutes via zod (≤ 30 days), but a legacy rule row could carry an
+  // older absurd value, and a malformed slaDeadline (NaN / Invalid Date)
+  // would propagate through every downstream query. Drop the task with a
+  // log rather than persist a row that can't be sorted on slaDeadline.
+  if (!(slaDeadline instanceof Date) || isNaN(slaDeadline.getTime())) {
+    console.error(`[createTask] aborting — invalid slaDeadline for rule=${taskRuleId} entity=${entityId}`);
+    return;
+  }
+
   // Fetch required skills for this rule
   const ruleSkills = await prisma.taskRuleSkill.findMany({
     where: { taskRuleId },
@@ -602,7 +653,16 @@ async function createTask(payload: CreateTaskPayload): Promise<void> {
   });
   const skillIds = ruleSkills.map((r) => r.skillTagId);
 
-  const assigneeId = await pickAssignee(skillIds, storeId, dataSourceId, assignmentStrategy);
+  // W1.3 — distinguish "no candidates" (expected) from "engine error" (bug).
+  // assignmentMethod records the path so the dashboard can split unassigned
+  // tasks into actionable buckets.
+  const outcome = await pickAssignee(skillIds, storeId, dataSourceId, assignmentStrategy);
+  const assigneeId = outcome.ok ? outcome.userId : null;
+  const assignmentMethod = outcome.ok
+    ? "auto"
+    : outcome.reason === "error"
+      ? "auto-failed"
+      : `auto-${outcome.reason}`; // auto-no_candidates / auto-no_capability / auto-no_active_roster
 
   const now = new Date();
   const task = await prisma.task.create({
@@ -616,13 +676,18 @@ async function createTask(payload: CreateTaskPayload): Promise<void> {
       orderType,
       priority,
       slaDeadline,
-      metadata: metadata as Parameters<typeof prisma.task.create>[0]["data"]["metadata"],
+      // Stash the assignment outcome on the task's metadata so the operator
+      // can see WHY a task is unassigned without grepping logs.
+      metadata: {
+        ...(metadata as Record<string, unknown>),
+        ...(outcome.ok ? {} : { assignmentFailure: { reason: outcome.reason, detail: outcome.detail } }),
+      } as Parameters<typeof prisma.task.create>[0]["data"]["metadata"],
       status: TaskStatus.CREATED,
       assignedToId: assigneeId,
       assignedAt: assigneeId ? now : null,
-      lastStatusUpdate: now,  // Phase 2: Track status change time for aging calculations
-      assignmentMethod: "auto", // Phase 2: Mark as auto-assigned
-      assignmentRuleId: taskRuleId, // Phase 2: Track which rule assigned it
+      lastStatusUpdate: now,
+      assignmentMethod,
+      assignmentRuleId: taskRuleId,
       checklistItems: {
         create: checklistSteps.map((s) => ({
           stepOrder: s.stepOrder,
@@ -634,11 +699,51 @@ async function createTask(payload: CreateTaskPayload): Promise<void> {
       history: {
         create: {
           status: TaskStatus.CREATED,
-          note: "Task auto-created by OpsFlow polling engine",
+          note: outcome.ok
+            ? "Task auto-created by OpsFlow polling engine"
+            : `Task auto-created (UNASSIGNED — ${outcome.reason}: ${outcome.detail ?? "no detail"})`,
         },
       },
     },
   });
+
+  // W1.3 — surface engine errors via the alert feed. "no candidates" /
+  // "no roster" are normal off-hours cases; "error" is a bug worth waking
+  // someone up. We dedupe on (dataSourceId) so a stuck rule doesn't spam.
+  if (!outcome.ok && outcome.reason === "error") {
+    try {
+      const recentSimilar = await prisma.alert.findFirst({
+        where: {
+          alertType: "ESCALATION",
+          status: { in: ["PENDING", "SENT"] },
+          metadata: { path: ["scope", "dataSourceId"], equals: dataSourceId },
+          createdAt: { gte: new Date(Date.now() - 15 * 60_000) }, // last 15 min
+        },
+        select: { id: true },
+      });
+      if (!recentSimilar) {
+        await prisma.alert.create({
+          data: {
+            alertType: "ESCALATION",
+            severity: "HIGH",
+            entityType: "ENGINE",
+            entityId: null,
+            taskId: task.id,
+            message: `pickAssignee threw for dataSource=${dataSourceId}: ${outcome.detail ?? "(no detail)"}`,
+            metadata: {
+              scope: { dataSourceId, storeId, taskRuleId },
+              reason: outcome.reason,
+              detail: outcome.detail,
+              taskId: task.id,
+            },
+            status: "PENDING",
+          },
+        });
+      }
+    } catch (alertErr) {
+      console.error("[createTask] failed to emit assignment-failure alert:", alertErr);
+    }
+  }
 
   // If assigned, add history entry
   if (assigneeId) {
@@ -675,20 +780,26 @@ export async function evaluateAndCreateTasks(
 
   for (const order of orders) {
     // Correct for IST timezone offset before any time-based comparison.
-    const appointmentMs = correctISTTimestamp(order.appointmentTime).getTime();
-    const ageDays = (now.getTime() - appointmentMs) / msPerDay; // +ve = past, -ve = future
+    // Orders without an appointmentTime (e.g. some order types that aren't
+    // appointment-driven) don't get age-gated — let the rule's own trigger
+    // conditions decide whether they're eligible. Previously a null
+    // appointmentTime collapsed to 1970 → "very old" → skipped silently.
+    const appointmentTs = correctISTTimestamp(order.appointmentTime);
+    if (appointmentTs) {
+      const ageDays = (now.getTime() - appointmentTs.getTime()) / msPerDay; // +ve = past, -ve = future
 
-    // Skip very old orders (appointment 10+ days in the past)
-    if (ageDays > maxOrderAgeDays) {
-      skipped++;
-      continue;
-    }
+      // Skip very old orders (appointment 10+ days in the past)
+      if (ageDays > maxOrderAgeDays) {
+        skipped++;
+        continue;
+      }
 
-    // Skip far-future orders — agents don't need to act on these yet.
-    // Negative ageDays means appointment is in the future; flip the sign.
-    if (-ageDays > maxOrderFutureDays) {
-      skipped++;
-      continue;
+      // Skip far-future orders — agents don't need to act on these yet.
+      // Negative ageDays means appointment is in the future; flip the sign.
+      if (-ageDays > maxOrderFutureDays) {
+        skipped++;
+        continue;
+      }
     }
 
     for (const rule of rules) {
@@ -863,10 +974,13 @@ export async function archiveObsoleteTasks(
   const maxOrderAgeDays = 10;
 
   for (const order of orders) {
-    // Check if appointment is very old (10+ days) - archive all tasks for very old orders
-    // Correct for IST timezone offset before calculation
-    const appointmentMs = correctISTTimestamp(order.appointmentTime).getTime();
-    const daysOld = (now.getTime() - appointmentMs) / msPerDay;
+    // Check if appointment is very old (10+ days) - archive all tasks for very old orders.
+    // Orders with no appointmentTime can't age-out via this rule; their tasks
+    // archive only when the rule's trigger says so. (W1.2 — was crashing on
+    // null appointmentTime by collapsing to the 1970 epoch.)
+    const appointmentTs = correctISTTimestamp(order.appointmentTime);
+    if (!appointmentTs) continue;
+    const daysOld = (now.getTime() - appointmentTs.getTime()) / msPerDay;
     const isVeryOldOrder = daysOld > maxOrderAgeDays;
 
     // Get all non-completed tasks for this order

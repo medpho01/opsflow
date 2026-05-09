@@ -5,7 +5,6 @@
  * LabStack console.
  */
 import prisma from "@/lib/db/client";
-import { Prisma } from "@prisma/client";
 
 // Raw query helper — reads from labstack's public schema
 async function labstackQuery<T>(sql: string, params: unknown[] = []): Promise<T[]> {
@@ -56,7 +55,15 @@ export async function fetchActiveHomeSampleOrders(): Promise<RawOrder[]> {
       COALESCE(o."phleboNumber", '')  AS "phleboNumber",
       u.name                          AS "patientName",
       l."labName"                     AS "labName",
-      s."storeName"                   AS "storeName"
+      s."storeName"                   AS "storeName",
+      -- W1.1: populate RawOrder.metadata. Previously the column was typed
+      -- but never selected, so every metadataCondition rule silently never
+      -- fired. to_jsonb(o.*) gives the entire row as JSONB so authors can
+      -- reference any column (top-level or one level into the source JSONB
+      -- columns like rawValues / standardizedValues) via dot-paths, matching
+      -- what /api/data-sources/[id]/metadata-keys surfaces in the editor
+      -- autocomplete.
+      to_jsonb(o.*)                   AS metadata
     FROM public."Order" o
     JOIN public."User" u ON u.id = o."userId"
     LEFT JOIN public."Lab" l ON l.id = o."labId"
@@ -89,7 +96,15 @@ export async function fetchAllActiveOrders(): Promise<RawOrder[]> {
       COALESCE(o."phleboNumber", '')  AS "phleboNumber",
       u.name                          AS "patientName",
       l."labName"                     AS "labName",
-      s."storeName"                   AS "storeName"
+      s."storeName"                   AS "storeName",
+      -- W1.1: populate RawOrder.metadata. Previously the column was typed
+      -- but never selected, so every metadataCondition rule silently never
+      -- fired. to_jsonb(o.*) gives the entire row as JSONB so authors can
+      -- reference any column (top-level or one level into the source JSONB
+      -- columns like rawValues / standardizedValues) via dot-paths, matching
+      -- what /api/data-sources/[id]/metadata-keys surfaces in the editor
+      -- autocomplete.
+      to_jsonb(o.*)                   AS metadata
     FROM public."Order" o
     JOIN public."User" u ON u.id = o."userId"
     LEFT JOIN public."Lab" l ON l.id = o."labId"
@@ -102,16 +117,52 @@ export async function fetchAllActiveOrders(): Promise<RawOrder[]> {
 /**
  * Write a completion note back to labstack Order.internalNotes.
  * This is the only write OpsFlow makes to the labstack schema.
+ *
+ * W1.4 — retries with exponential backoff. The previous implementation
+ * was a single `$executeRawUnsafe` whose error path was caught upstream
+ * (in `tasks/[id]/route.ts`) and only logged — so a transient labstack
+ * blip silently dropped the note from the patient's order. Three attempts
+ * (immediate, 200ms, 1s) handle most blips; persistent failures throw so
+ * the caller can surface them rather than swallow.
  */
-export async function appendOrderNote(orderId: number, note: string): Promise<void> {
+export interface AppendOrderNoteResult {
+  ok: boolean;
+  attempts: number;
+  error?: string;
+}
+
+export async function appendOrderNote(
+  orderId: number,
+  note: string,
+  opts: { maxAttempts?: number } = {}
+): Promise<AppendOrderNoteResult> {
+  const maxAttempts = opts.maxAttempts ?? 3;
   const timestamp = new Date().toISOString();
   const entry = `[OpsFlow ${timestamp}] ${note}`;
-  await prisma.$executeRawUnsafe(
-    `UPDATE public."Order"
-     SET "internalNotes" = COALESCE("internalNotes", '') || E'\n' || $1,
-         "updatedAt"     = NOW()
-     WHERE id = $2`,
-    entry,
-    orderId
-  );
+
+  let lastErr: unknown = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      await prisma.$executeRawUnsafe(
+        `UPDATE public."Order"
+         SET "internalNotes" = COALESCE("internalNotes", '') || E'\n' || $1,
+             "updatedAt"     = NOW()
+         WHERE id = $2`,
+        entry,
+        orderId
+      );
+      return { ok: true, attempts: attempt };
+    } catch (err) {
+      lastErr = err;
+      // Backoff: 0ms, 200ms, 1000ms — short total budget, three chances.
+      if (attempt < maxAttempts) {
+        const backoff = attempt === 1 ? 200 : 1000;
+        await new Promise((resolve) => setTimeout(resolve, backoff));
+      }
+    }
+  }
+
+  const message = lastErr instanceof Error ? lastErr.message : String(lastErr);
+  console.error(`[appendOrderNote] order=${orderId} failed after ${maxAttempts} attempts:`, lastErr);
+  return { ok: false, attempts: maxAttempts, error: message };
 }

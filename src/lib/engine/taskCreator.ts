@@ -10,6 +10,7 @@ import { RawOrder } from "./labstack";
 import { TaskRuleWithRelations, TriggerCondition, CreateTaskPayload, MetadataCondition, MetadataOperator } from "@/types";
 import { TaskStatus, TaskPriority } from "@prisma/client";
 import { isAvailableNow, getUTCDayOfWeek } from "@/lib/roster/availability";
+import { renderTitleTemplate } from "@/lib/templating/title";
 
 // C1.4: Timezone support for SLA calculations
 // All timestamps stored as UTC in database, but calculations use TIMEZONE
@@ -563,12 +564,19 @@ export async function evaluateAndCreateTasks(
 
       const slaDeadline = new Date(now.getTime() + rule.slaMinutes * 60_000);
 
-      const title = rule.titleTemplate
-        .replace("{{patientName}}", order.patientName ?? "Patient")
-        .replace("{{orderId}}", String(order.id))
-        .replace("{{storeName}}", order.storeName ?? "")
-        .replace("{{labName}}", order.labName ?? "")
-        .replace("{{phleboName}}", order.phleboName ?? "");
+      // Use the shared, regex-based substituter — handles repeated tokens
+      // (the inline `.replace(string, ...)` only swapped the first match)
+      // and renders unknown placeholders as `[missing: key]` so a typo or
+      // newly-added rule placeholder fails loudly instead of leaking
+      // `{{patientName}}` into user-visible task titles + alert messages.
+      const title = renderTitleTemplate(rule.titleTemplate, {
+        patientName: order.patientName,
+        orderId: order.id,
+        storeName: order.storeName,
+        labName: order.labName,
+        phleboName: order.phleboName,
+        appointmentTime: order.appointmentTime,
+      });
 
       const payload: CreateTaskPayload = {
         taskRuleId: rule.id,

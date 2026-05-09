@@ -802,6 +802,11 @@ export default function TeamPanel() {
             in one view; flags coverage gaps and low-coverage days. */}
         {!loading && members.length > 0 && <WeeklyHeatmap />}
 
+        {/* W5b — Coverage by hour. Answers "is anyone working at 7pm Tuesday?".
+            Hour-of-day × day grid with concurrent-agent counts so the head can
+            spot intra-day gaps when planning shift patterns. */}
+        {!loading && members.length > 0 && <CoverageHeatmap />}
+
         {/* Roster + Capacity Analytics */}
         {!loading && members.length > 0 && (() => {
           // W3 — team-wide capacity summary so heads can balance load at a glance.
@@ -1396,18 +1401,24 @@ export function WeeklyHeatmap() {
                           cell.status === "EXCEPTION" && cell.exception ? `${cell.exception.kind}${cell.exception.note ? `: ${cell.exception.note}` : ""}` :
                           cell.status === "OFF" ? "Off" :
                           "Unscheduled — no shift defined";
-                        const label =
-                          cell.status === "WORKING" && cell.shift ? cell.shift.start.slice(0, 5) :
-                          cell.status === "EXCEPTION" && cell.exception ? cell.exception.kind.slice(0, 4) :
-                          cell.status === "OFF" ? "·" :
-                          "—";
                         return (
                           <td
                             key={idx}
                             className={`text-center text-[10px] px-2 py-1.5 border rounded ${cls}`}
                             title={tooltip}
                           >
-                            {label}
+                            {cell.status === "WORKING" && cell.shift ? (
+                              <div className="leading-tight">
+                                <div className="font-mono">{cell.shift.start.slice(0, 5)}</div>
+                                <div className="font-mono opacity-70">{cell.shift.end.slice(0, 5)}</div>
+                              </div>
+                            ) : cell.status === "EXCEPTION" && cell.exception ? (
+                              cell.exception.kind.slice(0, 4)
+                            ) : cell.status === "OFF" ? (
+                              "·"
+                            ) : (
+                              "—"
+                            )}
                           </td>
                         );
                       })}
@@ -1429,6 +1440,214 @@ export function WeeklyHeatmap() {
                 </div>
               )}
             </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Coverage Heatmap (W5b — hour × day) ─────────────────────────────────────
+// Answers the question the agent×day heatmap can't: "is anyone working at
+// 7pm Tuesday?". Rows = half-hour slots inside the operating window
+// (default 06:00–22:30); columns = days of the week. Each cell shows the
+// number of agents on-shift at that exact slot. Colour-coded so the head
+// can spot gaps (red) and over-coverage (deep green) at a glance.
+type CoverageSlot = { time: string; dayCounts: number[] };
+type CoveragePayload = {
+  weekStart: string;
+  weekEnd: string;
+  hourFrom: string;
+  hourTo: string;
+  intervalMinutes: number;
+  lowCoverageThreshold: number;
+  days: string[];
+  dates: string[];
+  slots: CoverageSlot[];
+  summary: { totalSlots: number; gapSlots: number; lowCoverageSlots: number; peakConcurrent: number; agentsConsidered: number };
+};
+
+export function CoverageHeatmap() {
+  const [open, setOpen] = useState(false);
+  const [weekOffset, setWeekOffset] = useState(0);
+  const [hourFrom, setHourFrom] = useState("06:00");
+  const [hourTo, setHourTo] = useState("22:30");
+  const [interval, setIntervalMin] = useState<15 | 30 | 60>(30);
+  const [lowCoverage, setLowCoverage] = useState(1);
+  const [data, setData] = useState<CoveragePayload | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const displayedWeekStart = (() => {
+    const now = new Date();
+    const today = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()));
+    const dow = today.getUTCDay();
+    const offsetToMon = (dow + 6) % 7;
+    const monday = new Date(today);
+    monday.setUTCDate(monday.getUTCDate() - offsetToMon + weekOffset * 7);
+    return monday.toISOString().slice(0, 10);
+  })();
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    setLoading(true); setError(null);
+    const qs = new URLSearchParams({
+      weekStart: displayedWeekStart,
+      hourFrom, hourTo,
+      interval: String(interval),
+      lowCoverage: String(lowCoverage),
+    });
+    fetch(`/api/team/coverage?${qs}`)
+      .then((r) => r.ok ? r.json() : Promise.reject(`HTTP ${r.status}`))
+      .then((d) => { if (!cancelled) setData(d); })
+      .catch((e) => { if (!cancelled) setError(String(e)); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [open, displayedWeekStart, hourFrom, hourTo, interval, lowCoverage]);
+
+  // Colour each cell by count vs the peak so the gradient adapts to the team size.
+  const cellClass = (count: number, peak: number, threshold: number) => {
+    if (count === 0) return "bg-red-900/60 text-red-200";
+    if (count < threshold) return "bg-amber-700/40 text-amber-100";
+    if (peak <= 0) return "bg-zinc-800 text-zinc-300";
+    const ratio = count / peak;
+    if (ratio >= 0.8) return "bg-emerald-600/70 text-emerald-50";
+    if (ratio >= 0.5) return "bg-emerald-700/50 text-emerald-100";
+    return "bg-emerald-800/40 text-emerald-200";
+  };
+
+  return (
+    <div className="mb-5 border border-zinc-800 rounded-lg bg-zinc-900/40">
+      <button
+        onClick={() => setOpen(!open)}
+        className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-zinc-800/40 transition-colors"
+      >
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-semibold text-white">Coverage by hour</span>
+          <span className="text-[10px] text-zinc-500">how many agents are on-shift each half-hour — find your gaps</span>
+        </div>
+        <svg className={`w-4 h-4 text-zinc-500 transition-transform ${open ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+
+      {open && (
+        <div className="border-t border-zinc-800 p-4 space-y-3">
+          {/* Controls */}
+          <div className="flex flex-wrap items-center gap-4 text-xs">
+            <div className="flex items-center gap-1">
+              <button onClick={() => setWeekOffset((w) => w - 1)} className="px-2 py-1 rounded bg-zinc-800 text-zinc-400 hover:text-white transition-colors">‹</button>
+              <span className="text-zinc-300 font-medium px-2">{data ? `${data.weekStart} → ${data.weekEnd}` : displayedWeekStart}</span>
+              <button onClick={() => setWeekOffset((w) => w + 1)} className="px-2 py-1 rounded bg-zinc-800 text-zinc-400 hover:text-white transition-colors">›</button>
+              <button onClick={() => setWeekOffset(0)} className="ml-1 px-2 py-1 rounded bg-zinc-800 text-zinc-400 hover:text-white transition-colors text-[10px]">Today</button>
+            </div>
+
+            <label className="flex items-center gap-2 text-zinc-500">
+              From
+              <input
+                type="time"
+                value={hourFrom}
+                onChange={(e) => setHourFrom(e.target.value || "06:00")}
+                step={1800}
+                className="px-2 py-1 bg-zinc-800 border border-zinc-700 rounded text-zinc-200 text-[11px] [color-scheme:dark]"
+              />
+            </label>
+
+            <label className="flex items-center gap-2 text-zinc-500">
+              To
+              <input
+                type="time"
+                value={hourTo}
+                onChange={(e) => setHourTo(e.target.value || "22:30")}
+                step={1800}
+                className="px-2 py-1 bg-zinc-800 border border-zinc-700 rounded text-zinc-200 text-[11px] [color-scheme:dark]"
+              />
+            </label>
+
+            <div className="flex items-center gap-1">
+              <span className="text-zinc-600 text-[10px] uppercase tracking-wider">Slot</span>
+              {([15, 30, 60] as const).map((m) => (
+                <button
+                  key={m}
+                  onClick={() => setIntervalMin(m)}
+                  className={`px-2 py-1 rounded text-[11px] transition-colors ${interval === m ? "bg-blue-600 text-white" : "bg-zinc-800 text-zinc-400 hover:text-zinc-200"}`}
+                >{m}m</button>
+              ))}
+            </div>
+
+            <label className="flex items-center gap-2 text-zinc-500" title="Slots with fewer than this many agents are flagged as low-coverage.">
+              Low cov &lt;
+              <input
+                type="number" min={1} max={20}
+                value={lowCoverage}
+                onChange={(e) => setLowCoverage(Math.max(1, Math.min(20, Number(e.target.value) || 1)))}
+                className="w-12 px-2 py-1 bg-zinc-800 border border-zinc-700 rounded text-zinc-200 text-[11px] text-center"
+              />
+            </label>
+          </div>
+
+          {/* Body */}
+          {loading ? (
+            <div className="text-[11px] text-zinc-600 italic py-4 text-center">Loading…</div>
+          ) : error ? (
+            <div className="text-[11px] text-red-400 py-4 text-center">Failed: {error}</div>
+          ) : !data || data.slots.length === 0 ? (
+            <div className="text-[11px] text-zinc-600 py-4 text-center">No data.</div>
+          ) : (
+            <>
+              {/* Summary chips */}
+              <div className="flex flex-wrap gap-2 text-[11px]">
+                <span className="px-2 py-1 rounded bg-zinc-800 border border-zinc-700 text-zinc-300">
+                  {data.summary.agentsConsidered} agents
+                </span>
+                <span className="px-2 py-1 rounded bg-zinc-800 border border-zinc-700 text-zinc-300">
+                  Peak: <strong className="text-emerald-400">{data.summary.peakConcurrent}</strong> concurrent
+                </span>
+                <span className={`px-2 py-1 rounded border ${data.summary.gapSlots > 0 ? "bg-red-900/30 border-red-900 text-red-300" : "bg-zinc-800 border-zinc-700 text-zinc-400"}`}>
+                  Gaps: <strong>{data.summary.gapSlots}</strong> slots with <strong>0</strong> coverage
+                </span>
+                <span className={`px-2 py-1 rounded border ${data.summary.lowCoverageSlots > 0 ? "bg-amber-900/30 border-amber-900 text-amber-300" : "bg-zinc-800 border-zinc-700 text-zinc-400"}`}>
+                  Low cov: <strong>{data.summary.lowCoverageSlots}</strong> slots &lt; {data.lowCoverageThreshold}
+                </span>
+              </div>
+
+              {/* Heatmap table */}
+              <div className="overflow-x-auto">
+                <table className="text-[10px] border-separate" style={{ borderSpacing: "1px" }}>
+                  <thead>
+                    <tr>
+                      <th className="text-left px-2 py-1 sticky left-0 bg-zinc-900/40 z-10 text-zinc-600 uppercase tracking-wider"></th>
+                      {data.days.map((day, i) => (
+                        <th key={i} className="text-center px-2 py-1 text-zinc-500 min-w-[3rem]">
+                          <div className="font-semibold">{day}</div>
+                          <div className="text-[9px] font-normal">{data.dates[i].slice(5)}</div>
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.slots.map((slot) => (
+                      <tr key={slot.time}>
+                        <td className="text-right pr-2 py-1 sticky left-0 bg-zinc-900/40 z-10 font-mono text-zinc-500 text-[10px]">
+                          {slot.time}
+                        </td>
+                        {slot.dayCounts.map((count, dayIdx) => (
+                          <td
+                            key={dayIdx}
+                            className={`text-center font-mono text-[11px] ${cellClass(count, data.summary.peakConcurrent, data.lowCoverageThreshold)}`}
+                            title={`${data.days[dayIdx]} ${data.dates[dayIdx]} ${slot.time} — ${count} agent${count === 1 ? "" : "s"} on-shift`}
+                            style={{ minWidth: "3rem" }}
+                          >
+                            {count}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
           )}
         </div>
       )}

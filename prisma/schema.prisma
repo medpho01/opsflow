@@ -576,6 +576,9 @@ model PollingLog {
   tasksCreated Int      @default(0)
   status       String   @default("SUCCESS") // "SUCCESS" | "ERROR"
   errorMessage String?
+  // W4 — per-cycle observability. Stores `{ perRule: RuleCycleStats[] }` so
+  // operators can see which rules fired vs skipped without grepping logs.
+  metadata     Json?
   createdAt    DateTime @default(now())
 
   @@map("polling_logs")

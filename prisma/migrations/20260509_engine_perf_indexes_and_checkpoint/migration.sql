@@ -25,6 +25,13 @@ CREATE INDEX IF NOT EXISTS "idx_tasks_assignedToId_status_open"
 ALTER TABLE taskos.polling_locks
   ADD COLUMN IF NOT EXISTS "lockedBy" TEXT;
 
+-- ── W4 — Per-cycle observability ──────────────────────────────────────────
+-- Stash a per-rule fire/skip breakdown on each PollingLog row so operators
+-- can answer "did rule X fire this cycle, and if not why?" without reading
+-- container logs. Schema is `{ perRule: RuleCycleStats[] }`.
+ALTER TABLE taskos.polling_logs
+  ADD COLUMN IF NOT EXISTS "metadata" JSONB;
+
 -- ── W2.2 — Polling checkpoint ─────────────────────────────────────────────
 -- Lets the engine ask labstack for "orders updated since <last_seen>"
 -- instead of refetching the entire active-order universe every cycle.

@@ -14,7 +14,7 @@
 // from bundling its ESM files which use node:crypto/path/url.
 import prisma from "@/lib/db/client";
 import { fetchAllActiveOrders } from "./labstack";
-import { evaluateAndCreateTasks, loadActiveRules } from "./taskCreator";
+import { evaluateAndCreateTasks, loadActiveRules, RuleCycleStats } from "./taskCreator";
 import { runSourceHealthWatcher } from "./sourceHealthWatcher";
 import { runSlaWatcher } from "./slaWatcher";
 import { sendDailySummary } from "./dailySummary";
@@ -138,6 +138,7 @@ export async function runPollCycle(): Promise<void> {
   let errorMessage: string | null = null;
   let ordersFound = 0;
   let tasksCreated = 0;
+  let perRule: RuleCycleStats[] = [];
 
   try {
     console.log(`[Poller] Cycle started at ${startedAt.toISOString()}`);
@@ -163,6 +164,7 @@ export async function runPollCycle(): Promise<void> {
     if (orders.length > 0 && rules.length > 0) {
       const result = await evaluateAndCreateTasks(orders, rules);
       tasksCreated = result.created;
+      perRule = result.perRule;
       console.log(`[Poller] Tasks created: ${result.created}, skipped: ${result.skipped}`);
     }
     // W3 — archive duplicate removed. `archiveOldTasks` runs nightly via
@@ -204,6 +206,11 @@ export async function runPollCycle(): Promise<void> {
           tasksCreated,
           status,
           errorMessage,
+          // W4 — per-rule fire breakdown so operators can answer "did rule
+          // X fire?" from the dashboard rather than grep. Empty array on
+          // ERROR cycles is fine; the row's `status` makes the failure
+          // explicit independently.
+          metadata: perRule.length > 0 ? { perRule } : undefined,
         },
       });
     } catch (logErr) {

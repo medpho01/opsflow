@@ -629,7 +629,7 @@ async function pickAssignee(
 
 // ── Core creator ──────────────────────────────────────────────────────────────
 
-async function createTask(payload: CreateTaskPayload): Promise<void> {
+async function createTask(payload: CreateTaskPayload): Promise<PickAssigneeOutcome> {
   const {
     taskRuleId, taskTypeId, title, entityType, entityId,
     storeId, orderType, dataSourceId, priority, slaDeadline, metadata, checklistSteps,
@@ -643,7 +643,7 @@ async function createTask(payload: CreateTaskPayload): Promise<void> {
   // log rather than persist a row that can't be sorted on slaDeadline.
   if (!(slaDeadline instanceof Date) || isNaN(slaDeadline.getTime())) {
     console.error(`[createTask] aborting — invalid slaDeadline for rule=${taskRuleId} entity=${entityId}`);
-    return;
+    return { ok: false, reason: "error", detail: "invalid slaDeadline" };
   }
 
   // Fetch required skills for this rule
@@ -771,17 +771,47 @@ async function createTask(payload: CreateTaskPayload): Promise<void> {
   // (W2.3 — assignment history + status are now created inside the
   // transaction above, so there's no follow-up block here.)
   void task;
+  return outcome;
 }
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
+// W4 — per-rule fire log. Each cycle reports counts per rule so the operator
+// can answer "did rule X fire?" without grepping logs or running an
+// after-the-fact metrics query against the tasks table. The poller persists
+// this on the PollingLog row's metadata.
+export interface RuleCycleStats {
+  ruleId: string;
+  ruleName: string;
+  fired: number;             // tasks actually created by this rule this cycle
+  skippedDedup: number;      // matched trigger but already had an open task
+  skippedTrigger: number;    // status / timing / metadata didn't pass
+  skippedTypeFilter: number; // allowedTypes filtered the order out
+  failedAssignment: number;  // task created but pickAssignee couldn't pick anyone
+}
+
 export async function evaluateAndCreateTasks(
   orders: RawOrder[],
   rules: TaskRuleWithRelations[]
-): Promise<{ created: number; skipped: number }> {
+): Promise<{ created: number; skipped: number; perRule: RuleCycleStats[] }> {
   const now = new Date();
   let created = 0;
   let skipped = 0;
+
+  // Per-rule counters initialised for every active rule (so a rule with zero
+  // fires still appears in the report, instead of being invisible).
+  const perRule = new Map<string, RuleCycleStats>();
+  for (const r of rules) {
+    perRule.set(r.id, {
+      ruleId: r.id, ruleName: r.name,
+      fired: 0, skippedDedup: 0, skippedTrigger: 0,
+      skippedTypeFilter: 0, failedAssignment: 0,
+    });
+  }
+  const bumpRule = (ruleId: string, key: keyof Omit<RuleCycleStats, "ruleId" | "ruleName">) => {
+    const s = perRule.get(ruleId);
+    if (s) s[key]++;
+  };
   const msPerDay = 24 * 60 * 60 * 1000;
   const maxOrderAgeDays = 10;
   // Don't create tasks for orders whose appointment is far in the future —
@@ -845,6 +875,7 @@ export async function evaluateAndCreateTasks(
       // Filter by allowed types (if any are specified)
       if (Array.isArray(rule.allowedTypes) && rule.allowedTypes.length > 0) {
         if (!rule.allowedTypes.includes(order.orderType)) {
+          bumpRule(rule.id, "skippedTypeFilter");
           continue;
         }
       }
@@ -858,6 +889,7 @@ export async function evaluateAndCreateTasks(
       // Validate trigger condition structure
       if (!cond || typeof cond !== 'object') {
         console.warn(`[TaskCreator] Rule ${rule.id} has invalid trigger condition:`, cond);
+        bumpRule(rule.id, "skippedTrigger");
         skipped++;
         continue;
       }
@@ -879,6 +911,7 @@ export async function evaluateAndCreateTasks(
       }
 
       if (!shouldCreate) {
+        bumpRule(rule.id, "skippedTrigger");
         skipped++;
         continue;
       }
@@ -886,6 +919,7 @@ export async function evaluateAndCreateTasks(
       // W2.1 — dedup via the pre-loaded Set instead of a per-iteration query.
       const key = dedupKey("ORDER", rule.id, order.id);
       if (activeTaskKeys.has(key)) {
+        bumpRule(rule.id, "skippedDedup");
         skipped++;
         continue;
       }
@@ -939,12 +973,16 @@ export async function evaluateAndCreateTasks(
         })),
       };
 
-      await createTask(payload);
+      const outcome = await createTask(payload);
+      bumpRule(rule.id, "fired");
+      if (!outcome.ok) {
+        bumpRule(rule.id, "failedAssignment");
+      }
       created++;
     }
   }
 
-  return { created, skipped };
+  return { created, skipped, perRule: Array.from(perRule.values()) };
 }
 
 // ── Active rules loader ───────────────────────────────────────────────────────

@@ -1,7 +1,17 @@
 /**
- * Rule Matcher
- * Determines which task rules apply to a source entity.
- * Queries TaskRule directly — rules now own their dataSourceId, allowedTypes, and allowedStatuses.
+ * Rule Matcher — DEPRECATED.
+ *
+ * This module duplicates the rule evaluation logic that lives in
+ * `src/lib/engine/taskCreator.ts:evaluateTrigger` + `evaluateMetadataConditions`.
+ * It only runs from the disabled multi-source polling subsystem
+ * (`lib/polling/`) and the equally-dead `app/api/webhooks/[sourceId]` route.
+ *
+ * Do NOT extend this file. If you need rule evaluation, call into the
+ * canonical implementation in `taskCreator.ts`. A follow-up cleanup will
+ * delete this whole cluster (webhooks + lib/polling/ + lib/task-creation/)
+ * once the audit's Phase-2 dead-code purge runs.
+ *
+ * Tracked in DOCS/audit/features/02-task-rules.md (W2.3).
  */
 
 import prisma from "@/lib/db/client";

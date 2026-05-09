@@ -11,6 +11,7 @@ import { TaskRuleWithRelations, TriggerCondition, CreateTaskPayload, MetadataCon
 import { TaskStatus, TaskPriority } from "@prisma/client";
 import { isAvailableNow, getUTCDayOfWeek } from "@/lib/roster/availability";
 import { renderTitleTemplate } from "@/lib/templating/title";
+import { triggerConditionSchema } from "@/lib/validation/task-rules";
 
 // C1.4: Timezone support for SLA calculations
 // All timestamps stored as UTC in database, but calculations use TIMEZONE
@@ -34,6 +35,37 @@ function correctISTTimestamp(timestamp: string | Date, debug: boolean = false): 
     console.log(`[DEBUG-TZ] Input: ${timestamp}, Parsed: ${parsed.toISOString()}, Corrected: ${corrected.toISOString()}`);
   }
   return corrected;
+}
+
+// ── Comparison helpers for metadata operators ────────────────────────────────
+
+/** Single source of truth for the >, >=, <, <= comparison itself. */
+function compareNumbers(op: ">" | ">=" | "<" | "<=", a: number, b: number): boolean {
+  switch (op) {
+    case ">":  return a > b;
+    case ">=": return a >= b;
+    case "<":  return a < b;
+    case "<=": return a <= b;
+  }
+}
+
+/**
+ * Heuristic: does `v` look like an ISO date or datetime string?
+ * Matches "2026-01-01", "2026-01-01T10:00:00Z", "2026-01-01T10:00:00.000+05:30", etc.
+ * Pure numbers ("123", "2026") return false so the numeric branch can handle them.
+ */
+function isIsoDateLike(v: unknown): boolean {
+  if (typeof v !== "string") return false;
+  if (!/^\d{4}-\d{2}-\d{2}/.test(v)) return false;
+  return !isNaN(Date.parse(v));
+}
+
+/** Coerce to a milliseconds-since-epoch number. NaN if it can't be parsed. */
+function parseDateOrNaN(v: unknown): number {
+  if (v instanceof Date) return v.getTime();
+  if (typeof v === "string") return Date.parse(v);
+  if (typeof v === "number") return v;
+  return NaN;
 }
 
 // ── Metadata Condition Evaluation (Phase 2) ───────────────────────────────────
@@ -94,45 +126,54 @@ function evaluateMetadataCondition(
     case ">=":
     case "<":
     case "<=": {
-      // For timestamp comparison with offset
-      if (offsetMinutes !== undefined && typeof fieldValue === 'string') {
-        // fieldValue is ISO timestamp string (e.g., reportETA)
-        try {
-          const fieldTime = new Date(fieldValue).getTime();
-          const offsetMs = offsetMinutes * 60_000;
-          const thresholdTime = now.getTime() + offsetMs;
+      // Three comparison modes, dispatched in order:
+      //
+      //   1. Timestamp-with-offset: caller set `offsetMinutes` and the field
+      //      is a string (e.g. reportETA, appointmentTime). Compares the
+      //      parsed date against `now + offsetMinutes`.
+      //
+      //   2. Date-vs-date: neither offsetMinutes nor a numeric `value` —
+      //      both sides parse as valid dates AND at least one side LOOKS
+      //      like an ISO date string (rather than just a parseable number).
+      //      This is the case the audit's W1.6 was about — previously the
+      //      code fell straight to the numeric branch and `Number("2026-01-01")`
+      //      → NaN → silent false.
+      //
+      //   3. Numeric: both sides coerce to finite numbers.
+      //
+      // Anything else: return false rather than silently passing.
 
-          switch (operator) {
-            case ">":
-              return fieldTime > thresholdTime;
-            case ">=":
-              return fieldTime >= thresholdTime;
-            case "<":
-              return fieldTime < thresholdTime;
-            case "<=":
-              return fieldTime <= thresholdTime;
-          }
-        } catch (e) {
-          console.warn(`[MetadataEval] Failed to parse timestamp ${fieldValue}:`, e);
+      // Mode 1: timestamp + offsetMinutes
+      if (offsetMinutes !== undefined && typeof fieldValue === "string") {
+        const fieldTime = Date.parse(fieldValue);
+        if (isNaN(fieldTime)) {
+          console.warn(`[MetadataEval] ${fieldPath}: not a parseable date: ${fieldValue}`);
           return false;
         }
+        const thresholdTime = now.getTime() + offsetMinutes * 60_000;
+        return compareNumbers(operator, fieldTime, thresholdTime);
       }
 
-      // For numeric comparison without offset
-      const numValue = Number(value);
+      // Mode 2: date-vs-date — at least one side is an ISO-shaped string.
+      const fieldIsIsoLike = isIsoDateLike(fieldValue);
+      const valueIsIsoLike = isIsoDateLike(value);
+      if (fieldIsIsoLike || valueIsIsoLike) {
+        const fieldTime = parseDateOrNaN(fieldValue);
+        const valueTime = parseDateOrNaN(value);
+        if (isNaN(fieldTime) || isNaN(valueTime)) {
+          console.warn(`[MetadataEval] ${fieldPath}: date comparison failed (${typeof fieldValue}, ${typeof value})`);
+          return false;
+        }
+        return compareNumbers(operator, fieldTime, valueTime);
+      }
+
+      // Mode 3: pure numeric.
       const numField = Number(fieldValue);
-      if (isNaN(numValue) || isNaN(numField)) return false;
-
-      switch (operator) {
-        case ">":
-          return numField > numValue;
-        case ">=":
-          return numField >= numValue;
-        case "<":
-          return numField < numValue;
-        case "<=":
-          return numField <= numValue;
+      const numValue = Number(value);
+      if (!Number.isFinite(numField) || !Number.isFinite(numValue)) {
+        return false;
       }
+      return compareNumbers(operator, numField, numValue);
     }
 
     default:
@@ -633,13 +674,29 @@ export async function loadActiveRules(): Promise<TaskRuleWithRelations[]> {
     },
   });
 
-  const mapped = rules.map((r) => ({
-    ...r,
-    triggerType: (r as any).triggerType as "STATUS" | "TIME" ?? "TIME",
-    triggerCondition: r.triggerCondition as unknown as TriggerCondition,
-  })) as TaskRuleWithRelations[];
-
-
+  // Defensive load: if a rule has a malformed `triggerCondition` (legacy
+  // row, direct DB write, etc.) the engine should skip it loudly rather
+  // than crash mid-poll. zod-parse here so the rest of the file can rely
+  // on the shape; field-by-field validation is the same one POST/PATCH use.
+  const mapped = rules
+    .map((r) => {
+      const parsed = triggerConditionSchema.safeParse(r.triggerCondition);
+      if (!parsed.success) {
+        console.warn(
+          `[loadActiveRules] Skipping rule '${r.name}' (id=${r.id}) — triggerCondition fails validation:`,
+          parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")
+        );
+        return null;
+      }
+      return {
+        ...r,
+        // triggerType is now properly typed by Prisma (schema field
+        // TaskRuleTriggerType @default(TIME)); no cast needed.
+        triggerType: r.triggerType,
+        triggerCondition: parsed.data as unknown as TriggerCondition,
+      };
+    })
+    .filter((r): r is NonNullable<typeof r> => r !== null) as TaskRuleWithRelations[];
 
   return mapped;
 }

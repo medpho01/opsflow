@@ -1,162 +1,122 @@
 /**
  * PATCH  /api/task-rules/:id — update any field on a task rule
- * DELETE /api/task-rules/:id — delete a task rule (blocks if tasks exist)
+ * DELETE /api/task-rules/:id — delete a task rule (blocks if non-archived tasks exist)
  */
 import { NextRequest, NextResponse } from "next/server";
+import { ZodError } from "zod";
 import { getSessionFromRequest } from "@/lib/auth/session";
 import prisma from "@/lib/db/client";
-import { UserRole, TaskPriority } from "@prisma/client";
-import { MetadataOperator, validateTriggerConditionStatuses, getValidOrderStatuses } from "@/types";
+import { UserRole } from "@prisma/client";
 import { logRuleAudit } from "@/lib/engine/ruleAudit";
+import {
+  updateRuleSchema,
+  validateStatusesAgainstSource,
+  zodErrorToResponse,
+} from "@/lib/validation/task-rules";
+import { getValidOrderStatuses } from "@/types";
+import { newRequestId, logAndBuildErrorBody } from "@/lib/observability/request-id";
 
 export async function PATCH(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const requestId = newRequestId();
   const user = await getSessionFromRequest(request);
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (!user) return NextResponse.json({ error: "Unauthorized", requestId }, { status: 401 });
   if (user.role !== UserRole.OPS_HEAD) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    return NextResponse.json({ error: "Forbidden", requestId }, { status: 403 });
   }
 
   const { id } = await params;
   if (id === "MANUAL") {
-    return NextResponse.json({ error: "Cannot modify the MANUAL sentinel rule" }, { status: 400 });
+    return NextResponse.json({ error: "Cannot modify the MANUAL sentinel rule", requestId }, { status: 400 });
   }
 
   const rule = await prisma.taskRule.findUnique({ where: { id } });
-  if (!rule) return NextResponse.json({ error: "Rule not found" }, { status: 404 });
+  if (!rule) return NextResponse.json({ error: "Rule not found", requestId }, { status: 404 });
 
   const body = await request.json();
-  const {
-    isActive, slaMinutes, priority, name, titleTemplate,
-    dataSourceId, allowedTypes, allowedStatuses, pollingIntervalMinutes,
-    triggerCondition, escalationChainId, skillTagIds,
-  } = body;
-
-  const updates: Record<string, unknown> = {};
-
-  if (typeof isActive === "boolean") updates.isActive = isActive;
-
-  if (name !== undefined) {
-    if (!name.trim()) return NextResponse.json({ error: "name cannot be empty" }, { status: 400 });
-    updates.name = name.trim();
-  }
-
-  if (titleTemplate !== undefined) {
-    if (!titleTemplate.trim()) return NextResponse.json({ error: "titleTemplate cannot be empty" }, { status: 400 });
-    updates.titleTemplate = titleTemplate.trim();
-  }
-
-  if (dataSourceId !== undefined) {
-    const ds = await prisma.dataSource.findUnique({ where: { id: dataSourceId } });
-    if (!ds) return NextResponse.json({ error: "Data source not found" }, { status: 404 });
-    updates.dataSourceId = dataSourceId;
-  }
-  if (allowedTypes !== undefined) updates.allowedTypes = allowedTypes;
-  if (allowedStatuses !== undefined) updates.allowedStatuses = allowedStatuses;
-  if (pollingIntervalMinutes !== undefined) {
-    const mins = Number(pollingIntervalMinutes);
-    if (isNaN(mins) || mins < 1) return NextResponse.json({ error: "pollingIntervalMinutes must be >= 1" }, { status: 400 });
-    updates.pollingIntervalMinutes = mins;
-  }
-
-  if (slaMinutes !== undefined) {
-    const mins = parseInt(slaMinutes, 10);
-    if (isNaN(mins) || mins < 1) {
-      return NextResponse.json({ error: "slaMinutes must be a positive integer" }, { status: 400 });
+  let parsed: import("@/lib/validation/task-rules").UpdateRuleInput;
+  try {
+    parsed = updateRuleSchema.parse(body);
+  } catch (err) {
+    if (err instanceof ZodError) {
+      return NextResponse.json({ ...zodErrorToResponse(err), requestId }, { status: 400 });
     }
-    updates.slaMinutes = mins;
+    throw err;
   }
 
-  if (priority !== undefined) {
-    if (!Object.values(TaskPriority).includes(priority)) {
-      return NextResponse.json({ error: `Invalid priority: ${priority}` }, { status: 400 });
-    }
-    updates.priority = priority;
+  // Validate dataSourceId resolves
+  if (parsed.dataSourceId !== undefined) {
+    const ds = await prisma.dataSource.findUnique({ where: { id: parsed.dataSourceId } });
+    if (!ds) return NextResponse.json({ error: "Data source not found", requestId }, { status: 404 });
   }
 
-  if (triggerCondition !== undefined) {
-    if (!triggerCondition.statusIn?.length) {
-      return NextResponse.json({ error: "triggerCondition.statusIn must have at least one status" }, { status: 400 });
-    }
-
-    // NEW P1: Validate status values
-    const statusValidation = validateTriggerConditionStatuses(triggerCondition.statusIn);
+  // Validate triggerCondition statuses against the (effective) source.
+  if (parsed.triggerCondition !== undefined) {
+    const effectiveDataSourceId = parsed.dataSourceId ?? rule.dataSourceId;
+    const statusValidation = await validateStatusesAgainstSource(
+      effectiveDataSourceId,
+      parsed.triggerCondition.statusIn
+    );
     if (!statusValidation.valid) {
       return NextResponse.json({
         error: "Invalid order status in triggerCondition.statusIn",
+        code: "VALIDATION_ERROR",
         invalidStatuses: statusValidation.invalidStatuses,
-        validStatuses: getValidOrderStatuses(),
+        validStatuses: statusValidation.validStatuses ?? getValidOrderStatuses(),
+        requestId,
       }, { status: 400 });
     }
+  }
 
-    // NEW P2: Validate metadata conditions if provided
-    if (triggerCondition?.metadataConditions) {
-      const validOps: MetadataOperator[] = [
-        "exists", "not_exists", "equals", "not_equals",
-        "contains", "starts_with", "ends_with",
-        ">", ">=", "<", "<="
-      ];
+  // Map parsed fields → Prisma update payload, omitting fields the caller didn't send.
+  const updates: Record<string, unknown> = {};
+  if (parsed.isActive !== undefined) updates.isActive = parsed.isActive;
+  if (parsed.name !== undefined) updates.name = parsed.name;
+  if (parsed.titleTemplate !== undefined) updates.titleTemplate = parsed.titleTemplate;
+  if (parsed.dataSourceId !== undefined) updates.dataSourceId = parsed.dataSourceId;
+  if (parsed.allowedTypes !== undefined) updates.allowedTypes = parsed.allowedTypes;
+  if (parsed.allowedStatuses !== undefined) updates.allowedStatuses = parsed.allowedStatuses;
+  if (parsed.pollingIntervalMinutes !== undefined) updates.pollingIntervalMinutes = parsed.pollingIntervalMinutes;
+  if (parsed.slaMinutes !== undefined) updates.slaMinutes = parsed.slaMinutes;
+  if (parsed.priority !== undefined) updates.priority = parsed.priority;
+  if (parsed.triggerCondition !== undefined) updates.triggerCondition = parsed.triggerCondition;
+  // escalationChainId is allowed to be null (clear) or a number (set).
+  if ("escalationChainId" in parsed) updates.escalationChainId = parsed.escalationChainId ?? null;
 
-      for (const mc of triggerCondition.metadataConditions) {
-        if (!mc.fieldPath || !mc.operator) {
-          return NextResponse.json({
-            error: "Each metadataCondition must have fieldPath and operator",
-          }, { status: 400 });
-        }
+  const hasSkillUpdate = Array.isArray(parsed.skillTagIds);
+  if (Object.keys(updates).length === 0 && !hasSkillUpdate) {
+    return NextResponse.json({ error: "Nothing to update", requestId }, { status: 400 });
+  }
 
-        if (!validOps.includes(mc.operator as any)) {
-          return NextResponse.json({
-            error: `Invalid operator: ${mc.operator}. Valid: ${validOps.join(", ")}`,
-          }, { status: 400 });
-        }
-
-        // Value is required for most operators
-        if (
-          ["equals", "not_equals", "contains", "starts_with", "ends_with", ">", ">=", "<", "<="]
-            .includes(mc.operator)
-          && mc.value === undefined
-        ) {
-          return NextResponse.json({
-            error: `metadataCondition with operator '${mc.operator}' requires a value`,
-          }, { status: 400 });
+  try {
+    // Run skill update + field update in a transaction
+    const updated = await prisma.$transaction(async (tx) => {
+      if (hasSkillUpdate) {
+        await tx.taskRuleSkill.deleteMany({ where: { taskRuleId: id } });
+        if (parsed.skillTagIds!.length > 0) {
+          await tx.taskRuleSkill.createMany({
+            data: parsed.skillTagIds!.map((sid) => ({ taskRuleId: id, skillTagId: sid })),
+          });
         }
       }
-    }
 
-    updates.triggerCondition = triggerCondition;
-  }
-
-  // escalationChainId: null clears it, a number sets it
-  if ("escalationChainId" in body) {
-    updates.escalationChainId = escalationChainId ? Number(escalationChainId) : null;
-  }
-
-  // Skill tags — full replace when provided
-  const hasSkillUpdate = Array.isArray(skillTagIds);
-  // Source scope — upsert/delete when dataSourceId key is present in body
-  const hasSourceScopeUpdate = "dataSourceId" in body;
-
-  if (Object.keys(updates).length === 0 && !hasSkillUpdate && !hasSourceScopeUpdate) {
-    return NextResponse.json({ error: "Nothing to update" }, { status: 400 });
-  }
-
-  // Run skill update + field update + source scope in a transaction
-  const updated = await prisma.$transaction(async (tx) => {
-    if (hasSkillUpdate) {
-      await tx.taskRuleSkill.deleteMany({ where: { taskRuleId: id } });
-      if (skillTagIds.length > 0) {
-        await tx.taskRuleSkill.createMany({
-          data: (skillTagIds as number[]).map((sid) => ({ taskRuleId: id, skillTagId: sid })),
+      if (Object.keys(updates).length > 0) {
+        return tx.taskRule.update({
+          where: { id },
+          data: updates,
+          include: {
+            taskType: { select: { name: true, label: true } },
+            requiredSkills: { include: { skillTag: { select: { id: true, name: true, label: true } } } },
+            escalationChain: { select: { id: true, name: true } },
+            dataSource: { select: { id: true, sourceId: true, displayName: true } },
+          },
         });
       }
-    }
 
-    if (Object.keys(updates).length > 0) {
-      return tx.taskRule.update({
+      return tx.taskRule.findUnique({
         where: { id },
-        data: updates,
         include: {
           taskType: { select: { name: true, label: true } },
           requiredSkills: { include: { skillTag: { select: { id: true, name: true, label: true } } } },
@@ -164,96 +124,116 @@ export async function PATCH(
           dataSource: { select: { id: true, sourceId: true, displayName: true } },
         },
       });
-    }
-
-    return tx.taskRule.findUnique({
-      where: { id },
-      include: {
-        taskType: { select: { name: true, label: true } },
-        requiredSkills: { include: { skillTag: { select: { id: true, name: true, label: true } } } },
-        escalationChain: { select: { id: true, name: true } },
-        dataSource: { select: { id: true, sourceId: true, displayName: true } },
-      },
     });
-  });
 
-  // P4: Log update with changes summary
-  if (Object.keys(updates).length > 0 || hasSkillUpdate) {
-    const changesSummary: Record<string, { before: any; after: any }> = {};
-
-    // Track field changes
-    if (updates.isActive !== undefined) {
-      changesSummary.isActive = { before: rule.isActive, after: updates.isActive };
-    }
-    if (updates.name !== undefined) {
-      changesSummary.name = { before: rule.name, after: updates.name };
-    }
-    if (updates.titleTemplate !== undefined) {
-      changesSummary.titleTemplate = { before: rule.titleTemplate, after: updates.titleTemplate };
-    }
-    if (updates.slaMinutes !== undefined) {
-      changesSummary.slaMinutes = { before: rule.slaMinutes, after: updates.slaMinutes };
-    }
-    if (updates.priority !== undefined) {
-      changesSummary.priority = { before: rule.priority, after: updates.priority };
-    }
-    if (updates.dataSourceId !== undefined) {
-      changesSummary.dataSourceId = { before: rule.dataSourceId, after: updates.dataSourceId };
-    }
-    if (updates.triggerCondition !== undefined) {
-      changesSummary.triggerCondition = { before: rule.triggerCondition, after: updates.triggerCondition };
-    }
-    if (updates.escalationChainId !== undefined) {
-      changesSummary.escalationChainId = { before: rule.escalationChainId, after: updates.escalationChainId };
+    // Audit log with before/after summary for tracked fields
+    if (Object.keys(updates).length > 0 || hasSkillUpdate) {
+      const changesSummary: Record<string, { before: unknown; after: unknown }> = {};
+      const trackedFields: (keyof typeof updates)[] = [
+        "isActive", "name", "titleTemplate", "slaMinutes",
+        "priority", "dataSourceId", "triggerCondition", "escalationChainId",
+      ];
+      for (const f of trackedFields) {
+        if (updates[f] !== undefined) {
+          changesSummary[f as string] = { before: rule[f as keyof typeof rule], after: updates[f] };
+        }
+      }
+      await logRuleAudit({
+        action: "UPDATE",
+        ruleId: id,
+        changedById: user.id,
+        changesSummary: Object.keys(changesSummary).length > 0 ? changesSummary : undefined,
+        metadata: { ruleName: updated?.name },
+      });
     }
 
-    await logRuleAudit({
-      action: "UPDATE",
-      ruleId: id,
-      changedById: user.id,
-      changesSummary: Object.keys(changesSummary).length > 0 ? changesSummary : undefined,
-      metadata: { ruleName: updated?.name },
-    });
+    return NextResponse.json({ rule: updated, requestId });
+  } catch (error) {
+    return NextResponse.json(
+      logAndBuildErrorBody({
+        requestId,
+        scope: "TaskRulesAPI.PATCH",
+        code: "UPDATE_ERROR",
+        userMessage: "Failed to update task rule",
+        error,
+      }),
+      { status: 500 }
+    );
   }
-
-  return NextResponse.json({ rule: updated });
 }
 
 export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const requestId = newRequestId();
   const user = await getSessionFromRequest(request);
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (!user) return NextResponse.json({ error: "Unauthorized", requestId }, { status: 401 });
   if (user.role !== UserRole.OPS_HEAD) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    return NextResponse.json({ error: "Forbidden", requestId }, { status: 403 });
   }
 
   const { id } = await params;
   if (id === "MANUAL") {
-    return NextResponse.json({ error: "Cannot delete the MANUAL sentinel rule" }, { status: 400 });
+    return NextResponse.json({ error: "Cannot delete the MANUAL sentinel rule", requestId }, { status: 400 });
   }
 
-  const taskCount = await prisma.task.count({ where: { taskRuleId: id } });
-  if (taskCount > 0) {
+  // W1.3 — only block delete when ACTIVE (non-archived) tasks reference the rule.
+  // Operators were unable to delete rules whose only references were archived tasks
+  // (which is the common end-of-life case for any rule that ever fired).
+  const activeTaskCount = await prisma.task.count({
+    where: { taskRuleId: id, isArchived: false },
+  });
+  if (activeTaskCount > 0) {
     return NextResponse.json(
-      { error: `Cannot delete — ${taskCount} task(s) reference this rule. Deactivate it instead.` },
+      {
+        error: `Cannot delete — ${activeTaskCount} active task(s) reference this rule. Deactivate it instead.`,
+        code: "RULE_IN_USE",
+        activeTaskCount,
+        requestId,
+      },
       { status: 409 }
     );
   }
 
-  const rule = await prisma.taskRule.findUnique({ where: { id } });
-
-  await prisma.taskRuleSkill.deleteMany({ where: { taskRuleId: id } });
-  await prisma.taskRule.delete({ where: { id } });
-
-  // P4: Log deletion
-  await logRuleAudit({
-    action: "DELETE",
-    ruleId: id,
-    changedById: user.id,
-    metadata: { ruleName: rule?.name },
+  // Archived tasks: keep them but null out the FK so the rule can go.
+  // The audit log preserves the ruleName so historical attribution is intact.
+  const archivedTaskCount = await prisma.task.count({
+    where: { taskRuleId: id, isArchived: true },
   });
 
-  return NextResponse.json({ success: true });
+  const rule = await prisma.taskRule.findUnique({ where: { id } });
+
+  try {
+    await prisma.$transaction([
+      // Re-attribute archived tasks to the MANUAL sentinel so we don't break
+      // their FK while keeping ruleName traceable via task.metadata if logged.
+      prisma.task.updateMany({
+        where: { taskRuleId: id, isArchived: true },
+        data: { taskRuleId: "MANUAL" },
+      }),
+      prisma.taskRuleSkill.deleteMany({ where: { taskRuleId: id } }),
+      prisma.taskRule.delete({ where: { id } }),
+    ]);
+
+    await logRuleAudit({
+      action: "DELETE",
+      ruleId: id,
+      changedById: user.id,
+      metadata: { ruleName: rule?.name, archivedTasksReattributed: archivedTaskCount },
+    });
+
+    return NextResponse.json({ success: true, archivedTasksReattributed: archivedTaskCount, requestId });
+  } catch (error) {
+    return NextResponse.json(
+      logAndBuildErrorBody({
+        requestId,
+        scope: "TaskRulesAPI.DELETE",
+        code: "DELETE_ERROR",
+        userMessage: "Failed to delete task rule",
+        error,
+      }),
+      { status: 500 }
+    );
+  }
 }

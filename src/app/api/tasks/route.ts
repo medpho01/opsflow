@@ -425,18 +425,30 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: `Invalid priority: ${priority}` }, { status: 400 });
   }
 
-  // Ensure the MANUAL sentinel task rule exists
-  // For the MANUAL sentinel we need a valid dataSourceId — use any existing source
-  const anySource = await prisma.dataSource.findFirst({ select: { id: true } });
-  if (!anySource) {
-    return NextResponse.json({ error: "No data sources configured" }, { status: 500 });
+  // Ensure the MANUAL sentinel task rule exists.
+  //
+  // The MANUAL rule is a row whose `id = 'MANUAL'` carries every manually-
+  // created or system-archived task's FK. It needs a valid dataSourceId
+  // because TaskRule.dataSourceId is NOT NULL — but the row has no semantic
+  // tie to any specific source. Pick the OLDEST active source as a stable
+  // anchor (was: random-first; sources getting deleted left a stale FK).
+  //
+  // The upsert refreshes the dataSourceId on every manual-task POST so a
+  // deleted source can never leave it dangling for long.
+  const anchorSource = await prisma.dataSource.findFirst({
+    where: { isActive: true },
+    orderBy: { createdAt: "asc" },
+    select: { id: true },
+  });
+  if (!anchorSource) {
+    return NextResponse.json({ error: "No active data sources configured" }, { status: 500 });
   }
   const manualRule = await prisma.taskRule.upsert({
     where: { id: "MANUAL" },
     create: {
       id: "MANUAL",
       name: "Manual Task",
-      dataSourceId: anySource.id,
+      dataSourceId: anchorSource.id,
       taskTypeId: parseInt(taskTypeId, 10),
       titleTemplate: "{title}",
       slaMinutes: 60,
@@ -444,7 +456,9 @@ export async function POST(request: NextRequest) {
       triggerCondition: {},
       isActive: false,
     },
-    update: {},
+    // W1.2: refresh the anchor on every call so a deleted-and-recreated
+    // source can't leave the MANUAL rule pointing at a non-existent FK.
+    update: { dataSourceId: anchorSource.id },
   });
 
   const slaDeadline = new Date(Date.now() + Number(slaMinutes) * 60_000);

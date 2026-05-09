@@ -63,6 +63,7 @@ interface TaskRule {
   slaMinutes: number;
   isActive: boolean;
   titleTemplate: string;
+  assignmentStrategy: string;
   requiredSkills: SkillTag[];
   escalationChain: { id: number; name: string } | null;
   totalTasksCreated: number;
@@ -433,12 +434,20 @@ interface RuleDrawerProps {
   onSaved: () => void;
 }
 
+// W4.2 — descriptions surface what each strategy actually does so authors
+// don't have to guess. The engine uses these names verbatim (see
+// pickAssignee in lib/engine/taskCreator.ts).
 const ASSIGNMENT_STRATEGIES = [
-  { value: "default",        label: "Default (Least Loaded)" },
-  { value: "round_robin",    label: "Round Robin" },
-  { value: "store_affinity", label: "Store Affinity" },
-  { value: "skill_based",    label: "Skill Based" },
-  { value: "least_loaded",   label: "Least Loaded" },
+  { value: "default",        label: "Default (Least Loaded + Round Robin)",
+    description: "Pick the agent with the fewest open tasks; if tied, rotate." },
+  { value: "least_loaded",   label: "Least Loaded",
+    description: "Same as Default — pick the agent with the fewest open tasks." },
+  { value: "round_robin",    label: "Round Robin",
+    description: "Rotate evenly across all eligible agents, ignoring current load." },
+  { value: "store_affinity", label: "Store Affinity",
+    description: "Prefer agents assigned to the order's store; least-loaded among them." },
+  { value: "skill_based",    label: "Skill Based",
+    description: "Prefer agents matching the most required skills; least-loaded among them." },
 ];
 
 function RuleDrawer({ rule, allTags, chains, metadataFields, orderStatuses, onClose, onSaved }: RuleDrawerProps) {
@@ -469,7 +478,7 @@ function RuleDrawer({ rule, allTags, chains, metadataFields, orderStatuses, onCl
   const [loadingEnums, setLoadingEnums] = useState(false);
   const [allowedTypes, setAllowedTypes] = useState<string[]>(rule?.allowedTypes ?? []);
   const [allowedStatuses, setAllowedStatuses] = useState<string[]>(rule?.allowedStatuses ?? []);
-  const [assignmentStrategy, setAssignmentStrategy] = useState<string>("default");
+  const [assignmentStrategy, setAssignmentStrategy] = useState<string>(rule?.assignmentStrategy ?? "default");
 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -578,6 +587,7 @@ function RuleDrawer({ rule, allTags, chains, metadataFields, orderStatuses, onCl
         dataSourceId: dataSourceId || null,
         allowedTypes,
         allowedStatuses,
+        assignmentStrategy,
         isDraft,
       };
 
@@ -828,6 +838,9 @@ function RuleDrawer({ rule, allTags, chains, metadataFields, orderStatuses, onCl
                       <option key={s.value} value={s.value}>{s.label}</option>
                     ))}
                   </select>
+                  <p className="text-[10px] text-zinc-500 mt-2 italic">
+                    {ASSIGNMENT_STRATEGIES.find((s) => s.value === assignmentStrategy)?.description}
+                  </p>
                 </div>
 
                 <div>
@@ -1272,6 +1285,25 @@ export default function TaskRulesPanel() {
                         >
                           <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                             <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                          </svg>
+                        </button>
+
+                        {/* W4.1 — Clone rule. Lands as inactive copy; opens edit drawer for review. */}
+                        <button
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            const res = await fetch(`/api/task-rules/${rule.id}/clone`, { method: "POST" });
+                            const data = await res.json();
+                            if (!res.ok) { alert(data.error ?? "Clone failed"); return; }
+                            await fetchAll();
+                            // Open the new clone in the drawer so author can tweak immediately
+                            setDrawerRule(data.rule);
+                          }}
+                          className="shrink-0 p-1.5 rounded-lg text-zinc-600 hover:text-zinc-300 hover:bg-zinc-800 transition-colors"
+                          title="Clone rule"
+                        >
+                          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
                           </svg>
                         </button>
 

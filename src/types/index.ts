@@ -138,6 +138,9 @@ export interface CreateTaskPayload {
   storeId: number | null;
   orderType: string;
   dataSourceId: string;
+  // W4.2 — passed through from rule.assignmentStrategy so pickAssignee
+  // can branch on it. Omitted ⇒ "default" (least-loaded with RR tiebreaker).
+  assignmentStrategy?: "default" | "round_robin" | "store_affinity" | "skill_based" | "least_loaded";
   priority: TaskPriority;
   slaDeadline: Date;
   metadata: Record<string, unknown>;

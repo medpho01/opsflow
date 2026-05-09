@@ -62,6 +62,7 @@ export async function GET(request: NextRequest) {
     isActive: r.isActive,
     titleTemplate: r.titleTemplate,
     triggerCondition: r.triggerCondition,
+    assignmentStrategy: r.assignmentStrategy,
     taskType: r.taskType,
     requiredSkills: r.requiredSkills.map((s) => s.skillTag),
     escalationChain: r.escalationChain,
@@ -138,6 +139,7 @@ export async function POST(request: NextRequest) {
         slaMinutes: parsed.slaMinutes,
         priority: parsed.priority as never,
         triggerCondition: parsed.triggerCondition,
+        assignmentStrategy: parsed.assignmentStrategy,
         // Drafts land inactive — they pass validation but won't fire until
         // the author flips the toggle. See W3.2 in the audit roadmap.
         isActive: !parsed.isDraft,

@@ -82,6 +82,7 @@ export async function PATCH(
   if (parsed.slaMinutes !== undefined) updates.slaMinutes = parsed.slaMinutes;
   if (parsed.priority !== undefined) updates.priority = parsed.priority;
   if (parsed.triggerCondition !== undefined) updates.triggerCondition = parsed.triggerCondition;
+  if (parsed.assignmentStrategy !== undefined) updates.assignmentStrategy = parsed.assignmentStrategy;
   // escalationChainId is allowed to be null (clear) or a number (set).
   if ("escalationChainId" in parsed) updates.escalationChainId = parsed.escalationChainId ?? null;
 

@@ -319,10 +319,26 @@ async function applyRoundRobin(
   return nextCandidate.userId;
 }
 
+// W4.2 — assignment strategies. Names match the CHECK constraint on
+// task_rules.assignmentStrategy.
+type AssignmentStrategy = "default" | "round_robin" | "store_affinity" | "skill_based" | "least_loaded";
+
+/**
+ * Select only the least-loaded subset of candidates. Used as the inner
+ * preference for strategies that want load-aware fairness, and as the
+ * default behaviour when no strategy is selected.
+ */
+function leastLoaded<T extends { _count: { assignedTasks: number } }>(entries: T[]): T[] {
+  if (entries.length === 0) return entries;
+  const minLoad = Math.min(...entries.map((e) => e._count.assignedTasks));
+  return entries.filter((e) => e._count.assignedTasks === minLoad);
+}
+
 async function pickAssignee(
   requiredSkillIds: number[],
   storeId: number | null,
-  dataSourceId: string
+  dataSourceId: string,
+  strategy: AssignmentStrategy = "default"
 ): Promise<number | null> {
   try {
     // Check if this data source has any capability assignments
@@ -358,6 +374,12 @@ async function pickAssignee(
       include: {
         user: { select: { id: true } },
         capabilities: { select: { dataSourceId: true } },
+        // Loaded for strategies that look beyond load (skill_based,
+        // store_affinity). The base query already filters by required skills
+        // when present, but strategies that PREFER more matches still need
+        // the full skill set.
+        skills: { select: { skillTagId: true } },
+        storeAssignments: { select: { storeId: true } },
         weeklySchedules: { where: { dayOfWeek: todayDayOfWeek } },
         rosterExceptions: {
           where: { date: { gte: todayUTC, lt: tomorrowUTC } },
@@ -410,39 +432,92 @@ async function pickAssignee(
       }
     }
 
-    // Group by load and pick minimum load group
-    const loadGroups = new Map<number, typeof eligibleEntries>();
-    for (const entry of eligibleEntries) {
-      const load = entry._count.assignedTasks;
-      if (!loadGroups.has(load)) {
-        loadGroups.set(load, []);
+    // ── Strategy dispatch ─────────────────────────────────────────────────
+    // Each strategy first NARROWS the candidate set (preference), then
+    // hands the survivors to a deterministic tiebreaker (round-robin) so
+    // identical states still produce a fair rotation. Falling back to the
+    // full eligibleEntries when a strategy doesn't apply means an unlucky
+    // configuration never starves a task.
+
+    let preferred: typeof eligibleEntries;
+
+    switch (strategy) {
+      case "round_robin":
+        // Pure rotation across all eligible. No load consideration.
+        preferred = eligibleEntries;
+        break;
+
+      case "store_affinity": {
+        // Prefer agents who own the order's store; fall through to all
+        // eligible if no perfect match exists (or if storeId is null).
+        if (storeId === null) {
+          preferred = eligibleEntries;
+        } else {
+          const affine = eligibleEntries.filter((m) =>
+            m.storeAssignments.some((sa) => sa.storeId === storeId)
+          );
+          preferred = affine.length > 0 ? affine : eligibleEntries;
+        }
+        // Within store-affine candidates, pick least-loaded (busy phlebos
+        // assigned to a store still get spread across the day's tasks).
+        preferred = leastLoaded(preferred);
+        break;
       }
-      loadGroups.get(load)!.push(entry);
+
+      case "skill_based": {
+        // Prefer agents with the MOST matching required skills. The base
+        // query already filtered to ≥1 match when requiredSkillIds is set,
+        // so this is a tie-resolver, not a gate.
+        if (requiredSkillIds.length === 0) {
+          preferred = eligibleEntries;
+        } else {
+          const requiredSet = new Set(requiredSkillIds);
+          const scored = eligibleEntries.map((m) => ({
+            m,
+            matches: m.skills.filter((s) => requiredSet.has(s.skillTagId)).length,
+          }));
+          const maxMatches = Math.max(...scored.map((s) => s.matches));
+          preferred = scored.filter((s) => s.matches === maxMatches).map((s) => s.m);
+        }
+        // Then least-loaded among the top-skill-match group.
+        preferred = leastLoaded(preferred);
+        break;
+      }
+
+      case "least_loaded":
+      case "default":
+      default:
+        // The historical behaviour: pick the lowest current-load group,
+        // then round-robin among ties. "default" and "least_loaded" are
+        // identical semantically; the dropdown lists both so authors
+        // coming from different mental models can find the right name.
+        preferred = leastLoaded(eligibleEntries);
+        break;
     }
 
-    const minLoad = Math.min(...Array.from(loadGroups.keys()));
-    const minLoadMembers = loadGroups.get(minLoad)!;
+    if (preferred.length === 0) {
+      // Strategy filtered everything out — fall back to the full set so a
+      // task is at least assigned, and warn so the operator can fix the
+      // strategy config.
+      console.warn(`[pickAssignee] Strategy "${strategy}" left zero candidates; falling back to least-loaded`);
+      preferred = leastLoaded(eligibleEntries);
+    }
 
     let selected: typeof eligibleEntries[0];
-
-    // Apply round-robin if multiple candidates at min load
-    if (minLoadMembers.length > 1) {
-      const candidates = minLoadMembers.map((m) => ({
-        userId: m.user.id,
-        teamMemberId: m.id,
-      }));
+    if (preferred.length > 1) {
+      const candidates = preferred.map((m) => ({ userId: m.user.id, teamMemberId: m.id }));
       const selectedUserId = await applyRoundRobin(dataSourceId, candidates);
-      selected = minLoadMembers.find((m) => m.user.id === selectedUserId)!;
+      selected = preferred.find((m) => m.user.id === selectedUserId)!;
     } else {
-      selected = minLoadMembers[0];
+      selected = preferred[0];
     }
 
-    console.info(`Task assigned to user ${selected.user.id} (load: ${minLoad})`, {
+    console.info(`[pickAssignee] strategy=${strategy} → user ${selected.user.id} (load: ${selected._count.assignedTasks})`, {
       dataSourceId,
+      strategy,
       userId: selected.user.id,
-      currentLoad: minLoad,
-      totalCandidates: eligibleEntries.length,
-      usedRoundRobin: minLoadMembers.length > 1,
+      candidatePool: eligibleEntries.length,
+      preferredPool: preferred.length,
     });
 
     return selected.user.id;
@@ -458,6 +533,7 @@ async function createTask(payload: CreateTaskPayload): Promise<void> {
   const {
     taskRuleId, taskTypeId, title, entityType, entityId,
     storeId, orderType, dataSourceId, priority, slaDeadline, metadata, checklistSteps,
+    assignmentStrategy,
   } = payload;
 
   // Fetch required skills for this rule
@@ -467,7 +543,7 @@ async function createTask(payload: CreateTaskPayload): Promise<void> {
   });
   const skillIds = ruleSkills.map((r) => r.skillTagId);
 
-  const assigneeId = await pickAssignee(skillIds, storeId, dataSourceId);
+  const assigneeId = await pickAssignee(skillIds, storeId, dataSourceId, assignmentStrategy);
 
   const now = new Date();
   const task = await prisma.task.create({
@@ -628,6 +704,8 @@ export async function evaluateAndCreateTasks(
         storeId: order.storeId,
         orderType: order.orderType,
         dataSourceId: rule.dataSourceId,
+        // W4.2 — pass strategy down so pickAssignee can branch.
+        assignmentStrategy: rule.assignmentStrategy as CreateTaskPayload["assignmentStrategy"],
         priority: rule.priority,
         slaDeadline,
         metadata: {

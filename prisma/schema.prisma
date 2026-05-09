@@ -349,6 +349,12 @@ model TaskRule {
   triggerType            TaskRuleTriggerType @default(TIME)
   triggerCondition       Json
   isActive               Boolean             @default(true)
+  // W4.2 — How pickAssignee picks among eligible candidates. Stored as a
+  // text column rather than a Prisma enum because adding new strategies
+  // later (e.g. `geographic_proximity`, `language_match`) is a one-line
+  // CHECK-constraint change instead of a typegen migration.
+  // Allowed values: default | round_robin | store_affinity | skill_based | least_loaded
+  assignmentStrategy     String              @default("default")
   escalationChainId      Int?
   createdAt              DateTime            @default(now())
   updatedAt              DateTime            @updatedAt

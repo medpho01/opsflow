@@ -66,6 +66,12 @@ export const triggerConditionSchema = z.object({
 }).passthrough(); // tolerate forward-compatible new fields
 
 // ── Rule body — create ──────────────────────────────────────────────────────
+// Must match the CHECK constraint on task_rules.assignmentStrategy.
+export const ASSIGNMENT_STRATEGIES = [
+  "default", "round_robin", "store_affinity", "skill_based", "least_loaded",
+] as const;
+export const assignmentStrategySchema = z.enum(ASSIGNMENT_STRATEGIES);
+
 export const createRuleSchema = z.object({
   name: z.string().min(1).transform((s) => s.trim()),
   dataSourceId: z.string().min(1),
@@ -81,6 +87,7 @@ export const createRuleSchema = z.object({
   pollingIntervalMinutes: z.coerce.number().int().min(POLLING_INTERVAL_MIN).max(POLLING_INTERVAL_MAX).default(15),
   escalationChainId: z.coerce.number().int().nullable().optional(),
   skillTagIds: z.array(z.coerce.number().int().positive()).default([]),
+  assignmentStrategy: assignmentStrategySchema.default("default"),
   isDraft: z.boolean().default(false),
 });
 

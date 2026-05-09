@@ -477,6 +477,10 @@ const EMPTY_TRIGGER: TriggerCondition = {
   metadataConditions: [],
 };
 
+// W5.2 — RuleDrawer reports a "Simulate" click back to the panel which
+// owns the modal state. Lifting the modal up means the simulator survives
+// closing the drawer (so authors can reference it while making edits).
+interface RuleDrawerProps_OnSimulate { onSimulate?: (req: SimRequest) => void }
 interface RuleDrawerProps {
   rule: TaskRule | null;
   allTags: SkillTag[];
@@ -485,6 +489,7 @@ interface RuleDrawerProps {
   orderStatuses: string[];
   onClose: () => void;
   onSaved: () => void;
+  onSimulate?: (req: SimRequest) => void;
 }
 
 // W4.2 — descriptions surface what each strategy actually does so authors
@@ -503,7 +508,7 @@ const ASSIGNMENT_STRATEGIES = [
     description: "Prefer agents matching the most required skills; least-loaded among them." },
 ];
 
-function RuleDrawer({ rule, allTags, chains, metadataFields, orderStatuses, onClose, onSaved }: RuleDrawerProps) {
+function RuleDrawer({ rule, allTags, chains, metadataFields, orderStatuses, onClose, onSaved, onSimulate }: RuleDrawerProps) {
   const isCreate = rule === null;
 
   const [form, setForm] = useState({
@@ -1092,6 +1097,45 @@ function RuleDrawer({ rule, allTags, chains, metadataFields, orderStatuses, onCl
           <button type="button" onClick={onClose} className="px-4 py-2 text-xs text-zinc-400 hover:text-zinc-200 transition-colors">
             Cancel
           </button>
+
+          {/*
+            W5.2 — Simulate. Sends the current form state (unsaved) to the
+            simulator so authors can verify a change before clicking Save.
+            For an EXISTING rule, sends the saved ruleId so dedup info is
+            included in the simulation.
+          */}
+          {onSimulate && (
+            <button
+              type="button"
+              onClick={() => {
+                if (!isCreate && rule) {
+                  onSimulate({ ruleId: rule.id, limit: 100 });
+                  return;
+                }
+                if (!dataSourceId || !(trigger?.statusIn?.length)) {
+                  setError("Pick a data source and at least one status to simulate.");
+                  return;
+                }
+                onSimulate({
+                  rule: {
+                    dataSourceId,
+                    allowedTypes,
+                    allowedStatuses,
+                    triggerType: "TIME",
+                    triggerCondition: trigger,
+                    titleTemplate: form.titleTemplate || "{{patientName}} — {{orderId}}",
+                  },
+                  limit: 100,
+                });
+              }}
+              disabled={saving || !dataSourceId}
+              title={!dataSourceId ? "Pick a data source first" : "Dry-run against last 100 orders — no tasks created"}
+              className="px-4 py-2 bg-blue-600/20 hover:bg-blue-600/30 border border-blue-600/40 text-blue-300 text-xs font-medium rounded-lg disabled:opacity-50 transition-colors"
+            >
+              ▶ Simulate
+            </button>
+          )}
+
           {/*
             W3.2 — Save-as-Draft. The rule lands inactive (won't fire) but
             persisted, so authors can step away and resume. The API skips
@@ -1154,6 +1198,8 @@ export default function TaskRulesPanel() {
   const [saving, setSaving] = useState<string | null>(null);
   const [drawerRule, setDrawerRule] = useState<TaskRule | "create" | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  // W5.2 — simulator modal target. Either a saved ruleId or an inline rule body.
+  const [simulatorRequest, setSimulatorRequest] = useState<SimRequest | null>(null);
 
   const fetchAll = useCallback(async () => {
     setLoading(true);
@@ -1367,6 +1413,20 @@ export default function TaskRulesPanel() {
                           </svg>
                         </button>
 
+                        {/* W5.2 — Simulate the saved rule against the last 100 orders. */}
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSimulatorRequest({ ruleId: rule.id, limit: 100 });
+                          }}
+                          className="shrink-0 p-1.5 rounded-lg text-zinc-600 hover:text-blue-300 hover:bg-zinc-800 transition-colors"
+                          title="Simulate — dry-run against recent orders"
+                        >
+                          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                          </svg>
+                        </button>
+
                         <div className="flex items-center gap-2.5 shrink-0 pl-2 border-l border-zinc-800">
                           <div className="text-center">
                             <div className="text-xs font-semibold text-zinc-300">{rule.tasksLast24h}</div>
@@ -1468,7 +1528,13 @@ export default function TaskRulesPanel() {
           orderStatuses={orderStatuses}
           onClose={() => setDrawerRule(null)}
           onSaved={fetchAll}
+          onSimulate={(req) => setSimulatorRequest(req)}
         />
+      )}
+
+      {/* W5.2 — simulator modal */}
+      {simulatorRequest && (
+        <SimulatorModal request={simulatorRequest} onClose={() => setSimulatorRequest(null)} />
       )}
     </div>
   );
@@ -1675,4 +1741,260 @@ function fmtAvgMins(mins: number): string {
   const h = Math.floor(mins / 60);
   const m = Math.round(mins - h * 60);
   return m === 0 ? `${h}h` : `${h}h ${m}m`;
+}
+
+// ── Simulator Modal (W5.2) ───────────────────────────────────────────────────
+// "Run this rule against the last N orders, show me which would fire and why."
+// Accepts either a saved ruleId OR an inline rule body so authors can simulate
+// edits before clicking Save.
+type SimResult = {
+  entityId: number;
+  orderType: string;
+  orderStatus: string;
+  appointmentTime: string | null;
+  patientName: string | null;
+  storeName: string | null;
+  wouldFire: boolean;
+  wouldDedup: boolean;
+  renderedTitle?: string;
+  reason?: string;
+  failedCheck?: string;
+};
+
+type SimRequest =
+  | { ruleId: string; limit: number }
+  | { rule: {
+      dataSourceId: string;
+      allowedTypes: string[];
+      allowedStatuses: string[];
+      triggerType: "TIME" | "STATUS";
+      triggerCondition: TriggerCondition;
+      titleTemplate: string;
+    }; limit: number };
+
+function SimulatorModal({
+  request,
+  onClose,
+}: {
+  request: SimRequest;
+  onClose: () => void;
+}) {
+  const [data, setData] = useState<{
+    ruleName: string;
+    summary: {
+      sampled: number;
+      availableOrders: number;
+      wouldFire: number;
+      wouldDedup: number;
+      wouldNotFire: number;
+      failedChecks: Record<string, number>;
+    };
+    results: SimResult[];
+  } | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [filter, setFilter] = useState<"all" | "fire" | "skip" | "dedup">("all");
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    fetch("/api/task-rules/simulate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+    })
+      .then(async (r) => {
+        const body = await r.json();
+        if (!r.ok) throw new Error(body?.details?.reason || body?.error || `HTTP ${r.status}`);
+        return body;
+      })
+      .then((d) => { if (!cancelled) setData(d); })
+      .catch((e) => { if (!cancelled) setError(e instanceof Error ? e.message : String(e)); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [JSON.stringify(request)]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Esc to close
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const filtered = data?.results.filter((r) => {
+    if (filter === "all") return true;
+    if (filter === "fire") return r.wouldFire;
+    if (filter === "dedup") return r.wouldDedup;
+    if (filter === "skip") return !r.wouldFire && !r.wouldDedup;
+    return true;
+  }) ?? [];
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70" onClick={onClose}>
+      <div
+        className="w-full max-w-5xl max-h-[90vh] bg-zinc-900 border border-zinc-700 rounded-xl shadow-2xl flex flex-col overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-zinc-700">
+          <div>
+            <h3 className="text-sm font-semibold text-white">Rule Simulator</h3>
+            <p className="text-[10px] text-zinc-500 mt-0.5">
+              Dry-run the rule against recent orders — no tasks are created.
+            </p>
+          </div>
+          <button onClick={onClose} className="p-1.5 rounded-md text-zinc-400 hover:text-white hover:bg-zinc-700 transition-colors">
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-auto">
+          {loading ? (
+            <div className="flex items-center justify-center py-16 text-zinc-400 gap-3">
+              <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+              <span className="text-sm">Simulating against orders…</span>
+            </div>
+          ) : error ? (
+            <div className="px-5 py-8">
+              <div className="text-sm text-red-400 mb-2">Simulation failed</div>
+              <code className="text-[11px] text-zinc-500 break-all">{error}</code>
+            </div>
+          ) : !data ? (
+            <div className="px-5 py-8 text-center text-sm text-zinc-500">No data</div>
+          ) : (
+            <div className="p-5 space-y-4">
+              {/* Summary chips */}
+              <div className="grid grid-cols-4 gap-2">
+                <SummaryStat label="Sampled" value={data.summary.sampled} sub={`of ${data.summary.availableOrders} available`} />
+                <SummaryStat label="Would Fire" value={data.summary.wouldFire} valueClass="text-emerald-400" />
+                <SummaryStat label="Would Dedup" value={data.summary.wouldDedup} valueClass="text-amber-400" sub="already has open task" />
+                <SummaryStat label="Would Skip" value={data.summary.wouldNotFire} valueClass="text-zinc-400" />
+              </div>
+
+              {/* Failed-check breakdown */}
+              {Object.values(data.summary.failedChecks).some((n) => n > 0) && (
+                <div className="bg-zinc-800/40 border border-zinc-700/50 rounded-lg p-3">
+                  <div className="text-[10px] text-zinc-500 uppercase tracking-wider mb-2">Why orders didn't match</div>
+                  <div className="flex flex-wrap gap-2">
+                    {Object.entries(data.summary.failedChecks)
+                      .filter(([, n]) => n > 0)
+                      .sort((a, b) => b[1] - a[1])
+                      .map(([check, n]) => (
+                        <span key={check} className="text-[11px] px-2 py-0.5 bg-zinc-800 border border-zinc-700 rounded text-zinc-300">
+                          {check}: <strong>{n}</strong>
+                        </span>
+                      ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Filter tabs */}
+              <div className="flex items-center gap-2 border-b border-zinc-800">
+                {([
+                  ["all",   `All (${data.results.length})`],
+                  ["fire",  `Would Fire (${data.summary.wouldFire})`],
+                  ["dedup", `Dedup (${data.summary.wouldDedup})`],
+                  ["skip",  `Skip (${data.summary.wouldNotFire})`],
+                ] as const).map(([key, label]) => (
+                  <button
+                    key={key}
+                    onClick={() => setFilter(key)}
+                    className={`px-3 py-1.5 text-xs font-medium border-b-2 transition-colors ${
+                      filter === key
+                        ? "border-blue-500 text-blue-400"
+                        : "border-transparent text-zinc-500 hover:text-zinc-300"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Results table */}
+              {filtered.length === 0 ? (
+                <div className="text-center py-8 text-sm text-zinc-500">No orders in this bucket.</div>
+              ) : (
+                <table className="w-full text-[11px]">
+                  <thead className="text-[10px] text-zinc-500 uppercase tracking-wider">
+                    <tr>
+                      <th className="text-left px-2 py-1.5 w-16"></th>
+                      <th className="text-left px-2 py-1.5">Order</th>
+                      <th className="text-left px-2 py-1.5">Type</th>
+                      <th className="text-left px-2 py-1.5">Status</th>
+                      <th className="text-left px-2 py-1.5">Result</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filtered.map((r) => (
+                      <tr key={r.entityId} className="border-t border-zinc-800/60 hover:bg-zinc-800/40">
+                        <td className="px-2 py-2">
+                          {r.wouldFire ? (
+                            <span className="inline-block px-1.5 py-0.5 text-[9px] rounded bg-emerald-500/20 text-emerald-400 border border-emerald-700/50">FIRE</span>
+                          ) : r.wouldDedup ? (
+                            <span className="inline-block px-1.5 py-0.5 text-[9px] rounded bg-amber-500/20 text-amber-400 border border-amber-700/50">DEDUP</span>
+                          ) : (
+                            <span className="inline-block px-1.5 py-0.5 text-[9px] rounded bg-zinc-700 text-zinc-400">SKIP</span>
+                          )}
+                        </td>
+                        <td className="px-2 py-2 text-zinc-300">
+                          <div className="font-mono">#{r.entityId}</div>
+                          {r.patientName && <div className="text-zinc-500 text-[10px]">{r.patientName}</div>}
+                        </td>
+                        <td className="px-2 py-2 text-zinc-400">{r.orderType}</td>
+                        <td className="px-2 py-2 text-zinc-400">{r.orderStatus}</td>
+                        <td className="px-2 py-2 text-zinc-400">
+                          {r.wouldFire && r.renderedTitle && (
+                            <div className="text-zinc-300 truncate max-w-md" title={r.renderedTitle}>
+                              → {r.renderedTitle}
+                            </div>
+                          )}
+                          {r.wouldDedup && (
+                            <div className="text-amber-400/80 text-[10px]">
+                              already has an open task for this rule
+                            </div>
+                          )}
+                          {r.reason && (
+                            <div className="text-zinc-500 text-[10px]">
+                              {r.failedCheck && <span className="text-zinc-600 mr-1">[{r.failedCheck}]</span>}
+                              {r.reason}
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        {data && (
+          <div className="px-5 py-2 border-t border-zinc-800 text-[10px] text-zinc-600">
+            {data.ruleName} · simulator does not create tasks · pickAssignee not run
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function SummaryStat({ label, value, valueClass = "text-zinc-200", sub }: {
+  label: string;
+  value: number;
+  valueClass?: string;
+  sub?: string;
+}) {
+  return (
+    <div className="bg-zinc-800/50 border border-zinc-700/50 rounded-lg px-3 py-2">
+      <div className={`text-lg font-semibold ${valueClass}`}>{value}</div>
+      <div className="text-[10px] text-zinc-500 leading-tight">{label}</div>
+      {sub && <div className="text-[9px] text-zinc-600 mt-0.5">{sub}</div>}
+    </div>
+  );
 }

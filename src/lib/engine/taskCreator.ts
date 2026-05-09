@@ -206,10 +206,31 @@ function getNestedMetadataValue(metadata: any, fieldPath: string): any {
 
 // ── Trigger evaluation ────────────────────────────────────────────────────────
 
-function evaluateTrigger(order: RawOrder, cond: TriggerCondition, now: Date): boolean {
+/**
+ * W5.2 — structured evaluation result so callers (engine + simulator) can
+ * tell not just IF a rule matches but WHY it didn't. The polling engine just
+ * reads `.matches`; the simulator surfaces `reason` to the operator.
+ */
+export type TriggerResult =
+  | { matches: true }
+  | { matches: false; reason: string; failedCheck: TriggerCheck };
+
+export type TriggerCheck =
+  | "statusIn"
+  | "minutesSinceCreated"
+  | "minutesSinceStatusUpdated"
+  | "minutesBeforeAppointment"
+  | "minutesAfterAppointment"
+  | "metadataConditions";
+
+export function evaluateTrigger(order: RawOrder, cond: TriggerCondition, now: Date): TriggerResult {
   // 1. Order status must be in the allowed set
   if (!Array.isArray(cond.statusIn) || !cond.statusIn.includes(order.orderStatus)) {
-    return false;
+    return {
+      matches: false,
+      failedCheck: "statusIn",
+      reason: `order.orderStatus="${order.orderStatus}" not in [${(cond.statusIn ?? []).join(", ")}]`,
+    };
   }
 
   const msPerMin = 60_000;
@@ -222,34 +243,72 @@ function evaluateTrigger(order: RawOrder, cond: TriggerCondition, now: Date): bo
   // 2. Age since created
   if (cond.minutesSinceCreated !== undefined) {
     const ageMin = (now.getTime() - createdAt.getTime()) / msPerMin;
-    if (ageMin < cond.minutesSinceCreated) return false;
+    if (ageMin < cond.minutesSinceCreated) {
+      return {
+        matches: false,
+        failedCheck: "minutesSinceCreated",
+        reason: `order is ${Math.floor(ageMin)}m old, threshold is ${cond.minutesSinceCreated}m`,
+      };
+    }
   }
 
   // 3. Age since last status change
   if (cond.minutesSinceStatusUpdated !== undefined) {
     const staleMin = (now.getTime() - statusUpdatedAt.getTime()) / msPerMin;
-    if (staleMin < cond.minutesSinceStatusUpdated) return false;
+    if (staleMin < cond.minutesSinceStatusUpdated) {
+      return {
+        matches: false,
+        failedCheck: "minutesSinceStatusUpdated",
+        reason: `status was updated ${Math.floor(staleMin)}m ago, threshold is ${cond.minutesSinceStatusUpdated}m`,
+      };
+    }
   }
 
   // 4. Time before appointment
   if (cond.minutesBeforeAppointment !== undefined) {
     const minBefore = (appointmentTime.getTime() - now.getTime()) / msPerMin;
-    // trigger fires when window <= minutesBeforeAppointment and not past appt
-    if (minBefore > cond.minutesBeforeAppointment || minBefore < 0) return false;
+    if (minBefore > cond.minutesBeforeAppointment) {
+      return {
+        matches: false,
+        failedCheck: "minutesBeforeAppointment",
+        reason: `appointment is ${Math.floor(minBefore)}m away, window is ${cond.minutesBeforeAppointment}m`,
+      };
+    }
+    if (minBefore < 0) {
+      return {
+        matches: false,
+        failedCheck: "minutesBeforeAppointment",
+        reason: `appointment was ${Math.floor(-minBefore)}m ago — past, won't fire`,
+      };
+    }
   }
 
   // 5. Time after appointment
   if (cond.minutesAfterAppointment !== undefined) {
     const minAfter = (now.getTime() - appointmentTime.getTime()) / msPerMin;
-    if (minAfter < cond.minutesAfterAppointment) return false;
+    if (minAfter < cond.minutesAfterAppointment) {
+      return {
+        matches: false,
+        failedCheck: "minutesAfterAppointment",
+        reason: `appointment was ${Math.floor(minAfter)}m ago, threshold is ${cond.minutesAfterAppointment}m post-appt`,
+      };
+    }
   }
 
-  // NEW P2: Metadata conditions
-  if (!evaluateMetadataConditions(order, cond.metadataConditions, now)) {
-    return false;
+  // 6. Metadata conditions (P2)
+  if (cond.metadataConditions && cond.metadataConditions.length > 0) {
+    for (const mc of cond.metadataConditions) {
+      if (!evaluateMetadataCondition(order, mc, now)) {
+        return {
+          matches: false,
+          failedCheck: "metadataConditions",
+          reason: `metadata condition failed: ${mc.fieldPath} ${mc.operator}${mc.value !== undefined ? ` ${JSON.stringify(mc.value)}` : ""}`,
+        };
+      }
+    }
   }
 
-  return true;
+  return { matches: true };
 }
 
 // ── Deduplication ─────────────────────────────────────────────────────────────
@@ -663,8 +722,10 @@ export async function evaluateAndCreateTasks(
           shouldCreate = true;
         }
       } else {
-        // TIME-triggered: Check all conditions
-        shouldCreate = evaluateTrigger(order, cond, now);
+        // TIME-triggered: Check all conditions. evaluateTrigger now returns
+        // a structured result; the engine just reads .matches. The reason
+        // strings are surfaced by the simulator endpoint.
+        shouldCreate = evaluateTrigger(order, cond, now).matches;
       }
 
       if (!shouldCreate) {

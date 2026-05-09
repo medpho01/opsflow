@@ -794,6 +794,10 @@ export default function TeamPanel() {
       </div>
 
       <div className="flex-1 overflow-auto px-6 py-5">
+        {/* W4 — Performance leaderboard (collapsed by default; lives inline so heads
+            don't have to bounce to Analytics) */}
+        {!loading && members.length > 0 && <LeaderboardPanel />}
+
         {/* Roster + Capacity Analytics */}
         {!loading && members.length > 0 && (() => {
           // W3 — team-wide capacity summary so heads can balance load at a glance.
@@ -1075,6 +1079,153 @@ export default function TeamPanel() {
           onSaved={onSaved}
           onDeleted={() => { setEditMember(null); fetchAll(); }}
         />
+      )}
+    </div>
+  );
+}
+
+// ── Leaderboard Panel (W4) ───────────────────────────────────────────────────
+// Per-agent performance ranking surfaced INSIDE the Team page (not buried in
+// Analytics). Collapsible — defaults closed so the team grid stays the
+// primary content; opens when the head wants to compare/coach.
+type LeaderboardEntry = {
+  userId: number;
+  name: string;
+  role: string;
+  totalAssigned: number;
+  completed: number;
+  cancelled: number;
+  breached: number;
+  active: number;
+  slaCompliance: number | null;
+  avgMinutesToComplete: number | null;
+  currentLoad: number;
+  maxConcurrentTasks: number;
+  utilizationPct: number;
+  rank: { byCompleted: number | null; bySlaCompliance: number | null; byVolume: number | null };
+};
+
+export function LeaderboardPanel() {
+  const [open, setOpen] = useState(false);
+  const [range, setRange] = useState<"24h" | "7d" | "30d">("7d");
+  const [sortBy, setSortBy] = useState<"completed" | "sla" | "load">("completed");
+  const [data, setData] = useState<LeaderboardEntry[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    setLoading(true); setError(null);
+    fetch(`/api/team/leaderboard?range=${range}`)
+      .then((r) => r.ok ? r.json() : Promise.reject(`HTTP ${r.status}`))
+      .then((d) => { if (!cancelled) setData(d.entries ?? []); })
+      .catch((e) => { if (!cancelled) setError(String(e)); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [open, range]);
+
+  const sorted = [...data].sort((a, b) => {
+    if (sortBy === "completed") return b.completed - a.completed;
+    if (sortBy === "load")      return b.utilizationPct - a.utilizationPct;
+    // sla: nulls last
+    const av = a.slaCompliance ?? -1;
+    const bv = b.slaCompliance ?? -1;
+    return bv - av;
+  });
+
+  return (
+    <div className="mb-5 border border-zinc-800 rounded-lg bg-zinc-900/40">
+      <button
+        onClick={() => setOpen(!open)}
+        className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-zinc-800/40 transition-colors"
+      >
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-semibold text-white">Performance leaderboard</span>
+          <span className="text-[10px] text-zinc-500">range, sort, and ranks per agent</span>
+        </div>
+        <svg className={`w-4 h-4 text-zinc-500 transition-transform ${open ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+
+      {open && (
+        <div className="border-t border-zinc-800 p-4 space-y-3">
+          <div className="flex items-center justify-between gap-3 text-xs flex-wrap">
+            <div className="flex gap-1">
+              {(["24h","7d","30d"] as const).map((r) => (
+                <button
+                  key={r}
+                  onClick={() => setRange(r)}
+                  className={`px-2 py-1 rounded text-[11px] transition-colors ${range===r ? "bg-blue-600 text-white" : "bg-zinc-800 text-zinc-400 hover:text-zinc-200"}`}
+                >{r}</button>
+              ))}
+            </div>
+            <div className="flex gap-1">
+              <span className="text-zinc-600 text-[10px] uppercase tracking-wider self-center mr-1">Sort</span>
+              {([["completed","Completed"],["sla","SLA"],["load","Load %"]] as const).map(([k, l]) => (
+                <button
+                  key={k}
+                  onClick={() => setSortBy(k)}
+                  className={`px-2 py-1 rounded text-[11px] transition-colors ${sortBy===k ? "bg-zinc-700 text-white" : "bg-zinc-800 text-zinc-400 hover:text-zinc-200"}`}
+                >{l}</button>
+              ))}
+            </div>
+          </div>
+
+          {loading ? (
+            <div className="text-[11px] text-zinc-600 italic py-4 text-center">Loading…</div>
+          ) : error ? (
+            <div className="text-[11px] text-red-400 py-4 text-center">Failed: {error}</div>
+          ) : sorted.length === 0 ? (
+            <div className="text-[11px] text-zinc-600 py-4 text-center">No team activity in the last {range}.</div>
+          ) : (
+            <table className="w-full text-[11px]">
+              <thead className="text-[9px] text-zinc-600 uppercase tracking-wider">
+                <tr>
+                  <th className="text-left px-2 py-1">Agent</th>
+                  <th className="text-right px-2 py-1">Completed</th>
+                  <th className="text-right px-2 py-1">Breached</th>
+                  <th className="text-right px-2 py-1">Cancel</th>
+                  <th className="text-right px-2 py-1">SLA %</th>
+                  <th className="text-right px-2 py-1">Avg Time</th>
+                  <th className="text-right px-2 py-1">Load</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sorted.map((e) => {
+                  const slaClass = e.slaCompliance == null ? "text-zinc-600" :
+                    e.slaCompliance >= 90 ? "text-emerald-400" :
+                    e.slaCompliance >= 70 ? "text-amber-400" : "text-red-400";
+                  const loadClass = e.utilizationPct >= 80 ? "text-red-400" :
+                                    e.utilizationPct >= 60 ? "text-amber-400" : "text-zinc-300";
+                  return (
+                    <tr key={e.userId} className="border-t border-zinc-800/60 hover:bg-zinc-800/40">
+                      <td className="px-2 py-1.5">
+                        <div className="text-zinc-200">{e.name}</div>
+                        <div className="text-[9px] text-zinc-600">
+                          rank: done #{e.rank.byCompleted ?? "—"} · sla #{e.rank.bySlaCompliance ?? "—"} · vol #{e.rank.byVolume ?? "—"}
+                        </div>
+                      </td>
+                      <td className="px-2 py-1.5 text-right text-emerald-300 font-semibold">{e.completed}</td>
+                      <td className={`px-2 py-1.5 text-right ${e.breached>0 ? "text-red-400" : "text-zinc-500"}`}>{e.breached}</td>
+                      <td className={`px-2 py-1.5 text-right ${e.cancelled>0 ? "text-amber-400" : "text-zinc-500"}`}>{e.cancelled}</td>
+                      <td className={`px-2 py-1.5 text-right ${slaClass}`}>
+                        {e.slaCompliance == null ? "—" : `${e.slaCompliance}%`}
+                      </td>
+                      <td className="px-2 py-1.5 text-right text-zinc-400">
+                        {e.avgMinutesToComplete == null ? "—" : `${e.avgMinutesToComplete.toFixed(0)}m`}
+                      </td>
+                      <td className={`px-2 py-1.5 text-right ${loadClass}`}>
+                        {e.currentLoad}/{e.maxConcurrentTasks} <span className="text-zinc-600">({e.utilizationPct}%)</span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
       )}
     </div>
   );

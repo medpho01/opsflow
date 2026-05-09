@@ -1322,6 +1322,9 @@ export function WeeklyHeatmap() {
               </button>
               <span className="text-zinc-300 font-medium px-2">
                 {data ? `${data.weekStart} → ${data.weekEnd}` : displayedWeekStart}
+                {weekOffset === 0 && <span className="text-[9px] text-emerald-500 ml-2 uppercase tracking-wider">this week</span>}
+                {weekOffset < 0 && <span className="text-[9px] text-zinc-600 ml-2">{weekOffset}w ago</span>}
+                {weekOffset > 0 && <span className="text-[9px] text-zinc-600 ml-2">+{weekOffset}w</span>}
               </span>
               <button
                 onClick={() => setWeekOffset((w) => w + 1)}
@@ -1332,8 +1335,9 @@ export function WeeklyHeatmap() {
               </button>
               <button
                 onClick={() => setWeekOffset(0)}
-                className="px-2 py-1 rounded bg-zinc-800 text-zinc-400 hover:text-white transition-colors text-[10px]"
-                title="This week"
+                disabled={weekOffset === 0}
+                className="px-2 py-1 rounded bg-zinc-800 text-zinc-400 hover:text-white transition-colors text-[10px] disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-zinc-400"
+                title={weekOffset === 0 ? "Already on this week" : "Jump to this week"}
               >
                 Today
               </button>
@@ -1537,10 +1541,20 @@ export function CoverageHeatmap() {
           {/* Controls */}
           <div className="flex flex-wrap items-center gap-4 text-xs">
             <div className="flex items-center gap-1">
-              <button onClick={() => setWeekOffset((w) => w - 1)} className="px-2 py-1 rounded bg-zinc-800 text-zinc-400 hover:text-white transition-colors">‹</button>
-              <span className="text-zinc-300 font-medium px-2">{data ? `${data.weekStart} → ${data.weekEnd}` : displayedWeekStart}</span>
-              <button onClick={() => setWeekOffset((w) => w + 1)} className="px-2 py-1 rounded bg-zinc-800 text-zinc-400 hover:text-white transition-colors">›</button>
-              <button onClick={() => setWeekOffset(0)} className="ml-1 px-2 py-1 rounded bg-zinc-800 text-zinc-400 hover:text-white transition-colors text-[10px]">Today</button>
+              <button onClick={() => setWeekOffset((w) => w - 1)} className="px-2 py-1 rounded bg-zinc-800 text-zinc-400 hover:text-white transition-colors" title="Previous week">‹</button>
+              <span className="text-zinc-300 font-medium px-2">
+                {data ? `${data.weekStart} → ${data.weekEnd}` : displayedWeekStart}
+                {weekOffset === 0 && <span className="text-[9px] text-emerald-500 ml-2 uppercase tracking-wider">this week</span>}
+                {weekOffset < 0 && <span className="text-[9px] text-zinc-600 ml-2">{weekOffset}w ago</span>}
+                {weekOffset > 0 && <span className="text-[9px] text-zinc-600 ml-2">+{weekOffset}w</span>}
+              </span>
+              <button onClick={() => setWeekOffset((w) => w + 1)} className="px-2 py-1 rounded bg-zinc-800 text-zinc-400 hover:text-white transition-colors" title="Next week">›</button>
+              <button
+                onClick={() => setWeekOffset(0)}
+                disabled={weekOffset === 0}
+                className="ml-1 px-2 py-1 rounded bg-zinc-800 text-zinc-400 hover:text-white transition-colors text-[10px] disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-zinc-400"
+                title={weekOffset === 0 ? "Already on this week" : "Jump to this week"}
+              >Today</button>
             </div>
 
             <label className="flex items-center gap-2 text-zinc-500">

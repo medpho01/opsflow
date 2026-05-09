@@ -22,28 +22,50 @@ import { sendDailySummary } from "./dailySummary";
 const POLLING_INTERVAL_MS = parseInt(process.env.POLLING_INTERVAL_MS ?? "300000", 10);
 const CRON_EXPRESSION = intervalToCron(POLLING_INTERVAL_MS);
 
-// C1.2: Database-level polling lock (prevent concurrent polling cycles)
+// W2.4 — Polling lock with ownership token + tunable TTL.
+//
+// History of this lock:
+// - v1: row in taskos.polling_locks with 60s TTL. Cycles longer than 60s
+//   let a second cycle start in parallel; the TTL was a hint, not a mutex.
+// - v2 (attempted): pg_try_advisory_lock session-scoped — but Prisma's
+//   connection pool means lock and unlock can land on different physical
+//   connections, leaving the lock held forever from a previous session's
+//   POV. Pure-DB session locks need a single pinned connection, which
+//   would require a deeper Prisma refactor.
+// - v3 (this): row-based TTL lock with an INSTANCE_ID owner token. Only
+//   the instance that took the lock can release it. TTL is configurable
+//   (default 10 min) so cycles longer than the previous 60s budget don't
+//   silently double-fire. If a process dies mid-cycle, the TTL is the
+//   safety net that lets a new instance reclaim the lock.
+// Process-unique instance ID for the polling lock's ownership token. Just a
+// random hex string — we only need uniqueness across concurrent processes,
+// not cryptographic security. Avoids the `crypto` import dance with Next's
+// webpack config (which doesn't accept node: scheme in this setup).
+function makeInstanceId(): string {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 const POLLING_LOCK_KEY = 1000;
-const LOCK_TIMEOUT_MS = 60000; // 60 second lock timeout
+const POLLING_LOCK_TTL_MS = parseInt(process.env.POLLING_LOCK_TTL_MS ?? "600000", 10); // 10 min default
+const INSTANCE_ID = makeInstanceId();
 
 async function acquirePollingLock(): Promise<boolean> {
   try {
     const now = new Date();
-    const lockUntil = new Date(now.getTime() + LOCK_TIMEOUT_MS);
+    const lockUntil = new Date(now.getTime() + POLLING_LOCK_TTL_MS);
 
-    // Try to acquire lock using upsert
-    // If lock doesn't exist, create it; if exists, update only if expired
-    const result = await prisma.$queryRaw<
-      Array<{ acquired: boolean }>
-    >`
-      INSERT INTO taskos."polling_locks" ("lockKey", "lockedAt", "lockedUntil")
-      VALUES (${POLLING_LOCK_KEY}, ${now}, ${lockUntil})
+    // Stash the instance UUID in `lockedBy` so release can verify ownership.
+    const result = await prisma.$queryRaw<Array<{ acquired: boolean }>>`
+      INSERT INTO taskos."polling_locks" ("lockKey", "lockedAt", "lockedUntil", "lockedBy")
+      VALUES (${POLLING_LOCK_KEY}, ${now}, ${lockUntil}, ${INSTANCE_ID})
       ON CONFLICT ("lockKey")
-      DO UPDATE SET "lockedUntil" = ${lockUntil}
+      DO UPDATE SET
+        "lockedAt" = ${now},
+        "lockedUntil" = ${lockUntil},
+        "lockedBy" = ${INSTANCE_ID}
       WHERE "polling_locks"."lockedUntil" < ${now}
       RETURNING TRUE as "acquired";
     `;
-
     return result.length > 0;
   } catch (err) {
     console.error("[Poller] Lock acquisition error:", err);
@@ -53,12 +75,51 @@ async function acquirePollingLock(): Promise<boolean> {
 
 async function releasePollingLock(): Promise<void> {
   try {
+    // Only delete if WE own the lock — protects against a leftover row
+    // belonging to a different (still-running) instance.
     await prisma.$executeRaw`
       DELETE FROM taskos."polling_locks"
-      WHERE "lockKey" = ${POLLING_LOCK_KEY};
+      WHERE "lockKey" = ${POLLING_LOCK_KEY}
+        AND "lockedBy" = ${INSTANCE_ID}
     `;
   } catch (err) {
     console.error("[Poller] Lock release error:", err);
+  }
+}
+
+// ── W2.2: Polling checkpoint ────────────────────────────────────────────────
+// Stores the last `updatedAt` we successfully consumed from a source so the
+// next cycle can ask labstack for "orders changed since X" instead of refetching
+// the entire active-order universe. One row per logical source.
+const SOURCE_KEY_LABSTACK_ORDER = "labstack:Order";
+// 5-minute back-overlap absorbs labstack's clock skew + the lag between
+// labstack's COMMIT and our SELECT. Cheaper to re-fetch a few rows than to
+// miss a status change.
+const CHECKPOINT_BACKLAP_MS = 5 * 60_000;
+
+async function readCheckpoint(sourceKey: string): Promise<Date | null> {
+  try {
+    const rows = await prisma.$queryRaw<Array<{ lastSeenAt: Date }>>`
+      SELECT "lastSeenAt" FROM taskos.engine_checkpoints
+      WHERE "sourceKey" = ${sourceKey}
+    `;
+    return rows[0]?.lastSeenAt ?? null;
+  } catch (err) {
+    console.error("[Poller] readCheckpoint error:", err);
+    return null;
+  }
+}
+
+async function writeCheckpoint(sourceKey: string, seenAt: Date): Promise<void> {
+  try {
+    await prisma.$executeRaw`
+      INSERT INTO taskos.engine_checkpoints ("sourceKey", "lastSeenAt", "updatedAt")
+      VALUES (${sourceKey}, ${seenAt}, NOW())
+      ON CONFLICT ("sourceKey")
+      DO UPDATE SET "lastSeenAt" = ${seenAt}, "updatedAt" = NOW()
+    `;
+  } catch (err) {
+    console.error("[Poller] writeCheckpoint error:", err);
   }
 }
 
@@ -81,10 +142,18 @@ export async function runPollCycle(): Promise<void> {
   try {
     console.log(`[Poller] Cycle started at ${startedAt.toISOString()}`);
 
-    // 1. Fetch orders from labstack
-    const orders = await fetchAllActiveOrders();
+    // 1. Fetch orders from labstack — with a checkpoint cursor (W2.2).
+    // We grab the last successful cycle's seen-time and ask only for orders
+    // touched since. First cycle (no checkpoint row) falls back to the
+    // unbounded fetch. Heuristic 5-minute back-overlap absorbs clock skew
+    // between OpsFlow and labstack — small re-fetch < missed orders.
+    const checkpoint = await readCheckpoint(SOURCE_KEY_LABSTACK_ORDER);
+    const since = checkpoint
+      ? new Date(checkpoint.getTime() - CHECKPOINT_BACKLAP_MS)
+      : null;
+    const orders = await fetchAllActiveOrders(since);
     ordersFound = orders.length;
-    console.log(`[Poller] ${ordersFound} active orders fetched from labstack`);
+    console.log(`[Poller] ${ordersFound} active orders fetched from labstack${since ? ` since ${since.toISOString()}` : " (full scan)"}`);
 
     // 2. Load active rules
     const rules = await loadActiveRules();
@@ -115,6 +184,12 @@ export async function runPollCycle(): Promise<void> {
     } catch (healthErr) {
       console.error("[Poller] Source-health watcher failed (non-fatal):", healthErr);
     }
+
+    // 6. Persist the checkpoint so the NEXT cycle can fetch incrementally.
+    // We anchor on `startedAt` (not "now") so anything labstack updates while
+    // this cycle was running still gets seen by the next one — the back-lap
+    // window in readCheckpoint then provides additional cushion.
+    await writeCheckpoint(SOURCE_KEY_LABSTACK_ORDER, startedAt);
   } catch (err) {
     status = "ERROR";
     errorMessage = err instanceof Error ? err.message : String(err);

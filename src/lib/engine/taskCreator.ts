@@ -665,46 +665,69 @@ async function createTask(payload: CreateTaskPayload): Promise<void> {
       : `auto-${outcome.reason}`; // auto-no_candidates / auto-no_capability / auto-no_active_roster
 
   const now = new Date();
-  const task = await prisma.task.create({
-    data: {
-      taskRuleId,
-      taskTypeId,
-      title,
-      entityType,
-      entityId,
-      storeId,
-      orderType,
-      priority,
-      slaDeadline,
-      // Stash the assignment outcome on the task's metadata so the operator
-      // can see WHY a task is unassigned without grepping logs.
-      metadata: {
-        ...(metadata as Record<string, unknown>),
-        ...(outcome.ok ? {} : { assignmentFailure: { reason: outcome.reason, detail: outcome.detail } }),
-      } as Parameters<typeof prisma.task.create>[0]["data"]["metadata"],
-      status: TaskStatus.CREATED,
-      assignedToId: assigneeId,
-      assignedAt: assigneeId ? now : null,
-      lastStatusUpdate: now,
-      assignmentMethod,
-      assignmentRuleId: taskRuleId,
-      checklistItems: {
-        create: checklistSteps.map((s) => ({
-          stepOrder: s.stepOrder,
-          stepText: s.stepText,
-          isRequired: s.isRequired,
-          isDone: false,
-        })),
-      },
-      history: {
-        create: {
-          status: TaskStatus.CREATED,
-          note: outcome.ok
-            ? "Task auto-created by OpsFlow polling engine"
-            : `Task auto-created (UNASSIGNED — ${outcome.reason}: ${outcome.detail ?? "no detail"})`,
+
+  // W2.3 — wrap the task + checklist + history + assignment in a single
+  // transaction. Previously these were 3 sequential awaits; if the second
+  // failed (e.g. taskHistory.create after task.create), the resulting state
+  // was a task with no history and an inconsistent status, with no signal.
+  // The transaction rolls back the whole thing on any sub-failure.
+  const task = await prisma.$transaction(async (tx) => {
+    const created = await tx.task.create({
+      data: {
+        taskRuleId,
+        taskTypeId,
+        title,
+        entityType,
+        entityId,
+        storeId,
+        orderType,
+        priority,
+        slaDeadline,
+        // Stash the assignment outcome on the task's metadata so the operator
+        // can see WHY a task is unassigned without grepping logs.
+        metadata: {
+          ...(metadata as Record<string, unknown>),
+          ...(outcome.ok ? {} : { assignmentFailure: { reason: outcome.reason, detail: outcome.detail } }),
+        } as Parameters<typeof tx.task.create>[0]["data"]["metadata"],
+        // If assigned, the task lands directly as ASSIGNED — saves one
+        // round-trip vs the previous create-then-update pattern.
+        status: assigneeId ? TaskStatus.ASSIGNED : TaskStatus.CREATED,
+        assignedToId: assigneeId,
+        assignedAt: assigneeId ? now : null,
+        lastStatusUpdate: now,
+        assignmentMethod,
+        assignmentRuleId: taskRuleId,
+        checklistItems: {
+          create: checklistSteps.map((s) => ({
+            stepOrder: s.stepOrder,
+            stepText: s.stepText,
+            isRequired: s.isRequired,
+            isDone: false,
+          })),
+        },
+        history: {
+          create: assigneeId
+            ? [
+                {
+                  status: TaskStatus.CREATED,
+                  note: "Task auto-created by OpsFlow polling engine",
+                },
+                {
+                  status: TaskStatus.ASSIGNED,
+                  changedById: assigneeId,
+                  note: "Auto-assigned by OpsFlow engine",
+                },
+              ]
+            : {
+                status: TaskStatus.CREATED,
+                note: outcome.ok
+                  ? "Task auto-created by OpsFlow polling engine"
+                  : `Task auto-created (UNASSIGNED — ${outcome.reason}: ${outcome.detail ?? "no detail"})`,
+              },
         },
       },
-    },
+    });
+    return created;
   });
 
   // W1.3 — surface engine errors via the alert feed. "no candidates" /
@@ -745,21 +768,9 @@ async function createTask(payload: CreateTaskPayload): Promise<void> {
     }
   }
 
-  // If assigned, add history entry
-  if (assigneeId) {
-    await prisma.taskHistory.create({
-      data: {
-        taskId: task.id,
-        status: TaskStatus.ASSIGNED,
-        changedById: assigneeId,
-        note: `Auto-assigned by OpsFlow engine`,
-      },
-    });
-    await prisma.task.update({
-      where: { id: task.id },
-      data: { status: TaskStatus.ASSIGNED },
-    });
-  }
+  // (W2.3 — assignment history + status are now created inside the
+  // transaction above, so there's no follow-up block here.)
+  void task;
 }
 
 // ── Public entry point ────────────────────────────────────────────────────────
@@ -777,6 +788,34 @@ export async function evaluateAndCreateTasks(
   // they don't need attention yet and would clutter the active queue.
   // Tasks become eligible once the appointment is within this window.
   const maxOrderFutureDays = 3;
+
+  // ─── W2.1: Pre-load dedup keys ─────────────────────────────────────────
+  // Previously isDuplicate ran one DB roundtrip per (rule, order) pair that
+  // passed the trigger — N+1 antipattern that scaled with orders × rules.
+  // At 5K orders × 8 rules × 50% trigger rate this was ~20K queries per
+  // cycle; well over the per-cycle budget at 10K+ orders.
+  //
+  // One query loads every active task's dedup key into a Set; the inner
+  // loop swaps the DB call for an O(1) Set.has() check. The key shape
+  // matches isDuplicate's where-clause: `<entityType>|<taskRuleId>|<entityId>`.
+  // Keys observed in this cycle's hot loop are appended to the Set so two
+  // rules trying to create for the same order in one cycle still dedupe.
+  const ruleIds = rules.map((r) => r.id);
+  const activeTaskKeys = new Set<string>();
+  if (ruleIds.length > 0) {
+    const existingActive = await prisma.task.findMany({
+      where: {
+        taskRuleId: { in: ruleIds },
+        isArchived: false,
+      },
+      select: { taskRuleId: true, entityType: true, entityId: true },
+    });
+    for (const t of existingActive) {
+      activeTaskKeys.add(`${t.entityType}|${t.taskRuleId}|${t.entityId}`);
+    }
+  }
+  const dedupKey = (entityType: string, ruleId: string, entityId: number) =>
+    `${entityType}|${ruleId}|${entityId}`;
 
   for (const order of orders) {
     // Correct for IST timezone offset before any time-based comparison.
@@ -844,12 +883,15 @@ export async function evaluateAndCreateTasks(
         continue;
       }
 
-      // Deduplication: prevent creating multiple tasks for the same (ruleId, orderId)
-      const isDup = await isDuplicate(rule.id, order.id);
-      if (isDup) {
+      // W2.1 — dedup via the pre-loaded Set instead of a per-iteration query.
+      const key = dedupKey("ORDER", rule.id, order.id);
+      if (activeTaskKeys.has(key)) {
         skipped++;
         continue;
       }
+      // Mark as taken so a later rule in this same cycle that targets the
+      // same (rule, order) — vanishingly rare, but possible — also dedupes.
+      activeTaskKeys.add(key);
 
       const slaDeadline = new Date(now.getTime() + rule.slaMinutes * 60_000);
 

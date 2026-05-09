@@ -44,10 +44,17 @@ interface TeamMember {
 
 interface Alert {
   id: number;
-  type: string;
+  // The DB column / Prisma field is `alertType`. Tolerate `type` as a legacy
+  // alias in case any older response shape is in flight after a deploy.
+  alertType?: string;
+  type?: string;
   message: string;
   createdAt: string;
   task: { id: number; title: string; entityId: number } | null;
+}
+
+function alertTypeOf(a: Alert): string {
+  return a.alertType ?? a.type ?? "UNKNOWN";
 }
 
 interface SourceStat {
@@ -323,15 +330,17 @@ export default function HeadCommandCenter() {
                     <p className="text-xs text-zinc-600">No active alerts</p>
                   </div>
                 ) : (
-                  visibleAlerts.slice(0, 8).map((alert) => (
+                  visibleAlerts.slice(0, 8).map((alert) => {
+                    const t = alertTypeOf(alert);
+                    return (
                     <div
                       key={alert.id}
                       className="bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2.5 flex items-start justify-between gap-2"
                     >
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-1.5 flex-wrap">
-                          <p className={`text-xs font-medium ${ALERT_TYPE_COLORS[alert.type] ?? "text-zinc-400"}`}>
-                            {alert.type?.replace(/_/g, " ") ?? "ALERT"}
+                          <p className={`text-xs font-medium ${ALERT_TYPE_COLORS[t] ?? "text-zinc-400"}`}>
+                            {t.replace(/_/g, " ")}
                           </p>
                           {alert.task && (
                             <span className="text-[10px] text-zinc-600 font-mono">
@@ -356,7 +365,8 @@ export default function HeadCommandCenter() {
                         </svg>
                       </button>
                     </div>
-                  ))
+                    );
+                  })
                 )}
               </div>
             </div>

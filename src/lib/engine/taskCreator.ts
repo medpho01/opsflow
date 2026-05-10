@@ -422,7 +422,7 @@ function leastLoaded<T extends { _count: { assignedTasks: number } }>(entries: T
 // The caller can now distinguish them and surface (1) as a normal task
 // state vs (2) as an alertable engine failure.
 export type PickAssigneeOutcome =
-  | { ok: true;  userId: number }
+  | { ok: true;  userId: number; teamMemberId: number }
   | { ok: false; reason: "no_candidates" | "no_capability" | "no_active_roster" | "error"; detail?: string };
 
 async function pickAssignee(
@@ -607,7 +607,7 @@ async function pickAssignee(
       preferredPool: preferred.length,
     });
 
-    return { ok: true, userId: selected.user.id };
+    return { ok: true, userId: selected.user.id, teamMemberId: selected.id };
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     console.error(`[pickAssignee] Error storeId=${storeId} dsId=${dataSourceId}:`, error instanceof Error ? error.stack : String(error));
@@ -646,6 +646,10 @@ async function createTask(payload: CreateTaskPayload): Promise<PickAssigneeOutco
   // tasks into actionable buckets.
   const outcome = await pickAssignee(skillIds, storeId, dataSourceId, assignmentStrategy);
   const assigneeId = outcome.ok ? outcome.userId : null;
+  // Audit arch finding: keep `teamMemberId` in lockstep with `assignedToId`.
+  // Engine used to set only assignedToId while the manual-task path set both,
+  // so any query filtering by teamMemberId silently missed auto-assigned tasks.
+  const assigneeTeamMemberId = outcome.ok ? outcome.teamMemberId : null;
   const assignmentMethod = outcome.ok
     ? "auto"
     : outcome.reason === "error"
@@ -681,6 +685,7 @@ async function createTask(payload: CreateTaskPayload): Promise<PickAssigneeOutco
         // round-trip vs the previous create-then-update pattern.
         status: assigneeId ? TaskStatus.ASSIGNED : TaskStatus.CREATED,
         assignedToId: assigneeId,
+        teamMemberId: assigneeTeamMemberId,
         assignedAt: assigneeId ? now : null,
         lastStatusUpdate: now,
         assignmentMethod,

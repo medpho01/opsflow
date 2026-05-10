@@ -175,9 +175,13 @@ export async function GET(request: NextRequest) {
     ? statusParam.split(",").filter((s) => Object.values(TaskStatus).includes(s as TaskStatus)) as TaskStatus[]
     : undefined;
 
-  // Parse priority filter (comma-separated)
+  // Parse priority filter (comma-separated, validated against enum).
+  // Audit yellow-bug: previously unvalidated; an invalid value crashed
+  // the Prisma query with a 500.
   const priorityFilter = priorityParam
-    ? priorityParam.split(",").filter((p) => p.length > 0)
+    ? priorityParam
+        .split(",")
+        .filter((p) => Object.values(TaskPriority).includes(p as TaskPriority)) as TaskPriority[]
     : undefined;
 
   // Parse source filter (comma-separated)
@@ -203,7 +207,14 @@ export async function GET(request: NextRequest) {
         .filter((id) => !isNaN(id))
     : undefined;
 
-  // Parse date range filters
+  // Parse date range filters.
+  //
+  // Audit yellow-bug on `dateTo`: when the UI passes a date-only string like
+  // "2026-05-09", `new Date("2026-05-09")` parses to 00:00 UTC of that day,
+  // and the `lte` filter then misses every task created during that day.
+  // Bump date-only `dateTo` to the END of the day so the inclusive filter
+  // does what users expect. Detect by checking for the absence of a time
+  // component in the original string.
   let dateFromFilter: Date | undefined;
   let dateToFilter: Date | undefined;
   if (dateFromParam) {
@@ -212,24 +223,39 @@ export async function GET(request: NextRequest) {
   }
   if (dateToParam) {
     const parsed = new Date(dateToParam);
-    if (!isNaN(parsed.getTime())) dateToFilter = parsed;
+    if (!isNaN(parsed.getTime())) {
+      const isDateOnly = /^\d{4}-\d{2}-\d{2}$/.test(dateToParam);
+      dateToFilter = isDateOnly
+        ? new Date(parsed.getTime() + 24 * 60 * 60 * 1000 - 1)
+        : parsed;
+    }
   }
 
   // Parse SLA risk filter
   const slaRiskOnly = slaRiskOnlyParam === "true";
 
-  // Role-based scoping
+  // Role-based scoping.
+  //
+  // Audit P0 #2 — STORE_ADMIN scoping bypass. The previous implementation
+  // set `where.storeId = { in: <admin's stores> }` and was overwritten two
+  // lines later by `if (storeId) where.storeId = parseInt(...)`, letting a
+  // STORE_ADMIN read tasks for any store by passing `?storeId=X`.
+  //
+  // Fix: derive the admin's store list FIRST, then compose the
+  // user-supplied `storeId` filter against that list (intersect, never
+  // overwrite). OPS_AGENT scope (own tasks) is composed similarly so an
+  // explicit `assigneeId` filter can't broaden it.
   const where: Record<string, unknown> = {};
+  let adminStoreIds: number[] | null = null; // null = no role-based store gate
 
   if (user.role === UserRole.OPS_AGENT) {
     where.assignedToId = user.id;
   } else if (user.role === UserRole.STORE_ADMIN) {
     const member = await prisma.teamMember.findFirst({
       where: { userId: user.id },
-      include: { storeAssignments: true },
+      include: { storeAssignments: { select: { storeId: true } } },
     });
-    const ids = member?.storeAssignments.map((a) => a.storeId) ?? [];
-    where.storeId = { in: ids };
+    adminStoreIds = member?.storeAssignments.map((a) => a.storeId) ?? [];
   }
   // OPS_HEAD sees everything
 
@@ -239,8 +265,29 @@ export async function GET(request: NextRequest) {
   // Apply filters
   if (statusFilter?.length) where.status = { in: statusFilter };
   if (priorityFilter?.length) where.priority = { in: priorityFilter };
-  if (assigneeIdFilter?.length) where.assignedToId = { in: assigneeIdFilter };
-  if (storeId) where.storeId = parseInt(storeId, 10);
+  // Compose, don't overwrite: agent's own scope already bound `assignedToId`.
+  // For non-agents, an `assigneeId=...` param applies as the only constraint.
+  if (assigneeIdFilter?.length && user.role !== UserRole.OPS_AGENT) {
+    where.assignedToId = { in: assigneeIdFilter };
+  }
+
+  // ── Store scoping (compose with role-based admin scope) ───────────────
+  // - OPS_HEAD with no `storeId` param: no store gate.
+  // - OPS_HEAD with `storeId`: gate to that store.
+  // - STORE_ADMIN with no `storeId` param: gate to admin's stores.
+  // - STORE_ADMIN with `storeId`: gate to that store iff it's in admin's
+  //   stores; otherwise gate to id=-1 (returns nothing) — never broaden.
+  if (adminStoreIds !== null) {
+    if (storeId) {
+      const requested = parseInt(storeId, 10);
+      where.storeId = adminStoreIds.includes(requested) ? requested : -1;
+    } else {
+      where.storeId = { in: adminStoreIds };
+    }
+  } else if (storeId) {
+    where.storeId = parseInt(storeId, 10);
+  }
+
   if (orderId) where.entityId = parseInt(orderId, 10);
   if (sourceFilter?.length) where.source = { in: sourceFilter };
   if (sourceTypeFilter?.length) where.sourceType = { in: sourceTypeFilter };
@@ -254,6 +301,19 @@ export async function GET(request: NextRequest) {
     where.createdAt = {};
     if (dateFromFilter) (where.createdAt as Record<string, unknown>).gte = dateFromFilter;
     if (dateToFilter) (where.createdAt as Record<string, unknown>).lte = dateToFilter;
+  }
+
+  // SLA-risk filter pushed into the SQL WHERE (was previously applied AFTER
+  // pagination, which made `pagination.total` wrong — the count came from
+  // the unfiltered query while the page came from the filtered subset). The
+  // semantics match the slaStatus mapping below: warning (<30min remaining),
+  // critical (<10min), or breached (slaDeadline < now OR status=BREACHED).
+  if (slaRiskOnly) {
+    const warningCutoff = new Date(now.getTime() + 30 * 60 * 1000);
+    where.OR = [
+      { status: TaskStatus.BREACHED },
+      { slaDeadline: { lt: warningCutoff } },
+    ];
   }
 
   // Build the orderBy clause with tiebreakers
@@ -363,7 +423,10 @@ export async function GET(request: NextRequest) {
       // sourceEntityId is a BigInt in the DB — convert to string so JSON.stringify doesn't throw
       sourceEntityId: task.sourceEntityId != null ? task.sourceEntityId.toString() : null,
       slaStatus,
-      minutesRemaining: Math.max(0, minutesRemaining),
+      // Signed minutesRemaining — negative means breached by N min. The
+      // previous `Math.max(0, ...)` clamped to zero and lost the magnitude
+      // every breach UI needs to render "breached by 12m".
+      minutesRemaining,
       assignmentMethod,
       assignmentRuleId,
       slaContext,
@@ -372,13 +435,9 @@ export async function GET(request: NextRequest) {
     };
   });
 
-  // Phase 2: Apply SLA risk filter (warning, critical, or breached)
-  let filteredTasks = tasksWithMeta;
-  if (slaRiskOnly) {
-    filteredTasks = tasksWithMeta.filter(
-      (task) => task.slaStatus === "warning" || task.slaStatus === "critical" || task.slaStatus === "breached"
-    );
-  }
+  // SLA-risk filter is now applied at the SQL WHERE level above, so
+  // pagination.total reflects the filtered count.
+  const filteredTasks = tasksWithMeta;
 
   // Build appliedFilters response object for UI
   const appliedFilters: Record<string, unknown> = {};

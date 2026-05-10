@@ -11,6 +11,37 @@ import { TaskStatus, UserRole } from "@prisma/client";
 // path has been removed. Task completion is recorded in taskos.task_history
 // only; the labstack Order row is left untouched.)
 
+/**
+ * Resolve store IDs a STORE_ADMIN is permitted to act on. Empty array means
+ * the admin has no store assignments — they should be forbidden from acting
+ * on any task.
+ */
+async function getAdminStoreIds(userId: number): Promise<number[]> {
+  const member = await prisma.teamMember.findFirst({
+    where: { userId },
+    include: { storeAssignments: { select: { storeId: true } } },
+  });
+  return member?.storeAssignments.map((a) => a.storeId) ?? [];
+}
+
+/**
+ * Returns true iff the user is allowed to read/write this task. Centralises
+ * the role-based scoping rule so GET and PATCH agree (audit P0 #4 — PATCH
+ * previously only checked OPS_AGENT-not-own and let STORE_ADMINs touch any
+ * task).
+ */
+async function canAccessTask(
+  user: { id: number; role: UserRole },
+  task: { assignedToId: number | null; storeId: number | null }
+): Promise<boolean> {
+  if (user.role === UserRole.OPS_HEAD) return true;
+  if (user.role === UserRole.OPS_AGENT) return task.assignedToId === user.id;
+  // STORE_ADMIN: must own the task's store
+  if (task.storeId == null) return false;
+  const storeIds = await getAdminStoreIds(user.id);
+  return storeIds.includes(task.storeId);
+}
+
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -20,6 +51,9 @@ export async function GET(
 
   const { id } = await params;
   const taskId = parseInt(id, 10);
+  if (isNaN(taskId)) {
+    return NextResponse.json({ error: "Invalid task id" }, { status: 400 });
+  }
 
   const task = await prisma.task.findUnique({
     where: { id: taskId },
@@ -37,8 +71,7 @@ export async function GET(
 
   if (!task) return NextResponse.json({ error: "Task not found" }, { status: 404 });
 
-  // Access control: agents can only see their own tasks
-  if (user.role === UserRole.OPS_AGENT && task.assignedToId !== user.id) {
+  if (!(await canAccessTask(user, task))) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
@@ -54,13 +87,16 @@ export async function PATCH(
 
   const { id } = await params;
   const taskId = parseInt(id, 10);
+  if (isNaN(taskId)) {
+    return NextResponse.json({ error: "Invalid task id" }, { status: 400 });
+  }
+
   const body = await request.json();
 
   const task = await prisma.task.findUnique({ where: { id: taskId } });
   if (!task) return NextResponse.json({ error: "Task not found" }, { status: 404 });
 
-  // Agents can only update their own tasks
-  if (user.role === UserRole.OPS_AGENT && task.assignedToId !== user.id) {
+  if (!(await canAccessTask(user, task))) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
@@ -97,17 +133,49 @@ export async function PATCH(
   }
 
   // ── Checklist item toggle ─────────────────────────────────────────
+  // Audit P1: previously the route updated whatever checklistItemId the
+  // caller supplied without verifying it belonged to this task. A
+  // logged-in agent could toggle any checklist item across any task by
+  // guessing ids. Now we constrain the update to (id AND taskId).
   if (checklistItemId !== undefined && isDone !== undefined) {
-    await prisma.taskChecklistItem.update({
-      where: { id: checklistItemId },
+    const updated = await prisma.taskChecklistItem.updateMany({
+      where: { id: checklistItemId, taskId },
       data: { isDone, doneAt: isDone ? new Date() : null },
     });
+    if (updated.count === 0) {
+      return NextResponse.json(
+        { error: "Checklist item not found on this task" },
+        { status: 404 }
+      );
+    }
   }
 
   // ── Re-assign (OPS_HEAD / STORE_ADMIN only) ───────────────────────
+  // Audit P1: PATCH previously accepted any `assignedToId` without
+  // verifying the user existed or was an OPS_AGENT. Verify both before
+  // landing the change so a typo or malicious id can't orphan the task.
   if (assignedToId !== undefined && user.role !== UserRole.OPS_AGENT) {
-    updates.assignedToId = assignedToId;
-    updates.assignedAt = new Date();
+    const target =
+      assignedToId === null
+        ? null
+        : await prisma.user.findUnique({
+            where: { id: Number(assignedToId) },
+            select: { id: true, role: true, isActive: true, teamMember: { select: { id: true } } },
+          });
+
+    if (assignedToId !== null) {
+      if (!target || !target.isActive || target.role !== UserRole.OPS_AGENT) {
+        return NextResponse.json(
+          { error: "Invalid assignee — must be an active OPS_AGENT" },
+          { status: 400 }
+        );
+      }
+    }
+
+    updates.assignedToId = target?.id ?? null;
+    // Keep teamMemberId in sync (audit arch finding — divergent dual writes)
+    updates.teamMemberId = target?.teamMember?.id ?? null;
+    updates.assignedAt = target ? new Date() : null;
 
     if (!status) {
       // If only reassigning (no status change), also create history
@@ -116,14 +184,16 @@ export async function PATCH(
           taskId,
           status: task.status,
           changedById: user.id,
-          note: `Reassigned to user #${assignedToId}`,
+          note: target
+            ? `Reassigned to user #${target.id}`
+            : `Unassigned`,
         },
       });
     }
   }
 
   // ── Standalone note (no status change) ──────────────────────────
-  const standaloneNote = !status && !assignedToId && note?.trim() && checklistItemId === undefined;
+  const standaloneNote = !status && assignedToId === undefined && note?.trim() && checklistItemId === undefined;
   if (standaloneNote) {
     await prisma.taskHistory.create({
       data: {

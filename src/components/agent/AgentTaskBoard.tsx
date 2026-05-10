@@ -330,7 +330,12 @@ export default function AgentTaskBoard({ userId, userName }: { userId: number; u
       {/* ── Right: Task Detail ── */}
       <div className="flex-1 min-w-0">
         {selectedTask ? (
+          // `key` forces a fresh mount when the user clicks a different task —
+          // TaskDetailPanel mirrors `task` into local state via useState(task)
+          // and doesn't sync on prop change, so without the key the panel
+          // would stay stuck on whatever task was opened first.
           <TaskDetailPanel
+            key={selectedTask.id}
             task={selectedTask}
             onUpdate={() => setRefreshKey((k) => k + 1)}
           />

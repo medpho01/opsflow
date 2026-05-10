@@ -43,6 +43,69 @@ interface TaskDetailPanelProps {
   onUpdate: () => void;
 }
 
+// W3 — "Why this task?" panel.
+// Reads `metadata.whyThisTask`, which the engine stamps onto the task at
+// creation time (see taskCreator.ts). For older tasks (created before W3
+// shipped) the block is missing and the panel renders a graceful fallback.
+function WhyThisTask({ metadata }: { metadata: Record<string, unknown> | null | undefined }) {
+  const why = (metadata && (metadata.whyThisTask as
+    | {
+        ruleName?: string;
+        ruleId?: string;
+        triggerType?: "STATUS" | "TIME";
+        matchedFacts?: { check: string; detail: string }[];
+        evaluatedAt?: string;
+      }
+    | undefined)) || null;
+
+  // Graceful fallback for legacy tasks: still show "Why this task?" with
+  // whatever rule context is on hand, so the section header isn't a lie.
+  if (!why || !why.ruleName) {
+    const manual = (metadata as Record<string, unknown> | null)?.manual === true;
+    return (
+      <div>
+        <h3 className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-2">
+          Why this task?
+        </h3>
+        <div className="rounded-lg border border-zinc-800 bg-zinc-900/40 px-3 py-2 text-xs text-zinc-500">
+          {manual
+            ? "Created manually by an Ops Head."
+            : "Trigger details not recorded for this task (created before this surface was added)."}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <h3 className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-2">
+        Why this task?
+      </h3>
+      <div className="rounded-lg border border-zinc-800 bg-zinc-900/60 px-3 py-3 space-y-2">
+        <div className="flex items-baseline gap-2">
+          <span className="text-[10px] uppercase tracking-wider text-zinc-600">Rule</span>
+          <span className="text-sm font-medium text-zinc-100">{why.ruleName}</span>
+          {why.triggerType && (
+            <span className="text-[10px] uppercase tracking-wider text-zinc-600 ml-auto">
+              {why.triggerType}-triggered
+            </span>
+          )}
+        </div>
+        {why.matchedFacts && why.matchedFacts.length > 0 && (
+          <ul className="space-y-1 pl-1">
+            {why.matchedFacts.map((f, i) => (
+              <li key={i} className="text-xs text-zinc-300 flex gap-2">
+                <span className="text-zinc-600 shrink-0">•</span>
+                <span>{f.detail}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}
+
 const NEXT_STATUS: Record<string, { label: string; status: string; cls: string }[]> = {
   ASSIGNED: [{ label: "Start Task", status: "IN_PROGRESS", cls: "bg-blue-600 hover:bg-blue-500 text-white" }],
   CREATED: [{ label: "Start Task", status: "IN_PROGRESS", cls: "bg-blue-600 hover:bg-blue-500 text-white" }],
@@ -284,6 +347,9 @@ export default function TaskDetailPanel({ task, onUpdate }: TaskDetailPanelProps
             ))}
           </div>
         </div>
+
+        {/* W3 — Why this task? */}
+        <WhyThisTask metadata={displayedTask.metadata} />
 
         {/* Phase 2 Feature 7: SLA Timeline Context - Not yet implemented */}
         {/* Uncomment when Phase 2 features are added

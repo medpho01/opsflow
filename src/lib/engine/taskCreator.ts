@@ -202,8 +202,18 @@ function getNestedMetadataValue(metadata: any, fieldPath: string): any {
  * tell not just IF a rule matches but WHY it didn't. The polling engine just
  * reads `.matches`; the simulator surfaces `reason` to the operator.
  */
+// W3 — when a trigger matches, we capture the human-readable facts that
+// caused it to fire. These are stamped onto Task.metadata.whyThisTask so
+// the agent's "Why this task?" panel can answer the question without
+// re-evaluating the rule. Authoring tools (the simulator) reuse the same
+// shape.
+export type TriggerMatchedFact = {
+  check: TriggerCheck;
+  detail: string;
+};
+
 export type TriggerResult =
-  | { matches: true }
+  | { matches: true; matchedFacts: TriggerMatchedFact[] }
   | { matches: false; reason: string; failedCheck: TriggerCheck };
 
 export type TriggerCheck =
@@ -215,6 +225,11 @@ export type TriggerCheck =
   | "metadataConditions";
 
 export function evaluateTrigger(order: RawOrder, cond: TriggerCondition, now: Date): TriggerResult {
+  // W3 — collect facts about each check that passed so the agent can later
+  // see WHY their task fired. Matched facts are intentionally human-readable
+  // (no JSON ids), since they end up rendered verbatim in TaskDetailPanel.
+  const matchedFacts: TriggerMatchedFact[] = [];
+
   // 1. Order status must be in the allowed set
   if (!Array.isArray(cond.statusIn) || !cond.statusIn.includes(order.orderStatus)) {
     return {
@@ -223,6 +238,10 @@ export function evaluateTrigger(order: RawOrder, cond: TriggerCondition, now: Da
       reason: `order.orderStatus="${order.orderStatus}" not in [${(cond.statusIn ?? []).join(", ")}]`,
     };
   }
+  matchedFacts.push({
+    check: "statusIn",
+    detail: `order is in ${order.orderStatus}`,
+  });
 
   const msPerMin = 60_000;
 
@@ -248,6 +267,10 @@ export function evaluateTrigger(order: RawOrder, cond: TriggerCondition, now: Da
         reason: `order is ${Math.floor(ageMin)}m old, threshold is ${cond.minutesSinceCreated}m`,
       };
     }
+    matchedFacts.push({
+      check: "minutesSinceCreated",
+      detail: `order is ${Math.floor(ageMin)}m old (threshold ${cond.minutesSinceCreated}m)`,
+    });
   }
 
   // 3. Age since last status change
@@ -263,6 +286,10 @@ export function evaluateTrigger(order: RawOrder, cond: TriggerCondition, now: Da
         reason: `status was updated ${Math.floor(staleMin)}m ago, threshold is ${cond.minutesSinceStatusUpdated}m`,
       };
     }
+    matchedFacts.push({
+      check: "minutesSinceStatusUpdated",
+      detail: `order has been in ${order.orderStatus} for ${Math.floor(staleMin)}m (threshold ${cond.minutesSinceStatusUpdated}m)`,
+    });
   }
 
   // 4. Time before appointment
@@ -285,6 +312,10 @@ export function evaluateTrigger(order: RawOrder, cond: TriggerCondition, now: Da
         reason: `appointment was ${Math.floor(-minBefore)}m ago — past, won't fire`,
       };
     }
+    matchedFacts.push({
+      check: "minutesBeforeAppointment",
+      detail: `appointment is in ${Math.floor(minBefore)}m (window ${cond.minutesBeforeAppointment}m)`,
+    });
   }
 
   // 5. Time after appointment
@@ -300,6 +331,10 @@ export function evaluateTrigger(order: RawOrder, cond: TriggerCondition, now: Da
         reason: `appointment was ${Math.floor(minAfter)}m ago, threshold is ${cond.minutesAfterAppointment}m post-appt`,
       };
     }
+    matchedFacts.push({
+      check: "minutesAfterAppointment",
+      detail: `appointment was ${Math.floor(minAfter)}m ago (threshold ${cond.minutesAfterAppointment}m)`,
+    });
   }
 
   // 6. Metadata conditions (P2)
@@ -312,10 +347,14 @@ export function evaluateTrigger(order: RawOrder, cond: TriggerCondition, now: Da
           reason: `metadata condition failed: ${mc.fieldPath} ${mc.operator}${mc.value !== undefined ? ` ${JSON.stringify(mc.value)}` : ""}`,
         };
       }
+      matchedFacts.push({
+        check: "metadataConditions",
+        detail: `${mc.fieldPath} ${mc.operator}${mc.value !== undefined ? ` ${JSON.stringify(mc.value)}` : ""}`,
+      });
     }
   }
 
-  return { matches: true };
+  return { matches: true, matchedFacts };
 }
 
 // ── Deduplication ─────────────────────────────────────────────────────────────
@@ -889,17 +928,28 @@ export async function evaluateAndCreateTasks(
       // Handle STATUS vs TIME-triggered rules differently
       const triggerType = rule.triggerType ?? "TIME";
       let shouldCreate = false;
+      // W3 — capture the facts that caused this rule to fire so we can
+      // stamp them on the task's metadata (read by "Why this task?" panel).
+      let matchedFacts: TriggerMatchedFact[] = [];
 
       if (triggerType === "STATUS") {
         // STATUS-triggered: Create only if status matches (no time checks)
         if (Array.isArray(cond.statusIn) && cond.statusIn.includes(order.orderStatus)) {
           shouldCreate = true;
+          matchedFacts = [{
+            check: "statusIn",
+            detail: `order is in ${order.orderStatus} (status-trigger rule)`,
+          }];
         }
       } else {
-        // TIME-triggered: Check all conditions. evaluateTrigger now returns
-        // a structured result; the engine just reads .matches. The reason
-        // strings are surfaced by the simulator endpoint.
-        shouldCreate = evaluateTrigger(order, cond, now).matches;
+        // TIME-triggered: Check all conditions. evaluateTrigger returns the
+        // matched facts on success; the simulator endpoint surfaces failed
+        // checks with reason strings.
+        const result = evaluateTrigger(order, cond, now);
+        if (result.matches) {
+          shouldCreate = true;
+          matchedFacts = result.matchedFacts;
+        }
       }
 
       if (!shouldCreate) {
@@ -957,6 +1007,15 @@ export async function evaluateAndCreateTasks(
           storeName: order.storeName,
           phleboName: order.phleboName,
           phleboNumber: order.phleboNumber,
+          // W3 — "Why this task?" payload. Read verbatim by the agent
+          // panel; do not embed ids the agent shouldn't see.
+          whyThisTask: {
+            ruleId: rule.id,
+            ruleName: rule.name,
+            triggerType,
+            matchedFacts,
+            evaluatedAt: now.toISOString(),
+          },
         },
         checklistSteps: rule.taskType.checklistItems.map((ci) => ({
           stepOrder: ci.stepOrder,

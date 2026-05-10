@@ -1,10 +1,20 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
+import Link from "next/link";
 import SlaCountdown from "@/components/shared/SlaCountdown";
 import PriorityBadge from "@/components/shared/PriorityBadge";
 import StatusBadge from "@/components/shared/StatusBadge";
 import CreateTaskModal from "@/components/head/CreateTaskModal";
+
+/**
+ * IST-anchored "today" key — used to drive drill-in links to All Tasks for
+ * the "Done Today" / "Breached Today" tiles. Matches /api/dashboard's
+ * IST anchoring so the filtered table shows the same set the tile counts.
+ */
+function todayISTKey(): string {
+  return new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+}
 
 interface Stats {
   activeOrders: number;
@@ -78,6 +88,44 @@ const ALERT_TYPE_COLORS: Record<string, string> = {
   UNASSIGNED_TASK: "text-blue-400",
   ESCALATION: "text-purple-400",
 };
+
+/**
+ * RosterGlanceTile — single-row breakdown of the team's current
+ * rosterStatus values. Buckets match computeRosterStatus's output enum:
+ * ACTIVE / ON_LEAVE / SICK / OFF. Renders compactly so it fits between
+ * the KPI strip and the source chips without adding vertical weight.
+ */
+function RosterGlanceTile({ team }: { team: TeamMember[] }) {
+  const counts = useMemo(() => {
+    const acc = { ACTIVE: 0, ON_LEAVE: 0, SICK: 0, OFF: 0 } as Record<string, number>;
+    for (const m of team) {
+      const key = (m.rosterStatus in acc) ? m.rosterStatus : "OFF";
+      acc[key]++;
+    }
+    return acc;
+  }, [team]);
+
+  const buckets: Array<{ label: string; key: string; cls: string; dot: string }> = [
+    { label: "Active",   key: "ACTIVE",   cls: "text-emerald-400", dot: "bg-emerald-400" },
+    { label: "On Leave", key: "ON_LEAVE", cls: "text-amber-400",   dot: "bg-amber-400" },
+    { label: "Sick",     key: "SICK",     cls: "text-pink-400",    dot: "bg-pink-400" },
+    { label: "Off",      key: "OFF",      cls: "text-zinc-500",    dot: "bg-zinc-600" },
+  ];
+
+  return (
+    <div className="flex flex-wrap items-center gap-4 bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-2.5">
+      <span className="text-[10px] text-zinc-600 uppercase tracking-wider font-semibold">Roster</span>
+      {buckets.map(b => (
+        <div key={b.key} className="flex items-center gap-2">
+          <span className={`w-1.5 h-1.5 rounded-full ${b.dot}`} />
+          <span className="text-xs text-zinc-400">{b.label}</span>
+          <span className={`text-xs font-semibold ${b.cls}`}>{counts[b.key]}</span>
+        </div>
+      ))}
+      <span className="ml-auto text-[10px] text-zinc-600">{team.length} total</span>
+    </div>
+  );
+}
 
 export default function HeadCommandCenter() {
   const [data, setData] = useState<DashboardData | null>(null);
@@ -183,24 +231,78 @@ export default function HeadCommandCenter() {
       </div>
 
       <div className="px-6 py-5 space-y-6">
-        {/* ── Stats bar ── */}
+        {/* ── Stats bar — each tile drills into /head/tasks pre-filtered.
+            "Active Orders" + "SLA Health" stay non-interactive (one is a
+            labstack count without a tasks-side equivalent, the other is a
+            derived %). Today-anchored tiles use IST `dateFrom` so the
+            drill-in matches what the tile counted. */}
         <div className="grid grid-cols-4 xl:grid-cols-8 gap-3">
-          {[
-            { label: "Active Orders", value: stats.activeOrders, cls: "text-white" },
-            { label: "Open Tasks", value: stats.openTasks, cls: "text-white" },
-            { label: "Breached", value: stats.breachedTasks, cls: stats.breachedTasks > 0 ? "text-red-400" : "text-white" },
-            { label: "Near SLA", value: stats.warningTasks, cls: stats.warningTasks > 0 ? "text-amber-400" : "text-white" },
-            { label: "Unassigned", value: stats.unassignedTasks, cls: stats.unassignedTasks > 0 ? "text-blue-400" : "text-white" },
-            { label: "SLA Health", value: `${stats.slaHealthPercent}%`, cls: stats.slaHealthPercent >= 90 ? "text-green-400" : stats.slaHealthPercent >= 70 ? "text-amber-400" : "text-red-400" },
-            { label: "Done Today", value: stats.completedToday, cls: "text-green-400" },
-            { label: "Breached Today", value: stats.breachedToday, cls: stats.breachedToday > 0 ? "text-red-400" : "text-zinc-400" },
-          ].map(({ label, value, cls }) => (
-            <div key={label} className="bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3">
-              <div className="text-xs text-zinc-500 mb-1">{label}</div>
-              <div className={`text-2xl font-bold ${cls}`}>{value}</div>
-            </div>
-          ))}
+          {(() => {
+            const today = todayISTKey();
+            const tiles: Array<{
+              label: string;
+              value: number | string;
+              cls: string;
+              href?: string;
+            }> = [
+              { label: "Active Orders", value: stats.activeOrders, cls: "text-white" },
+              { label: "Open Tasks", value: stats.openTasks, cls: "text-white",
+                href: "/head/tasks?status=CREATED,ASSIGNED,IN_PROGRESS,BLOCKED" },
+              { label: "Breached", value: stats.breachedTasks,
+                cls: stats.breachedTasks > 0 ? "text-red-400" : "text-white",
+                href: "/head/tasks?status=BREACHED" },
+              { label: "Near SLA", value: stats.warningTasks,
+                cls: stats.warningTasks > 0 ? "text-amber-400" : "text-white",
+                href: "/head/tasks?slaRiskOnly=true" },
+              { label: "Unassigned", value: stats.unassignedTasks,
+                cls: stats.unassignedTasks > 0 ? "text-blue-400" : "text-white",
+                // CREATED + no assignee is the dashboard's definition of
+                // "Unassigned"; the table view doesn't have a dedicated
+                // unassigned filter so we narrow to status=CREATED — the
+                // closest single-filter approximation.
+                href: "/head/tasks?status=CREATED" },
+              { label: "SLA Health",
+                value: `${stats.slaHealthPercent}%`,
+                cls: stats.slaHealthPercent >= 90 ? "text-green-400" : stats.slaHealthPercent >= 70 ? "text-amber-400" : "text-red-400" },
+              { label: "Done Today", value: stats.completedToday, cls: "text-green-400",
+                href: `/head/tasks?status=COMPLETED&dateFrom=${today}&dateTo=${today}` },
+              { label: "Breached Today", value: stats.breachedToday,
+                cls: stats.breachedToday > 0 ? "text-red-400" : "text-zinc-400",
+                href: `/head/tasks?status=BREACHED&dateFrom=${today}&dateTo=${today}` },
+            ];
+            return tiles.map(({ label, value, cls, href }) => {
+              const inner = (
+                <>
+                  <div className="text-xs text-zinc-500 mb-1">{label}</div>
+                  <div className={`text-2xl font-bold ${cls}`}>{value}</div>
+                </>
+              );
+              if (href) {
+                return (
+                  <Link
+                    key={label}
+                    href={href}
+                    className="block bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3 hover:border-zinc-700 hover:bg-zinc-800/40 transition-colors"
+                  >
+                    {inner}
+                  </Link>
+                );
+              }
+              return (
+                <div key={label} className="bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3">
+                  {inner}
+                </div>
+              );
+            });
+          })()}
         </div>
+
+        {/* ── Roster glance — bucket counts of the team's current
+             rosterStatus. Reads team[] already in the dashboard payload
+             (post-W1 fix), no extra API. */}
+        {team.length > 0 && (
+          <RosterGlanceTile team={team} />
+        )}
 
         {/* ── Per-source breakdown ── */}
         {sourceStats.length > 0 && (

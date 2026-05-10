@@ -502,7 +502,7 @@ export default function TaskDetailPanel({ task, onUpdate }: TaskDetailPanelProps
       {/* W5 — Snoozed banner. Rendered above the action buttons when active.
           Shows the wall-clock target time + a Cancel control. */}
       {isSnoozed && snoozedUntilDate && !isTerminal && (
-        <div className="px-6 pt-4">
+        <div className="px-6 pt-4 pb-3">
           <div className="flex items-center gap-3 px-3 py-2 bg-amber-500/10 border border-amber-500/30 rounded-lg">
             <svg className="w-4 h-4 text-amber-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -523,7 +523,7 @@ export default function TaskDetailPanel({ task, onUpdate }: TaskDetailPanelProps
 
       {/* W5 — Snooze presets. Hidden when terminal or already snoozed. */}
       {!isTerminal && !isSnoozed && (
-        <div className="px-6 pt-4 flex items-center gap-2">
+        <div className="px-6 pt-4 pb-3 flex items-center gap-2">
           <span className="text-[11px] text-zinc-500 uppercase tracking-wider">Snooze</span>
           {SNOOZE_PRESETS.map((p) => (
             <button

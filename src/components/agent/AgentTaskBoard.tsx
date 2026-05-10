@@ -298,6 +298,12 @@ export default function AgentTaskBoard({ userId, userName }: { userId: number; u
                 const doneItems = task.checklistItems.filter((i) => i.isDone).length;
                 const totalItems = task.checklistItems.length;
 
+                // W5 — show a "Snoozed until X" pill on the card so the agent
+                // can spot snoozed tasks in tabs that don't filter them out
+                // (Blocked / Done). Active tab still hides them entirely.
+                const snoozedUntil = task.snoozedUntil ? new Date(task.snoozedUntil) : null;
+                const isSnoozed = !!snoozedUntil && snoozedUntil.getTime() > Date.now();
+
                 return (
                   <button
                     key={task.id}
@@ -311,9 +317,20 @@ export default function AgentTaskBoard({ userId, userName }: { userId: number; u
                       <PriorityBadge priority={task.priority} />
                     </div>
 
-                    <div className="flex items-center gap-2 mb-1.5">
+                    <div className="flex items-center gap-2 mb-1.5 flex-wrap">
                       <StatusBadge status={task.status} />
                       <span className="text-[10px] text-zinc-600">#{task.entityId}</span>
+                      {isSnoozed && snoozedUntil && (
+                        <span
+                          className="inline-flex items-center gap-1 text-[10px] text-amber-300 bg-amber-500/10 border border-amber-500/30 px-1.5 py-0.5 rounded"
+                          title={`Snoozed — re-appears at ${snoozedUntil.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}`}
+                        >
+                          <svg className="w-2.5 h-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                          </svg>
+                          Snoozed · {snoozedUntil.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}
+                        </span>
+                      )}
                     </div>
 
                     <div className="flex items-center justify-between">

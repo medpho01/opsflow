@@ -13,6 +13,7 @@ import StatusBadge from "@/components/shared/StatusBadge";
 import ClickableStatusBadge from "@/components/shared/ClickableStatusBadge";
 import OrderQuickView from "@/components/shared/OrderQuickView";
 import UnifiedFilterBar from "@/components/shared/UnifiedFilterBar";
+import SavedViewsDropdown from "@/components/head/SavedViewsDropdown";
 
 interface Task {
   id: number;
@@ -436,6 +437,16 @@ export default function AllTasksBoard() {
       {/* Sort & View Controls */}
       <div className="px-6 py-3 border-b border-zinc-800 flex items-center gap-3 justify-between">
         <div className="flex items-center gap-3">
+          {/* W6 — Saved filter views. Apply persists current filter combos
+              ("My SLA risks", "Unassigned", etc.) so they're one click away. */}
+          <SavedViewsDropdown
+            currentFilters={appliedFilters as unknown as Record<string, unknown>}
+            onApply={(filters) => {
+              setAppliedFilters(filters as AppliedFilters);
+              setPage(1);
+            }}
+          />
+
           <select
             value={sortBy}
             onChange={(e) => {

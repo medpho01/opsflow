@@ -20,8 +20,9 @@ import AgentPerformancePanel from "./AgentPerformancePanel";
 import DailySummaryPanel from "./DailySummaryPanel";
 import BreakdownPanel from "./BreakdownPanel";
 import TrendsPanel from "./TrendsPanel";
+import CohortsPanel from "./CohortsPanel";
 
-type Tab = "agents" | "sources" | "rules" | "stores" | "task-types" | "trends" | "daily";
+type Tab = "agents" | "sources" | "rules" | "stores" | "task-types" | "trends" | "cohorts" | "daily";
 
 const TABS: Array<{ key: Tab; label: string }> = [
   { key: "agents",     label: "Agents" },
@@ -30,6 +31,7 @@ const TABS: Array<{ key: Tab; label: string }> = [
   { key: "stores",     label: "Stores" },
   { key: "task-types", label: "Task Types" },
   { key: "trends",     label: "Trends" },
+  { key: "cohorts",    label: "Cohorts" },
   { key: "daily",      label: "Daily Summary" },
 ];
 
@@ -66,6 +68,7 @@ export default function AnalyticsTabs() {
         {tab === "stores"     && <BreakdownPanel dimension="store" />}
         {tab === "task-types" && <BreakdownPanel dimension="task-type" />}
         {tab === "trends"     && <TrendsPanel />}
+        {tab === "cohorts"    && <CohortsPanel />}
         {tab === "daily"      && <DailySummaryPanel />}
       </div>
     </div>

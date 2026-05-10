@@ -19,12 +19,11 @@ interface Expectation {
   description: string;
 }
 
-// Note: the legacy poller in src/lib/engine/poller.ts only polls
-// public.Order ("Lab Orders" data source). Appointments + PharmaOrder
-// rules are registered but the multi-source engine that would poll them
-// is intentionally disabled in src/instrumentation.ts (it created
-// duplicate cron jobs). So Appointment + PharmaOrder demo rows are
-// expected to produce ZERO tasks under the current configuration.
+// The legacy poller in src/lib/engine/poller.ts polls only public.Order.
+// For Appointments, the demo's poll-appointments.ts helper fetches the
+// reserved demo-range Appointment rows and feeds them through the same
+// rule engine — covering R6/R7a/R7b/R10 end-to-end. PharmaOrder has no
+// rules so produces 0 regardless.
 const EXPECTATIONS: Expectation[] = [
   // Lab Orders → engine stores entityType as "ORDER"
   { source: "ORDER", entityId: 8800001, expectedTasks: 2, triggers: "R1+R2",   description: "ORDER_SCHEDULED → Pre-Visit + Confirm New Order" },
@@ -38,18 +37,20 @@ const EXPECTATIONS: Expectation[] = [
   { source: "ORDER", entityId: 8800009, expectedTasks: 0, triggers: "(none)",  description: "KIT_BASED — type mismatch" },
   { source: "ORDER", entityId: 8800010, expectedTasks: 0, triggers: "(none)",  description: "CANCELED — terminal, filtered before evaluation" },
 
-  // Appointments → not polled in legacy mode (multi-source engine disabled).
-  // Verifier asserts 0 tasks for these to make the limitation visible.
-  { source: "APPOINTMENTS", entityId: 8800001, expectedTasks: 0, triggers: "(skipped)", description: "Appointments not polled in legacy mode" },
-  { source: "APPOINTMENTS", entityId: 8800002, expectedTasks: 0, triggers: "(skipped)", description: "Appointments not polled in legacy mode" },
-  { source: "APPOINTMENTS", entityId: 8800003, expectedTasks: 0, triggers: "(skipped)", description: "Appointments not polled in legacy mode" },
-  { source: "APPOINTMENTS", entityId: 8800004, expectedTasks: 0, triggers: "(skipped)", description: "Appointments not polled in legacy mode" },
-  { source: "APPOINTMENTS", entityId: 8800005, expectedTasks: 0, triggers: "(none)",    description: "(would be terminal anyway)" },
-  { source: "APPOINTMENTS", entityId: 8800006, expectedTasks: 0, triggers: "(skipped)", description: "Appointments not polled in legacy mode" },
-  { source: "APPOINTMENTS", entityId: 8800007, expectedTasks: 0, triggers: "(none)",    description: "(would be type mismatch anyway)" },
-  { source: "APPOINTMENTS", entityId: 8800008, expectedTasks: 0, triggers: "(none)",    description: "(would be terminal anyway)" },
-  { source: "APPOINTMENTS", entityId: 8800009, expectedTasks: 0, triggers: "(none)",    description: "(no rule for DELAYED)" },
-  { source: "APPOINTMENTS", entityId: 8800010, expectedTasks: 0, triggers: "(none)",    description: "(no rule for RESCHEDULED)" },
+  // Appointments → polled by tests/demo/poll-appointments.ts (replicates
+  // multi-source poll for the demo ID range). The engine evaluates
+  // these the same way it evaluates Order rows, but tags the resulting
+  // tasks entityType="APPOINTMENTS".
+  { source: "APPOINTMENTS", entityId: 8800001, expectedTasks: 1, triggers: "R6",     description: "CENTER_VISIT + CREATED → Confirm Centre Appointment" },
+  { source: "APPOINTMENTS", entityId: 8800002, expectedTasks: 1, triggers: "R6",     description: "CENTER_VISIT + PENDING → Confirm Centre Appointment" },
+  { source: "APPOINTMENTS", entityId: 8800003, expectedTasks: 2, triggers: "R7a+R7b",description: "CENTER_VISIT + CONFIRMED → Day-of Check + T-1 Reconfirm" },
+  { source: "APPOINTMENTS", entityId: 8800004, expectedTasks: 1, triggers: "R10",    description: "CENTER_VISIT + CHECKED_IN → Post-Visit Confirm Test" },
+  { source: "APPOINTMENTS", entityId: 8800005, expectedTasks: 0, triggers: "(none)", description: "COMPLETED — filtered out before evaluation" },
+  { source: "APPOINTMENTS", entityId: 8800006, expectedTasks: 1, triggers: "R6",     description: "HOME_VISIT + CREATED → R6 fires (allowedTypes empty = any)" },
+  { source: "APPOINTMENTS", entityId: 8800007, expectedTasks: 0, triggers: "(none)", description: "ONLINE — R7 requires CENTER_VISIT" },
+  { source: "APPOINTMENTS", entityId: 8800008, expectedTasks: 0, triggers: "(none)", description: "CANCELED — filtered out" },
+  { source: "APPOINTMENTS", entityId: 8800009, expectedTasks: 0, triggers: "(none)", description: "DELAYED — no rule listens" },
+  { source: "APPOINTMENTS", entityId: 8800010, expectedTasks: 0, triggers: "(none)", description: "RESCHEDULED — no rule listens" },
 
   // PharmaOrder → registered, but no rules + not polled
   { source: "PharmaOrder", entityId: 8800001, expectedTasks: 0, triggers: "(none)", description: "no rules + not polled" },

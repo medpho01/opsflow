@@ -57,6 +57,12 @@ export interface RawOrder {
   labName: string | null;
   storeName: string | null;
   metadata?: Record<string, unknown>;
+  // Optional. Defaults to "ORDER" downstream. Set to "APPOINTMENTS",
+  // "PHARMA_ORDER", etc. when the source is something other than
+  // public.Order so the engine's dedup-by-entityType key is correct
+  // across sources (otherwise an Appointment with id=42 would dedup
+  // against an Order with id=42).
+  entityType?: string;
 }
 
 /**

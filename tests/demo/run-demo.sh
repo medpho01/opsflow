@@ -54,13 +54,18 @@ cmd_cleanup() {
 }
 
 cmd_poll() {
-  echo "→ Triggering manual poll cycle…"
-  # /api/debug/trigger-poller is unauthenticated by design (dev tool).
+  echo "→ Triggering manual poll cycle (Lab Orders via legacy poller)…"
   local resp
   resp=$(curl -s "http://localhost:3000/api/debug/trigger-poller")
   echo "   $resp"
-  echo "→ Waiting 3s for engine to settle…"
-  sleep 3
+
+  echo "→ Polling Appointments source (demo helper, scoped to demo ID range)…"
+  docker cp "$DEMO_DIR/poll-appointments.ts" "$APP_CONTAINER:/tmp/poll-appointments.ts" >/dev/null
+  $COMPOSE exec -T -e NODE_PATH=/app/node_modules -w /app app \
+    node node_modules/.bin/tsx /tmp/poll-appointments.ts
+
+  echo "→ Waiting 2s for engine to settle…"
+  sleep 2
 }
 
 cmd_verify() {

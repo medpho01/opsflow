@@ -4,14 +4,13 @@ Run `./tests/demo/run-demo.sh demo` to execute and verify automatically.
 
 All demo rows are reserved in the **8800001–8800099** ID range across `Appointment`, `Order`, and `PharmaOrder`. Cleanup is keyed on this range.
 
-## Important: Engine reality
+## How sources are polled
 
-The legacy poller in `src/lib/engine/poller.ts` polls **only `public."Order"` (Lab Orders)**. Rules registered against `Appointments` and `PharmaOrder` exist in the DB but the multi-source engine that would poll those sources is intentionally disabled in `src/instrumentation.ts` (it created duplicate cron jobs that tripled DB load). Until that's re-architected, **only Lab Orders demo rows will produce tasks**.
-
-The demo seeds Appointment + PharmaOrder rows anyway — they're useful to:
-1. Show in `/head/data-sources` that the source ingestion path works
-2. Demonstrate the limitation explicitly to the team
-3. Be ready to assert the correct task counts the moment multi-source polling is re-enabled
+| Source | Poll path |
+|---|---|
+| Lab Orders (`public."Order"`) | Legacy poller in `src/lib/engine/poller.ts` (auto, every 5 min). Manual trigger: `GET /api/debug/trigger-poller`. |
+| Appointments (`public."Appointment"`) | Demo helper `tests/demo/poll-appointments.ts` (scoped to demo ID range). The multi-source engine that would auto-poll this is disabled in `src/instrumentation.ts` due to a duplicate-cron issue — `run-demo.sh poll` invokes the helper directly so the demo still exercises every Appointments rule end-to-end. |
+| PharmaOrder | Same as Appointments — would be polled by the multi-source engine if it were enabled. No active rules are registered today, so the demo seeds rows but expects 0 tasks. |
 
 ## Active rules (10)
 
@@ -49,22 +48,22 @@ The wait conditions (R8 `minutesAfterAppointment ≥ 30`, R9 `minutesSinceStatus
 
 ## Appointments (`public.Appointment`) — 10 rows, 8800001..8800010
 
-⚠️ All 10 rows currently produce **0 tasks** because the legacy poller doesn't fetch from `public.Appointment`. Once multi-source polling is re-enabled, these are the expected results:
+Polled by the demo helper `poll-appointments.ts`. Engine tags resulting tasks with `entityType="APPOINTMENTS"`.
 
-| ID | appointmentType | appointmentStatus | Triggers (when polling enabled) | Expected (now) | Expected (future) |
-|----|-----------------|-------------------|---------------------------------|----------------|-------------------|
-| 8800001 | CENTER_VISIT | CREATED | R6 | 0 | 1 |
-| 8800002 | CENTER_VISIT | PENDING | R6 | 0 | 1 |
-| 8800003 | CENTER_VISIT | CONFIRMED | R7a + R7b | 0 | 2 |
-| 8800004 | CENTER_VISIT | CHECKED_IN | R10 | 0 | 1 |
-| 8800005 | CENTER_VISIT | COMPLETED | (terminal) | 0 | 0 |
-| 8800006 | HOME_VISIT | CREATED | R6 (any-type) | 0 | 1 |
-| 8800007 | ONLINE | CONFIRMED | (R7 wants CENTER_VISIT) | 0 | 0 |
-| 8800008 | CENTER_VISIT | CANCELED | (terminal) | 0 | 0 |
-| 8800009 | CENTER_VISIT | DELAYED | (no rule) | 0 | 0 |
-| 8800010 | CENTER_VISIT | RESCHEDULED | (no rule) | 0 | 0 |
+| ID | appointmentType | appointmentStatus | Triggers | Expected | Title pattern |
+|----|-----------------|-------------------|----------|----------|---------------|
+| 8800001 | CENTER_VISIT | CREATED | R6 | **1** | "Confirm Centre Appointment…" |
+| 8800002 | CENTER_VISIT | PENDING | R6 | **1** | "Confirm Centre Appointment…" |
+| 8800003 | CENTER_VISIT | CONFIRMED | R7a + R7b | **2** | "Day-of Check: Call Centre…" / "T-1: Reconfirm Centre Booking…" |
+| 8800004 | CENTER_VISIT | CHECKED_IN | R10 | **1** | "Post-Visit: Confirm Test Completed…" |
+| 8800005 | CENTER_VISIT | COMPLETED | (terminal — filtered) | 0 | — |
+| 8800006 | HOME_VISIT | CREATED | R6 (any-type) | **1** | "Confirm Centre Appointment…" |
+| 8800007 | ONLINE | CONFIRMED | (R7 wants CENTER_VISIT) | 0 | — |
+| 8800008 | CENTER_VISIT | CANCELED | (terminal — filtered) | 0 | — |
+| 8800009 | CENTER_VISIT | DELAYED | (no rule for DELAYED) | 0 | — |
+| 8800010 | CENTER_VISIT | RESCHEDULED | (no rule for RESCHEDULED) | 0 | — |
 
-**Appointments subtotal: 0 tasks now / 6 once polling re-enabled**
+**Appointments subtotal: 6 tasks**
 
 ## PharmaOrder (`public.PharmaOrder`) — 3 rows, 8800001..8800003
 
@@ -76,16 +75,16 @@ No rules registered. Used to demonstrate "source ingested but no rule fired".
 | 8800002 | HOME_DELIVERY | CONFIRMED | 0 |
 | 8800003 | PICKUP | SHIPPED | 0 |
 
-## Grand totals
+## Grand total
 
-| | Now | If multi-source polling enabled |
-|---|---|---|
-| Lab Orders tasks | 8 | 8 |
-| Appointments tasks | 0 | 6 |
-| PharmaOrder tasks | 0 | 0 |
-| **Total** | **8** | **14** |
+| Source | Tasks |
+|---|---|
+| Lab Orders | 8 |
+| Appointments | 6 |
+| PharmaOrder | 0 |
+| **Total** | **14** |
 
-`verify.ts` asserts the "Now" column. When multi-source polling is re-enabled, update the `EXPECTATIONS` array in `verify.ts` to use the "future" column.
+`verify.ts` asserts all 23 expectation rows (10 Lab Orders + 10 Appointments + 3 PharmaOrder), including the negative cases.
 
 ## Negative cases verified
 

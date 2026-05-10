@@ -989,7 +989,10 @@ export async function evaluateAndCreateTasks(
         taskRuleId: rule.id,
         taskTypeId: rule.taskTypeId,
         title,
-        entityType: "ORDER",
+        // Honour entityType from RawOrder when the caller sets it (e.g.
+        // demo's Appointments fetcher passes "APPOINTMENTS"). Defaults
+        // to "ORDER" since the legacy Lab-Orders poller never sets it.
+        entityType: order.entityType ?? "ORDER",
         entityId: order.id,
         storeId: order.storeId,
         orderType: order.orderType,

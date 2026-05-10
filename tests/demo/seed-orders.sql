@@ -101,8 +101,8 @@ SELECT setval(pg_get_serial_sequence('public."Appointment"', 'id'), GREATEST((SE
 SELECT setval(pg_get_serial_sequence('public."PharmaOrder"', 'id'), GREATEST((SELECT MAX(id) FROM public."PharmaOrder"), 1));
 
 \echo '✅ Demo orders seeded:'
-\echo '   - 10 Lab Orders (8800001-8800010)   — expect 8 tasks'
-\echo '   - 10 Appointments (8800001-8800010) — expect 0 tasks (legacy poller polls Order only)'
-\echo '   -  3 PharmaOrders (8800001-8800003) — expect 0 tasks (no rules)'
+\echo '   - 10 Lab Orders (8800001-8800010)   — expect 8 tasks (legacy poller)'
+\echo '   - 10 Appointments (8800001-8800010) — expect 6 tasks (poll-appointments.ts helper)'
+\echo '   -  3 PharmaOrders (8800001-8800003) — expect 0 tasks (no active rules)'
 \echo '   ──────────────────────────────────────────────────'
-\echo '   Total expected: 8 tasks after next poll cycle.'
+\echo '   Total expected: 14 tasks after next poll cycle.'

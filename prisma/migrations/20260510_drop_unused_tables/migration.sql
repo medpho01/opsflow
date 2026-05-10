@@ -2,10 +2,6 @@
 -- Backup at /tmp/taskos-schema-backup.sql before this migration
 --
 -- Classification rationale:
---   - checklist_templates  → model ChecklistTemplate exists in schema.prisma
---                            but zero `prisma.checklistTemplate.*` calls in src/.
---                            Zero rows in DB. The TaskType.checklistItems relation
---                            is declared but never traversed. Safe to drop.
 --   - shift_templates      → table created in 20260425053755_init_taskos_schema
 --                            but no Prisma model maps to it (orphan). Zero rows.
 --                            FK from daily_rosters.shiftId — zero rows have a non-null
@@ -27,6 +23,5 @@
 ALTER TABLE taskos.daily_rosters DROP CONSTRAINT IF EXISTS daily_roster_shiftId_fkey;
 ALTER TABLE taskos.daily_rosters DROP COLUMN IF EXISTS "shiftId";
 
-DROP TABLE IF EXISTS taskos.checklist_templates CASCADE;
 DROP TABLE IF EXISTS taskos.shift_templates CASCADE;
 DROP TABLE IF EXISTS taskos.team_member_order_types CASCADE;

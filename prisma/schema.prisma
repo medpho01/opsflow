@@ -318,10 +318,24 @@ model TaskType {
   createdAt                DateTime @default(now())
   updatedAt                DateTime @updatedAt
 
-  rules TaskRule[]
-  tasks Task[]
+  checklistItems ChecklistTemplate[]
+  rules          TaskRule[]
+  tasks          Task[]
 
   @@map("task_types")
+}
+
+model ChecklistTemplate {
+  id         Int      @id @default(autoincrement())
+  taskTypeId Int
+  stepOrder  Int
+  stepText   String
+  isRequired Boolean  @default(true)
+  createdAt  DateTime @default(now())
+
+  taskType TaskType @relation(fields: [taskTypeId], references: [id], onDelete: Cascade)
+
+  @@map("checklist_templates")
 }
 
 // ─────────────────────────────────────────────

@@ -16,6 +16,20 @@ export async function register() {
   // Only run in the Node.js runtime (not Edge)
   if (process.env.NEXT_RUNTIME !== "nodejs") return;
 
+  // ── 0. Global BigInt → string serialization ─────────────────────────────────
+  // Several Prisma models carry BigInt fields (e.g. Task.sourceEntityId).
+  // NextResponse.json calls JSON.stringify, which throws TypeError on BigInt by
+  // default. List endpoints sidestepped this by using `select` to drop the
+  // BigInt fields, but single-record routes (GET/PATCH /api/tasks/[id],
+  // /unarchive) returned the full record and 500'd. One toJSON shim fixes all
+  // of them; routes that need numeric serialization can still call .toString()
+  // explicitly.
+  //
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (BigInt.prototype as any).toJSON = function () {
+    return this.toString();
+  };
+
   // ── 1. Multi-source polling engine (DISABLED — duplicates legacy poller) ───
   // The multi-source engine started a separate cron per DataSource (every 15 min),
   // running the same queries as the legacy poller. Disabled to prevent 3× DB load.

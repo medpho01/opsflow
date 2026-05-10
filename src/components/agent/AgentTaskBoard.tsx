@@ -123,6 +123,8 @@ export default function AgentTaskBoard({ userId, userName }: { userId: number; u
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [orderIdFilter, setOrderIdFilter] = useState("");
+  // W2 — per-tab badge counts shown next to tab labels.
+  const [tabCounts, setTabCounts] = useState<Record<string, number>>({});
 
   const currentTab = STATUS_TABS.find((t) => t.key === activeTab)!;
 
@@ -147,9 +149,29 @@ export default function AgentTaskBoard({ userId, userName }: { userId: number; u
     }
   }, [currentTab.statuses, selectedTask?.id, orderIdFilter]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // W2 — fetch counts for ALL tabs in parallel so badges stay accurate
+  // regardless of which tab is currently selected. limit=1 + reading
+  // pagination.total avoids pulling task rows we won't render.
+  const fetchTabCounts = useCallback(async () => {
+    try {
+      const results = await Promise.all(
+        STATUS_TABS.map((tab) =>
+          fetch(`/api/tasks?status=${tab.statuses}&limit=1`)
+            .then((r) => r.json())
+            .then((d) => [tab.key, d.pagination?.total ?? 0] as const)
+            .catch(() => [tab.key, 0] as const)
+        )
+      );
+      setTabCounts(Object.fromEntries(results));
+    } catch {
+      // best-effort — leave counts as-is on transient errors
+    }
+  }, []);
+
   useEffect(() => {
     setLoading(true);
     fetchTasks();
+    fetchTabCounts();
   }, [activeTab, refreshKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-refresh every 30s
@@ -190,21 +212,37 @@ export default function AgentTaskBoard({ userId, userName }: { userId: number; u
             </div>
           </div>
 
-          {/* Tabs */}
+          {/* Tabs (with W2 badge counts) */}
           <div className="flex gap-1 bg-zinc-900 rounded-lg p-1 mb-3">
-            {STATUS_TABS.map((tab) => (
-              <button
-                key={tab.key}
-                onClick={() => { setActiveTab(tab.key); setSelectedTask(null); }}
-                className={`flex-1 text-xs font-medium py-1.5 rounded-md transition-colors ${
-                  activeTab === tab.key
-                    ? "bg-zinc-700 text-white"
-                    : "text-zinc-500 hover:text-zinc-300"
-                }`}
-              >
-                {tab.label}
-              </button>
-            ))}
+            {STATUS_TABS.map((tab) => {
+              const isActive = activeTab === tab.key;
+              const count = tabCounts[tab.key];
+              const showCount = typeof count === "number";
+              return (
+                <button
+                  key={tab.key}
+                  onClick={() => { setActiveTab(tab.key); setSelectedTask(null); }}
+                  className={`flex-1 inline-flex items-center justify-center gap-1.5 text-xs font-medium py-1.5 rounded-md transition-colors ${
+                    isActive
+                      ? "bg-zinc-700 text-white"
+                      : "text-zinc-500 hover:text-zinc-300"
+                  }`}
+                >
+                  <span>{tab.label}</span>
+                  {showCount && (
+                    <span
+                      className={`text-[10px] px-1.5 py-0.5 rounded-full leading-none ${
+                        isActive
+                          ? "bg-zinc-900 text-zinc-300"
+                          : "bg-zinc-800 text-zinc-500"
+                      }`}
+                    >
+                      {count}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
           </div>
 
           {/* Order ID Filter */}

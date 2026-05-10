@@ -6,7 +6,8 @@ import SlaCountdown from "@/components/shared/SlaCountdown";
 import SLADisplay from "@/components/shared/SLADisplay";
 import EmptyStateMessage from "@/components/shared/EmptyStateMessage";
 import TaskAgingIndicator from "@/components/shared/TaskAgingIndicator";
-import KanbanBoard from "@/components/shared/KanbanBoard";
+// Kanban view removed (W2 — UX simplification). Was a low-fidelity duplicate
+// of the table view with no inline edit; the table is the single source.
 import PriorityBadge from "@/components/shared/PriorityBadge";
 import StatusBadge from "@/components/shared/StatusBadge";
 import ClickableStatusBadge from "@/components/shared/ClickableStatusBadge";
@@ -99,7 +100,7 @@ export default function AllTasksBoard() {
   const [archiveStats, setArchiveStats] = useState<{ activeTasks: number; archivedTasks: number } | null>(null);
 
   // Phase 3: View toggle
-  const [viewMode, setViewMode] = useState<"table" | "kanban">("table");
+  // viewMode removed — board is table-only since W2.
 
   // Feature 1: Refresh button + timestamp
   const [lastUpdated, setLastUpdated] = useState<Date>(new Date());
@@ -474,31 +475,7 @@ export default function AllTasksBoard() {
             )}
           </Link>
 
-          {/* Phase 3: View Toggle */}
-          <div className="flex items-center gap-1.5 bg-zinc-800 border border-zinc-700 rounded p-1">
-            <button
-              onClick={() => setViewMode("table")}
-              className={`px-3 py-1 text-sm rounded transition-colors ${
-                viewMode === "table"
-                  ? "bg-blue-600 text-white"
-                  : "text-zinc-400 hover:text-zinc-200"
-              }`}
-              title="Table view"
-            >
-              📋
-            </button>
-            <button
-              onClick={() => setViewMode("kanban")}
-              className={`px-3 py-1 text-sm rounded transition-colors ${
-                viewMode === "kanban"
-                  ? "bg-blue-600 text-white"
-                  : "text-zinc-400 hover:text-zinc-200"
-              }`}
-              title="Kanban view"
-            >
-              📊
-            </button>
-          </div>
+          {/* W2 — table/kanban toggle removed; table is the only view. */}
         </div>
       </div>
 
@@ -546,53 +523,10 @@ export default function AllTasksBoard() {
         </div>
       )}
 
-      {/* Task View (Table or Kanban) */}
+      {/* Task View — table-only since W2 (kanban view removed). */}
       <div className="flex-1 overflow-auto flex flex-col">
         {loading ? (
           <div className="flex-1 flex items-center justify-center text-zinc-400">Loading tasks...</div>
-        ) : viewMode === "kanban" && tasks.length > 0 ? (
-          <KanbanBoard
-            tasks={tasks.map((t) => ({
-              id: t.id,
-              title: t.title,
-              status: t.status,
-              priority: t.priority,
-            }))}
-            onStatusChange={async (taskId, newStatus) => {
-              // Optimistic update: update task status immediately
-              const previousTasks = tasks;
-              setTasks(
-                tasks.map((t) =>
-                  t.id === taskId ? { ...t, status: newStatus } : t
-                )
-              );
-
-              try {
-                const res = await fetch(`/api/tasks/${taskId}`, {
-                  method: "PATCH",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ status: newStatus }),
-                });
-
-                if (!res.ok) {
-                  throw new Error("Failed to update task status");
-                }
-
-                const data = await res.json();
-                // Update with server response to ensure consistency
-                setTasks(
-                  tasks.map((t) =>
-                    t.id === taskId ? { ...t, ...data.task } : t
-                  )
-                );
-                await fetchStatusDistribution();
-              } catch (err) {
-                // Revert optimistic update on error
-                setTasks(previousTasks);
-                console.error("[AllTasksBoard] Error updating task status:", err);
-              }
-            }}
-          />
         ) : tasks.length === 0 ? (
           <EmptyStateMessage
             filterCount={Object.values(appliedFilters).filter((v) => v && (Array.isArray(v) ? v.length > 0 : true)).length}

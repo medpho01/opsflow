@@ -61,9 +61,12 @@ const NEXT_STATUS: Record<string, { label: string; status: string; cls: string }
 };
 
 export default function TaskDetailPanel({ task, onUpdate }: TaskDetailPanelProps) {
-  const [note, setNote] = useState("");
+  // W2 — standalone Note field removed. Status changes no longer carry a
+  // freeform note from the agent; the system records each transition with
+  // a default reason ("Flagged for help", auto-generated SLA notes, etc).
+  // If users need richer communication, the future in-task chat (Phase 4)
+  // is the channel for that.
   const [loading, setLoading] = useState<string | null>(null);
-  const [noteSaved, setNoteSaved] = useState(false);
   const [showOrderView, setShowOrderView] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [displayedTask, setDisplayedTask] = useState<Task>(task);
@@ -83,7 +86,7 @@ export default function TaskDetailPanel({ task, onUpdate }: TaskDetailPanelProps
       const res = await fetch(`/api/tasks/${task.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status, note }),
+        body: JSON.stringify({ status }),
       });
 
       if (!res.ok) {
@@ -94,7 +97,6 @@ export default function TaskDetailPanel({ task, onUpdate }: TaskDetailPanelProps
       const data = await res.json();
       // Update with server response to ensure consistency
       setDisplayedTask(data.task);
-      setNote("");
       onUpdate();
     } catch (err) {
       // Revert optimistic update on error
@@ -106,35 +108,7 @@ export default function TaskDetailPanel({ task, onUpdate }: TaskDetailPanelProps
     }
   }
 
-  async function saveNote() {
-    if (!note.trim()) return;
-    setLoading("note");
-    setError(null);
-    try {
-      const res = await fetch(`/api/tasks/${task.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ note: note.trim() }),
-      });
-
-      if (!res.ok) {
-        const errorData = await res.json();
-        throw new Error(errorData.error || "Failed to save note");
-      }
-
-      const data = await res.json();
-      setDisplayedTask(data.task);
-      setNote("");
-      setNoteSaved(true);
-      setTimeout(() => setNoteSaved(false), 2500);
-      onUpdate();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save note");
-      console.error("[TaskDetailPanel] saveNote error:", err);
-    } finally {
-      setLoading(null);
-    }
-  }
+  // saveNote() removed in W2 — see comment on `loading` declaration above.
 
   async function flagForHelp() {
     setLoading("flag");
@@ -148,7 +122,7 @@ export default function TaskDetailPanel({ task, onUpdate }: TaskDetailPanelProps
       const res = await fetch(`/api/tasks/${task.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status: "BLOCKED", note: note.trim() || "Flagged for help" }),
+        body: JSON.stringify({ status: "BLOCKED", note: "Flagged for help" }),
       });
 
       if (!res.ok) {
@@ -158,7 +132,6 @@ export default function TaskDetailPanel({ task, onUpdate }: TaskDetailPanelProps
 
       const data = await res.json();
       setDisplayedTask(data.task);
-      setNote("");
       onUpdate();
     } catch (err) {
       setDisplayedTask(previousTask);
@@ -383,39 +356,9 @@ export default function TaskDetailPanel({ task, onUpdate }: TaskDetailPanelProps
           </div>
         )}
 
-        {/* Note field */}
-        {!isTerminal && (
-          <div>
-            <h3 className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-2">
-              Note
-            </h3>
-            <textarea
-              value={note}
-              onChange={(e) => setNote(e.target.value)}
-              rows={3}
-              placeholder="Any observations, blockers, or updates..."
-              className="w-full px-3 py-2 bg-zinc-900 border border-zinc-700 rounded-lg text-sm text-zinc-200 placeholder-zinc-600 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            />
-            {/* Standalone note save */}
-            <div className="flex items-center justify-end mt-2 gap-2">
-              {noteSaved && (
-                <span className="text-xs text-green-400 flex items-center gap-1">
-                  <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                  </svg>
-                  Saved
-                </span>
-              )}
-              <button
-                onClick={saveNote}
-                disabled={!note.trim() || !!loading}
-                className="px-3 py-1.5 text-xs bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg transition-colors disabled:opacity-40 font-medium"
-              >
-                {loading === "note" ? "Saving..." : "Save Note"}
-              </button>
-            </div>
-          </div>
-        )}
+        {/* W2 — standalone Note field removed (was a UX trap: users assumed
+            status-change saved the note too). Status changes now stand on
+            their own; future in-task chat will be the comm channel. */}
       </div>
 
       {/* Action buttons */}

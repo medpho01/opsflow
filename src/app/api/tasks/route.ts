@@ -234,6 +234,11 @@ export async function GET(request: NextRequest) {
   // Parse SLA risk filter
   const slaRiskOnly = slaRiskOnlyParam === "true";
 
+  // W5 — `excludeSnoozed=true` drops snoozed-future tasks from the result.
+  // The agent's Active tab + tab-count fetches always pass this; the head
+  // view leaves it off so monitoring isn't blinded.
+  const excludeSnoozed = searchParams.get("excludeSnoozed") === "true";
+
   // Role-based scoping.
   //
   // Audit P0 #2 — STORE_ADMIN scoping bypass. The previous implementation
@@ -314,6 +319,26 @@ export async function GET(request: NextRequest) {
       { status: TaskStatus.BREACHED },
       { slaDeadline: { lt: warningCutoff } },
     ];
+  }
+
+  // W5 — Hide tasks that are still snoozed. Two-condition AND captured via
+  // a Prisma `OR` array (snooze is null) OR (snooze is past) — task is
+  // visible. Composed before the OR slot used by slaRiskOnly above; if both
+  // are active we use AND with both predicates instead of stomping the OR.
+  if (excludeSnoozed) {
+    const notSnoozed = {
+      OR: [
+        { snoozedUntil: null },
+        { snoozedUntil: { lte: now } },
+      ],
+    };
+    if (where.OR) {
+      // slaRiskOnly already set OR — combine with AND so both filters apply.
+      where.AND = [{ OR: where.OR }, notSnoozed];
+      delete where.OR;
+    } else {
+      Object.assign(where, notSnoozed);
+    }
   }
 
   // Build the orderBy clause with tiebreakers

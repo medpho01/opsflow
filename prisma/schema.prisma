@@ -429,6 +429,12 @@ model Task {
   isArchived        Boolean          @default(false)
   escalationChainId Int?
 
+  // W5 — Snooze. Agent presses "Ping me in 15m"; the task drops out of
+  // their Active list until this timestamp passes. Null when not snoozed.
+  // Filter at query time — no scheduler, no auto-clear; the task simply
+  // re-appears once `snoozedUntil < now`.
+  snoozedUntil      DateTime?        @db.Timestamptz(3)
+
   // C1.1: Assignment tracking fields for Foundation feature
   assignmentMethod String?     // "auto" | "manual" | null
   assignmentRuleId String?     // Which rule auto-assigned (if method=auto)

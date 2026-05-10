@@ -29,6 +29,7 @@ interface Task {
   createdAt: string;
   assignedAt: string | null;
   startedAt: string | null;
+  snoozedUntil: string | null; // W5
   metadata: Record<string, unknown>;
   assignedTo: { id: number; name: string } | null;
   checklistItems: ChecklistItem[];
@@ -130,7 +131,12 @@ export default function AgentTaskBoard({ userId, userName }: { userId: number; u
 
   const fetchTasks = useCallback(async () => {
     try {
-      let url = `/api/tasks?status=${currentTab.statuses}&limit=50`;
+      // W5 — agent's Active list filters out snoozed-future tasks; they
+      // re-appear automatically once snoozedUntil passes. We DON'T filter
+      // on Blocked/Done since those tabs are review-oriented (still useful
+      // to see "I snoozed this earlier" while reviewing what's blocked).
+      const exclude = currentTab.key === "active" ? "&excludeSnoozed=true" : "";
+      let url = `/api/tasks?status=${currentTab.statuses}&limit=50${exclude}`;
       if (orderIdFilter) {
         url += `&orderId=${orderIdFilter}`;
       }
@@ -147,7 +153,7 @@ export default function AgentTaskBoard({ userId, userName }: { userId: number; u
     } finally {
       setLoading(false);
     }
-  }, [currentTab.statuses, selectedTask?.id, orderIdFilter]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [currentTab.statuses, currentTab.key, selectedTask?.id, orderIdFilter]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // W2 — fetch counts for ALL tabs in parallel so badges stay accurate
   // regardless of which tab is currently selected. limit=1 + reading
@@ -155,12 +161,16 @@ export default function AgentTaskBoard({ userId, userName }: { userId: number; u
   const fetchTabCounts = useCallback(async () => {
     try {
       const results = await Promise.all(
-        STATUS_TABS.map((tab) =>
-          fetch(`/api/tasks?status=${tab.statuses}&limit=1`)
+        STATUS_TABS.map((tab) => {
+          // Active count must respect the same `excludeSnoozed` filter as
+          // the visible list, otherwise the badge over-reports by counting
+          // tasks the user can't see.
+          const exclude = tab.key === "active" ? "&excludeSnoozed=true" : "";
+          return fetch(`/api/tasks?status=${tab.statuses}&limit=1${exclude}`)
             .then((r) => r.json())
             .then((d) => [tab.key, d.pagination?.total ?? 0] as const)
-            .catch(() => [tab.key, 0] as const)
-        )
+            .catch(() => [tab.key, 0] as const);
+        })
       );
       setTabCounts(Object.fromEntries(results));
     } catch {

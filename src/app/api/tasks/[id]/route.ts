@@ -100,9 +100,37 @@ export async function PATCH(
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
-  const { status, note, checklistItemId, isDone, assignedToId } = body;
+  const { status, note, checklistItemId, isDone, assignedToId, snoozeMinutes, clearSnooze } = body;
   const updates: Record<string, unknown> = {};
   const historyNote = note ?? "";
+
+  // ── Snooze (W5) ───────────────────────────────────────────────────
+  // The agent picks a duration ("Ping me in 15m") which sets snoozedUntil.
+  // The task disappears from their Active tab until the timestamp passes.
+  // `clearSnooze: true` removes an active snooze (the panel banner does this).
+  // Allowed durations are clamped server-side so the UI can't drift.
+  if (clearSnooze === true) {
+    updates.snoozedUntil = null;
+  } else if (snoozeMinutes !== undefined) {
+    const minutes = Number(snoozeMinutes);
+    const ALLOWED = [15, 30, 60, 240];
+    if (!ALLOWED.includes(minutes)) {
+      return NextResponse.json(
+        { error: `Invalid snoozeMinutes — must be one of ${ALLOWED.join(", ")}` },
+        { status: 400 }
+      );
+    }
+    updates.snoozedUntil = new Date(Date.now() + minutes * 60_000);
+    // History trail so heads can see the snooze in the timeline.
+    await prisma.taskHistory.create({
+      data: {
+        taskId,
+        status: task.status,
+        changedById: user.id,
+        note: `Snoozed for ${minutes} min`,
+      },
+    });
+  }
 
   // ── Status transition ─────────────────────────────────────────────
   if (status && Object.values(TaskStatus).includes(status)) {

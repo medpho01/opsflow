@@ -205,11 +205,12 @@ export async function exampleRegisterDataSource() {
 export async function exampleCreateSourceSpecificRule() {
   console.log("\n=== Example 6: Create Source-Specific Task Rule ===");
 
-  // Create a task rule
+  // Create a task rule (requires a valid dataSourceId)
+  const anySource = await prisma.dataSource.findFirst({ select: { id: true } });
   const rule = await prisma.taskRule.create({
     data: {
       name: "New Appointment Check-in",
-      orderType: "HOME_SAMPLE", // Using default for this example
+      dataSourceId: anySource!.id,
       taskTypeId: 1,
       titleTemplate: "Check-in: {patientName} with {doctorName}",
       slaMinutes: 120,

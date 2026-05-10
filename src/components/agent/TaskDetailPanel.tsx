@@ -32,6 +32,7 @@ interface Task {
   createdAt: string;
   assignedAt: string | null;
   startedAt: string | null;
+  snoozedUntil: string | null; // W5
   metadata: Record<string, unknown>;
   assignedTo: { id: number; name: string } | null;
   checklistItems: ChecklistItem[];
@@ -41,6 +42,69 @@ interface Task {
 interface TaskDetailPanelProps {
   task: Task;
   onUpdate: () => void;
+}
+
+// W3 — "Why this task?" panel.
+// Reads `metadata.whyThisTask`, which the engine stamps onto the task at
+// creation time (see taskCreator.ts). For older tasks (created before W3
+// shipped) the block is missing and the panel renders a graceful fallback.
+function WhyThisTask({ metadata }: { metadata: Record<string, unknown> | null | undefined }) {
+  const why = (metadata && (metadata.whyThisTask as
+    | {
+        ruleName?: string;
+        ruleId?: string;
+        triggerType?: "STATUS" | "TIME";
+        matchedFacts?: { check: string; detail: string }[];
+        evaluatedAt?: string;
+      }
+    | undefined)) || null;
+
+  // Graceful fallback for legacy tasks: still show "Why this task?" with
+  // whatever rule context is on hand, so the section header isn't a lie.
+  if (!why || !why.ruleName) {
+    const manual = (metadata as Record<string, unknown> | null)?.manual === true;
+    return (
+      <div>
+        <h3 className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-2">
+          Why this task?
+        </h3>
+        <div className="rounded-lg border border-zinc-800 bg-zinc-900/40 px-3 py-2 text-xs text-zinc-500">
+          {manual
+            ? "Created manually by an Ops Head."
+            : "Trigger details not recorded for this task (created before this surface was added)."}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <h3 className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-2">
+        Why this task?
+      </h3>
+      <div className="rounded-lg border border-zinc-800 bg-zinc-900/60 px-3 py-3 space-y-2">
+        <div className="flex items-baseline gap-2">
+          <span className="text-[10px] uppercase tracking-wider text-zinc-600">Rule</span>
+          <span className="text-sm font-medium text-zinc-100">{why.ruleName}</span>
+          {why.triggerType && (
+            <span className="text-[10px] uppercase tracking-wider text-zinc-600 ml-auto">
+              {why.triggerType}-triggered
+            </span>
+          )}
+        </div>
+        {why.matchedFacts && why.matchedFacts.length > 0 && (
+          <ul className="space-y-1 pl-1">
+            {why.matchedFacts.map((f, i) => (
+              <li key={i} className="text-xs text-zinc-300 flex gap-2">
+                <span className="text-zinc-600 shrink-0">•</span>
+                <span>{f.detail}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
 }
 
 const NEXT_STATUS: Record<string, { label: string; status: string; cls: string }[]> = {
@@ -61,9 +125,12 @@ const NEXT_STATUS: Record<string, { label: string; status: string; cls: string }
 };
 
 export default function TaskDetailPanel({ task, onUpdate }: TaskDetailPanelProps) {
-  const [note, setNote] = useState("");
+  // W2 — standalone Note field removed. Status changes no longer carry a
+  // freeform note from the agent; the system records each transition with
+  // a default reason ("Flagged for help", auto-generated SLA notes, etc).
+  // If users need richer communication, the future in-task chat (Phase 4)
+  // is the channel for that.
   const [loading, setLoading] = useState<string | null>(null);
-  const [noteSaved, setNoteSaved] = useState(false);
   const [showOrderView, setShowOrderView] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [displayedTask, setDisplayedTask] = useState<Task>(task);
@@ -83,7 +150,7 @@ export default function TaskDetailPanel({ task, onUpdate }: TaskDetailPanelProps
       const res = await fetch(`/api/tasks/${task.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status, note }),
+        body: JSON.stringify({ status }),
       });
 
       if (!res.ok) {
@@ -94,7 +161,6 @@ export default function TaskDetailPanel({ task, onUpdate }: TaskDetailPanelProps
       const data = await res.json();
       // Update with server response to ensure consistency
       setDisplayedTask(data.task);
-      setNote("");
       onUpdate();
     } catch (err) {
       // Revert optimistic update on error
@@ -106,35 +172,7 @@ export default function TaskDetailPanel({ task, onUpdate }: TaskDetailPanelProps
     }
   }
 
-  async function saveNote() {
-    if (!note.trim()) return;
-    setLoading("note");
-    setError(null);
-    try {
-      const res = await fetch(`/api/tasks/${task.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ note: note.trim() }),
-      });
-
-      if (!res.ok) {
-        const errorData = await res.json();
-        throw new Error(errorData.error || "Failed to save note");
-      }
-
-      const data = await res.json();
-      setDisplayedTask(data.task);
-      setNote("");
-      setNoteSaved(true);
-      setTimeout(() => setNoteSaved(false), 2500);
-      onUpdate();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save note");
-      console.error("[TaskDetailPanel] saveNote error:", err);
-    } finally {
-      setLoading(null);
-    }
-  }
+  // saveNote() removed in W2 — see comment on `loading` declaration above.
 
   async function flagForHelp() {
     setLoading("flag");
@@ -148,7 +186,7 @@ export default function TaskDetailPanel({ task, onUpdate }: TaskDetailPanelProps
       const res = await fetch(`/api/tasks/${task.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status: "BLOCKED", note: note.trim() || "Flagged for help" }),
+        body: JSON.stringify({ status: "BLOCKED", note: "Flagged for help" }),
       });
 
       if (!res.ok) {
@@ -158,12 +196,69 @@ export default function TaskDetailPanel({ task, onUpdate }: TaskDetailPanelProps
 
       const data = await res.json();
       setDisplayedTask(data.task);
-      setNote("");
       onUpdate();
     } catch (err) {
       setDisplayedTask(previousTask);
       setError(err instanceof Error ? err.message : "Failed to flag task");
       console.error("[TaskDetailPanel] flagForHelp error:", err);
+    } finally {
+      setLoading(null);
+    }
+  }
+
+  async function snoozeTask(minutes: number) {
+    // W5 — Drop the task out of Active for N minutes. Optimistic update so
+    // the panel reflects the snooze immediately; parent re-fetches will
+    // also drop the task from the visible list.
+    setLoading(`snooze-${minutes}`);
+    setError(null);
+    const previousTask = displayedTask;
+    const optimisticUntil = new Date(Date.now() + minutes * 60_000).toISOString();
+    setDisplayedTask({ ...displayedTask, snoozedUntil: optimisticUntil });
+    try {
+      const res = await fetch(`/api/tasks/${task.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ snoozeMinutes: minutes }),
+      });
+      if (!res.ok) {
+        const errorData = await res.json();
+        throw new Error(errorData.error || "Failed to snooze task");
+      }
+      const data = await res.json();
+      setDisplayedTask(data.task);
+      onUpdate();
+    } catch (err) {
+      setDisplayedTask(previousTask);
+      setError(err instanceof Error ? err.message : "Failed to snooze task");
+      console.error("[TaskDetailPanel] snoozeTask error:", err);
+    } finally {
+      setLoading(null);
+    }
+  }
+
+  async function clearSnooze() {
+    setLoading("snooze-clear");
+    setError(null);
+    const previousTask = displayedTask;
+    setDisplayedTask({ ...displayedTask, snoozedUntil: null });
+    try {
+      const res = await fetch(`/api/tasks/${task.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ clearSnooze: true }),
+      });
+      if (!res.ok) {
+        const errorData = await res.json();
+        throw new Error(errorData.error || "Failed to clear snooze");
+      }
+      const data = await res.json();
+      setDisplayedTask(data.task);
+      onUpdate();
+    } catch (err) {
+      setDisplayedTask(previousTask);
+      setError(err instanceof Error ? err.message : "Failed to clear snooze");
+      console.error("[TaskDetailPanel] clearSnooze error:", err);
     } finally {
       setLoading(null);
     }
@@ -211,6 +306,19 @@ export default function TaskDetailPanel({ task, onUpdate }: TaskDetailPanelProps
 
   const isTerminal = displayedTask.status === "COMPLETED" || displayedTask.status === "CANCELLED";
   const canFlag = !isTerminal && displayedTask.status !== "BLOCKED";
+
+  // W5 — Snooze state. A future timestamp means the task is currently snoozed
+  // (and will already be filtered out of the agent's Active list). The panel
+  // can still be opened when the agent navigates to it directly, so we render
+  // a banner + cancel control rather than a blank state.
+  const snoozedUntilDate = displayedTask.snoozedUntil ? new Date(displayedTask.snoozedUntil) : null;
+  const isSnoozed = !!snoozedUntilDate && snoozedUntilDate.getTime() > Date.now();
+  const SNOOZE_PRESETS = [
+    { mins: 15, label: "15m" },
+    { mins: 30, label: "30m" },
+    { mins: 60, label: "1h" },
+    { mins: 240, label: "4h" },
+  ];
 
   return (
     <div className="flex flex-col h-full bg-zinc-950">
@@ -312,7 +420,11 @@ export default function TaskDetailPanel({ task, onUpdate }: TaskDetailPanelProps
           </div>
         </div>
 
-        {/* Phase 2 Feature 7: SLA Timeline Context */}
+        {/* W3 — Why this task? */}
+        <WhyThisTask metadata={displayedTask.metadata} />
+
+        {/* Phase 2 Feature 7: SLA Timeline Context - Not yet implemented */}
+        {/* Uncomment when Phase 2 features are added
         {displayedTask.slaContext && (
           <SLADisplay
             slaContext={displayedTask.slaContext as any}
@@ -320,6 +432,7 @@ export default function TaskDetailPanel({ task, onUpdate }: TaskDetailPanelProps
             mode="expanded"
           />
         )}
+        */}
 
         {/* Phase 2: Assignment Audit Trail */}
         <AssignmentAuditTrail
@@ -381,40 +494,50 @@ export default function TaskDetailPanel({ task, onUpdate }: TaskDetailPanelProps
           </div>
         )}
 
-        {/* Note field */}
-        {!isTerminal && (
-          <div>
-            <h3 className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-2">
-              Note
-            </h3>
-            <textarea
-              value={note}
-              onChange={(e) => setNote(e.target.value)}
-              rows={3}
-              placeholder="Any observations, blockers, or updates..."
-              className="w-full px-3 py-2 bg-zinc-900 border border-zinc-700 rounded-lg text-sm text-zinc-200 placeholder-zinc-600 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            />
-            {/* Standalone note save */}
-            <div className="flex items-center justify-end mt-2 gap-2">
-              {noteSaved && (
-                <span className="text-xs text-green-400 flex items-center gap-1">
-                  <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                  </svg>
-                  Saved
-                </span>
-              )}
-              <button
-                onClick={saveNote}
-                disabled={!note.trim() || !!loading}
-                className="px-3 py-1.5 text-xs bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg transition-colors disabled:opacity-40 font-medium"
-              >
-                {loading === "note" ? "Saving..." : "Save Note"}
-              </button>
-            </div>
-          </div>
-        )}
+        {/* W2 — standalone Note field removed (was a UX trap: users assumed
+            status-change saved the note too). Status changes now stand on
+            their own; future in-task chat will be the comm channel. */}
       </div>
+
+      {/* W5 — Snoozed banner. Rendered above the action buttons when active.
+          Shows the wall-clock target time + a Cancel control. */}
+      {isSnoozed && snoozedUntilDate && !isTerminal && (
+        <div className="px-6 pt-4 pb-3">
+          <div className="flex items-center gap-3 px-3 py-2 bg-amber-500/10 border border-amber-500/30 rounded-lg">
+            <svg className="w-4 h-4 text-amber-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            <span className="text-xs text-amber-200 flex-1">
+              Snoozed until {snoozedUntilDate.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}
+            </span>
+            <button
+              onClick={clearSnooze}
+              disabled={!!loading}
+              className="text-xs text-amber-300 hover:text-amber-100 underline-offset-2 hover:underline disabled:opacity-50"
+            >
+              {loading === "snooze-clear" ? "Cancelling..." : "Cancel snooze"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* W5 — Snooze presets. Hidden when terminal or already snoozed. */}
+      {!isTerminal && !isSnoozed && (
+        <div className="px-6 pt-4 pb-3 flex items-center gap-2">
+          <span className="text-[11px] text-zinc-500 uppercase tracking-wider">Snooze</span>
+          {SNOOZE_PRESETS.map((p) => (
+            <button
+              key={p.mins}
+              onClick={() => snoozeTask(p.mins)}
+              disabled={!!loading}
+              className="px-2 py-1 text-xs bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 text-zinc-300 rounded-md transition-colors disabled:opacity-40"
+              title={`Hide this task for ${p.label} — re-appears after`}
+            >
+              {loading === `snooze-${p.mins}` ? "…" : p.label}
+            </button>
+          ))}
+        </div>
+      )}
 
       {/* Action buttons */}
       {!isTerminal && actions.length > 0 && (

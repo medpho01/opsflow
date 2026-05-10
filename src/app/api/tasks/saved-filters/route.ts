@@ -20,6 +20,9 @@ export async function GET(request: NextRequest) {
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   try {
+    // W6 — table + model existed but the GET was stubbed (returned []).
+    // Now wired up; orders by usageCount so filters the user actually
+    // re-runs surface first, ties broken by recency.
     const filters = await prisma.userSavedFilter.findMany({
       where: { userId: user.id },
       select: {
@@ -29,7 +32,7 @@ export async function GET(request: NextRequest) {
         createdAt: true,
         usageCount: true,
       },
-      orderBy: { usageCount: "desc" },
+      orderBy: [{ usageCount: "desc" }, { createdAt: "desc" }],
     });
 
     return NextResponse.json({
@@ -83,11 +86,11 @@ export async function POST(request: NextRequest) {
       create: {
         userId: user.id,
         filterName: name.trim(),
-        filterJson: filters as SavedFilter,
+        filterJson: filters as any,
         usageCount: 1,
       },
       update: {
-        filterJson: filters as SavedFilter,
+        filterJson: filters as any,
         updatedAt: new Date(),
       },
     });

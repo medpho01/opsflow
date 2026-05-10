@@ -29,6 +29,7 @@ interface Task {
   createdAt: string;
   assignedAt: string | null;
   startedAt: string | null;
+  snoozedUntil: string | null; // W5
   metadata: Record<string, unknown>;
   assignedTo: { id: number; name: string } | null;
   checklistItems: ChecklistItem[];
@@ -123,12 +124,19 @@ export default function AgentTaskBoard({ userId, userName }: { userId: number; u
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [orderIdFilter, setOrderIdFilter] = useState("");
+  // W2 — per-tab badge counts shown next to tab labels.
+  const [tabCounts, setTabCounts] = useState<Record<string, number>>({});
 
   const currentTab = STATUS_TABS.find((t) => t.key === activeTab)!;
 
   const fetchTasks = useCallback(async () => {
     try {
-      let url = `/api/tasks?status=${currentTab.statuses}&limit=50`;
+      // W5 — agent's Active list filters out snoozed-future tasks; they
+      // re-appear automatically once snoozedUntil passes. We DON'T filter
+      // on Blocked/Done since those tabs are review-oriented (still useful
+      // to see "I snoozed this earlier" while reviewing what's blocked).
+      const exclude = currentTab.key === "active" ? "&excludeSnoozed=true" : "";
+      let url = `/api/tasks?status=${currentTab.statuses}&limit=50${exclude}`;
       if (orderIdFilter) {
         url += `&orderId=${orderIdFilter}`;
       }
@@ -145,11 +153,35 @@ export default function AgentTaskBoard({ userId, userName }: { userId: number; u
     } finally {
       setLoading(false);
     }
-  }, [currentTab.statuses, selectedTask?.id, orderIdFilter]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [currentTab.statuses, currentTab.key, selectedTask?.id, orderIdFilter]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // W2 — fetch counts for ALL tabs in parallel so badges stay accurate
+  // regardless of which tab is currently selected. limit=1 + reading
+  // pagination.total avoids pulling task rows we won't render.
+  const fetchTabCounts = useCallback(async () => {
+    try {
+      const results = await Promise.all(
+        STATUS_TABS.map((tab) => {
+          // Active count must respect the same `excludeSnoozed` filter as
+          // the visible list, otherwise the badge over-reports by counting
+          // tasks the user can't see.
+          const exclude = tab.key === "active" ? "&excludeSnoozed=true" : "";
+          return fetch(`/api/tasks?status=${tab.statuses}&limit=1${exclude}`)
+            .then((r) => r.json())
+            .then((d) => [tab.key, d.pagination?.total ?? 0] as const)
+            .catch(() => [tab.key, 0] as const);
+        })
+      );
+      setTabCounts(Object.fromEntries(results));
+    } catch {
+      // best-effort — leave counts as-is on transient errors
+    }
+  }, []);
 
   useEffect(() => {
     setLoading(true);
     fetchTasks();
+    fetchTabCounts();
   }, [activeTab, refreshKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-refresh every 30s
@@ -190,21 +222,37 @@ export default function AgentTaskBoard({ userId, userName }: { userId: number; u
             </div>
           </div>
 
-          {/* Tabs */}
+          {/* Tabs (with W2 badge counts) */}
           <div className="flex gap-1 bg-zinc-900 rounded-lg p-1 mb-3">
-            {STATUS_TABS.map((tab) => (
-              <button
-                key={tab.key}
-                onClick={() => { setActiveTab(tab.key); setSelectedTask(null); }}
-                className={`flex-1 text-xs font-medium py-1.5 rounded-md transition-colors ${
-                  activeTab === tab.key
-                    ? "bg-zinc-700 text-white"
-                    : "text-zinc-500 hover:text-zinc-300"
-                }`}
-              >
-                {tab.label}
-              </button>
-            ))}
+            {STATUS_TABS.map((tab) => {
+              const isActive = activeTab === tab.key;
+              const count = tabCounts[tab.key];
+              const showCount = typeof count === "number";
+              return (
+                <button
+                  key={tab.key}
+                  onClick={() => { setActiveTab(tab.key); setSelectedTask(null); }}
+                  className={`flex-1 inline-flex items-center justify-center gap-1.5 text-xs font-medium py-1.5 rounded-md transition-colors ${
+                    isActive
+                      ? "bg-zinc-700 text-white"
+                      : "text-zinc-500 hover:text-zinc-300"
+                  }`}
+                >
+                  <span>{tab.label}</span>
+                  {showCount && (
+                    <span
+                      className={`text-[10px] px-1.5 py-0.5 rounded-full leading-none ${
+                        isActive
+                          ? "bg-zinc-900 text-zinc-300"
+                          : "bg-zinc-800 text-zinc-500"
+                      }`}
+                    >
+                      {count}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
           </div>
 
           {/* Order ID Filter */}
@@ -250,6 +298,12 @@ export default function AgentTaskBoard({ userId, userName }: { userId: number; u
                 const doneItems = task.checklistItems.filter((i) => i.isDone).length;
                 const totalItems = task.checklistItems.length;
 
+                // W5 — show a "Snoozed until X" pill on the card so the agent
+                // can spot snoozed tasks in tabs that don't filter them out
+                // (Blocked / Done). Active tab still hides them entirely.
+                const snoozedUntil = task.snoozedUntil ? new Date(task.snoozedUntil) : null;
+                const isSnoozed = !!snoozedUntil && snoozedUntil.getTime() > Date.now();
+
                 return (
                   <button
                     key={task.id}
@@ -263,9 +317,20 @@ export default function AgentTaskBoard({ userId, userName }: { userId: number; u
                       <PriorityBadge priority={task.priority} />
                     </div>
 
-                    <div className="flex items-center gap-2 mb-1.5">
+                    <div className="flex items-center gap-2 mb-1.5 flex-wrap">
                       <StatusBadge status={task.status} />
                       <span className="text-[10px] text-zinc-600">#{task.entityId}</span>
+                      {isSnoozed && snoozedUntil && (
+                        <span
+                          className="inline-flex items-center gap-1 text-[10px] text-amber-300 bg-amber-500/10 border border-amber-500/30 px-1.5 py-0.5 rounded"
+                          title={`Snoozed — re-appears at ${snoozedUntil.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}`}
+                        >
+                          <svg className="w-2.5 h-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                          </svg>
+                          Snoozed · {snoozedUntil.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}
+                        </span>
+                      )}
                     </div>
 
                     <div className="flex items-center justify-between">
@@ -292,7 +357,12 @@ export default function AgentTaskBoard({ userId, userName }: { userId: number; u
       {/* ── Right: Task Detail ── */}
       <div className="flex-1 min-w-0">
         {selectedTask ? (
+          // `key` forces a fresh mount when the user clicks a different task —
+          // TaskDetailPanel mirrors `task` into local state via useState(task)
+          // and doesn't sync on prop change, so without the key the panel
+          // would stay stuck on whatever task was opened first.
           <TaskDetailPanel
+            key={selectedTask.id}
             task={selectedTask}
             onUpdate={() => setRefreshKey((k) => k + 1)}
           />

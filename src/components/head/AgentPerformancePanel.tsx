@@ -59,15 +59,16 @@ function LoadBar({ value }: { value: number }) {
   );
 }
 
-export default function AgentPerformancePanel() {
+export default function AgentPerformancePanel({ dataSourceId = null }: { dataSourceId?: string | null }) {
   const [metrics, setMetrics] = useState<AgentMetric[]>([]);
   const [range, setRange] = useState<Range>("today");
   const [loading, setLoading] = useState(true);
 
-  const fetchMetrics = useCallback(async (r: Range) => {
+  const fetchMetrics = useCallback(async (r: Range, ds: string | null) => {
     setLoading(true);
     try {
-      const res = await fetch(`/api/analytics/agents?range=${r}`);
+      const dsParam = ds ? `&dataSourceId=${encodeURIComponent(ds)}` : "";
+      const res = await fetch(`/api/analytics/agents?range=${r}${dsParam}`);
       if (res.ok) {
         const data = await res.json();
         setMetrics(data.metrics ?? []);
@@ -77,7 +78,7 @@ export default function AgentPerformancePanel() {
     }
   }, []);
 
-  useEffect(() => { fetchMetrics(range); }, [range, fetchMetrics]);
+  useEffect(() => { fetchMetrics(range, dataSourceId); }, [range, dataSourceId, fetchMetrics]);
 
   const rangeLabels: Record<Range, string> = { today: "Today", week: "Last 7 Days", month: "Last 30 Days" };
 

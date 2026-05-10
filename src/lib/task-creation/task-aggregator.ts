@@ -133,8 +133,8 @@ export async function aggregateTasksIntoGroup(
       groupKey: groupBy,
       originalTaskIds: taskIds,
       entityCount: tasks.length,
-      firstEntityId: firstTask.sourceEntityId || firstTask.id,
-      lastEntityId: lastTask.sourceEntityId || lastTask.id,
+      firstEntityId: firstTask.sourceEntityId ? Number(firstTask.sourceEntityId) : firstTask.id,
+      lastEntityId: lastTask.sourceEntityId ? Number(lastTask.sourceEntityId) : lastTask.id,
       createdAt: new Date(),
       status: "CREATED",
     };

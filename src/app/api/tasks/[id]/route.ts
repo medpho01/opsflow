@@ -6,7 +6,41 @@ import { NextRequest, NextResponse } from "next/server";
 import { getSessionFromRequest } from "@/lib/auth/session";
 import prisma from "@/lib/db/client";
 import { TaskStatus, UserRole } from "@prisma/client";
-import { appendOrderNote } from "@/lib/engine/labstack";
+// Labstack is treated as a strictly read-only source — no writebacks.
+// (Previously this route called appendOrderNote() on task completion; that
+// path has been removed. Task completion is recorded in taskos.task_history
+// only; the labstack Order row is left untouched.)
+
+/**
+ * Resolve store IDs a STORE_ADMIN is permitted to act on. Empty array means
+ * the admin has no store assignments — they should be forbidden from acting
+ * on any task.
+ */
+async function getAdminStoreIds(userId: number): Promise<number[]> {
+  const member = await prisma.teamMember.findFirst({
+    where: { userId },
+    include: { storeAssignments: { select: { storeId: true } } },
+  });
+  return member?.storeAssignments.map((a) => a.storeId) ?? [];
+}
+
+/**
+ * Returns true iff the user is allowed to read/write this task. Centralises
+ * the role-based scoping rule so GET and PATCH agree (audit P0 #4 — PATCH
+ * previously only checked OPS_AGENT-not-own and let STORE_ADMINs touch any
+ * task).
+ */
+async function canAccessTask(
+  user: { id: number; role: UserRole },
+  task: { assignedToId: number | null; storeId: number | null }
+): Promise<boolean> {
+  if (user.role === UserRole.OPS_HEAD) return true;
+  if (user.role === UserRole.OPS_AGENT) return task.assignedToId === user.id;
+  // STORE_ADMIN: must own the task's store
+  if (task.storeId == null) return false;
+  const storeIds = await getAdminStoreIds(user.id);
+  return storeIds.includes(task.storeId);
+}
 
 export async function GET(
   request: NextRequest,
@@ -17,6 +51,9 @@ export async function GET(
 
   const { id } = await params;
   const taskId = parseInt(id, 10);
+  if (isNaN(taskId)) {
+    return NextResponse.json({ error: "Invalid task id" }, { status: 400 });
+  }
 
   const task = await prisma.task.findUnique({
     where: { id: taskId },
@@ -34,12 +71,20 @@ export async function GET(
 
   if (!task) return NextResponse.json({ error: "Task not found" }, { status: 404 });
 
-  // Access control: agents can only see their own tasks
-  if (user.role === UserRole.OPS_AGENT && task.assignedToId !== user.id) {
+  if (!(await canAccessTask(user, task))) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
-  return NextResponse.json({ task });
+  return NextResponse.json({ task: serializeTask(task) });
+}
+
+// Task.sourceEntityId is BigInt in Postgres; NextResponse.json → JSON.stringify
+// throws on BigInt. Mirror the cast used in the list route (api/tasks/route.ts).
+function serializeTask<T extends { sourceEntityId: bigint | null }>(task: T) {
+  return {
+    ...task,
+    sourceEntityId: task.sourceEntityId != null ? task.sourceEntityId.toString() : null,
+  };
 }
 
 export async function PATCH(
@@ -51,19 +96,50 @@ export async function PATCH(
 
   const { id } = await params;
   const taskId = parseInt(id, 10);
+  if (isNaN(taskId)) {
+    return NextResponse.json({ error: "Invalid task id" }, { status: 400 });
+  }
+
   const body = await request.json();
 
   const task = await prisma.task.findUnique({ where: { id: taskId } });
   if (!task) return NextResponse.json({ error: "Task not found" }, { status: 404 });
 
-  // Agents can only update their own tasks
-  if (user.role === UserRole.OPS_AGENT && task.assignedToId !== user.id) {
+  if (!(await canAccessTask(user, task))) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
-  const { status, note, checklistItemId, isDone, assignedToId } = body;
+  const { status, note, checklistItemId, isDone, assignedToId, snoozeMinutes, clearSnooze } = body;
   const updates: Record<string, unknown> = {};
   const historyNote = note ?? "";
+
+  // ── Snooze (W5) ───────────────────────────────────────────────────
+  // The agent picks a duration ("Ping me in 15m") which sets snoozedUntil.
+  // The task disappears from their Active tab until the timestamp passes.
+  // `clearSnooze: true` removes an active snooze (the panel banner does this).
+  // Allowed durations are clamped server-side so the UI can't drift.
+  if (clearSnooze === true) {
+    updates.snoozedUntil = null;
+  } else if (snoozeMinutes !== undefined) {
+    const minutes = Number(snoozeMinutes);
+    const ALLOWED = [15, 30, 60, 240];
+    if (!ALLOWED.includes(minutes)) {
+      return NextResponse.json(
+        { error: `Invalid snoozeMinutes — must be one of ${ALLOWED.join(", ")}` },
+        { status: 400 }
+      );
+    }
+    updates.snoozedUntil = new Date(Date.now() + minutes * 60_000);
+    // History trail so heads can see the snooze in the timeline.
+    await prisma.taskHistory.create({
+      data: {
+        taskId,
+        status: task.status,
+        changedById: user.id,
+        note: `Snoozed for ${minutes} min`,
+      },
+    });
+  }
 
   // ── Status transition ─────────────────────────────────────────────
   if (status && Object.values(TaskStatus).includes(status)) {
@@ -88,27 +164,55 @@ export async function PATCH(
       },
     });
 
-    // Write note back to labstack if completing
-    if (status === TaskStatus.COMPLETED && task.entityType === "ORDER") {
-      const completionNote = `Task completed by ${user.name}: ${task.title}${historyNote ? ` — ${historyNote}` : ""}`;
-      await appendOrderNote(task.entityId, completionNote).catch((e) =>
-        console.error("[TaskPatch] appendOrderNote failed:", e)
+    // (Removed) labstack writeback on COMPLETED. OpsFlow no longer mutates
+    // the labstack Order row — task completion is recorded entirely in
+    // taskos.task_history above. Labstack is read-only from OpsFlow.
+  }
+
+  // ── Checklist item toggle ─────────────────────────────────────────
+  // Audit P1: previously the route updated whatever checklistItemId the
+  // caller supplied without verifying it belonged to this task. A
+  // logged-in agent could toggle any checklist item across any task by
+  // guessing ids. Now we constrain the update to (id AND taskId).
+  if (checklistItemId !== undefined && isDone !== undefined) {
+    const updated = await prisma.taskChecklistItem.updateMany({
+      where: { id: checklistItemId, taskId },
+      data: { isDone, doneAt: isDone ? new Date() : null },
+    });
+    if (updated.count === 0) {
+      return NextResponse.json(
+        { error: "Checklist item not found on this task" },
+        { status: 404 }
       );
     }
   }
 
-  // ── Checklist item toggle ─────────────────────────────────────────
-  if (checklistItemId !== undefined && isDone !== undefined) {
-    await prisma.taskChecklistItem.update({
-      where: { id: checklistItemId },
-      data: { isDone, doneAt: isDone ? new Date() : null },
-    });
-  }
-
   // ── Re-assign (OPS_HEAD / STORE_ADMIN only) ───────────────────────
+  // Audit P1: PATCH previously accepted any `assignedToId` without
+  // verifying the user existed or was an OPS_AGENT. Verify both before
+  // landing the change so a typo or malicious id can't orphan the task.
   if (assignedToId !== undefined && user.role !== UserRole.OPS_AGENT) {
-    updates.assignedToId = assignedToId;
-    updates.assignedAt = new Date();
+    const target =
+      assignedToId === null
+        ? null
+        : await prisma.user.findUnique({
+            where: { id: Number(assignedToId) },
+            select: { id: true, role: true, isActive: true, teamMember: { select: { id: true } } },
+          });
+
+    if (assignedToId !== null) {
+      if (!target || !target.isActive || target.role !== UserRole.OPS_AGENT) {
+        return NextResponse.json(
+          { error: "Invalid assignee — must be an active OPS_AGENT" },
+          { status: 400 }
+        );
+      }
+    }
+
+    updates.assignedToId = target?.id ?? null;
+    // Keep teamMemberId in sync (audit arch finding — divergent dual writes)
+    updates.teamMemberId = target?.teamMember?.id ?? null;
+    updates.assignedAt = target ? new Date() : null;
 
     if (!status) {
       // If only reassigning (no status change), also create history
@@ -117,14 +221,16 @@ export async function PATCH(
           taskId,
           status: task.status,
           changedById: user.id,
-          note: `Reassigned to user #${assignedToId}`,
+          note: target
+            ? `Reassigned to user #${target.id}`
+            : `Unassigned`,
         },
       });
     }
   }
 
   // ── Standalone note (no status change) ──────────────────────────
-  const standaloneNote = !status && !assignedToId && note?.trim() && checklistItemId === undefined;
+  const standaloneNote = !status && assignedToId === undefined && note?.trim() && checklistItemId === undefined;
   if (standaloneNote) {
     await prisma.taskHistory.create({
       data: {
@@ -149,5 +255,5 @@ export async function PATCH(
     },
   });
 
-  return NextResponse.json({ task: updated });
+  return NextResponse.json({ task: serializeTask(updated) });
 }

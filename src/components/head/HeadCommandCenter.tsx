@@ -1,10 +1,20 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
+import Link from "next/link";
 import SlaCountdown from "@/components/shared/SlaCountdown";
 import PriorityBadge from "@/components/shared/PriorityBadge";
 import StatusBadge from "@/components/shared/StatusBadge";
 import CreateTaskModal from "@/components/head/CreateTaskModal";
+
+/**
+ * IST-anchored "today" key — used to drive drill-in links to All Tasks for
+ * the "Done Today" / "Breached Today" tiles. Matches /api/dashboard's
+ * IST anchoring so the filtered table shows the same set the tile counts.
+ */
+function todayISTKey(): string {
+  return new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+}
 
 interface Stats {
   activeOrders: number;
@@ -44,26 +54,218 @@ interface TeamMember {
 
 interface Alert {
   id: number;
-  type: string;
+  // The DB column / Prisma field is `alertType`. Tolerate `type` as a legacy
+  // alias in case any older response shape is in flight after a deploy.
+  alertType?: string;
+  type?: string;
   message: string;
   createdAt: string;
   task: { id: number; title: string; entityId: number } | null;
 }
 
+function alertTypeOf(a: Alert): string {
+  return a.alertType ?? a.type ?? "UNKNOWN";
+}
+
+interface SourceStat {
+  sourceId: string;
+  displayName: string;
+  openTasks: number;
+}
+
 interface DashboardData {
   stats: Stats;
+  sourceStats: SourceStat[];
   riskItems: RiskItem[];
   team: TeamMember[];
   recentAlerts: Alert[];
   lastPollAt: string | null;
 }
 
+/**
+ * Plays a short two-tone beep via Web Audio. No asset to ship, runs only
+ * after a user gesture-triggered audio enable (browsers gate audio
+ * autoplay; the toggle button itself counts as the gesture). Fails
+ * silently if AudioContext isn't available (older browsers / SSR path).
+ */
+function playBreachBeep() {
+  try {
+    const Ctx = (window.AudioContext ||
+      // @ts-expect-error — webkit prefix on older Safari
+      window.webkitAudioContext) as typeof AudioContext | undefined;
+    if (!Ctx) return;
+    const ctx = new Ctx();
+    const tones = [880, 660]; // descending two-tone, alarm-like
+    const duration = 0.18;
+    tones.forEach((freq, i) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.frequency.value = freq;
+      osc.type = "sine";
+      gain.gain.setValueAtTime(0, ctx.currentTime + i * duration);
+      gain.gain.linearRampToValueAtTime(0.18, ctx.currentTime + i * duration + 0.02);
+      gain.gain.linearRampToValueAtTime(0, ctx.currentTime + i * duration + duration);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(ctx.currentTime + i * duration);
+      osc.stop(ctx.currentTime + i * duration + duration);
+    });
+    // Tear down the context after the beeps finish.
+    setTimeout(() => ctx.close().catch(() => undefined), 1000);
+  } catch {
+    // No-op — audio is best-effort.
+  }
+}
+
 const ALERT_TYPE_COLORS: Record<string, string> = {
   SLA_BREACH: "text-red-400",
+  SLA_BREACHED: "text-red-400",
   SLA_WARNING: "text-amber-400",
   UNASSIGNED_TASK: "text-blue-400",
   ESCALATION: "text-purple-400",
 };
+
+/**
+ * SourceHealthCard — replaces the prior "source chips" strip with a card
+ * that surfaces per-source open-task counts AND the cycle-level health
+ * signals the audit (feature 08) flagged: last poll, success rate over
+ * the last hour, tasks created last hour. Calls /api/sources/health.
+ */
+interface SourceHealth {
+  cycle: {
+    lastPollAt: string | null;
+    cyclesInLastHour: number;
+    successCount: number;
+    successRate: number | null;
+    health: "green" | "amber" | "red";
+  };
+  sources: Array<{
+    id: string;
+    sourceId: string;
+    displayName: string;
+    openTasks: number;
+    tasksLastHour: number;
+  }>;
+}
+
+function formatRelativeTime(iso: string | null): string {
+  if (!iso) return "never";
+  const d = new Date(iso);
+  const seconds = Math.round((Date.now() - d.getTime()) / 1000);
+  if (seconds < 60) return `${seconds}s ago`;
+  const mins = Math.round(seconds / 60);
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.round(mins / 60);
+  return `${hours}h ago`;
+}
+
+function SourceHealthCard({ refreshKey }: { refreshKey: number }) {
+  const [data, setData] = useState<SourceHealth | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/sources/health")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (!cancelled) setData(d);
+      })
+      .catch(() => { if (!cancelled) setData(null); });
+    return () => { cancelled = true; };
+  }, [refreshKey]);
+
+  if (!data) return null;
+
+  const { cycle, sources } = data;
+  const healthCls =
+    cycle.health === "green" ? "bg-emerald-400" :
+    cycle.health === "amber" ? "bg-amber-400" :
+    "bg-red-400";
+  const healthLabel =
+    cycle.health === "green" ? "healthy" :
+    cycle.health === "amber" ? "degraded" :
+    "unhealthy";
+
+  return (
+    <div className="bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3">
+      {/* Cycle header — global health for the polling cycle. */}
+      <div className="flex items-center gap-3 flex-wrap">
+        <span className="text-[10px] text-zinc-600 uppercase tracking-wider font-semibold">Sources</span>
+        <span className="flex items-center gap-1.5">
+          <span className={`w-1.5 h-1.5 rounded-full ${healthCls}`} />
+          <span className="text-xs text-zinc-300 font-medium capitalize">{healthLabel}</span>
+        </span>
+        <span className="text-xs text-zinc-500">Last poll {formatRelativeTime(cycle.lastPollAt)}</span>
+        {cycle.successRate !== null && (
+          <span className="text-xs text-zinc-500">
+            {cycle.successCount}/{cycle.cyclesInLastHour} cycles ok
+          </span>
+        )}
+      </div>
+
+      {/* Per-source rows — open tasks + last-hour fire count. */}
+      {sources.length > 0 && (
+        <div className="mt-3 flex flex-wrap gap-2">
+          {sources.map((s) => (
+            <div
+              key={s.id}
+              className="flex items-center gap-3 bg-zinc-950/60 border border-zinc-800 rounded-lg px-3 py-1.5"
+            >
+              <svg className="w-3 h-3 text-emerald-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4" />
+              </svg>
+              <span className="text-xs text-zinc-300">{s.displayName}</span>
+              <span className={`text-xs font-semibold ${s.openTasks > 0 ? "text-blue-400" : "text-zinc-600"}`}>
+                {s.openTasks} open
+              </span>
+              <span className="text-[10px] text-zinc-500">·</span>
+              <span className="text-[10px] text-zinc-500">
+                {s.tasksLastHour > 0 ? `+${s.tasksLastHour} last hour` : "no new tasks"}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * RosterGlanceTile — single-row breakdown of the team's current
+ * rosterStatus values. Buckets match computeRosterStatus's output enum:
+ * ACTIVE / ON_LEAVE / SICK / OFF. Renders compactly so it fits between
+ * the KPI strip and the source chips without adding vertical weight.
+ */
+function RosterGlanceTile({ team }: { team: TeamMember[] }) {
+  const counts = useMemo(() => {
+    const acc = { ACTIVE: 0, ON_LEAVE: 0, SICK: 0, OFF: 0 } as Record<string, number>;
+    for (const m of team) {
+      const key = (m.rosterStatus in acc) ? m.rosterStatus : "OFF";
+      acc[key]++;
+    }
+    return acc;
+  }, [team]);
+
+  const buckets: Array<{ label: string; key: string; cls: string; dot: string }> = [
+    { label: "Active",   key: "ACTIVE",   cls: "text-emerald-400", dot: "bg-emerald-400" },
+    { label: "On Leave", key: "ON_LEAVE", cls: "text-amber-400",   dot: "bg-amber-400" },
+    { label: "Sick",     key: "SICK",     cls: "text-pink-400",    dot: "bg-pink-400" },
+    { label: "Off",      key: "OFF",      cls: "text-zinc-500",    dot: "bg-zinc-600" },
+  ];
+
+  return (
+    <div className="flex flex-wrap items-center gap-4 bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-2.5">
+      <span className="text-[10px] text-zinc-600 uppercase tracking-wider font-semibold">Roster</span>
+      {buckets.map(b => (
+        <div key={b.key} className="flex items-center gap-2">
+          <span className={`w-1.5 h-1.5 rounded-full ${b.dot}`} />
+          <span className="text-xs text-zinc-400">{b.label}</span>
+          <span className={`text-xs font-semibold ${b.cls}`}>{counts[b.key]}</span>
+        </div>
+      ))}
+      <span className="ml-auto text-[10px] text-zinc-600">{team.length} total</span>
+    </div>
+  );
+}
 
 export default function HeadCommandCenter() {
   const [data, setData] = useState<DashboardData | null>(null);
@@ -71,22 +273,97 @@ export default function HeadCommandCenter() {
   const [refreshKey, setRefreshKey] = useState(0);
   const [dismissedAlerts, setDismissedAlerts] = useState<Set<number>>(new Set());
   const [showCreateModal, setShowCreateModal] = useState(false);
+  // W4 — date range toggle. "today" matches the prior behaviour (the
+  // server defaults to today when no `range` is passed), so users who
+  // never touch the control see the same dashboard as before.
+  const [range, setRange] = useState<"today" | "shift" | "week">("today");
+  // W5 — audio alert on new BREACHED. Persisted in localStorage so the
+  // preference survives reloads. Defaults to OFF — head explicitly opts
+  // in via the bell button so we never beep without consent.
+  const [audioEnabled, setAudioEnabled] = useState(false);
+  // Set of alert IDs we've already seen. Initialised from the FIRST
+  // fetch (so we don't beep for every alert that already existed when
+  // the page loaded — only new arrivals trigger sound).
+  const seenAlertIdsRef = useRef<Set<number> | null>(null);
+
+  // Restore the audioEnabled preference. Run once on mount.
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("opsflow.cc.audioEnabled");
+      if (saved === "true") setAudioEnabled(true);
+    } catch {
+      // localStorage unavailable (SSR / private mode) — default OFF stays.
+    }
+  }, []);
 
   const fetchDashboard = useCallback(async () => {
     try {
-      const res = await fetch("/api/dashboard");
+      const res = await fetch(`/api/dashboard?range=${range}`);
       if (!res.ok) {
         console.error(`[Dashboard] HTTP ${res.status}:`, res.statusText);
         setLoading(false);
         return;
       }
       const json = await res.json();
+
+      // W5 — detect new BREACHED alerts since the last fetch.
+      // First fetch initialises the seen set (no beep for pre-existing
+      // alerts). Subsequent fetches diff and beep on any newly-arrived
+      // SLA_BREACHED entries.
+      const incoming: Alert[] = json.recentAlerts ?? [];
+      const incomingIds = new Set(incoming.map((a) => a.id));
+      if (seenAlertIdsRef.current === null) {
+        seenAlertIdsRef.current = incomingIds;
+      } else {
+        const seen = seenAlertIdsRef.current;
+        const newBreaches = incoming.filter(
+          (a) => !seen.has(a.id) && /BREACH/.test(alertTypeOf(a))
+        );
+        if (newBreaches.length > 0 && audioEnabled) {
+          playBreachBeep();
+          // Best-effort browser notification — silently no-ops if the
+          // user never granted permission.
+          if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+            try {
+              new Notification(
+                newBreaches.length === 1
+                  ? "SLA breached"
+                  : `${newBreaches.length} new SLA breaches`,
+                {
+                  body: newBreaches[0].message,
+                  tag: "opsflow-breach",
+                }
+              );
+            } catch { /* ignore */ }
+          }
+        }
+        seenAlertIdsRef.current = incomingIds;
+      }
+
       setData(json);
     } catch (error) {
       console.error("[Dashboard] Error:", error);
     } finally {
       setLoading(false);
     }
+  }, [range, audioEnabled]);
+
+  // Toggle audio + persist + (on enable) request browser notification permission.
+  const toggleAudio = useCallback(() => {
+    setAudioEnabled((prev) => {
+      const next = !prev;
+      try { localStorage.setItem("opsflow.cc.audioEnabled", String(next)); } catch { /* ignore */ }
+      // Test-fire the beep on enable so the user knows the volume + that
+      // it's wired up. The user gesture also unlocks the AudioContext
+      // for browsers that gate autoplay behind a click.
+      if (next) {
+        playBreachBeep();
+        if (typeof Notification !== "undefined" && Notification.permission === "default") {
+          Notification.requestPermission().catch(() => undefined);
+        }
+      }
+      return next;
+    });
   }, []);
 
   useEffect(() => {
@@ -133,7 +410,7 @@ export default function HeadCommandCenter() {
     );
   }
 
-  const { stats, riskItems, team, recentAlerts, lastPollAt } = data;
+  const { stats, sourceStats = [], riskItems, team, recentAlerts, lastPollAt } = data;
   const visibleAlerts = recentAlerts.filter((a) => !dismissedAlerts.has(a.id));
 
   return (
@@ -156,6 +433,28 @@ export default function HeadCommandCenter() {
             </svg>
             Create Task
           </button>
+          {/* W5 — Audio alert toggle. Beeps + (if permission granted)
+              fires a desktop notification on new BREACHED alerts. */}
+          <button
+            onClick={toggleAudio}
+            title={audioEnabled ? "Audio alerts on — click to silence" : "Audio alerts off — click to enable"}
+            className={`flex items-center gap-1.5 px-3 py-1.5 border rounded-lg text-xs transition-colors ${
+              audioEnabled
+                ? "bg-amber-500/10 border-amber-500/40 text-amber-300 hover:bg-amber-500/15"
+                : "bg-zinc-900 border-zinc-700 text-zinc-400 hover:text-zinc-200 hover:border-zinc-600"
+            }`}
+          >
+            {audioEnabled ? (
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
+              </svg>
+            ) : (
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15zM17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" />
+              </svg>
+            )}
+            {audioEnabled ? "Alerts on" : "Alerts off"}
+          </button>
           <button
             onClick={() => setRefreshKey((k) => k + 1)}
             className="flex items-center gap-1.5 px-3 py-1.5 bg-zinc-900 border border-zinc-700 rounded-lg text-xs text-zinc-400 hover:text-zinc-200 hover:border-zinc-600 transition-colors"
@@ -169,24 +468,114 @@ export default function HeadCommandCenter() {
       </div>
 
       <div className="px-6 py-5 space-y-6">
-        {/* ── Stats bar ── */}
-        <div className="grid grid-cols-4 xl:grid-cols-8 gap-3">
-          {[
-            { label: "Active Orders", value: stats.activeOrders, cls: "text-white" },
-            { label: "Open Tasks", value: stats.openTasks, cls: "text-white" },
-            { label: "Breached", value: stats.breachedTasks, cls: stats.breachedTasks > 0 ? "text-red-400" : "text-white" },
-            { label: "Near SLA", value: stats.warningTasks, cls: stats.warningTasks > 0 ? "text-amber-400" : "text-white" },
-            { label: "Unassigned", value: stats.unassignedTasks, cls: stats.unassignedTasks > 0 ? "text-blue-400" : "text-white" },
-            { label: "SLA Health", value: `${stats.slaHealthPercent}%`, cls: stats.slaHealthPercent >= 90 ? "text-green-400" : stats.slaHealthPercent >= 70 ? "text-amber-400" : "text-red-400" },
-            { label: "Done Today", value: stats.completedToday, cls: "text-green-400" },
-            { label: "Breached Today", value: stats.breachedToday, cls: stats.breachedToday > 0 ? "text-red-400" : "text-zinc-400" },
-          ].map(({ label, value, cls }) => (
-            <div key={label} className="bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3">
-              <div className="text-xs text-zinc-500 mb-1">{label}</div>
-              <div className={`text-2xl font-bold ${cls}`}>{value}</div>
-            </div>
-          ))}
+        {/* ── W4 Date range toggle — affects the "Done" + "Breached"
+             tiles' counts AND labels. Defaults to "today" (existing
+             behaviour). */}
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] text-zinc-600 uppercase tracking-wider font-semibold">Range</span>
+          <div className="inline-flex rounded-lg bg-zinc-900 border border-zinc-800 p-0.5">
+            {(["today", "shift", "week"] as const).map((r) => (
+              <button
+                key={r}
+                onClick={() => setRange(r)}
+                className={`px-3 py-1 text-xs rounded-md capitalize transition-colors ${
+                  range === r
+                    ? "bg-zinc-700 text-white"
+                    : "text-zinc-400 hover:text-zinc-200"
+                }`}
+              >
+                {r === "today" ? "Today" : r === "shift" ? "This Shift" : "This Week"}
+              </button>
+            ))}
+          </div>
         </div>
+
+        {/* ── Stats bar — each tile drills into /head/tasks pre-filtered.
+            "Active Orders" + "SLA Health" stay non-interactive (one is a
+            labstack count without a tasks-side equivalent, the other is a
+            derived %). Today-anchored tiles use IST `dateFrom` so the
+            drill-in matches what the tile counted. */}
+        <div className="grid grid-cols-4 xl:grid-cols-8 gap-3">
+          {(() => {
+            const today = todayISTKey();
+            // Suffix to apply to range-bound tiles + drill-in dateFrom.
+            // For "today" we keep the original label "Done Today" /
+            // "Breached Today" so the visual stays familiar; "shift" /
+            // "week" relabel explicitly.
+            const rangeSuffix = range === "today" ? "Today" : range === "shift" ? "This Shift" : "This Week";
+            // For drill-in: today uses today, shift uses today (best
+            // single-date approx — "since 09:00" can't be expressed in
+            // dateFrom alone), week uses today (same caveat). Day-level
+            // drill-in is the closest /head/tasks supports.
+            const drillFrom = today;
+            const tiles: Array<{
+              label: string;
+              value: number | string;
+              cls: string;
+              href?: string;
+            }> = [
+              { label: "Active Orders", value: stats.activeOrders, cls: "text-white" },
+              { label: "Open Tasks", value: stats.openTasks, cls: "text-white",
+                href: "/head/tasks?status=CREATED,ASSIGNED,IN_PROGRESS,BLOCKED" },
+              { label: "Breached", value: stats.breachedTasks,
+                cls: stats.breachedTasks > 0 ? "text-red-400" : "text-white",
+                href: "/head/tasks?status=BREACHED" },
+              { label: "Near SLA", value: stats.warningTasks,
+                cls: stats.warningTasks > 0 ? "text-amber-400" : "text-white",
+                href: "/head/tasks?slaRiskOnly=true" },
+              { label: "Unassigned", value: stats.unassignedTasks,
+                cls: stats.unassignedTasks > 0 ? "text-blue-400" : "text-white",
+                // CREATED + no assignee is the dashboard's definition of
+                // "Unassigned"; the table view doesn't have a dedicated
+                // unassigned filter so we narrow to status=CREATED — the
+                // closest single-filter approximation.
+                href: "/head/tasks?status=CREATED" },
+              { label: "SLA Health",
+                value: `${stats.slaHealthPercent}%`,
+                cls: stats.slaHealthPercent >= 90 ? "text-green-400" : stats.slaHealthPercent >= 70 ? "text-amber-400" : "text-red-400" },
+              { label: `Done ${rangeSuffix}`, value: stats.completedToday, cls: "text-green-400",
+                href: `/head/tasks?status=COMPLETED&dateFrom=${drillFrom}&dateTo=${drillFrom}` },
+              { label: `Breached ${rangeSuffix}`, value: stats.breachedToday,
+                cls: stats.breachedToday > 0 ? "text-red-400" : "text-zinc-400",
+                href: `/head/tasks?status=BREACHED&dateFrom=${drillFrom}&dateTo=${drillFrom}` },
+            ];
+            return tiles.map(({ label, value, cls, href }) => {
+              const inner = (
+                <>
+                  <div className="text-xs text-zinc-500 mb-1">{label}</div>
+                  <div className={`text-2xl font-bold ${cls}`}>{value}</div>
+                </>
+              );
+              if (href) {
+                return (
+                  <Link
+                    key={label}
+                    href={href}
+                    className="block bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3 hover:border-zinc-700 hover:bg-zinc-800/40 transition-colors"
+                  >
+                    {inner}
+                  </Link>
+                );
+              }
+              return (
+                <div key={label} className="bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3">
+                  {inner}
+                </div>
+              );
+            });
+          })()}
+        </div>
+
+        {/* ── Roster glance — bucket counts of the team's current
+             rosterStatus. Reads team[] already in the dashboard payload
+             (post-W1 fix), no extra API. */}
+        {team.length > 0 && (
+          <RosterGlanceTile team={team} />
+        )}
+
+        {/* ── Source health card (W3) — replaces the prior plain
+             source-chips strip. Adds cycle health + tasks-last-hour. */}
+        <SourceHealthCard refreshKey={refreshKey} />
 
         <div className="grid grid-cols-3 gap-5">
           {/* ── Risk Zone ── */}
@@ -225,9 +614,14 @@ export default function HeadCommandCenter() {
                           <div className="text-sm font-medium text-zinc-100 leading-snug line-clamp-1 mb-0.5">
                             {item.title}
                           </div>
-                          <div className="flex items-center gap-1.5">
+                          <div className="flex items-center gap-1.5 flex-wrap">
                             <PriorityBadge priority={item.priority} />
                             <span className="text-[10px] text-zinc-600">#{item.entityId}</span>
+                            {item.orderType && item.orderType !== "MANUAL" && (
+                              <span className="text-[10px] text-zinc-500 bg-zinc-800 px-1.5 py-0.5 rounded font-mono">
+                                {item.orderType.replace(/_/g, " ")}
+                              </span>
+                            )}
                           </div>
                         </td>
                         <td className="px-3 py-3">
@@ -290,17 +684,29 @@ export default function HeadCommandCenter() {
                     <p className="text-xs text-zinc-600">No active alerts</p>
                   </div>
                 ) : (
-                  visibleAlerts.slice(0, 8).map((alert) => (
+                  visibleAlerts.slice(0, 8).map((alert) => {
+                    const t = alertTypeOf(alert);
+                    return (
                     <div
                       key={alert.id}
                       className="bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2.5 flex items-start justify-between gap-2"
                     >
                       <div className="flex-1 min-w-0">
-                        <p className={`text-xs font-medium ${ALERT_TYPE_COLORS[alert.type] ?? "text-zinc-400"}`}>
-                          {alert.type.replace("_", " ")}
-                        </p>
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <p className={`text-xs font-medium ${ALERT_TYPE_COLORS[t] ?? "text-zinc-400"}`}>
+                            {t.replace(/_/g, " ")}
+                          </p>
+                          {alert.task && (
+                            <span className="text-[10px] text-zinc-600 font-mono">
+                              #{alert.task.entityId}
+                            </span>
+                          )}
+                        </div>
                         <p className="text-xs text-zinc-400 mt-0.5 line-clamp-2">{alert.message}</p>
-                        <p className="text-[10px] text-zinc-600 mt-1">
+                        {alert.task && (
+                          <p className="text-[10px] text-zinc-600 mt-0.5 truncate">{alert.task.title}</p>
+                        )}
+                        <p className="text-[10px] text-zinc-700 mt-0.5">
                           {new Date(alert.createdAt).toLocaleTimeString("en-IN")}
                         </p>
                       </div>
@@ -313,7 +719,8 @@ export default function HeadCommandCenter() {
                         </svg>
                       </button>
                     </div>
-                  ))
+                    );
+                  })
                 )}
               </div>
             </div>

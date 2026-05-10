@@ -19,7 +19,11 @@ export async function runSlaWatcher(): Promise<void> {
       status: { notIn: [TaskStatus.COMPLETED, TaskStatus.CANCELLED, TaskStatus.BREACHED] },
       slaDeadline: { lt: now },
     },
-    select: { id: true, escalationChainId: true, assignedToId: true, title: true, storeId: true },
+    select: {
+      id: true, escalationChainId: true, assignedToId: true,
+      title: true, storeId: true, taskRuleId: true,
+      entityId: true, orderType: true, slaDeadline: true,
+    },
   });
 
   for (const task of breached) {
@@ -36,16 +40,28 @@ export async function runSlaWatcher(): Promise<void> {
       },
     });
 
+    const breachMinutes = task.slaDeadline
+      ? Math.round((now.getTime() - task.slaDeadline.getTime()) / 60_000)
+      : 0;
+
     await prisma.slaBreachLog.create({
-      data: { taskId: task.id, breachedAt: now },
+      data: {
+        taskId: task.id,
+        taskRuleId: task.taskRuleId ?? "MANUAL",
+        entityType: task.orderType ?? "UNKNOWN",
+        entityId: task.entityId,
+        assignedToId: task.assignedToId ?? null,
+        slaDeadline: task.slaDeadline ?? now,
+        breachedAt: now,
+        breachMinutes,
+      },
     });
 
     // Fire breach alert (in-app)
     await createAlert({
       taskId: task.id,
-      type: AlertType.SLA_BREACH,
+      alertType: AlertType.SLA_BREACHED,
       message: `SLA breached: "${task.title}"`,
-      storeId: task.storeId,
     });
 
     // Send WhatsApp to Ops Head for every breach
@@ -89,7 +105,7 @@ export async function runSlaWatcher(): Promise<void> {
       // avoid duplicate warnings: no WARNING alert in last 15 min
       alerts: {
         none: {
-          type: AlertType.SLA_WARNING,
+          alertType: AlertType.SLA_WARNING,
           createdAt: { gte: new Date(now.getTime() - 15 * 60_000) },
         },
       },
@@ -101,9 +117,8 @@ export async function runSlaWatcher(): Promise<void> {
     const minLeft = Math.round((task.slaDeadline.getTime() - now.getTime()) / 60_000);
     await createAlert({
       taskId: task.id,
-      type: AlertType.SLA_WARNING,
+      alertType: AlertType.SLA_WARNING,
       message: `SLA warning: "${task.title}" — ${minLeft} min remaining`,
-      storeId: task.storeId,
     });
   }
 
@@ -115,7 +130,7 @@ export async function runSlaWatcher(): Promise<void> {
       createdAt: { lt: new Date(now.getTime() - 15 * 60_000) },
       alerts: {
         none: {
-          type: AlertType.UNASSIGNED_TASK,
+          alertType: AlertType.TASK_UNASSIGNED,
           createdAt: { gte: new Date(now.getTime() - 30 * 60_000) },
         },
       },
@@ -126,9 +141,8 @@ export async function runSlaWatcher(): Promise<void> {
   for (const task of unassigned) {
     await createAlert({
       taskId: task.id,
-      type: AlertType.UNASSIGNED_TASK,
+      alertType: AlertType.TASK_UNASSIGNED,
       message: `Task unassigned for >15 min: "${task.title}"`,
-      storeId: task.storeId,
     });
   }
 
@@ -140,18 +154,17 @@ export async function runSlaWatcher(): Promise<void> {
 
 async function createAlert(params: {
   taskId: number;
-  type: AlertType;
+  alertType: AlertType;
   message: string;
-  storeId: number | null;
 }): Promise<void> {
   await prisma.alert.create({
     data: {
       taskId: params.taskId,
-      type: params.type,
+      alertType: params.alertType,
+      severity: "HIGH",
       message: params.message,
-      storeId: params.storeId,
-      isRead: false,
-      isSent: false,
+      channel: "IN_APP",
+      status: "PENDING",
     },
   });
 }
@@ -174,11 +187,11 @@ async function triggerEscalationChain(
   await prisma.alert.create({
     data: {
       taskId,
-      type: AlertType.ESCALATION,
+      alertType: AlertType.ESCALATION,
+      severity: "URGENT",
       message: `Escalation L${level.levelNumber}: notify ${level.notifyUser.name}`,
-      storeId: null,
-      isRead: false,
-      isSent: false,
+      channel: "IN_APP",
+      status: "PENDING",
       metadata: {
         escalationLevel: level.levelNumber,
         chainId,
@@ -197,8 +210,8 @@ async function triggerEscalationChain(
 async function firePendingEscalations(now: Date): Promise<void> {
   const pending = await prisma.alert.findMany({
     where: {
-      type: AlertType.ESCALATION,
-      isSent: false,
+      alertType: AlertType.ESCALATION,
+      status: "PENDING",
     },
     include: {
       task: { select: { id: true, title: true, entityId: true, metadata: true, assignedToId: true } },
@@ -221,7 +234,7 @@ async function firePendingEscalations(now: Date): Promise<void> {
     // Mark as sent
     await prisma.alert.update({
       where: { id: alert.id },
-      data: { isSent: true },
+      data: { status: "SENT", sentAt: now },
     });
 
     // Deliver via WhatsApp if configured
@@ -252,11 +265,11 @@ async function firePendingEscalations(now: Date): Promise<void> {
         await prisma.alert.create({
           data: {
             taskId: alert.task.id,
-            type: AlertType.ESCALATION,
+            alertType: AlertType.ESCALATION,
+            severity: "URGENT",
             message: `Escalation L${nextLevel.levelNumber}: notify ${nextLevel.notifyUser.name}`,
-            storeId: null,
-            isRead: false,
-            isSent: false,
+            channel: "IN_APP",
+            status: "PENDING",
             metadata: {
               escalationLevel: nextLevel.levelNumber,
               chainId,

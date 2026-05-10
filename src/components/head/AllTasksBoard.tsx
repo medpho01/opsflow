@@ -1,16 +1,19 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState, useCallback } from "react";
 import SlaCountdown from "@/components/shared/SlaCountdown";
 import SLADisplay from "@/components/shared/SLADisplay";
 import EmptyStateMessage from "@/components/shared/EmptyStateMessage";
 import TaskAgingIndicator from "@/components/shared/TaskAgingIndicator";
-import KanbanBoard from "@/components/shared/KanbanBoard";
+// Kanban view removed (W2 — UX simplification). Was a low-fidelity duplicate
+// of the table view with no inline edit; the table is the single source.
 import PriorityBadge from "@/components/shared/PriorityBadge";
 import StatusBadge from "@/components/shared/StatusBadge";
 import ClickableStatusBadge from "@/components/shared/ClickableStatusBadge";
 import OrderQuickView from "@/components/shared/OrderQuickView";
 import UnifiedFilterBar from "@/components/shared/UnifiedFilterBar";
+import SavedViewsDropdown from "@/components/head/SavedViewsDropdown";
 
 interface Task {
   id: number;
@@ -34,6 +37,7 @@ interface Task {
   sourceType?: string;
   sourceStatus?: string;
   sourceEntityId?: number;
+  dataSource?: { id: string; sourceId?: string; displayName: string } | null;
 }
 
 interface Agent {
@@ -75,6 +79,7 @@ interface AppliedFilters {
   status?: string[];
   priority?: string[];
   assigneeId?: number[];
+  dataSourceId?: string[];
   dateFrom?: string;
   dateTo?: string;
   slaRiskOnly?: boolean;
@@ -86,15 +91,17 @@ export default function AllTasksBoard() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
   const [appliedFilters, setAppliedFilters] = useState<AppliedFilters>({});
-  const [sortBy, setSortBy] = useState<"createdAt" | "appointmentTime" | "slaDeadline" | "status" | "priority">("priority");
-  const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc");
+  // Default: most imminent appointment first (matches server default).
+  // Surfaces tasks needing attention now; far-future appointments fall to the bottom.
+  const [sortBy, setSortBy] = useState<"createdAt" | "appointmentTime" | "slaDeadline" | "status" | "priority">("appointmentTime");
+  const [sortOrder, setSortOrder] = useState<"asc" | "desc">("asc");
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [total, setTotal] = useState(0);
   const [archiveStats, setArchiveStats] = useState<{ activeTasks: number; archivedTasks: number } | null>(null);
 
   // Phase 3: View toggle
-  const [viewMode, setViewMode] = useState<"table" | "kanban">("table");
+  // viewMode removed — board is table-only since W2.
 
   // Feature 1: Refresh button + timestamp
   const [lastUpdated, setLastUpdated] = useState<Date>(new Date());
@@ -162,6 +169,9 @@ export default function AllTasksBoard() {
       if (appliedFilters.sourceType?.length) {
         params.set("sourceType", appliedFilters.sourceType.join(","));
       }
+      if (appliedFilters.dataSourceId?.length) {
+        params.set("dataSourceId", appliedFilters.dataSourceId.join(","));
+      }
 
       params.set("page", String(page));
       params.set("limit", "25");
@@ -198,6 +208,27 @@ export default function AllTasksBoard() {
     fetchTasks();
     fetchStatusDistribution();
   }, [page, appliedFilters, sortBy, sortOrder]);
+
+  // Fetch archive stats (once on mount, and on refresh)
+  const fetchArchiveStats = useCallback(async () => {
+    try {
+      const res = await fetch("/api/tasks/archive");
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data.stats && Array.isArray(data.stats)) {
+        setArchiveStats({
+          activeTasks: data.stats.find((s: { category: string; count: number }) => s.category === "Active Tasks")?.count ?? 0,
+          archivedTasks: data.stats.find((s: { category: string; count: number }) => s.category === "Archived Tasks")?.count ?? 0,
+        });
+      }
+    } catch (err) {
+      console.error("[AllTasksBoard] Archive stats fetch error:", err);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchArchiveStats();
+  }, [fetchArchiveStats]);
 
   // Fetch agents for reassign dropdown (once)
   useEffect(() => {
@@ -406,6 +437,16 @@ export default function AllTasksBoard() {
       {/* Sort & View Controls */}
       <div className="px-6 py-3 border-b border-zinc-800 flex items-center gap-3 justify-between">
         <div className="flex items-center gap-3">
+          {/* W6 — Saved filter views. Apply persists current filter combos
+              ("My SLA risks", "Unassigned", etc.) so they're one click away. */}
+          <SavedViewsDropdown
+            currentFilters={appliedFilters as unknown as Record<string, unknown>}
+            onApply={(filters) => {
+              setAppliedFilters(filters as AppliedFilters);
+              setPage(1);
+            }}
+          />
+
           <select
             value={sortBy}
             onChange={(e) => {
@@ -414,10 +455,10 @@ export default function AllTasksBoard() {
             }}
             className="px-3 py-1 text-sm bg-zinc-800 border border-zinc-700 rounded text-zinc-100"
           >
-            <option value="priority">Sort: Priority</option>
-            <option value="createdAt">Sort: Created Date</option>
             <option value="appointmentTime">Sort: Appointment Time</option>
             <option value="slaDeadline">Sort: SLA Deadline</option>
+            <option value="priority">Sort: Priority</option>
+            <option value="createdAt">Sort: Created Date</option>
             <option value="status">Sort: Status</option>
           </select>
 
@@ -429,30 +470,23 @@ export default function AllTasksBoard() {
           </button>
         </div>
 
-        {/* Phase 3: View Toggle */}
-        <div className="flex items-center gap-1.5 bg-zinc-800 border border-zinc-700 rounded p-1">
-          <button
-            onClick={() => setViewMode("table")}
-            className={`px-3 py-1 text-sm rounded transition-colors ${
-              viewMode === "table"
-                ? "bg-blue-600 text-white"
-                : "text-zinc-400 hover:text-zinc-200"
-            }`}
-            title="Table view"
+        <div className="flex items-center gap-3">
+          {/* Archive Link */}
+          <Link
+            href="/head/archive"
+            className="px-3 py-1 text-sm bg-yellow-600/20 hover:bg-yellow-600/30 border border-yellow-600/40 hover:border-yellow-600/60 text-yellow-300 hover:text-yellow-200 rounded font-medium transition-colors flex items-center gap-1.5"
+            title="View archived tasks"
           >
-            📋
-          </button>
-          <button
-            onClick={() => setViewMode("kanban")}
-            className={`px-3 py-1 text-sm rounded transition-colors ${
-              viewMode === "kanban"
-                ? "bg-blue-600 text-white"
-                : "text-zinc-400 hover:text-zinc-200"
-            }`}
-            title="Kanban view"
-          >
-            📊
-          </button>
+            <span>📦</span>
+            <span>Archive</span>
+            {archiveStats && archiveStats.archivedTasks > 0 && (
+              <span className="ml-1 px-1.5 py-0.5 bg-yellow-600/40 rounded text-xs">
+                {archiveStats.archivedTasks}
+              </span>
+            )}
+          </Link>
+
+          {/* W2 — table/kanban toggle removed; table is the only view. */}
         </div>
       </div>
 
@@ -500,55 +534,10 @@ export default function AllTasksBoard() {
         </div>
       )}
 
-      {/* Task View (Table or Kanban) */}
+      {/* Task View — table-only since W2 (kanban view removed). */}
       <div className="flex-1 overflow-auto flex flex-col">
         {loading ? (
           <div className="flex-1 flex items-center justify-center text-zinc-400">Loading tasks...</div>
-        ) : viewMode === "kanban" && tasks.length > 0 ? (
-          <KanbanBoard
-            tasks={tasks.map((t) => ({
-              id: t.id,
-              title: t.title,
-              status: t.status,
-              priority: t.priority,
-              slaStatus: t.slaStatus,
-              aging: t.aging as any,
-            }))}
-            onStatusChange={async (taskId, newStatus) => {
-              // Optimistic update: update task status immediately
-              const previousTasks = tasks;
-              setTasks(
-                tasks.map((t) =>
-                  t.id === taskId ? { ...t, status: newStatus } : t
-                )
-              );
-
-              try {
-                const res = await fetch(`/api/tasks/${taskId}`, {
-                  method: "PATCH",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ status: newStatus }),
-                });
-
-                if (!res.ok) {
-                  throw new Error("Failed to update task status");
-                }
-
-                const data = await res.json();
-                // Update with server response to ensure consistency
-                setTasks(
-                  tasks.map((t) =>
-                    t.id === taskId ? { ...t, ...data.task } : t
-                  )
-                );
-                await fetchStatusDistribution();
-              } catch (err) {
-                // Revert optimistic update on error
-                setTasks(previousTasks);
-                console.error("[AllTasksBoard] Error updating task status:", err);
-              }
-            }}
-          />
         ) : tasks.length === 0 ? (
           <EmptyStateMessage
             filterCount={Object.values(appliedFilters).filter((v) => v && (Array.isArray(v) ? v.length > 0 : true)).length}
@@ -588,6 +577,7 @@ export default function AllTasksBoard() {
                   />
                 </th>
                 <th className="px-4 py-3 text-left text-xs font-semibold">Task</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold">Data Source</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold">Status</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold">Priority</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold">SLA</th>
@@ -601,7 +591,7 @@ export default function AllTasksBoard() {
               {tasks.map((task) => (
                 <tr
                   key={task.id}
-                  className={`border-b border-zinc-800 transition-colors ${getSlaRowColor(task.slaStatus)}`}
+                  className={`border-b border-zinc-800 transition-colors ${getSlaRowColor((task as any).slaStatus || 'safe')}`}
                 >
                   <td className="px-4 py-3">
                     <input
@@ -614,6 +604,15 @@ export default function AllTasksBoard() {
                   </td>
                   <td className="px-4 py-3 text-sm font-medium">{task.title}</td>
                   <td className="px-4 py-3 text-sm">
+                    {task.dataSource ? (
+                      <span className="inline-block px-2 py-0.5 text-xs rounded bg-zinc-800 text-zinc-200 border border-zinc-700">
+                        {task.dataSource.displayName}
+                      </span>
+                    ) : (
+                      <span className="text-zinc-500 text-xs">—</span>
+                    )}
+                  </td>
+                  <td className="px-4 py-3 text-sm">
                     <ClickableStatusBadge
                       status={task.status}
                       onStatusChange={(newStatus) => handleTableStatusChange(task.id, newStatus)}
@@ -625,14 +624,14 @@ export default function AllTasksBoard() {
                   </td>
                   <td className="px-4 py-3 text-sm">
                     <SLADisplay
-                      slaContext={task.slaContext as any}
-                      slaStatus={task.slaStatus}
+                      slaContext={(task as any).slaContext}
+                      slaStatus={(task as any).slaStatus || 'safe'}
                       mode="compact"
                     />
                   </td>
                   {/* Phase 3 Feature 13: Task Aging Indicator */}
                   <td className="px-4 py-3 text-sm">
-                    <TaskAgingIndicator aging={task.aging as any} compact={true} />
+                    <TaskAgingIndicator aging={(task as any).aging} compact={true} />
                   </td>
                   <td className="px-4 py-3 text-sm">{task.assignedTo?.name || "-"}</td>
 

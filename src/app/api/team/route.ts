@@ -1,12 +1,20 @@
 /**
- * GET  /api/team  — list team members with today's roster status, order types, and performance stats
+ * GET  /api/team  — list team members with today's roster status, capabilities, and stats
  * POST /api/team  — create a new team member (OPS_HEAD only)
+ *
+ * Validation lives in lib/validation/team.ts so POST and PATCH share the
+ * same parser (W1.1 — closes the role-enum priv-escalation: previously POST
+ * accepted any string for `role`, including "OPS_HEAD").
  */
 import { NextRequest, NextResponse } from "next/server";
+import { ZodError } from "zod";
 import { getSessionFromRequest } from "@/lib/auth/session";
 import prisma from "@/lib/db/client";
 import { hashPassword } from "@/lib/auth/password";
-import { UserRole, TaskStatus } from "@prisma/client";
+import { UserRole } from "@prisma/client";
+import { computeRosterStatus } from "@/lib/roster/availability";
+import { createTeamMemberSchema, zodErrorToTeamResponse } from "@/lib/validation/team";
+import { newRequestId, logAndBuildErrorBody } from "@/lib/observability/request-id";
 
 async function calculateTaskStats(
   userId: number,
@@ -55,38 +63,52 @@ async function calculateTaskStats(
 }
 
 export async function GET(request: NextRequest) {
+  const requestId = newRequestId();
   const user = await getSessionFromRequest(request);
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (!user) return NextResponse.json({ error: "Unauthorized", requestId }, { status: 401 });
 
-  // Get today's date in local timezone
+  // W1.3 — restrict to OPS_HEAD. Was open to any authenticated user; an
+  // OPS_AGENT could enumerate peer emails, performance stats, store
+  // assignments, current load. Read-only data leak.
+  if (user.role !== UserRole.OPS_HEAD) {
+    return NextResponse.json({ error: "Forbidden", requestId }, { status: 403 });
+  }
+
+  // W2 — store-first lens: ?storeId=N filters to members assigned to that store.
+  const url = new URL(request.url);
+  const storeIdParam = url.searchParams.get("storeId");
+  const storeIdFilter = storeIdParam ? parseInt(storeIdParam, 10) : null;
+  const storeIdFilterValid = storeIdFilter !== null && !isNaN(storeIdFilter) && storeIdFilter > 0;
+
+  // W1.6 — IST midnight edge case. The day-of-week needs to reflect the
+  // operator's local calendar, not the UTC calendar. At 04:00 IST Monday,
+  // UTC is Sunday 22:30 — we'd lookup Sunday's schedule when the user
+  // expects Monday's. Compute day-of-week from local components, then
+  // anchor "today" as a UTC midnight for stable DATE-column comparisons.
   const now = new Date();
-  const year = now.getFullYear();
-  const month = String(now.getMonth() + 1).padStart(2, '0');
-  const day = String(now.getDate()).padStart(2, '0');
-  const todayString = `${year}-${month}-${day}`;
-
-  // Parse as UTC to get day of week (matching daily roster endpoint)
-  const m = todayString.match(/^(\d{4})-(\d{2})-(\d{2})/);
-  const todayUTC = new Date(Date.UTC(Number(m![1]), Number(m![2]) - 1, Number(m![3])));
-  const todayDayOfWeek = todayUTC.getUTCDay(); // 0=Sunday, 1=Monday, etc.
-
-  // Use UTC date for consistent exception matching
-  const today = new Date(Date.UTC(Number(m![1]), Number(m![2]) - 1, Number(m![3])));
-  const tomorrow = new Date(today);
-  tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
+  const todayDayOfWeek = now.getDay();          // local day-of-week 0–6
+  const todayUTC = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()));
+  const tomorrowUTC = new Date(todayUTC);
+  tomorrowUTC.setUTCDate(tomorrowUTC.getUTCDate() + 1);
 
   const members = await prisma.user.findMany({
-    where: { isActive: true, role: { not: UserRole.OPS_HEAD } },
+    where: {
+      isActive: true,
+      role: { not: UserRole.OPS_HEAD },
+      // W2 — store filter applied as a relation-some on the join when present
+      ...(storeIdFilterValid
+        ? { teamMember: { storeAssignments: { some: { storeId: storeIdFilter } } } }
+        : {}),
+    },
     include: {
       teamMember: {
         include: {
           storeAssignments: { select: { storeId: true } },
-          orderTypes: true,
-          weeklySchedules: {
-            where: { dayOfWeek: todayDayOfWeek },
-          },
+          capabilities: { include: { dataSource: { select: { id: true, sourceId: true, displayName: true } } } },
+          skills: { include: { skillTag: { select: { id: true, name: true, label: true } } } },
+          weeklySchedules: { where: { dayOfWeek: todayDayOfWeek } },
           rosterExceptions: {
-            where: { date: { gte: today, lt: tomorrow } },
+            where: { date: { gte: todayUTC, lt: tomorrowUTC } },
             take: 1,
           },
         },
@@ -99,18 +121,31 @@ export async function GET(request: NextRequest) {
     orderBy: { name: "asc" },
   });
 
-  // Fetch today's exceptions separately for frontend button logic
+  // W1.5 — restore the actual hasException query. The previous TODO had
+  // it commented out and `hasException` was always false; the team UI
+  // depends on this for "needs schedule" hints.
   const todayExceptions = await prisma.rosterException.findMany({
-    where: { date: { gte: today, lt: tomorrow } },
+    where: { date: { gte: todayUTC, lt: tomorrowUTC } },
     select: { teamMemberId: true },
   });
-  const exceptionTeamMemberIds = new Set(todayExceptions.map(e => e.teamMemberId));
+  const exceptionTeamMemberIds = new Set(todayExceptions.map((e) => e.teamMemberId));
 
-  // Enrich response with order types and stats
   const enrichedMembers = await Promise.all(
     members.map(async (member) => {
       const thisMonthStats = await calculateTaskStats(member.id, "month");
       const thisWeekStats = await calculateTaskStats(member.id, "week");
+
+      const schedule = member.teamMember?.weeklySchedules?.[0] ?? null;
+      const exception = member.teamMember?.rosterExceptions?.[0] ?? null;
+      const rosterStatus = computeRosterStatus(schedule, exception, now);
+
+      // W1.7 — surface a head-visible warning when a member has neither a
+      // schedule for today's day-of-week nor any exception. computeRosterStatus
+      // returns "OFF" in that case (correct), but the head needs a hint that
+      // the member is unscheduled rather than affirmatively off.
+      const hasSchedule = !!schedule;
+      const hasExceptionToday = !!exception;
+      const isSilentlyOff = !hasSchedule && !hasExceptionToday && rosterStatus === "OFF";
 
       return {
         id: member.teamMember?.id || 0,
@@ -118,115 +153,111 @@ export async function GET(request: NextRequest) {
         name: member.name,
         email: member.email,
         role: member.role,
-        storeId: member.teamMember?.storeAssignments?.[0]?.storeId || 0,
+        // W1.4 — return the full storeIds array (not flatten-to-first).
+        // Legacy `storeId` retained for old callers but now reflects the
+        // first assignment as a string-or-null instead of `0` so it can't
+        // collide with a real storeId of 0.
+        stores: member.teamMember?.storeAssignments?.map((sa) => sa.storeId) ?? [],
+        storeIds: member.teamMember?.storeAssignments?.map((sa) => sa.storeId) ?? [],
+        storeCount: member.teamMember?.storeAssignments?.length || 0,
+        primaryStoreId: member.teamMember?.storeAssignments?.[0]?.storeId ?? null,
+        // Deprecated: kept until UI consumers migrate to primaryStoreId / storeIds[].
+        storeId: member.teamMember?.storeAssignments?.[0]?.storeId ?? 0,
         maxConcurrentTasks: member.teamMember?.maxConcurrentTasks || 5,
         isActive: member.isActive,
         createdAt: member.createdAt,
-        orderTypes: (member.teamMember?.orderTypes || []).map((ot) => ({
-          orderType: ot.orderType,
-          assignedAt: ot.assignedAt,
+        capabilities: (member.teamMember?.capabilities || []).map((c) => ({
+          dataSourceId: c.dataSourceId,
+          dataSource: c.dataSource,
+          assignedAt: c.assignedAt,
         })),
-        orderTypeCount: member.teamMember?.orderTypes?.length || 0,
-        skills: (member.teamMember?.skills || []).map((s) => ({
-          id: s.skillTag.id || 0,
-          name: s.skillTag.name,
-          label: s.skillTag.label,
-        })),
+        capabilityCount: member.teamMember?.capabilities?.length || 0,
+        skills: (member.teamMember?.skills || []).map((s) => s.skillTag),
         skillCount: member.teamMember?.skills?.length || 0,
-        stores: member.teamMember?.storeAssignments?.map((sa) => sa.storeId) || [],
-        storeCount: member.teamMember?.storeAssignments?.length || 0,
         currentLoad: member.assignedTasks?.length || 0,
         taskStats: {
           thisMonth: thisMonthStats,
           thisWeek: thisWeekStats,
         },
-        hasException: exceptionTeamMemberIds.has(member.teamMember?.id || 0),
-        // Calculate roster status based on exceptions + schedule + current time
-        rosterStatus: (() => {
-          const exception = member.teamMember?.rosterExceptions?.[0];
-
-          // Exception has highest priority (explicit override)
-          if (exception) {
-            if (exception.status === "ACTIVE") {
-              // Exception explicitly marks them as active (override OFF schedule)
-              return "ACTIVE";
-            }
-            // OFF, SICK, ON_LEAVE - return as is
-            return exception.status;
-          }
-
-          const schedule = member.teamMember?.weeklySchedules?.[0];
-          if (!schedule || !schedule.isWorking) {
-            return "OFF";
-          }
-
-          // Check if current time is within working hours
-          const currentTime = now.toTimeString().slice(0, 5); // HH:MM format
-          const startTime = schedule.startTime || "00:00";
-          const endTime = schedule.endTime || "23:59";
-
-          // Simple string comparison works for HH:MM format (00:00 to 23:59)
-          if (currentTime >= startTime && currentTime <= endTime) {
-            // Check if in break time
-            if (schedule.breakStart && schedule.breakEnd) {
-              if (currentTime >= schedule.breakStart && currentTime <= schedule.breakEnd) {
-                return "OFF"; // On break
-              }
-            }
-            return "ACTIVE";
-          }
-
-          return "OFF"; // Outside working hours
-        })(),
+        hasException: exceptionTeamMemberIds.has(member.teamMember?.id || -1),
+        rosterStatus,
+        isSilentlyOff,
         rosterUpdatedAt: member.teamMember?.rosterExceptions?.[0]?.createdAt,
       };
     })
   );
 
-  return NextResponse.json({ members: enrichedMembers });
+  return NextResponse.json({
+    members: enrichedMembers,
+    filters: storeIdFilterValid ? { storeId: storeIdFilter } : undefined,
+  });
 }
 
 export async function POST(request: NextRequest) {
+  const requestId = newRequestId();
   const user = await getSessionFromRequest(request);
   if (!user || user.role !== UserRole.OPS_HEAD) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    return NextResponse.json({ error: "Forbidden", requestId }, { status: 403 });
   }
 
-  const body = await request.json();
-  const { name, email, password, role, storeIds, skillTagIds, maxConcurrentTasks } = body;
-
-  if (!name || !email || !password || !role) {
-    return NextResponse.json({ error: "name, email, password, role required" }, { status: 400 });
+  let parsed: import("@/lib/validation/team").CreateTeamMemberInput;
+  try {
+    parsed = createTeamMemberSchema.parse(await request.json());
+  } catch (err) {
+    if (err instanceof ZodError) {
+      return NextResponse.json({ ...zodErrorToTeamResponse(err), requestId }, { status: 400 });
+    }
+    throw err;
   }
 
-  const existing = await prisma.user.findUnique({ where: { email: email.toLowerCase() } });
-  if (existing) {
-    return NextResponse.json({ error: "Email already exists" }, { status: 409 });
-  }
+  try {
+    const existing = await prisma.user.findUnique({ where: { email: parsed.email } });
+    if (existing) {
+      return NextResponse.json({ error: "Email already exists", code: "CONFLICT", requestId }, { status: 409 });
+    }
 
-  const passwordHash = await hashPassword(password);
+    const passwordHash = await hashPassword(parsed.password);
 
-  const newUser = await prisma.user.create({
-    data: {
-      name,
-      email: email.toLowerCase(),
-      passwordHash,
-      role,
-      isActive: true,
-      teamMember: {
-        create: {
-          maxConcurrentTasks: maxConcurrentTasks ?? 5,
-          storeAssignments: storeIds?.length
-            ? { create: storeIds.map((sid: number) => ({ storeId: sid })) }
-            : undefined,
-          skills: skillTagIds?.length
-            ? { create: skillTagIds.map((tid: number) => ({ skillTagId: tid })) }
-            : undefined,
+    const newUser = await prisma.user.create({
+      data: {
+        name: parsed.name,
+        email: parsed.email,
+        passwordHash,
+        role: parsed.role as UserRole,
+        phone: parsed.phone ?? null,
+        isActive: true,
+        teamMember: {
+          create: {
+            maxConcurrentTasks: parsed.maxConcurrentTasks,
+            storeAssignments: parsed.storeIds.length
+              ? { create: parsed.storeIds.map((sid) => ({ storeId: sid })) }
+              : undefined,
+            skills: parsed.skillTagIds.length
+              ? { create: parsed.skillTagIds.map((tid) => ({ skillTagId: tid })) }
+              : undefined,
+            capabilities: parsed.capabilityDataSourceIds.length
+              ? { create: parsed.capabilityDataSourceIds.map((dsid) => ({ dataSourceId: dsid, assignedBy: user.id })) }
+              : undefined,
+          },
         },
       },
-    },
-    include: { teamMember: true },
-  });
+      include: { teamMember: true },
+    });
 
-  return NextResponse.json({ user: { id: newUser.id, name: newUser.name, email: newUser.email, role: newUser.role } }, { status: 201 });
+    return NextResponse.json(
+      { user: { id: newUser.id, name: newUser.name, email: newUser.email, role: newUser.role }, requestId },
+      { status: 201 }
+    );
+  } catch (error) {
+    return NextResponse.json(
+      logAndBuildErrorBody({
+        requestId,
+        scope: "TeamAPI.POST",
+        code: "CREATION_ERROR",
+        userMessage: "Failed to create team member",
+        error,
+      }),
+      { status: 500 }
+    );
+  }
 }

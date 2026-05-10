@@ -66,14 +66,18 @@ function buildOrderBy(sortBy: SortField, sortOrder: SortOrder): Array<Record<str
         : [{ createdAt: "desc" }];
 
     case "appointmentTime":
-      // Appointment date: sort by appointment time, then by priority as tiebreaker
+      // Appointment date: most imminent first (asc) — what needs attention now.
+      // Tiebreakers: SLA deadline (most urgent first), then priority.
+      // Tasks with NULL appointmentTime sort to the end on asc by default in Prisma.
       return sortOrder === "asc"
         ? [
             { appointmentTime: "asc" },
+            { slaDeadline: "asc" },
             { priority: "desc" },
           ]
         : [
             { appointmentTime: "desc" },
+            { slaDeadline: "asc" },
             { priority: "desc" },
           ];
 
@@ -136,8 +140,11 @@ export async function GET(request: NextRequest) {
   const slaRiskOnlyParam = searchParams.get("slaRiskOnly");
   const sourceParam = searchParams.get("source");
   const sourceTypeParam = searchParams.get("sourceType");
-  const sortByParam = searchParams.get("sortBy") ?? "priority";
-  const sortOrderParam = searchParams.get("sortOrder") ?? "desc";
+  const dataSourceIdParam = searchParams.get("dataSourceId");
+  // Default sort: most imminent appointment first — surfaces tasks that
+  // need attention now ahead of tasks for far-future appointments.
+  const sortByParam = searchParams.get("sortBy") ?? "appointmentTime";
+  const sortOrderParam = searchParams.get("sortOrder") ?? "asc";
   const page = Math.max(1, parseInt(searchParams.get("page") ?? "1", 10));
   const limit = Math.min(50, Math.max(1, parseInt(searchParams.get("limit") ?? "20", 10)));
 
@@ -168,9 +175,13 @@ export async function GET(request: NextRequest) {
     ? statusParam.split(",").filter((s) => Object.values(TaskStatus).includes(s as TaskStatus)) as TaskStatus[]
     : undefined;
 
-  // Parse priority filter (comma-separated)
+  // Parse priority filter (comma-separated, validated against enum).
+  // Audit yellow-bug: previously unvalidated; an invalid value crashed
+  // the Prisma query with a 500.
   const priorityFilter = priorityParam
-    ? priorityParam.split(",").filter((p) => p.length > 0)
+    ? priorityParam
+        .split(",")
+        .filter((p) => Object.values(TaskPriority).includes(p as TaskPriority)) as TaskPriority[]
     : undefined;
 
   // Parse source filter (comma-separated)
@@ -183,6 +194,11 @@ export async function GET(request: NextRequest) {
     ? sourceTypeParam.split(",").filter((st) => st.length > 0)
     : undefined;
 
+  // Parse data-source ID filter (comma-separated CUIDs from data_sources.id)
+  const dataSourceIdFilter = dataSourceIdParam
+    ? dataSourceIdParam.split(",").filter((id) => id.length > 0)
+    : undefined;
+
   // Parse assignee IDs filter (comma-separated)
   const assigneeIdFilter = assigneeIdParam
     ? assigneeIdParam
@@ -191,7 +207,14 @@ export async function GET(request: NextRequest) {
         .filter((id) => !isNaN(id))
     : undefined;
 
-  // Parse date range filters
+  // Parse date range filters.
+  //
+  // Audit yellow-bug on `dateTo`: when the UI passes a date-only string like
+  // "2026-05-09", `new Date("2026-05-09")` parses to 00:00 UTC of that day,
+  // and the `lte` filter then misses every task created during that day.
+  // Bump date-only `dateTo` to the END of the day so the inclusive filter
+  // does what users expect. Detect by checking for the absence of a time
+  // component in the original string.
   let dateFromFilter: Date | undefined;
   let dateToFilter: Date | undefined;
   if (dateFromParam) {
@@ -200,24 +223,44 @@ export async function GET(request: NextRequest) {
   }
   if (dateToParam) {
     const parsed = new Date(dateToParam);
-    if (!isNaN(parsed.getTime())) dateToFilter = parsed;
+    if (!isNaN(parsed.getTime())) {
+      const isDateOnly = /^\d{4}-\d{2}-\d{2}$/.test(dateToParam);
+      dateToFilter = isDateOnly
+        ? new Date(parsed.getTime() + 24 * 60 * 60 * 1000 - 1)
+        : parsed;
+    }
   }
 
   // Parse SLA risk filter
   const slaRiskOnly = slaRiskOnlyParam === "true";
 
-  // Role-based scoping
+  // W5 — `excludeSnoozed=true` drops snoozed-future tasks from the result.
+  // The agent's Active tab + tab-count fetches always pass this; the head
+  // view leaves it off so monitoring isn't blinded.
+  const excludeSnoozed = searchParams.get("excludeSnoozed") === "true";
+
+  // Role-based scoping.
+  //
+  // Audit P0 #2 — STORE_ADMIN scoping bypass. The previous implementation
+  // set `where.storeId = { in: <admin's stores> }` and was overwritten two
+  // lines later by `if (storeId) where.storeId = parseInt(...)`, letting a
+  // STORE_ADMIN read tasks for any store by passing `?storeId=X`.
+  //
+  // Fix: derive the admin's store list FIRST, then compose the
+  // user-supplied `storeId` filter against that list (intersect, never
+  // overwrite). OPS_AGENT scope (own tasks) is composed similarly so an
+  // explicit `assigneeId` filter can't broaden it.
   const where: Record<string, unknown> = {};
+  let adminStoreIds: number[] | null = null; // null = no role-based store gate
 
   if (user.role === UserRole.OPS_AGENT) {
     where.assignedToId = user.id;
   } else if (user.role === UserRole.STORE_ADMIN) {
     const member = await prisma.teamMember.findFirst({
       where: { userId: user.id },
-      include: { storeAssignments: true },
+      include: { storeAssignments: { select: { storeId: true } } },
     });
-    const ids = member?.storeAssignments.map((a) => a.storeId) ?? [];
-    where.storeId = { in: ids };
+    adminStoreIds = member?.storeAssignments.map((a) => a.storeId) ?? [];
   }
   // OPS_HEAD sees everything
 
@@ -227,17 +270,75 @@ export async function GET(request: NextRequest) {
   // Apply filters
   if (statusFilter?.length) where.status = { in: statusFilter };
   if (priorityFilter?.length) where.priority = { in: priorityFilter };
-  if (assigneeIdFilter?.length) where.assignedToId = { in: assigneeIdFilter };
-  if (storeId) where.storeId = parseInt(storeId, 10);
+  // Compose, don't overwrite: agent's own scope already bound `assignedToId`.
+  // For non-agents, an `assigneeId=...` param applies as the only constraint.
+  if (assigneeIdFilter?.length && user.role !== UserRole.OPS_AGENT) {
+    where.assignedToId = { in: assigneeIdFilter };
+  }
+
+  // ── Store scoping (compose with role-based admin scope) ───────────────
+  // - OPS_HEAD with no `storeId` param: no store gate.
+  // - OPS_HEAD with `storeId`: gate to that store.
+  // - STORE_ADMIN with no `storeId` param: gate to admin's stores.
+  // - STORE_ADMIN with `storeId`: gate to that store iff it's in admin's
+  //   stores; otherwise gate to id=-1 (returns nothing) — never broaden.
+  if (adminStoreIds !== null) {
+    if (storeId) {
+      const requested = parseInt(storeId, 10);
+      where.storeId = adminStoreIds.includes(requested) ? requested : -1;
+    } else {
+      where.storeId = { in: adminStoreIds };
+    }
+  } else if (storeId) {
+    where.storeId = parseInt(storeId, 10);
+  }
+
   if (orderId) where.entityId = parseInt(orderId, 10);
   if (sourceFilter?.length) where.source = { in: sourceFilter };
   if (sourceTypeFilter?.length) where.sourceType = { in: sourceTypeFilter };
+  // Filter by data source via taskRule relation
+  if (dataSourceIdFilter?.length) {
+    where.taskRule = { dataSourceId: { in: dataSourceIdFilter } };
+  }
 
   // Date range filtering
   if (dateFromFilter || dateToFilter) {
     where.createdAt = {};
     if (dateFromFilter) (where.createdAt as Record<string, unknown>).gte = dateFromFilter;
     if (dateToFilter) (where.createdAt as Record<string, unknown>).lte = dateToFilter;
+  }
+
+  // SLA-risk filter pushed into the SQL WHERE (was previously applied AFTER
+  // pagination, which made `pagination.total` wrong — the count came from
+  // the unfiltered query while the page came from the filtered subset). The
+  // semantics match the slaStatus mapping below: warning (<30min remaining),
+  // critical (<10min), or breached (slaDeadline < now OR status=BREACHED).
+  if (slaRiskOnly) {
+    const warningCutoff = new Date(now.getTime() + 30 * 60 * 1000);
+    where.OR = [
+      { status: TaskStatus.BREACHED },
+      { slaDeadline: { lt: warningCutoff } },
+    ];
+  }
+
+  // W5 — Hide tasks that are still snoozed. Two-condition AND captured via
+  // a Prisma `OR` array (snooze is null) OR (snooze is past) — task is
+  // visible. Composed before the OR slot used by slaRiskOnly above; if both
+  // are active we use AND with both predicates instead of stomping the OR.
+  if (excludeSnoozed) {
+    const notSnoozed = {
+      OR: [
+        { snoozedUntil: null },
+        { snoozedUntil: { lte: now } },
+      ],
+    };
+    if (where.OR) {
+      // slaRiskOnly already set OR — combine with AND so both filters apply.
+      where.AND = [{ OR: where.OR }, notSnoozed];
+      delete where.OR;
+    } else {
+      Object.assign(where, notSnoozed);
+    }
   }
 
   // Build the orderBy clause with tiebreakers
@@ -250,6 +351,12 @@ export async function GET(request: NextRequest) {
         assignedTo: { select: { id: true, name: true } },
         checklistItems: { orderBy: { stepOrder: "asc" } },
         taskType: { select: { name: true, label: true } },
+        taskRule: {
+          select: {
+            dataSourceId: true,
+            dataSource: { select: { id: true, sourceId: true, displayName: true } },
+          },
+        },
       },
       orderBy,
       skip: (page - 1) * limit,
@@ -327,24 +434,35 @@ export async function GET(request: NextRequest) {
       },
     };
 
+    // Flatten the data source info onto the top of the task for easy UI access
+    const dataSource = task.taskRule?.dataSource
+      ? {
+          id: task.taskRule.dataSource.id,
+          sourceId: task.taskRule.dataSource.sourceId,
+          displayName: task.taskRule.dataSource.displayName,
+        }
+      : null;
+
     return {
       ...task,
+      // sourceEntityId is a BigInt in the DB — convert to string so JSON.stringify doesn't throw
+      sourceEntityId: task.sourceEntityId != null ? task.sourceEntityId.toString() : null,
       slaStatus,
-      minutesRemaining: Math.max(0, minutesRemaining),
+      // Signed minutesRemaining — negative means breached by N min. The
+      // previous `Math.max(0, ...)` clamped to zero and lost the magnitude
+      // every breach UI needs to render "breached by 12m".
+      minutesRemaining,
       assignmentMethod,
       assignmentRuleId,
       slaContext,
       aging,
+      dataSource,
     };
   });
 
-  // Phase 2: Apply SLA risk filter (warning, critical, or breached)
-  let filteredTasks = tasksWithMeta;
-  if (slaRiskOnly) {
-    filteredTasks = tasksWithMeta.filter(
-      (task) => task.slaStatus === "warning" || task.slaStatus === "critical" || task.slaStatus === "breached"
-    );
-  }
+  // SLA-risk filter is now applied at the SQL WHERE level above, so
+  // pagination.total reflects the filtered count.
+  const filteredTasks = tasksWithMeta;
 
   // Build appliedFilters response object for UI
   const appliedFilters: Record<string, unknown> = {};
@@ -357,6 +475,7 @@ export async function GET(request: NextRequest) {
   if (slaRiskOnly) appliedFilters.slaRiskOnly = true;
   if (sourceFilter?.length) appliedFilters.source = sourceFilter;
   if (sourceTypeFilter?.length) appliedFilters.sourceType = sourceTypeFilter;
+  if (dataSourceIdFilter?.length) appliedFilters.dataSourceId = dataSourceIdFilter;
 
   const filterCount = Object.keys(appliedFilters).length;
 
@@ -390,21 +509,40 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: `Invalid priority: ${priority}` }, { status: 400 });
   }
 
-  // Ensure the MANUAL sentinel task rule exists
+  // Ensure the MANUAL sentinel task rule exists.
+  //
+  // The MANUAL rule is a row whose `id = 'MANUAL'` carries every manually-
+  // created or system-archived task's FK. It needs a valid dataSourceId
+  // because TaskRule.dataSourceId is NOT NULL — but the row has no semantic
+  // tie to any specific source. Pick the OLDEST active source as a stable
+  // anchor (was: random-first; sources getting deleted left a stale FK).
+  //
+  // The upsert refreshes the dataSourceId on every manual-task POST so a
+  // deleted source can never leave it dangling for long.
+  const anchorSource = await prisma.dataSource.findFirst({
+    where: { isActive: true },
+    orderBy: { createdAt: "asc" },
+    select: { id: true },
+  });
+  if (!anchorSource) {
+    return NextResponse.json({ error: "No active data sources configured" }, { status: 500 });
+  }
   const manualRule = await prisma.taskRule.upsert({
     where: { id: "MANUAL" },
     create: {
       id: "MANUAL",
       name: "Manual Task",
-      orderType: "HOME_SAMPLE",
+      dataSourceId: anchorSource.id,
       taskTypeId: parseInt(taskTypeId, 10),
       titleTemplate: "{title}",
       slaMinutes: 60,
       priority: TaskPriority.MEDIUM,
       triggerCondition: {},
-      isActive: true,
+      isActive: false,
     },
-    update: {},
+    // W1.2: refresh the anchor on every call so a deleted-and-recreated
+    // source can't leave the MANUAL rule pointing at a non-existent FK.
+    update: { dataSourceId: anchorSource.id },
   });
 
   const slaDeadline = new Date(Date.now() + Number(slaMinutes) * 60_000);
@@ -476,7 +614,7 @@ export async function POST(request: NextRequest) {
       entityType: "ORDER",
       entityId: Number(entityId),
       storeId: storeId ? Number(storeId) : null,
-      orderType: "HOME_SAMPLE",
+      orderType: "MANUAL",
       priority,
       status: resolvedAssigneeId ? TaskStatus.ASSIGNED : TaskStatus.CREATED,
       assignedToId: resolvedAssigneeId,

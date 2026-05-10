@@ -62,7 +62,7 @@ export async function syncTaskStatusToSource(
     if (!dataSource) {
       return {
         taskId,
-        sourceEntityId: task.sourceEntityId,
+        sourceEntityId: task.sourceEntityId ? Number(task.sourceEntityId) : 0,
         success: false,
         strategy: "UNKNOWN",
         error: `Source not found: ${task.source}`,
@@ -76,7 +76,7 @@ export async function syncTaskStatusToSource(
     if (!handler) {
       return {
         taskId,
-        sourceEntityId: task.sourceEntityId,
+        sourceEntityId: task.sourceEntityId ? Number(task.sourceEntityId) : 0,
         success: false,
         strategy: dataSource.syncStrategy,
         error: `Handler not registered for source: ${task.source}`,
@@ -86,9 +86,9 @@ export async function syncTaskStatusToSource(
     // Sync based on strategy
     await handler.syncTaskStatusToSource(
       taskId,
-      task.sourceEntityId,
+      task.sourceEntityId ? Number(task.sourceEntityId) : 0,
       task.status,
-      task.sourceHandlerContext || {}
+      (task.sourceHandlerContext as Record<string, unknown>) || {}
     );
 
     // Update task sync timestamp
@@ -103,7 +103,7 @@ export async function syncTaskStatusToSource(
 
     return {
       taskId,
-      sourceEntityId: task.sourceEntityId,
+      sourceEntityId: task.sourceEntityId ? Number(task.sourceEntityId) : 0,
       success: true,
       strategy: dataSource.syncStrategy,
       syncedAt: new Date(),

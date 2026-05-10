@@ -1,0 +1,75 @@
+-- W2 — Engine performance: indexes + checkpoint table.
+
+-- ── W2.5 — Indexes ────────────────────────────────────────────────────────
+-- isDuplicate / dedup-set preload reads `tasks` filtered by
+-- (taskRuleId, isArchived = false). The unique on (taskRuleId, entityId)
+-- doesn't cover the partial filter, so PG falls back to a wider scan as
+-- the table grows. A partial index on isArchived = false is the cheapest
+-- physical fix.
+CREATE INDEX IF NOT EXISTS "idx_tasks_taskRuleId_entityType_entityId_active"
+  ON taskos.tasks ("taskRuleId", "entityType", "entityId")
+  WHERE "isArchived" = false;
+
+-- pickAssignee aggregates "open tasks per assignee" in the load step.
+-- Without this index the count fell back to a seq scan as the tasks table
+-- grew past ~50K rows.
+CREATE INDEX IF NOT EXISTS "idx_tasks_assignedToId_status_open"
+  ON taskos.tasks ("assignedToId", "status")
+  WHERE "status" NOT IN ('COMPLETED', 'CANCELLED');
+
+-- ── W2.4 — Lock ownership token ───────────────────────────────────────────
+-- The polling lock now carries the owning instance's UUID so release can
+-- verify ownership before deleting. Prevents a fresh process from clobbering
+-- another instance's still-valid lock if the TTL window straddles a
+-- restart-and-restart sequence.
+ALTER TABLE taskos.polling_locks
+  ADD COLUMN IF NOT EXISTS "lockedBy" TEXT;
+
+-- ── W4 — Per-cycle observability ──────────────────────────────────────────
+-- Stash a per-rule fire/skip breakdown on each PollingLog row so operators
+-- can answer "did rule X fire this cycle, and if not why?" without reading
+-- container logs. Schema is `{ perRule: RuleCycleStats[] }`.
+ALTER TABLE taskos.polling_logs
+  ADD COLUMN IF NOT EXISTS "metadata" JSONB;
+
+-- ── W2.2 — Polling checkpoint ─────────────────────────────────────────────
+-- Lets the engine ask labstack for "orders updated since <last_seen>"
+-- instead of refetching the entire active-order universe every cycle.
+-- One row per logical source ("labstack:Order"); we update it at the end
+-- of a successful cycle.
+--
+-- W5 — TIMESTAMPTZ, not naive TIMESTAMP. The DB session runs in IST so
+-- naive timestamps come back to JS shifted by +5:30 (the same scar
+-- labstack has). Storing as timestamptz makes the round-trip identity-
+-- correct: the JS Date written equals the JS Date read.
+CREATE TABLE IF NOT EXISTS taskos.engine_checkpoints (
+  "sourceKey"  TEXT NOT NULL PRIMARY KEY,
+  "lastSeenAt" TIMESTAMPTZ NOT NULL,
+  "updatedAt"  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- If the table was created in an earlier run with naive TIMESTAMP types,
+-- upgrade in-place. Idempotent — ALTER is a no-op if already TIMESTAMPTZ.
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'taskos' AND table_name = 'engine_checkpoints'
+      AND column_name  = 'lastSeenAt' AND data_type = 'timestamp without time zone'
+  ) THEN
+    ALTER TABLE taskos.engine_checkpoints
+      ALTER COLUMN "lastSeenAt" TYPE TIMESTAMPTZ USING ("lastSeenAt" AT TIME ZONE 'Asia/Kolkata'),
+      ALTER COLUMN "updatedAt"  TYPE TIMESTAMPTZ USING ("updatedAt"  AT TIME ZONE 'Asia/Kolkata');
+  END IF;
+END $$;
+
+-- ── W5 — Polling-log timestamps to TIMESTAMPTZ ────────────────────────────
+-- polling_logs.startedAt / finishedAt suffer the same naive-IST shift.
+-- sourceHealthWatcher carries an in-JS `IST_OFFSET_MS` band-aid to undo
+-- the read-time shift. Convert the columns once so that band-aid can go.
+-- Existing rows are reinterpreted as Asia/Kolkata wall-clock (which is
+-- what they actually represent) and converted to UTC.
+ALTER TABLE taskos.polling_logs
+  ALTER COLUMN "startedAt"  TYPE TIMESTAMPTZ USING ("startedAt"  AT TIME ZONE 'Asia/Kolkata'),
+  ALTER COLUMN "finishedAt" TYPE TIMESTAMPTZ USING ("finishedAt" AT TIME ZONE 'Asia/Kolkata'),
+  ALTER COLUMN "createdAt"  TYPE TIMESTAMPTZ USING ("createdAt"  AT TIME ZONE 'Asia/Kolkata');

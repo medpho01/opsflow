@@ -1,0 +1,59 @@
+# OpsFlow / TaskOs — production-ish Docker compose.
+#
+# This file assumes the database ALREADY EXISTS (the labstack DB the
+# real deployment connects to). The app container points at it via
+# DATABASE_URL, and on first boot the entrypoint:
+#
+#   1. Connects to the existing DB.
+#   2. Runs `prisma db push` to materialise the `taskos` schema and its
+#      tables — no-op if already present, idempotent.
+#   3. Seeds exactly one OPS_HEAD admin user (idempotent upsert).
+#   4. Starts Next.js on port 3000.
+#
+# The `public` schema (labstack data) is not touched — the engine only
+# reads from it.
+#
+# Usage:
+#   cp .env.example .env             # set DATABASE_URL to your real DB
+#   docker compose up --build
+#   open http://localhost:3000
+#
+# For a purely local stack (Postgres in a container too — no real
+# labstack data), use the dev override:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    environment:
+      # Required. Point at your existing labstack DB. The `?schema=taskos`
+      # tells Prisma which schema to manage; the public schema is left
+      # untouched. From inside the container, host.docker.internal
+      # reaches the host machine on macOS / Windows; on Linux pass
+      # --add-host=host.docker.internal:host-gateway or use the host IP.
+      DATABASE_URL: ${DATABASE_URL}
+      # Constrains glibc's per-thread malloc arenas to 2. Without this,
+      # the Prisma library engine (a Node native addon) trips
+      # "malloc(): unaligned tcache chunk detected" on Debian bookworm's
+      # glibc 2.36, crashing the process mid-request. Documented Prisma /
+      # Node native-addon workaround.
+      MALLOC_ARENA_MAX: "2"
+      JWT_SECRET: ${JWT_SECRET:-please-change-me-in-production}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-8h}
+      NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
+      POLLING_INTERVAL_MS: ${POLLING_INTERVAL_MS:-300000}
+      TIMEZONE: Asia/Kolkata
+      # Admin seed (one-time on first boot; idempotent on subsequent boots)
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@opsflow.local}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-changeme123}
+      ADMIN_NAME: ${ADMIN_NAME:-Admin}
+      # Skip the `prisma db push` step. Set true when pointing at a DB
+      # whose `taskos` schema already exists and you don't want Prisma
+      # to try reconciling drift. Default false — fresh DBs need it.
+      SKIP_PRISMA_PUSH: ${SKIP_PRISMA_PUSH:-false}
+    ports:
+      - "${APP_PORT:-3000}:3000"
+    # Required for host.docker.internal to resolve on Linux (no-op on
+    # macOS / Windows where Docker Desktop adds it automatically).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

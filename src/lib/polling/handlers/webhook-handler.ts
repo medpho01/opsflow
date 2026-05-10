@@ -121,23 +121,19 @@ export class WebhookSourceHandler implements ISourceHandler {
 
   /**
    * Get queued events (for polling-like consumption)
-   */
-  async fetchEntitiesNeedingTasks(): Promise<SourceEntity[]> {
-    const entities = [...this.eventQueue];
-    this.eventQueue = []; // Clear queue after retrieval
-    return entities;
-  }
-
-  /**
-   * Fetch with limit and timestamp (for compatibility)
-   * Note: Webhooks don't have built-in timestamping, so we ignore _since_
+   * Note: Webhooks don't use _since timestamp — we drain the queue up to limit.
    */
   async fetchEntitiesNeedingTasks(
-    _since: Date,
-    limit: number
+    _since?: Date,
+    limit?: number
   ): Promise<SourceEntity[]> {
-    const entities = this.eventQueue.slice(0, limit);
-    this.eventQueue = this.eventQueue.slice(limit);
+    if (limit !== undefined) {
+      const entities = this.eventQueue.slice(0, limit);
+      this.eventQueue = this.eventQueue.slice(limit);
+      return entities;
+    }
+    const entities = [...this.eventQueue];
+    this.eventQueue = [];
     return entities;
   }
 
@@ -189,7 +185,7 @@ export class WebhookSourceHandler implements ISourceHandler {
         method: "POST",
         headers,
         body: payloadJson,
-        timeout: 5000,
+        signal: AbortSignal.timeout(5000),
       });
 
       if (!response.ok) {
@@ -294,7 +290,7 @@ export async function createWebhookHandler(
   return new WebhookSourceHandler({
     sourceId: dataSource.sourceId,
     displayName: dataSource.displayName,
-    webhookUrl: config, // Where to send sync-back
+    webhookUrl: config ?? undefined, // Where to send sync-back
     webhookSecret: credentials?.secret, // Shared secret for validation
     typeFieldName: dataSource.typeFieldName,
     statusFieldName: dataSource.statusFieldName,

@@ -1,5 +1,12 @@
 generator client {
-  provider = "prisma-client-js"
+  provider      = "prisma-client-js"
+  // `native` for local dev (darwin-arm64). The Docker image is Debian
+  // bookworm-slim with OpenSSL 3, so both arm64 and x86_64 variants of
+  // the linux glibc target are bundled — Prisma picks the right one at
+  // runtime based on the host arch.
+  // Bullseye ships OpenSSL 1.1, not 3.0. Targets cover both arm64 and
+  // amd64 on Debian bullseye.
+  binaryTargets = ["native", "linux-arm64-openssl-1.1.x", "debian-openssl-1.1.x"]
 }
 
 datasource db {
@@ -39,20 +46,39 @@ enum TaskRuleTriggerType {
   TIME        // Create task only when time conditions are met
 }
 
-enum OrderType {
-  HOME_SAMPLE
-  CENTER_VISIT
-  INJECTION
+enum AssignmentMode {
+  ROUND_ROBIN
+  LOAD_BALANCED
+  PRIORITY_ONLY
 }
 
 enum AlertType {
   SLA_WARNING
-  SLA_BREACH
-  UNASSIGNED_TASK
+  SLA_URGENT
+  SLA_BREACHED
+  TASK_UNASSIGNED
   ESCALATION
   AGENT_AT_CAPACITY
   ORDER_STUCK
+  SKILL_GAP
   DAILY_SUMMARY
+  // Emitted by lib/engine/sourceHealthWatcher when a data source has been
+  // failing, silent, or producing zero rows for too long. Resolved when
+  // health recovers.
+  SOURCE_HEALTH
+}
+
+enum AlertChannel {
+  IN_APP
+  EMAIL
+  SMS
+}
+
+enum AlertStatus {
+  PENDING
+  SENT
+  ACKNOWLEDGED
+  DISMISSED
 }
 
 enum RosterStatus {
@@ -86,6 +112,7 @@ model User {
   ruleAudits             TaskRuleAudit[]     // P4: who changed rules
   dataSourcesCreated     DataSource[]        @relation("DataSourceCreatedBy")
   ruleSourceScopesCreated TaskRuleSourceScope[] @relation("RuleSourceScopeCreatedBy")
+  alerts                 Alert[]
 
   @@map("users")
 }
@@ -124,19 +151,22 @@ model UserSavedFilter {
 // ─────────────────────────────────────────────
 
 model TeamMember {
-  id                 Int      @id @default(autoincrement())
-  userId             Int      @unique
-  maxConcurrentTasks Int      @default(5)
-  isActive           Boolean  @default(true)
-  createdAt          DateTime @default(now())
-  updatedAt          DateTime @updatedAt
+  id                 Int            @id @default(autoincrement())
+  userId             Int            @unique
+  maxConcurrentTasks Int            @default(5)
+  isActive           Boolean        @default(true)
+  autoAssignEnabled  Boolean        @default(true)
+  assignmentPriority Int            @default(5)
+  assignmentMode     AssignmentMode @default(ROUND_ROBIN)
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
 
   user               User                        @relation(fields: [userId], references: [id], onDelete: Cascade)
   skills             TeamMemberSkill[]
   storeAssignments   StoreAssignment[]
   dailyRosters       DailyRoster[]
   assignedTasks      Task[]
-  orderTypes         TeamMemberOrderType[]       @relation("memberOrderTypes")
+  capabilities       TeamMemberCapability[]
   weeklySchedules    WeeklySchedule[]
   rosterExceptions   RosterException[]
 
@@ -193,25 +223,25 @@ model DailyRoster {
 }
 
 // ─────────────────────────────────────────────
-// TEAM MEMBER - ORDER TYPE ALLOCATION
+// TEAM MEMBER CAPABILITIES (data source handling)
 // ─────────────────────────────────────────────
 
-model TeamMemberOrderType {
-  id               Int      @id @default(autoincrement())
-  teamMemberId     Int
-  orderType        OrderType
-  assignedAt       DateTime @default(now())
-  assignedBy       Int?
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+model TeamMemberCapability {
+  id           Int      @id @default(autoincrement())
+  teamMemberId Int
+  dataSourceId String
+  assignedAt   DateTime @default(now())
+  assignedBy   Int?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
-  teamMember       TeamMember @relation("memberOrderTypes", fields: [teamMemberId], references: [id], onDelete: Cascade)
+  teamMember   TeamMember @relation(fields: [teamMemberId], references: [id], onDelete: Cascade)
+  dataSource   DataSource @relation(fields: [dataSourceId], references: [id], onDelete: Cascade)
 
-  @@unique([teamMemberId, orderType])
+  @@unique([teamMemberId, dataSourceId])
   @@index([teamMemberId])
-  @@index([orderType])
-  @@index([assignedAt])
-  @@map("team_member_order_types")
+  @@index([dataSourceId])
+  @@map("team_member_capabilities")
 }
 
 // ─────────────────────────────────────────────
@@ -219,14 +249,14 @@ model TeamMemberOrderType {
 // ─────────────────────────────────────────────
 
 model RoundRobinState {
-  id                    String    @id @default(cuid())
-  orderType             OrderType
+  id                    String   @id @default(cuid())
+  dataSourceId          String
   lastAssignedMemberId  Int?
-  lastUpdatedAt         DateTime  @updatedAt
-  createdAt             DateTime  @default(now())
+  lastUpdatedAt         DateTime @updatedAt
+  createdAt             DateTime @default(now())
 
-  @@unique([orderType])
-  @@index([orderType])
+  @@unique([dataSourceId])
+  @@index([dataSourceId])
   @@map("round_robin_states")
 }
 
@@ -313,20 +343,30 @@ model ChecklistTemplate {
 // ─────────────────────────────────────────────
 
 model TaskRule {
-  id                String                  @id @default(cuid())
-  name              String
-  orderType         OrderType
-  taskTypeId        Int
-  titleTemplate     String
-  slaMinutes        Int
-  priority          TaskPriority
-  triggerType       TaskRuleTriggerType     @default(TIME)  // STATUS or TIME
-  triggerCondition  Json
-  isActive          Boolean                 @default(true)
-  escalationChainId Int?
-  createdAt         DateTime                @default(now())
-  updatedAt         DateTime                @updatedAt
+  id                     String              @id @default(cuid())
+  name                   String
+  dataSourceId           String
+  allowedTypes           Json                @default("[]")
+  allowedStatuses        Json                @default("[]")
+  pollingIntervalMinutes Int                 @default(15)
+  taskTypeId             Int
+  titleTemplate          String
+  slaMinutes             Int
+  priority               TaskPriority
+  triggerType            TaskRuleTriggerType @default(TIME)
+  triggerCondition       Json
+  isActive               Boolean             @default(true)
+  // W4.2 — How pickAssignee picks among eligible candidates. Stored as a
+  // text column rather than a Prisma enum because adding new strategies
+  // later (e.g. `geographic_proximity`, `language_match`) is a one-line
+  // CHECK-constraint change instead of a typegen migration.
+  // Allowed values: default | round_robin | store_affinity | skill_based | least_loaded
+  assignmentStrategy     String              @default("default")
+  escalationChainId      Int?
+  createdAt              DateTime            @default(now())
+  updatedAt              DateTime            @updatedAt
 
+  dataSource      DataSource       @relation(fields: [dataSourceId], references: [id])
   taskType        TaskType         @relation(fields: [taskTypeId], references: [id])
   escalationChain EscalationChain? @relation(fields: [escalationChainId], references: [id])
   requiredSkills  TaskRuleSkill[]
@@ -377,7 +417,7 @@ model Task {
   entityType      String       // "ORDER"
   entityId        Int
   storeId         Int?
-  orderType       OrderType
+  orderType       String
   priority        TaskPriority
   status          TaskStatus   @default(CREATED)
   assignedToId    Int?
@@ -395,6 +435,12 @@ model Task {
 
   isArchived        Boolean          @default(false)
   escalationChainId Int?
+
+  // W5 — Snooze. Agent presses "Ping me in 15m"; the task drops out of
+  // their Active list until this timestamp passes. Null when not snoozed.
+  // Filter at query time — no scheduler, no auto-clear; the task simply
+  // re-appears once `snoozedUntil < now`.
+  snoozedUntil      DateTime?        @db.Timestamptz(3)
 
   // C1.1: Assignment tracking fields for Foundation feature
   assignmentMethod String?     // "auto" | "manual" | null
@@ -507,21 +553,26 @@ model EscalationLevel {
 // ─────────────────────────────────────────────
 
 model Alert {
-  id        Int       @id @default(autoincrement())
-  taskId    Int?
-  type      AlertType?
-  message   String
-  storeId   Int?
-  isRead    Boolean   @default(false)
-  readAt    DateTime?
-  isSent    Boolean   @default(false)
-  metadata  Json?
-  createdAt DateTime  @default(now())
+  id            Int          @id @default(autoincrement())
+  alertType     AlertType
+  severity      TaskPriority
+  entityType    String?
+  entityId      Int?
+  taskId        Int?
+  userId        Int?
+  message       String
+  metadata      Json?
+  channel       AlertChannel @default(IN_APP)
+  status        AlertStatus  @default(PENDING)
+  acknowledgedAt DateTime?
+  sentAt        DateTime?
+  createdAt     DateTime     @default(now())
 
   task Task? @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
 
   @@index([taskId])
-  @@index([isRead])
+  @@index([userId, status])
   @@map("alerts")
 }
 
@@ -530,24 +581,38 @@ model Alert {
 // ─────────────────────────────────────────────
 
 model PollingLog {
-  id           Int      @id @default(autoincrement())
-  startedAt    DateTime
-  finishedAt   DateTime?
+  id           Int       @id @default(autoincrement())
+  // W5 — TIMESTAMPTZ so `new Date()` round-trips cleanly. The DB session
+  // tz is IST; naive timestamp columns silently shift values by +5:30.
+  startedAt    DateTime  @db.Timestamptz(3)
+  finishedAt   DateTime? @db.Timestamptz(3)
   durationMs   Int?
-  ordersFound  Int      @default(0)
-  tasksCreated Int      @default(0)
-  status       String   @default("SUCCESS") // "SUCCESS" | "ERROR"
+  ordersFound  Int       @default(0)
+  tasksCreated Int       @default(0)
+  status       String    @default("SUCCESS") // "SUCCESS" | "ERROR"
   errorMessage String?
-  createdAt    DateTime @default(now())
+  // W4 — per-cycle observability. Stores `{ perRule: RuleCycleStats[] }` so
+  // operators can see which rules fired vs skipped without grepping logs.
+  metadata     Json?
+  createdAt    DateTime  @default(now()) @db.Timestamptz(3)
 
   @@map("polling_logs")
 }
 
 model SlaBreachLog {
-  id        Int      @id @default(autoincrement())
-  taskId    Int
-  breachedAt DateTime
-  createdAt DateTime @default(now())
+  id            Int       @id @default(autoincrement())
+  taskId        Int
+  taskRuleId    String
+  entityType    String
+  entityId      Int
+  assignedToId  Int?
+  slaDeadline   DateTime
+  breachedAt    DateTime
+  breachMinutes Int
+  rootCauseTag  String?
+  resolvedAt    DateTime?
+  notes         String?
+  createdAt     DateTime  @default(now())
 
   @@map("sla_breach_logs")
 }
@@ -616,6 +681,8 @@ model DataSource {
   // Relations
   pollingLogs        DataSourcePollingLog[]
   ruleScopes         TaskRuleSourceScope[]
+  capabilities       TeamMemberCapability[]
+  taskRules          TaskRule[]
 
   @@index([sourceId])
   @@index([isActive])

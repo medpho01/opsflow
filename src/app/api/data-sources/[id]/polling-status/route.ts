@@ -55,7 +55,31 @@ export async function GET(
       take: 10,
     });
 
-    const status: PollingStatus = {
+    // Open SOURCE_HEALTH alerts for this source — used by the UI to render
+    // a health badge alongside polling status. We can't query by entityId
+    // (Alert.entityId is Int and DataSource.id is a cuid) so we filter in JS
+    // using metadata.dataSourceId. Cheap because the alerts table is small.
+    const openHealthAlerts = await prisma.alert.findMany({
+      where: {
+        alertType: "SOURCE_HEALTH",
+        entityType: "DATA_SOURCE",
+        status: { in: ["PENDING", "SENT"] },
+      },
+      select: {
+        id: true,
+        severity: true,
+        message: true,
+        metadata: true,
+        createdAt: true,
+      },
+      orderBy: { createdAt: "desc" },
+    });
+    const healthAlertsForSource = openHealthAlerts.filter((a) => {
+      const md = a.metadata as { dataSourceId?: string } | null;
+      return md?.dataSourceId === id;
+    });
+
+    const status: PollingStatus & { health: { isHealthy: boolean; openAlerts: typeof healthAlertsForSource } } = {
       sourceId: dataSource.sourceId,
       displayName: dataSource.displayName,
       isActive: dataSource.isActive,
@@ -75,6 +99,10 @@ export async function GET(
         status: poll.status,
         tasksCreated: poll.tasksCreated,
       })),
+      health: {
+        isHealthy: healthAlertsForSource.length === 0,
+        openAlerts: healthAlertsForSource,
+      },
     };
 
     return NextResponse.json(status);

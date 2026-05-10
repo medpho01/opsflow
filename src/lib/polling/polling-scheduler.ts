@@ -10,14 +10,19 @@
  * 4. Log results
  */
 
-import cron from "node-cron";
+// node-cron is imported dynamically to prevent webpack from statically
+// bundling it (node-cron v4 uses node:crypto / path / url which
+// webpack cannot resolve when building server-side bundles).
 import { getPollingEngine } from "./polling-engine";
 import { findMatchingRules } from "@/lib/task-creation/rule-matcher";
 import { createTaskFromSourceEntity } from "@/lib/task-creation/create-task-service";
 import prisma from "@/lib/db/client";
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type ScheduledTask = any;
+
 // Map of source IDs to their cron tasks
-const scheduledTasks: Map<string, cron.ScheduledTask> = new Map();
+const scheduledTasks: Map<string, ScheduledTask> = new Map();
 
 // Lock to prevent concurrent polling of the same source
 const pollingLocks: Map<string, boolean> = new Map();
@@ -26,10 +31,7 @@ const pollingLocks: Map<string, boolean> = new Map();
  * Start polling scheduler for a specific source
  * Creates a cron job based on the source's polling interval
  */
-export function scheduleSourcePolling(sourceId: string, intervalMinutes: number): cron.ScheduledTask {
-  // Convert interval to cron expression
-  // For simplicity, we'll use */N * * * * for every N minutes
-  // Note: cron only supports minutes >= 1
+export async function scheduleSourcePolling(sourceId: string, intervalMinutes: number): Promise<ScheduledTask> {
   const clampedInterval = Math.max(1, intervalMinutes);
   const cronExpression = `*/${clampedInterval} * * * *`;
 
@@ -37,6 +39,7 @@ export function scheduleSourcePolling(sourceId: string, intervalMinutes: number)
     `[PollingScheduler] Scheduling polling for source '${sourceId}' with interval ${intervalMinutes}m (cron: '${cronExpression}')`
   );
 
+  const cron = (await import(/* webpackIgnore: true */ "node-cron")).default;
   const task = cron.schedule(cronExpression, async () => {
     await pollSourceSafely(sourceId);
   });
@@ -191,6 +194,22 @@ export async function startPollingSchedulers(): Promise<void> {
   try {
     console.log("[PollingScheduler] Starting polling schedulers for all active sources...");
 
+    // Env override: MULTI_SOURCE_POLLING_INTERVAL_MINUTES=N forces all sources
+    // to use N minutes regardless of their per-source DB setting (0 = use DB value).
+    const envOverrideMinutes = parseInt(
+      process.env.MULTI_SOURCE_POLLING_INTERVAL_MINUTES ?? "0",
+      10
+    );
+    const intervalOverride = Number.isFinite(envOverrideMinutes) && envOverrideMinutes > 0
+      ? envOverrideMinutes
+      : null;
+
+    if (intervalOverride) {
+      console.log(
+        `[PollingScheduler] Interval override active: all sources will poll every ${intervalOverride}m (from MULTI_SOURCE_POLLING_INTERVAL_MINUTES)`
+      );
+    }
+
     const activeSources = await prisma.dataSource.findMany({
       where: { isActive: true },
       select: {
@@ -210,7 +229,8 @@ export async function startPollingSchedulers(): Promise<void> {
 
     for (const source of activeSources) {
       try {
-        scheduleSourcePolling(source.sourceId, source.pollingIntervalMinutes);
+        const interval = intervalOverride ?? source.pollingIntervalMinutes;
+        await scheduleSourcePolling(source.sourceId, interval);
         console.log(
           `[PollingScheduler] ✓ Scheduled polling for: ${source.sourceId} (${source.displayName})`
         );
@@ -263,7 +283,7 @@ export function getScheduledTasksStatus(): Array<{
 }> {
   return Array.from(scheduledTasks.entries()).map(([sourceId, task]) => ({
     sourceId,
-    isRunning: !task._destroyed && task.status === 1,
+    isRunning: (task as any)._destroyed !== true,
   }));
 }
 

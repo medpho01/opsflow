@@ -19,17 +19,20 @@ function generateTaskTitle(
 ): string {
   let title = titleTemplate;
 
-  // Replace placeholders like {patientName}, {orderId}, etc.
+  // Replace built-in entity placeholders first
+  title = title.replace(/\{entityId\}/g, String(entity.id));
+  title = title.replace(/\{id\}/g, String(entity.id));
+  title = title.replace(/\{sourceType\}/g, entity.type);
+  title = title.replace(/\{sourceStatus\}/g, entity.status);
+  title = title.replace(/\{sourceName\}/g, sourceInfo.displayName);
+
+  // Replace placeholders from entity metadata, e.g. {patientName}, {orderId}
   for (const [key, value] of Object.entries(entity.metadata)) {
     const placeholder = `{${key}}`;
     if (title.includes(placeholder)) {
-      title = title.replace(new RegExp(placeholder, "g"), String(value || ""));
+      title = title.replace(new RegExp(placeholder.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"), String(value ?? ""));
     }
   }
-
-  // Replace {sourceType} and {sourceStatus}
-  title = title.replace("{sourceType}", entity.type);
-  title = title.replace("{sourceStatus}", entity.status);
 
   // Ensure title isn't empty
   if (!title.trim()) {
@@ -93,7 +96,7 @@ export async function createTaskFromSourceEntity(
     );
 
     // Calculate SLA deadline
-    const slaMinutes = rule.slaMinutesOverride || taskRule.slaMinutes;
+    const slaMinutes = rule.slaMinutes || taskRule.slaMinutes;
     const slaDeadline = new Date();
     slaDeadline.setMinutes(slaDeadline.getMinutes() + slaMinutes);
 
@@ -110,7 +113,7 @@ export async function createTaskFromSourceEntity(
       sourceId,
       entity,
       strategyName: rule.assignmentStrategy,
-      strategyConfig: rule.assignmentStrategyConfig,
+      strategyConfig: undefined,
       storeId,
       taskDate: appointmentDate,
       enforceRosterValidation: true,
@@ -145,18 +148,18 @@ export async function createTaskFromSourceEntity(
         sourceStatus: entity.status,
         sourceEntityId: Number(entity.id),
         sourceLastSyncedAt: null,
-        sourceHandlerContext: entity.metadata,
+        sourceHandlerContext: entity.metadata as any,
 
         // Assignment tracking
-        assignmentRuleId: rule.ruleScopeId,
+        assignmentRuleId: rule.taskRuleId,
 
         // Metadata
         metadata: {
           ruleName: rule.ruleName,
           assignmentStrategy: rule.assignmentStrategy,
-          assignmentResult: assignmentResult,
+          assignmentResult: assignmentResult as any,
           sourceEntity: {
-            id: entity.id,
+            id: String(entity.id),
             type: entity.type,
             status: entity.status,
           },

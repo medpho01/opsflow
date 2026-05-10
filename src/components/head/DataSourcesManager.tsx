@@ -1,275 +1,291 @@
 /**
- * Data Sources Manager Component
- * Allows OPS_HEAD to manage multi-source configuration
- *
- * Features:
- * - View all registered data sources
- * - Add new data sources
- * - Test source connections
- * - View polling status
- * - Deactivate sources
+ * Data Sources Manager
+ * Compact card list with inline polling status + edit drawer
  */
-
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 
 interface DataSource {
   id: string;
   sourceId: string;
   displayName: string;
-  description?: string;
   tableReference: string;
   primaryKeyField: string;
   typeFieldName: string;
   statusFieldName: string;
   queryTemplate: string;
-  metadataFieldMapping?: Record<string, string> | null;
   pollingIntervalMinutes: number;
   isActive: boolean;
   pollingType: string;
   syncStrategy: string;
-  backfillEnabled: boolean;
-  backfillCompleted: boolean;
   createdAt: string;
-  updatedAt: string;
 }
 
 interface PollingStatus {
   sourceId: string;
-  lastPoll?: {
-    startedAt: string;
-    status: string;
-    tasksCreated: number;
-  };
+  lastPoll?: { startedAt: string; status: string; tasksCreated: number };
   totalPolls: number;
   successfulPolls: number;
   failedPolls: number;
+  health?: {
+    isHealthy: boolean;
+    openAlerts: Array<{
+      id: number;
+      severity: string;
+      message: string;
+      createdAt: string;
+      metadata: { condition?: string; threshold?: string; observed?: string } | null;
+    }>;
+  };
 }
 
+interface Table { name: string; label: string }
+interface Column { name: string; type: string; nullable: boolean; label: string }
+
+// ── Icons ─────────────────────────────────────────────────────────────────────
+const IconPlus = () => (
+  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+  </svg>
+);
+const IconRefresh = () => (
+  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+  </svg>
+);
+const IconEdit = () => (
+  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+  </svg>
+);
+const IconTrash = () => (
+  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+  </svg>
+);
+const IconClose = () => (
+  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+  </svg>
+);
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function relativeTime(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime();
+  const m = Math.floor(diff / 60000);
+  if (m < 1) return "just now";
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
+
+/** Extract bare table name from formats like public."Appointment" → "Appointment" */
+function bareTableName(ref: string): string {
+  return ref.replace(/^public\."?/, "").replace(/"?$/, "");
+}
+
+/** Build full SQL reference from bare name → public."Appointment" */
+function fullTableRef(bare: string): string {
+  return `public."${bare}"`;
+}
+
+/** Auto-generate query template from table reference */
+function autoQueryTemplate(tableRef: string): string {
+  return `SELECT * FROM ${tableRef} WHERE updated_at > $1 LIMIT $2`;
+}
+
+// ── Main Component ────────────────────────────────────────────────────────────
 export function DataSourcesManager() {
   const [dataSources, setDataSources] = useState<DataSource[]>([]);
   const [pollingStatuses, setPollingStatuses] = useState<Record<string, PollingStatus>>({});
   const [loading, setLoading] = useState(true);
-  const [showForm, setShowForm] = useState(false);
-  const [isTesting, setIsTesting] = useState(false);
-  const [testResult, setTestResult] = useState<{
-    sourceId: string;
-    ok: boolean;
-    message: string;
-  } | null>(null);
-  const [activeTab, setActiveTab] = useState<"all" | "active">("all");
+  const [drawerSource, setDrawerSource] = useState<DataSource | null>(null); // null = add, DataSource = edit
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [testResults, setTestResults] = useState<Record<string, { ok: boolean; message: string }>>({});
+  const [testing, setTesting] = useState<string | null>(null);
+  const [polling, setPolling] = useState<string | null>(null);
+  const testTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const [previewSource, setPreviewSource] = useState<DataSource | null>(null);
 
-  useEffect(() => {
-    loadDataSources();
-  }, []);
+  useEffect(() => { loadAll(); }, []);
+  // Clear timers on unmount
+  useEffect(() => () => { Object.values(testTimers.current).forEach(clearTimeout); }, []);
 
-  const loadDataSources = async () => {
+  async function loadAll() {
+    setLoading(true);
     try {
-      setLoading(true);
-      const response = await fetch("/api/data-sources");
-      const data = await response.json();
-      setDataSources(data.dataSources || []);
-
-      for (const source of data.dataSources || []) {
-        loadPollingStatus(source.id);
-      }
-    } catch (error) {
-      console.error("Error loading data sources:", error);
+      const res = await fetch("/api/data-sources");
+      const data = await res.json();
+      const sources: DataSource[] = data.dataSources || [];
+      setDataSources(sources);
+      sources.forEach((s) => loadStatus(s.id));
     } finally {
       setLoading(false);
     }
-  };
+  }
 
-  const loadPollingStatus = async (sourceId: string) => {
+  async function loadStatus(id: string) {
     try {
-      const response = await fetch(`/api/data-sources/${sourceId}/polling-status`);
-      const data = await response.json();
-      setPollingStatuses((prev) => ({
-        ...prev,
-        [sourceId]: data,
-      }));
-    } catch (error) {
-      console.error(`Error loading polling status for ${sourceId}:`, error);
-    }
-  };
+      const res = await fetch(`/api/data-sources/${id}/polling-status`);
+      const data = await res.json();
+      setPollingStatuses((p) => ({ ...p, [id]: data }));
+    } catch { /* non-fatal */ }
+  }
 
-  const handleTestConnection = async (source: DataSource) => {
-    setIsTesting(true);
-    setTestResult(null);
+  function scheduleTestResultDismiss(sourceId: string) {
+    // Clear any existing timer for this source
+    if (testTimers.current[sourceId]) clearTimeout(testTimers.current[sourceId]);
+    testTimers.current[sourceId] = setTimeout(() => {
+      setTestResults((p) => {
+        const next = { ...p };
+        delete next[sourceId];
+        return next;
+      });
+    }, 5000);
+  }
 
+  async function handleTest(source: DataSource) {
+    setTesting(source.id);
+    setTestResults((p) => ({ ...p, [source.id]: { ok: false, message: "" } }));
     try {
-      const response = await fetch("/api/data-sources/validate", {
+      const res = await fetch("/api/data-sources/validate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           sourceId: source.sourceId,
-          tableReference: source.tableReference,
-          primaryKeyField: "id",
-          typeFieldName: "type",
-          statusFieldName: "status",
+          // validate endpoint expects bare table name (no schema prefix)
+          tableReference: bareTableName(source.tableReference),
+          primaryKeyField: source.primaryKeyField,
+          typeFieldName: source.typeFieldName,
+          statusFieldName: source.statusFieldName,
         }),
       });
-
-      const data = await response.json();
-      setTestResult({
-        sourceId: source.sourceId,
-        ok: response.ok,
-        message: data.message || (response.ok ? "Connection successful" : "Connection failed"),
-      });
-    } catch (error) {
-      setTestResult({
-        sourceId: source.sourceId,
-        ok: false,
-        message: error instanceof Error ? error.message : "Test failed",
-      });
+      const data = await res.json();
+      // API returns { ok: boolean, message: string } with HTTP 200 — use body ok, not res.ok
+      const passed = data.ok === true;
+      setTestResults((p) => ({
+        ...p,
+        [source.id]: {
+          ok: passed,
+          message: data.message || (passed ? "Connection successful" : "Validation failed"),
+        },
+      }));
+      scheduleTestResultDismiss(source.id);
+    } catch (e) {
+      setTestResults((p) => ({
+        ...p,
+        [source.id]: { ok: false, message: e instanceof Error ? e.message : "Error" },
+      }));
+      scheduleTestResultDismiss(source.id);
     } finally {
-      setIsTesting(false);
+      setTesting(null);
     }
-  };
+  }
 
-  const handleDeactivate = async (source: DataSource) => {
-    if (!window.confirm(`Deactivate source "${source.displayName}"?`)) return;
-
+  async function handleManualPoll(source: DataSource) {
+    setPolling(source.id);
     try {
-      const response = await fetch(`/api/data-sources/${source.id}`, {
-        method: "DELETE",
-      });
-
-      if (response.ok) {
-        setDataSources((prev) =>
-          prev.map((s) =>
-            s.id === source.id ? { ...s, isActive: false } : s
-          )
-        );
-      }
-    } catch (error) {
-      console.error("Error deactivating source:", error);
+      await fetch(`/api/data-sources/${source.id}/manual-poll`, { method: "POST" });
+      await loadStatus(source.id);
+    } finally {
+      setPolling(null);
     }
-  };
+  }
 
-  const handleTriggerPolling = async (source: DataSource) => {
-    try {
-      const response = await fetch(`/api/data-sources/${source.id}/manual-poll`, {
-        method: "POST",
-      });
+  async function handleDeactivate(source: DataSource) {
+    if (!window.confirm(`Deactivate "${source.displayName}"?`)) return;
+    const res = await fetch(`/api/data-sources/${source.id}`, { method: "DELETE" });
+    if (res.ok) setDataSources((p) => p.map((s) => s.id === source.id ? { ...s, isActive: false } : s));
+  }
 
-      if (response.ok) {
-        await loadPollingStatus(source.id);
-      }
-    } catch (error) {
-      console.error("Error triggering polling:", error);
-    }
-  };
-
-  const activeSources = dataSources.filter((s) => s.isActive);
-  const displayedSources = activeTab === "active" ? activeSources : dataSources;
+  function openAdd() { setDrawerSource(null); setDrawerOpen(true); }
+  function openEdit(source: DataSource) { setDrawerSource(source); setDrawerOpen(true); }
+  function closeDrawer() { setDrawerOpen(false); setDrawerSource(null); }
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center py-12">
-        <div className="w-6 h-6 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
-        <span className="ml-3 text-gray-400">Loading data sources...</span>
+      <div className="flex items-center justify-center py-16 text-zinc-400 gap-3">
+        <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+        Loading data sources…
       </div>
     );
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       {/* Header */}
-      <div className="flex justify-between items-start">
+      <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-2xl font-bold text-white">Data Sources</h2>
-          <p className="text-gray-400 mt-1">Manage multi-source task creation</p>
+          <h2 className="text-lg font-semibold text-white">Data Sources</h2>
+          <p className="text-xs text-zinc-500 mt-0.5">{dataSources.length} configured · {dataSources.filter(s => s.isActive).length} active</p>
         </div>
         <button
-          onClick={() => setShowForm(true)}
-          className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium"
+          onClick={openAdd}
+          className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium rounded-lg transition-colors"
         >
-          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-          </svg>
-          Register New Source
+          <IconPlus /> Register Source
         </button>
       </div>
 
-      {/* Tabs */}
-      <div className="border-b border-gray-700">
-        <div className="flex gap-8">
-          <button
-            onClick={() => setActiveTab("all")}
-            className={`py-3 px-1 border-b-2 font-medium text-sm transition-colors ${
-              activeTab === "all"
-                ? "border-blue-600 text-blue-600"
-                : "border-transparent text-gray-400 hover:text-gray-200"
-            }`}
-          >
-            All Sources ({dataSources.length})
-          </button>
-          <button
-            onClick={() => setActiveTab("active")}
-            className={`py-3 px-1 border-b-2 font-medium text-sm transition-colors ${
-              activeTab === "active"
-                ? "border-blue-600 text-blue-600"
-                : "border-transparent text-gray-400 hover:text-gray-200"
-            }`}
-          >
-            Active ({activeSources.length})
-          </button>
+      {/* Cards */}
+      {dataSources.length === 0 ? (
+        <div className="border border-zinc-700 rounded-lg p-10 text-center text-zinc-500 text-sm">
+          No data sources configured. Register one to get started.
         </div>
-      </div>
-
-      {/* Content */}
-      <div className="space-y-4">
-        {displayedSources.length === 0 ? (
-          <div className="border border-gray-700 rounded-lg p-8 text-center">
-            <p className="text-gray-500">
-              {activeTab === "active"
-                ? "No active data sources"
-                : "No data sources configured. Register one to get started."}
-            </p>
-          </div>
-        ) : (
-          displayedSources.map((source) => (
+      ) : (
+        <div className="space-y-2">
+          {dataSources.map((source) => (
             <SourceCard
               key={source.id}
               source={source}
-              pollingStatus={pollingStatuses[source.id]}
-              onTest={handleTestConnection}
-              onTriggerPolling={handleTriggerPolling}
-              onDeactivate={handleDeactivate}
-              isTesting={isTesting}
-              testResult={testResult?.sourceId === source.sourceId ? testResult : null}
+              status={pollingStatuses[source.id]}
+              testResult={testResults[source.id]}
+              isTesting={testing === source.id}
+              isPolling={polling === source.id}
+              onEdit={() => openEdit(source)}
+              onTest={() => handleTest(source)}
+              onPreview={() => setPreviewSource(source)}
+              onManualPoll={() => handleManualPoll(source)}
+              onDeactivate={() => handleDeactivate(source)}
             />
-          ))
-        )}
-      </div>
+          ))}
+        </div>
+      )}
 
-      {/* Form Modal */}
-      {showForm && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="w-full max-w-lg bg-gray-900 rounded-lg shadow-xl overflow-hidden border border-gray-700">
-            <div className="px-6 py-4 border-b border-gray-700 flex items-center justify-between">
+      {/* Preview modal — opens when user clicks Preview on a source card */}
+      {previewSource && (
+        <PreviewModal source={previewSource} onClose={() => setPreviewSource(null)} />
+      )}
+
+      {/* Slide-in Drawer — matches TeamPanel max-w-md */}
+      {drawerOpen && (
+        <div className="fixed inset-0 z-50 flex">
+          <div className="flex-1 bg-black/50" onClick={closeDrawer} />
+          <div className="w-full max-w-md bg-zinc-900 border-l border-zinc-800 flex flex-col overflow-hidden shadow-2xl">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-zinc-700">
               <div>
-                <h3 className="text-lg font-semibold text-white">Register New Data Source</h3>
-                <p className="text-sm text-gray-400 mt-1">Configure a new table as a task source</p>
+                <h3 className="text-sm font-semibold text-white">
+                  {drawerSource ? `Edit: ${drawerSource.displayName}` : "Register New Data Source"}
+                </h3>
+                <p className="text-xs text-zinc-500 mt-0.5">
+                  {drawerSource
+                    ? "Only display name and polling interval can be changed"
+                    : "Connect a database table as a task source"}
+                </p>
               </div>
-              <button
-                onClick={() => setShowForm(false)}
-                className="p-2 rounded-lg text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition-colors"
-              >
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
+              <button onClick={closeDrawer} className="p-1.5 rounded-md text-zinc-400 hover:text-white hover:bg-zinc-700 transition-colors">
+                <IconClose />
               </button>
             </div>
-            <SourceForm
-              onSuccess={() => {
-                loadDataSources();
-                setShowForm(false);
-              }}
-              onClose={() => setShowForm(false)}
-            />
+            <div className="flex-1 overflow-y-auto">
+              <SourceForm
+                existing={drawerSource}
+                onSuccess={() => { loadAll(); closeDrawer(); }}
+                onClose={closeDrawer}
+              />
+            </div>
           </div>
         </div>
       )}
@@ -277,441 +293,642 @@ export function DataSourcesManager() {
   );
 }
 
+// ── Source Card ───────────────────────────────────────────────────────────────
 function SourceCard({
-  source,
-  pollingStatus,
-  onTest,
-  onTriggerPolling,
-  onDeactivate,
-  isTesting,
-  testResult,
+  source, status, testResult, isTesting, isPolling,
+  onEdit, onTest, onPreview, onManualPoll, onDeactivate,
 }: {
   source: DataSource;
-  pollingStatus?: PollingStatus;
-  onTest: (source: DataSource) => void;
-  onTriggerPolling: (source: DataSource) => void;
-  onDeactivate: (source: DataSource) => void;
+  status?: PollingStatus;
+  testResult?: { ok: boolean; message: string };
   isTesting: boolean;
-  testResult: { ok: boolean; message: string } | null;
+  isPolling: boolean;
+  onEdit: () => void;
+  onTest: () => void;
+  onPreview: () => void;
+  onManualPoll: () => void;
+  onDeactivate: () => void;
 }) {
+  const [expanded, setExpanded] = useState(false);
+  const lastPoll = status?.lastPoll;
+  const lastOk = lastPoll?.status === "SUCCESS";
+
   return (
-    <div className="border border-gray-700 rounded-lg overflow-hidden bg-gray-800">
-      {/* Header */}
-      <div className="px-6 py-4 border-b border-gray-700 bg-gray-900">
-        <div className="flex justify-between items-start">
-          <div>
-            <h3 className="text-lg font-semibold text-white">{source.displayName}</h3>
-            <div className="flex gap-3 mt-2 text-sm">
-              <code className="bg-gray-700 px-2 py-1 rounded text-gray-200">{source.sourceId}</code>
-              <span className="text-gray-400">Table: <code className="bg-gray-700 px-2 py-1 rounded text-gray-200">{source.tableReference}</code></span>
-            </div>
+    <div className="border border-zinc-700 rounded-lg bg-zinc-900 overflow-hidden">
+      {/* Main row */}
+      <div className="flex items-center gap-4 px-4 py-3">
+        {/* Status dot — green when active and healthy, amber when degraded, grey when inactive */}
+        <div
+          className={`w-2 h-2 rounded-full flex-shrink-0 ${
+            !source.isActive
+              ? "bg-zinc-600"
+              : status?.health && !status.health.isHealthy
+                ? "bg-amber-500"
+                : "bg-emerald-500"
+          }`}
+          title={
+            !source.isActive
+              ? "Inactive"
+              : status?.health && !status.health.isHealthy
+                ? `Health degraded: ${status.health.openAlerts.length} open alert(s)`
+                : "Healthy"
+          }
+        />
+
+        {/* Name + meta */}
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium text-white truncate">{source.displayName}</span>
+            <code className="text-[10px] bg-zinc-800 text-zinc-400 px-1.5 py-0.5 rounded">{source.tableReference}</code>
           </div>
-          <span className={`px-3 py-1 rounded-full text-sm font-medium ${
-            source.isActive
-              ? "bg-green-100 text-green-800"
-              : "bg-gray-100 text-gray-800"
-          }`}>
-            {source.isActive ? "Active" : "Inactive"}
-          </span>
-        </div>
-      </div>
-
-      {/* Content */}
-      <div className="px-6 py-6 space-y-6">
-        {/* Configuration */}
-        <div className="space-y-4">
-          <div className="grid grid-cols-2 gap-4 text-sm">
-            <div>
-              <p className="text-gray-400 font-medium">Polling Interval</p>
-              <p className="mt-1 text-white">{source.pollingIntervalMinutes} minutes</p>
-            </div>
-            <div>
-              <p className="text-gray-400 font-medium">Polling Type</p>
-              <p className="mt-1 text-white">{source.pollingType}</p>
-            </div>
-            <div>
-              <p className="text-gray-400 font-medium">Sync Strategy</p>
-              <p className="mt-1 text-white">{source.syncStrategy}</p>
-            </div>
-            <div>
-              <p className="text-gray-400 font-medium">Created</p>
-              <p className="mt-1 text-white">{new Date(source.createdAt).toLocaleDateString()}</p>
-            </div>
-          </div>
-
-          {/* Column Mappings */}
-          <div className="border-t border-gray-700 pt-4">
-            <p className="text-sm font-semibold text-white mb-3">Column Mappings</p>
-            <div className="grid grid-cols-2 gap-4 text-sm">
-              <div>
-                <p className="text-gray-400 font-medium">Type Field</p>
-                <p className="mt-1 text-white">{source.typeFieldName || "—"}</p>
-              </div>
-              <div>
-                <p className="text-gray-400 font-medium">Status Field</p>
-                <p className="mt-1 text-white">{source.statusFieldName || "—"}</p>
-              </div>
-              <div>
-                <p className="text-gray-400 font-medium">Primary Key</p>
-                <p className="mt-1 text-white">{source.primaryKeyField || "id"}</p>
-              </div>
-            </div>
-          </div>
-
-          {/* Query Template */}
-          {source.queryTemplate && (
-            <div className="border-t border-gray-700 pt-4">
-              <p className="text-sm font-semibold text-white mb-2">Query Template</p>
-              <div className="bg-gray-900 border border-gray-700 rounded p-3">
-                <code className="text-xs text-gray-300 font-mono break-all">{source.queryTemplate}</code>
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Polling Status */}
-        {pollingStatus && (
-          <div className="border-t pt-6">
-            <p className="font-semibold text-white mb-4">Polling Status</p>
-            <div className="grid grid-cols-3 gap-4 text-sm">
-              <div>
-                <p className="text-gray-600">Total Polls</p>
-                <p className="text-2xl font-bold text-white mt-1">{pollingStatus.totalPolls}</p>
-              </div>
-              <div>
-                <p className="text-gray-600">Successful</p>
-                <p className="text-2xl font-bold text-green-600 mt-1">{pollingStatus.successfulPolls}</p>
-              </div>
-              <div>
-                <p className="text-gray-600">Failed</p>
-                <p className="text-2xl font-bold text-red-600 mt-1">{pollingStatus.failedPolls}</p>
-              </div>
-            </div>
-            {pollingStatus.lastPoll && (
-              <p className="text-xs text-gray-600 mt-3">
-                Last poll: {new Date(pollingStatus.lastPoll.startedAt).toLocaleString()} —
-                <span className={pollingStatus.lastPoll.status === "SUCCESS" ? " text-green-600" : " text-red-600"}>
-                  {" " + pollingStatus.lastPoll.status}
+          <div className="flex items-center gap-3 mt-0.5 text-[11px] text-zinc-500">
+            <span>Type: <span className="text-zinc-400">{source.typeFieldName}</span></span>
+            <span>·</span>
+            <span>Status: <span className="text-zinc-400">{source.statusFieldName}</span></span>
+            <span>·</span>
+            <span>Every <span className="text-zinc-400">{source.pollingIntervalMinutes}m</span></span>
+            {lastPoll && (
+              <>
+                <span>·</span>
+                <span className={lastOk ? "text-emerald-500" : "text-red-400"}>
+                  {lastOk ? "✓" : "✗"} {relativeTime(lastPoll.startedAt)}
+                  {lastOk && lastPoll.tasksCreated > 0 && ` · ${lastPoll.tasksCreated} tasks`}
                 </span>
-                {" (" + pollingStatus.lastPoll.tasksCreated + " tasks)"}
-              </p>
+              </>
+            )}
+            {!lastPoll && (
+              <>
+                <span>·</span>
+                <span className="text-zinc-600">No polls yet</span>
+              </>
             )}
           </div>
-        )}
-
-        {/* Test Result */}
-        {testResult?.sourceId === source.sourceId && (
-          <div className={`border-t pt-6 p-4 rounded-lg ${testResult.ok ? "bg-green-50" : "bg-red-50"}`}>
-            <div className="flex gap-3">
-              {testResult.ok ? (
-                <svg className="w-5 h-5 text-green-600 flex-shrink-0 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
-                  <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
-                </svg>
-              ) : (
-                <svg className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
-                  <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
-                </svg>
-              )}
-              <div>
-                <p className={`font-medium ${testResult.ok ? "text-green-900" : "text-red-900"}`}>
-                  {testResult.ok ? "Connection Successful" : "Connection Failed"}
-                </p>
-                <p className={`text-sm mt-1 ${testResult.ok ? "text-green-700" : "text-red-700"}`}>
-                  {testResult.message}
-                </p>
-              </div>
-            </div>
-          </div>
-        )}
+        </div>
 
         {/* Actions */}
-        <div className="border-t pt-6 flex gap-2">
+        <div className="flex items-center gap-1 flex-shrink-0">
           <button
-            onClick={() => onTest(source)}
-            disabled={isTesting}
-            className="px-4 py-2 border border-gray-600 rounded-lg text-gray-200 hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors font-medium text-sm"
+            onClick={onEdit}
+            className="p-1.5 rounded text-zinc-400 hover:text-white hover:bg-zinc-700 transition-colors"
+            title="Edit"
           >
-            {isTesting ? "Testing..." : "Test Connection"}
+            <IconEdit />
           </button>
           <button
-            onClick={() => onTriggerPolling(source)}
-            className="px-4 py-2 border border-gray-600 rounded-lg text-gray-200 hover:bg-gray-700 transition-colors font-medium text-sm flex items-center gap-2"
+            onClick={onTest}
+            disabled={isTesting}
+            className="p-1.5 rounded text-zinc-400 hover:text-white hover:bg-zinc-700 disabled:opacity-40 transition-colors text-[11px] font-medium px-2"
+            title="Test connection"
           >
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            {isTesting ? "Testing…" : "Test"}
+          </button>
+          <button
+            onClick={onPreview}
+            className="p-1.5 rounded text-zinc-400 hover:text-white hover:bg-zinc-700 transition-colors text-[11px] font-medium px-2"
+            title="Preview last 10 rows"
+          >
+            Preview
+          </button>
+          <button
+            onClick={onManualPoll}
+            disabled={isPolling}
+            className="p-1.5 rounded text-zinc-400 hover:text-white hover:bg-zinc-700 disabled:opacity-40 transition-colors"
+            title="Manual poll"
+          >
+            <span className={isPolling ? "animate-spin inline-block" : ""}><IconRefresh /></span>
+          </button>
+          <button
+            onClick={() => setExpanded((e) => !e)}
+            className="p-1.5 rounded text-zinc-400 hover:text-white hover:bg-zinc-700 transition-colors"
+            title={expanded ? "Collapse" : "Expand"}
+          >
+            <svg className={`w-3.5 h-3.5 transition-transform ${expanded ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
             </svg>
-            Manual Poll
           </button>
           {source.isActive && (
             <button
-              onClick={() => onDeactivate(source)}
-              className="px-4 py-2 border border-red-300 bg-red-50 rounded-lg text-red-700 hover:bg-red-100 transition-colors font-medium text-sm flex items-center gap-2 ml-auto"
+              onClick={onDeactivate}
+              className="p-1.5 rounded text-red-500 hover:text-red-400 hover:bg-zinc-700 transition-colors"
+              title="Deactivate"
             >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-              </svg>
-              Deactivate
+              <IconTrash />
             </button>
           )}
         </div>
       </div>
+
+      {/* Test result banner — auto-dismisses after 5s */}
+      {testResult && testResult.message && (
+        <div className={`flex items-center gap-2 text-xs px-4 py-2 border-t ${testResult.ok
+          ? "bg-emerald-950 text-emerald-400 border-emerald-900"
+          : "bg-red-950 text-red-400 border-red-900"}`}>
+          <span>{testResult.ok ? "✓" : "✗"}</span>
+          <span>{testResult.message}</span>
+        </div>
+      )}
+
+      {/* Health-alert banner — one row per open SOURCE_HEALTH alert. */}
+      {status?.health && !status.health.isHealthy && status.health.openAlerts.map((alert) => (
+        <div
+          key={alert.id}
+          className="flex items-start gap-2 text-xs px-4 py-2 border-t bg-amber-950/60 text-amber-300 border-amber-900"
+        >
+          <span className="font-semibold">⚠</span>
+          <div className="flex-1">
+            <div>{alert.message}</div>
+            {alert.metadata?.threshold && (
+              <div className="text-[10px] text-amber-400/70 mt-0.5">
+                threshold: {alert.metadata.threshold} · observed: {alert.metadata.observed}
+              </div>
+            )}
+          </div>
+          <span className="text-[10px] uppercase tracking-wider opacity-70">{alert.metadata?.condition}</span>
+        </div>
+      ))}
+
+      {/* Expanded detail */}
+      {expanded && (
+        <div className="border-t border-zinc-800 px-4 py-3 space-y-3 bg-zinc-950/50">
+          {/* Polling stats */}
+          {status && (
+            <div className="flex items-center gap-6 text-xs">
+              <span className="text-zinc-500">Polls:</span>
+              <span className="text-zinc-300">{status.totalPolls} total</span>
+              <span className="text-emerald-500">✓ {status.successfulPolls}</span>
+              <span className="text-red-400">✗ {status.failedPolls}</span>
+              {lastPoll && (
+                <span className="text-zinc-500 ml-auto">
+                  Last: {new Date(lastPoll.startedAt).toLocaleString()}
+                </span>
+              )}
+            </div>
+          )}
+
+          {/* Query template */}
+          <div>
+            <p className="text-[10px] text-zinc-500 uppercase tracking-wider mb-1">Query Template</p>
+            <code className="block text-[11px] text-zinc-300 font-mono bg-zinc-800 px-3 py-2 rounded border border-zinc-700 whitespace-pre-wrap">
+              {source.queryTemplate}
+            </code>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-interface Table {
-  name: string;
-  label: string;
-}
-
-interface Column {
-  name: string;
-  type: string;
-  nullable: boolean;
-  label: string;
-}
-
+// ── Source Form (Add + Edit) ───────────────────────────────────────────────────
 function SourceForm({
+  existing,
   onSuccess,
   onClose,
 }: {
+  existing: DataSource | null;
   onSuccess: () => void;
   onClose: () => void;
 }) {
-  const [formData, setFormData] = useState({
-    sourceId: "",
-    displayName: "",
-    tableReference: "",
-    primaryKeyField: "id",
-    typeFieldName: "",
-    statusFieldName: "",
-    queryTemplate: "",
-    pollingIntervalMinutes: 5,
-  });
+  const isEdit = !!existing;
+
+  const [displayName, setDisplayName] = useState(existing?.displayName ?? "");
+  const [pollingIntervalMinutes, setPollingIntervalMinutes] = useState(existing?.pollingIntervalMinutes ?? 15);
+  const [typeFieldName, setTypeFieldName] = useState(existing?.typeFieldName ?? "");
+  const [statusFieldName, setStatusFieldName] = useState(existing?.statusFieldName ?? "");
+  const [primaryKeyField, setPrimaryKeyField] = useState(existing?.primaryKeyField ?? "id");
+
+  // Add-only fields
+  const [sourceId, setSourceId] = useState("");
+  const [selectedTable, setSelectedTable] = useState(""); // bare table name (add mode)
+
+  // Derived from table selection (add mode)
+  const tableRef = selectedTable ? fullTableRef(selectedTable) : "";
+  const queryPreview = tableRef ? autoQueryTemplate(tableRef) : "";
+
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [tables, setTables] = useState<Table[]>([]);
   const [columns, setColumns] = useState<Column[]>([]);
   const [loadingTables, setLoadingTables] = useState(false);
-  const [loadingColumns, setLoadingColumns] = useState(false);;
+  const [loadingColumns, setLoadingColumns] = useState(false);
 
-  // Load available tables on mount
-  React.useEffect(() => {
-    loadTables();
+  useEffect(() => {
+    if (!isEdit) {
+      loadTables();
+    } else {
+      // Load columns for existing table so type/status dropdowns work
+      loadColumns(bareTableName(existing!.tableReference));
+    }
   }, []);
 
-  const loadTables = async () => {
+  async function loadTables() {
+    setLoadingTables(true);
     try {
-      setLoadingTables(true);
-      const response = await fetch("/api/data-sources/available-tables");
-      const data = await response.json();
+      const res = await fetch("/api/data-sources/available-tables");
+      const data = await res.json();
       setTables(data.tables || []);
-    } catch (err) {
-      console.error("Error loading tables:", err);
     } finally {
       setLoadingTables(false);
     }
-  };
+  }
 
-  const handleTableChange = async (tableName: string) => {
-    setFormData({
-      ...formData,
-      tableReference: tableName,
-      typeFieldName: "",
-      statusFieldName: "",
-    });
-    setColumns([]);
-
-    if (!tableName) return;
-
+  async function loadColumns(tableName: string) {
+    if (!tableName) { setColumns([]); return; }
+    setLoadingColumns(true);
     try {
-      setLoadingColumns(true);
-      const response = await fetch(`/api/data-sources/table-columns?table=${tableName}`);
-      const data = await response.json();
+      const res = await fetch(`/api/data-sources/table-columns?table=${encodeURIComponent(tableName)}`);
+      const data = await res.json();
       setColumns(data.columns || []);
-    } catch (err) {
-      console.error("Error loading columns:", err);
     } finally {
       setLoadingColumns(false);
     }
-  };
+  }
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  function handleTableChange(bare: string) {
+    setSelectedTable(bare);
+    setTypeFieldName("");
+    setStatusFieldName("");
+    loadColumns(bare);
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setLoading(true);
     setError("");
-
     try {
-      const response = await fetch("/api/data-sources", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(formData),
-      });
+      const payload = isEdit
+        ? { displayName, pollingIntervalMinutes, typeFieldName, statusFieldName, primaryKeyField }
+        : {
+            sourceId,
+            displayName,
+            tableReference: tableRef,
+            primaryKeyField,
+            typeFieldName,
+            statusFieldName,
+            queryTemplate: queryPreview,
+            pollingIntervalMinutes,
+          };
 
-      if (response.ok) {
+      const res = await fetch(
+        isEdit ? `/api/data-sources/${existing!.id}` : "/api/data-sources",
+        {
+          method: isEdit ? "PUT" : "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        }
+      );
+      if (res.ok) {
         onSuccess();
       } else {
-        const data = await response.json();
-        setError(data.error || "Failed to register source");
+        const data = await res.json();
+        setError(data.error || "Save failed");
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "An error occurred");
     } finally {
       setLoading(false);
     }
-  };
+  }
+
+  const inputCls = "w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-white placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-blue-500";
+  const labelCls = "block text-xs font-medium text-zinc-400 mb-1.5";
 
   return (
-    <form onSubmit={handleSubmit} className="px-6 py-5 space-y-4 max-h-[70vh] overflow-y-auto">
-      <div>
-        <label className="block text-xs font-medium text-gray-200 mb-1.5">
-          Source ID <span className="text-red-400">*</span>
-        </label>
-        <input
-          type="text"
-          required
-          placeholder="e.g., appointments, camps"
-          value={formData.sourceId}
-          onChange={(e) => setFormData({ ...formData, sourceId: e.target.value })}
-          className="w-full px-3 py-2 border border-gray-600 rounded-lg text-sm placeholder-gray-400 bg-gray-800 text-white focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
-        />
-        <p className="text-xs text-gray-400 mt-1">Unique identifier for this source</p>
-      </div>
+    <form onSubmit={handleSubmit} className="px-5 py-5 space-y-4">
 
-      <div>
-        <label className="block text-xs font-medium text-gray-200 mb-1.5">
-          Display Name <span className="text-red-400">*</span>
-        </label>
-        <input
-          type="text"
-          required
-          placeholder="e.g., Patient Appointments"
-          value={formData.displayName}
-          onChange={(e) => setFormData({ ...formData, displayName: e.target.value })}
-          className="w-full px-3 py-2 border border-gray-600 rounded-lg text-sm placeholder-gray-400 bg-gray-800 text-white focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
-        />
-      </div>
+      {/* ── Edit mode: immutable identity row ── */}
+      {isEdit && (
+        <div className="flex items-center gap-3 px-3 py-2.5 bg-zinc-800/40 rounded-lg border border-zinc-700/50">
+          <div className="flex-1 min-w-0">
+            <p className="text-[10px] text-zinc-500 uppercase tracking-wider mb-1">Source</p>
+            <p className="text-xs font-medium text-zinc-300 truncate">{existing!.sourceId}</p>
+          </div>
+          <div className="w-px h-8 bg-zinc-700" />
+          <div className="flex-1 min-w-0">
+            <p className="text-[10px] text-zinc-500 uppercase tracking-wider mb-1">Table</p>
+            <p className="text-xs font-mono text-zinc-300 truncate">{existing!.tableReference}</p>
+          </div>
+        </div>
+      )}
 
-      <div>
-        <label className="block text-xs font-medium text-gray-200 mb-1.5">
-          Table Reference <span className="text-red-400">*</span>
-        </label>
-        <select
-          required
-          value={formData.tableReference}
-          onChange={(e) => handleTableChange(e.target.value)}
-          disabled={loadingTables}
-          className="w-full px-3 py-2 border border-gray-600 rounded-lg text-sm placeholder-gray-400 bg-gray-800 text-white focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          <option value="">
-            {loadingTables ? "Loading tables..." : "Select a table"}
-          </option>
-          {tables.map((table) => (
-            <option key={table.name} value={table.name}>
-              {table.label}
-            </option>
-          ))}
-        </select>
-      </div>
+      {/* ── Add mode: source ID + display name ── */}
+      {!isEdit && (
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className={labelCls}>Source ID <span className="text-red-400">*</span></label>
+            <input
+              type="text"
+              required
+              placeholder="e.g., appointments"
+              value={sourceId}
+              onChange={(e) => setSourceId(e.target.value)}
+              className={inputCls}
+            />
+            <p className="text-[10px] text-zinc-600 mt-1">Unique slug, cannot be changed later</p>
+          </div>
+          <div>
+            <label className={labelCls}>Display Name <span className="text-red-400">*</span></label>
+            <input
+              type="text"
+              required
+              placeholder="e.g., Appointments"
+              value={displayName}
+              onChange={(e) => setDisplayName(e.target.value)}
+              className={inputCls}
+            />
+          </div>
+        </div>
+      )}
 
+      {/* ── Display name (edit mode) ── */}
+      {isEdit && (
+        <div>
+          <label className={labelCls}>Display Name <span className="text-red-400">*</span></label>
+          <input
+            type="text"
+            required
+            value={displayName}
+            onChange={(e) => setDisplayName(e.target.value)}
+            className={inputCls}
+          />
+        </div>
+      )}
+
+      {/* ── Add mode: table picker ── */}
+      {!isEdit && (
+        <div>
+          <label className={labelCls}>Table <span className="text-red-400">*</span></label>
+          <select
+            required
+            value={selectedTable}
+            onChange={(e) => handleTableChange(e.target.value)}
+            disabled={loadingTables}
+            className={`${inputCls} disabled:opacity-50`}
+          >
+            <option value="">{loadingTables ? "Loading tables…" : "Select a table"}</option>
+            {tables.map((t) => (
+              <option key={t.name} value={t.name}>{t.label}</option>
+            ))}
+          </select>
+        </div>
+      )}
+
+      {/* ── Type + Status field pickers (both modes) ── */}
       <div className="grid grid-cols-2 gap-3">
         <div>
-          <label className="block text-xs font-medium text-gray-200 mb-1.5">
-            Type Field <span className="text-red-400">*</span>
-          </label>
+          <label className={labelCls}>Type Field <span className="text-red-400">*</span></label>
           <select
             required
-            value={formData.typeFieldName}
-            onChange={(e) => setFormData({ ...formData, typeFieldName: e.target.value })}
-            disabled={!formData.tableReference || loadingColumns}
-            className="w-full px-3 py-2 border border-gray-600 rounded-lg text-sm bg-gray-800 text-white focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+            value={typeFieldName}
+            onChange={(e) => setTypeFieldName(e.target.value)}
+            disabled={(!isEdit && !selectedTable) || loadingColumns}
+            className={`${inputCls} disabled:opacity-50`}
           >
-            <option value="">
-              {loadingColumns ? "Loading..." : "Select type field"}
-            </option>
-            {columns.map((col) => (
-              <option key={col.name} value={col.name}>
-                {col.label} ({col.type})
-              </option>
-            ))}
+            <option value="">{loadingColumns ? "Loading…" : "Select"}</option>
+            {columns.map((c) => <option key={c.name} value={c.name}>{c.label} ({c.type})</option>)}
           </select>
         </div>
         <div>
-          <label className="block text-xs font-medium text-gray-200 mb-1.5">
-            Status Field <span className="text-red-400">*</span>
-          </label>
+          <label className={labelCls}>Status Field <span className="text-red-400">*</span></label>
           <select
             required
-            value={formData.statusFieldName}
-            onChange={(e) => setFormData({ ...formData, statusFieldName: e.target.value })}
-            disabled={!formData.tableReference || loadingColumns}
-            className="w-full px-3 py-2 border border-gray-600 rounded-lg text-sm bg-gray-800 text-white focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+            value={statusFieldName}
+            onChange={(e) => setStatusFieldName(e.target.value)}
+            disabled={(!isEdit && !selectedTable) || loadingColumns}
+            className={`${inputCls} disabled:opacity-50`}
           >
-            <option value="">
-              {loadingColumns ? "Loading..." : "Select status field"}
-            </option>
-            {columns.map((col) => (
-              <option key={col.name} value={col.name}>
-                {col.label} ({col.type})
-              </option>
-            ))}
+            <option value="">{loadingColumns ? "Loading…" : "Select"}</option>
+            {columns.map((c) => <option key={c.name} value={c.name}>{c.label} ({c.type})</option>)}
           </select>
         </div>
       </div>
 
+      {/* ── Primary key ── */}
       <div>
-        <label className="block text-xs font-medium text-gray-200 mb-1.5">
-          Query Template <span className="text-red-400">*</span>
-        </label>
-        <textarea
-          required
-          rows={3}
-          placeholder="e.g., SELECT * FROM table_name WHERE updated_at > $1 ORDER BY created_at DESC"
-          value={formData.queryTemplate}
-          onChange={(e) => setFormData({ ...formData, queryTemplate: e.target.value })}
-          className="w-full px-3 py-2 border border-gray-600 rounded-lg text-sm placeholder-gray-400 bg-gray-800 text-white font-mono focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+        <label className={labelCls}>Primary Key Field</label>
+        <input
+          type="text"
+          value={primaryKeyField}
+          onChange={(e) => setPrimaryKeyField(e.target.value)}
+          className={inputCls}
+          placeholder="id"
         />
-        <p className="text-xs text-gray-400 mt-1">SQL query template for polling. Use $1 for timestamp parameter.</p>
       </div>
 
+      {/* ── Query template preview (add mode only) ── */}
+      {!isEdit && queryPreview && (
+        <div>
+          <label className={labelCls}>Generated Query <span className="text-zinc-600 font-normal">(auto)</span></label>
+          <code className="block text-[11px] text-zinc-400 font-mono bg-zinc-800/50 border border-zinc-700/50 px-3 py-2 rounded-lg">
+            {queryPreview}
+          </code>
+          <p className="text-[10px] text-zinc-600 mt-1">$1 = timestamp filter · $2 = row limit</p>
+        </div>
+      )}
+
+      {/* ── Polling interval ── */}
       <div>
-        <label className="block text-xs font-medium text-gray-200 mb-1.5">
-          Polling Interval (minutes)
-        </label>
+        <label className={labelCls}>Polling Interval (minutes)</label>
         <input
           type="number"
           min="1"
-          value={formData.pollingIntervalMinutes}
-          onChange={(e) =>
-            setFormData({ ...formData, pollingIntervalMinutes: parseInt(e.target.value) || 5 })
-          }
-          className="w-full px-3 py-2 border border-gray-600 rounded-lg text-sm placeholder-gray-400 bg-gray-800 text-white focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+          value={pollingIntervalMinutes}
+          onChange={(e) => setPollingIntervalMinutes(parseInt(e.target.value) || 15)}
+          className={inputCls}
         />
       </div>
 
       {error && (
-        <div className="bg-red-900 border border-red-700 rounded-lg p-3">
-          <p className="text-sm text-red-200">{error}</p>
+        <div className="bg-red-950 border border-red-800 rounded-lg px-3 py-2">
+          <p className="text-sm text-red-300">{error}</p>
         </div>
       )}
 
-      <div className="flex gap-3 justify-end border-t border-gray-700 pt-4">
+      <div className="flex gap-3 justify-end pt-2 border-t border-zinc-700">
         <button
           type="button"
           onClick={onClose}
           disabled={loading}
-          className="px-4 py-2 border border-gray-600 rounded-lg text-gray-200 hover:bg-gray-700 disabled:opacity-50 transition-colors font-medium"
+          className="px-3 py-1.5 border border-zinc-600 rounded-lg text-zinc-300 hover:bg-zinc-700 disabled:opacity-50 text-sm font-medium transition-colors"
         >
           Cancel
         </button>
         <button
           type="submit"
           disabled={loading}
-          className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors font-medium"
+          className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg disabled:opacity-50 text-sm font-medium transition-colors"
         >
-          {loading ? "Registering..." : "Register Source"}
+          {loading ? "Saving…" : isEdit ? "Save Changes" : "Register Source"}
         </button>
       </div>
     </form>
   );
+}
+
+// ── Preview Modal ─────────────────────────────────────────────────────────────
+// Shows the last N rows from the source's underlying table so the head can
+// sanity-check what the polling engine sees. Read-only.
+function PreviewModal({
+  source,
+  onClose,
+}: {
+  source: DataSource;
+  onClose: () => void;
+}) {
+  const [data, setData] = useState<{
+    rows: Array<Record<string, unknown>>;
+    columns: Array<{ column_name: string; data_type: string }>;
+    meta: { rowCount: number; orderedBy: string | null; orderedDesc: boolean; limit: number };
+  } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [limit, setLimit] = useState(10);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const res = await fetch(`/api/data-sources/${source.id}/preview?limit=${limit}`);
+        const body = await res.json();
+        if (cancelled) return;
+        if (!res.ok) {
+          setError(body?.error || `Failed (${res.status})`);
+        } else {
+          setData(body);
+        }
+      } catch (e) {
+        if (!cancelled) setError(e instanceof Error ? e.message : "Network error");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [source.id, limit]);
+
+  // Close on Escape
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60" onClick={onClose}>
+      <div
+        className="w-full max-w-6xl max-h-[90vh] bg-zinc-900 border border-zinc-700 rounded-xl shadow-2xl flex flex-col overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-zinc-700">
+          <div className="min-w-0">
+            <h3 className="text-sm font-semibold text-white truncate">
+              Preview · {source.displayName}
+            </h3>
+            <div className="flex items-center gap-2 mt-0.5">
+              <code className="text-[10px] bg-zinc-800 text-zinc-400 px-1.5 py-0.5 rounded">
+                {source.tableReference}
+              </code>
+              {data?.meta.orderedBy && (
+                <span className="text-[10px] text-zinc-500">
+                  · ordered by <code className="text-zinc-400">{data.meta.orderedBy}</code> {data.meta.orderedDesc ? "DESC" : ""}
+                </span>
+              )}
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <label className="text-[11px] text-zinc-500">Rows:</label>
+            <select
+              value={limit}
+              onChange={(e) => setLimit(Number(e.target.value))}
+              className="text-[11px] bg-zinc-800 border border-zinc-700 text-zinc-300 rounded px-1.5 py-1"
+            >
+              <option value={10}>10</option>
+              <option value={25}>25</option>
+              <option value={50}>50</option>
+            </select>
+            <button
+              onClick={onClose}
+              className="p-1.5 rounded-md text-zinc-400 hover:text-white hover:bg-zinc-700 transition-colors"
+            >
+              <IconClose />
+            </button>
+          </div>
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-auto">
+          {loading ? (
+            <div className="flex items-center justify-center py-16 text-zinc-400 gap-3">
+              <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+              <span className="text-sm">Fetching preview…</span>
+            </div>
+          ) : error ? (
+            <div className="px-5 py-8 text-center">
+              <div className="text-sm text-red-400">{error}</div>
+              <div className="text-xs text-zinc-500 mt-2">Could not load preview from {source.tableReference}</div>
+            </div>
+          ) : !data || data.rows.length === 0 ? (
+            <div className="px-5 py-8 text-center text-sm text-zinc-500">
+              No rows in {source.tableReference}.
+            </div>
+          ) : (
+            <table className="w-full text-[11px]">
+              <thead className="sticky top-0 bg-zinc-950 border-b border-zinc-800">
+                <tr>
+                  {data.columns.map((c) => (
+                    <th
+                      key={c.column_name}
+                      className="text-left px-3 py-2 font-semibold text-zinc-300 whitespace-nowrap"
+                      title={c.data_type}
+                    >
+                      <div>{c.column_name}</div>
+                      <div className="text-[9px] text-zinc-600 font-normal mt-0.5">{c.data_type}</div>
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {data.rows.map((row, i) => (
+                  <tr key={i} className="border-b border-zinc-800/60 hover:bg-zinc-800/40">
+                    {data.columns.map((c) => (
+                      <td key={c.column_name} className="px-3 py-2 text-zinc-300 align-top">
+                        {renderPreviewCell(row[c.column_name])}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+
+        {/* Footer */}
+        {data && (
+          <div className="px-5 py-2 border-t border-zinc-800 text-[11px] text-zinc-500">
+            Showing {data.meta.rowCount} of {data.meta.limit} requested · live data from {source.tableReference}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function renderPreviewCell(value: unknown): string {
+  if (value === null || value === undefined) return "—";
+  if (typeof value === "boolean") return value ? "true" : "false";
+  if (typeof value === "string") {
+    // Truncate long strings to keep the table scannable
+    return value.length > 80 ? value.slice(0, 80) + "…" : value;
+  }
+  if (typeof value === "number" || typeof value === "bigint") return String(value);
+  if (value instanceof Date) return value.toISOString();
+  // Object/array — show a compact JSON snippet
+  try {
+    const json = JSON.stringify(value);
+    return json.length > 80 ? json.slice(0, 80) + "…" : json;
+  } catch {
+    return "[object]";
+  }
 }

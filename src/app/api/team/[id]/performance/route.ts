@@ -1,21 +1,22 @@
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/db/client";
 import { getSessionFromRequest } from "@/lib/auth/session";
-import { UserRole } from "@/types";
+import { UserRole } from "@prisma/client";
 import { getMemberStats } from "@/lib/performance";
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const { id } = await params;
     const session = await getSessionFromRequest(request);
     if (!session) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     // Check authorization
-    if (![UserRole.OPS_HEAD, UserRole.STORE_ADMIN].includes(session.role)) {
+    if (session.role !== UserRole.OPS_HEAD && session.role !== UserRole.STORE_ADMIN) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
@@ -31,7 +32,7 @@ export async function GET(
       );
     }
 
-    const teamMemberId = parseInt(params.id);
+    const teamMemberId = parseInt(id);
 
     // Check member exists
     const member = await prisma.teamMember.findUnique({

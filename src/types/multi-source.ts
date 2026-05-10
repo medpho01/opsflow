@@ -183,6 +183,9 @@ export interface RegisterDataSourceRequest {
   sourceId: string;
   displayName: string;
   description?: string;
+  // "DATABASE" | "WEBHOOK" | "API" — the route validates against the
+  // DataSourceType enum and falls back to "DATABASE" if omitted.
+  pollingType?: "DATABASE" | "WEBHOOK" | "API";
   tableReference: string;
   primaryKeyField: string;
   typeFieldName: string;

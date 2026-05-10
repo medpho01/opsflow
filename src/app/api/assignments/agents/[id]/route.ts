@@ -21,7 +21,7 @@ export async function GET(
     const user = await getSessionFromRequest(req);
 
     // OPS_HEAD or STORE_ADMIN can view agent info
-    if (!user || ![UserRole.OPS_HEAD, UserRole.STORE_ADMIN].includes(user.role)) {
+    if (!user || (user.role !== UserRole.OPS_HEAD && user.role !== UserRole.STORE_ADMIN)) {
       return NextResponse.json(
         { error: "Unauthorized", code: "FORBIDDEN" },
         { status: 403 }

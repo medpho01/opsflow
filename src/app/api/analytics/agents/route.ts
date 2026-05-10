@@ -1,88 +1,45 @@
 /**
  * GET /api/analytics/agents?range=today|week|month
- * Per-agent performance metrics for the Ops Head analytics dashboard.
+ *
+ * Per-agent performance metrics for the OPS_HEAD analytics dashboard.
+ *
+ * Audit (feature 07) rewrites:
+ *
+ *  - Replaced the inline `calculateRosterStatus` (the audit's "third
+ *    re-implementation" — used local `getDay()` not UTC, and referenced
+ *    nonexistent `breakStartTime`/`breakEndTime` columns so the break
+ *    window check was silently a no-op). Now calls
+ *    `computeRosterStatus()` from lib/roster/availability — the same
+ *    helper /api/team and pickAssignee use. Single source of truth.
+ *
+ *  - `getRangeStart` no longer uses local `setHours(0,0,0,0)`. The
+ *    server runs in UTC and the DB in IST; the resulting midnight was
+ *    misaligned by 5h30m. Now anchored to IST via the shared helper.
+ *
+ *  - Aggregation push-down: previously loaded every assigned task per
+ *    agent and filtered in JS — O(agents × tasks) memory and pure
+ *    JSON-over-the-wire bandwidth. Now a single GROUP BY assignedToId
+ *    aggregate run server-side; only the per-agent count rows come back.
+ *
+ *  - rosterExceptions filter now uses the shared IST-anchored start so
+ *    it matches everywhere else in the file (was inconsistently using
+ *    `Date.UTC(...)`).
  */
 import { NextRequest, NextResponse } from "next/server";
 import { getSessionFromRequest } from "@/lib/auth/session";
 import prisma from "@/lib/db/client";
-import { UserRole, TaskStatus } from "@prisma/client";
+import { Prisma, UserRole } from "@prisma/client";
+import { computeRosterStatus, getUTCDayOfWeek } from "@/lib/roster/availability";
+import { getRangeStart, startOfTodayIST } from "../_helpers";
 
-function getRangeStart(range: string): Date {
-  const now = new Date();
-  if (range === "week") {
-    const d = new Date(now);
-    d.setDate(d.getDate() - 6);
-    d.setHours(0, 0, 0, 0);
-    return d;
-  }
-  if (range === "month") {
-    const d = new Date(now);
-    d.setDate(d.getDate() - 29);
-    d.setHours(0, 0, 0, 0);
-    return d;
-  }
-  // today
-  const d = new Date(now);
-  d.setHours(0, 0, 0, 0);
-  return d;
-}
-
-function calculateRosterStatus(
-  teamMember: any,
-  now: Date
-): string {
-  // Check if there's an exception for today
-  if (teamMember?.rosterExceptions && teamMember.rosterExceptions.length > 0) {
-    return teamMember.rosterExceptions[0].status;
-  }
-
-  // Check weekly schedule for today
-  if (!teamMember?.weeklySchedules || teamMember.weeklySchedules.length === 0) {
-    return "OFF"; // No schedule configured
-  }
-
-  // Get day of week (0 = Sunday, 6 = Saturday)
-  const dayOfWeek = now.getDay();
-  const todaySchedule = teamMember.weeklySchedules.find(
-    (s: any) => s.dayOfWeek === dayOfWeek
-  );
-
-  if (!todaySchedule || !todaySchedule.isWorking) {
-    return "OFF";
-  }
-
-  // Parse times and check if current time is within working hours
-  const [startHour, startMin] = todaySchedule.startTime.split(":").map(Number);
-  const [endHour, endMin] = todaySchedule.endTime.split(":").map(Number);
-  const currentHour = now.getHours();
-  const currentMin = now.getMinutes();
-
-  const startTotalMin = startHour * 60 + startMin;
-  const endTotalMin = endHour * 60 + endMin;
-  const currentTotalMin = currentHour * 60 + currentMin;
-
-  // Check if in break time
-  if (todaySchedule.breakStartTime && todaySchedule.breakEndTime) {
-    const [breakStartHour, breakStartMin] = todaySchedule.breakStartTime
-      .split(":")
-      .map(Number);
-    const [breakEndHour, breakEndMin] = todaySchedule.breakEndTime
-      .split(":")
-      .map(Number);
-    const breakStartTotalMin = breakStartHour * 60 + breakStartMin;
-    const breakEndTotalMin = breakEndHour * 60 + breakEndMin;
-
-    if (currentTotalMin >= breakStartTotalMin && currentTotalMin < breakEndTotalMin) {
-      return "OFF"; // On break
-    }
-  }
-
-  // Check if within working hours
-  if (currentTotalMin >= startTotalMin && currentTotalMin < endTotalMin) {
-    return "ACTIVE";
-  }
-
-  return "OFF";
+interface AgentAggregate {
+  assignedToId: number;
+  completed: bigint;
+  open: bigint;
+  breached: bigint;
+  sla_compliant: bigint;
+  avg_completion_minutes: number | null;
+  urgent_breaches: bigint;
 }
 
 export async function GET(request: NextRequest) {
@@ -94,105 +51,106 @@ export async function GET(request: NextRequest) {
 
   const { searchParams } = new URL(request.url);
   const range = searchParams.get("range") ?? "today";
+  const dataSourceId = searchParams.get("dataSourceId"); // W5 — optional source slicer
   const since = getRangeStart(range);
   const now = new Date();
+  const dayStart = startOfTodayIST();
+  const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
+  const dayOfWeek = getUTCDayOfWeek(now);
 
-  // Get all agents + store admins with their team member data
-  const agents = await prisma.user.findMany({
-    where: { isActive: true, role: { in: [UserRole.OPS_AGENT, UserRole.STORE_ADMIN] } },
-    include: {
-      teamMember: {
-        include: {
-          storeAssignments: { select: { storeId: true } },
-          weeklySchedules: true,
-          rosterExceptions: {
-            where: {
-              date: {
-                gte: new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate())),
-                lt: new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate() + 1)),
-              },
+  // Conditional SQL clause that scopes the aggregate to a single data
+  // source. Empty fragment (no filter) when dataSourceId is null.
+  const sourceFilter = dataSourceId
+    ? Prisma.sql`AND EXISTS (
+        SELECT 1 FROM taskos.task_rules tr
+        WHERE tr.id = t."taskRuleId" AND tr."dataSourceId" = ${dataSourceId}
+      )`
+    : Prisma.empty;
+
+  const [agents, aggregates] = await Promise.all([
+    // Light user list — no nested tasks. Just the metadata we need to
+    // shape the row + compute roster status.
+    prisma.user.findMany({
+      where: { isActive: true, role: { in: [UserRole.OPS_AGENT, UserRole.STORE_ADMIN] } },
+      include: {
+        teamMember: {
+          include: {
+            storeAssignments: { select: { storeId: true } },
+            weeklySchedules: { where: { dayOfWeek } },
+            rosterExceptions: {
+              where: { date: { gte: dayStart, lt: dayEnd } },
+              take: 1,
             },
           },
         },
       },
-      assignedTasks: {
-        where: {
-          OR: [
-            { completedAt: { gte: since } },
-            { status: { notIn: [TaskStatus.COMPLETED, TaskStatus.CANCELLED] } },
-          ],
-        },
-        select: {
-          id: true,
-          status: true,
-          priority: true,
-          slaDeadline: true,
-          slaBreachedAt: true,
-          assignedAt: true,
-          completedAt: true,
-          createdAt: true,
-        },
-      },
-    },
-    orderBy: { name: "asc" },
-  });
+      orderBy: { name: "asc" },
+    }),
+    // Per-agent aggregates pushed into SQL. Avg-completion-minutes uses
+    // EPOCH math against naive TIMESTAMP columns; both columns store
+    // UTC instants the same way so the difference is correct.
+    prisma.$queryRaw<AgentAggregate[]>`
+      SELECT
+        t."assignedToId"                                                                                            AS "assignedToId",
+        COUNT(*) FILTER (WHERE t.status = 'COMPLETED' AND t."completedAt" >= ${since})                              AS completed,
+        COUNT(*) FILTER (WHERE t.status NOT IN ('COMPLETED','CANCELLED'))                                           AS open,
+        COUNT(*) FILTER (WHERE t."slaBreachedAt" >= ${since})                                                       AS breached,
+        COUNT(*) FILTER (WHERE t.status = 'COMPLETED' AND t."completedAt" >= ${since}
+                          AND t."slaBreachedAt" IS NULL)                                                            AS sla_compliant,
+        AVG(EXTRACT(EPOCH FROM (t."completedAt" - t."assignedAt")) / 60.0)
+          FILTER (WHERE t.status = 'COMPLETED' AND t."completedAt" >= ${since}
+                  AND t."completedAt" IS NOT NULL AND t."assignedAt" IS NOT NULL)                                   AS avg_completion_minutes,
+        COUNT(*) FILTER (WHERE t."slaBreachedAt" >= ${since}
+                          AND t.priority IN ('URGENT','HIGH'))                                                      AS urgent_breaches
+      FROM taskos.tasks t
+      WHERE t."isArchived" = false AND t."assignedToId" IS NOT NULL
+      ${sourceFilter}
+      GROUP BY t."assignedToId"
+    `,
+  ]);
+
+  // Index the aggregate by agent id for O(1) lookup during shape.
+  const aggByUser = new Map<number, AgentAggregate>();
+  for (const row of aggregates) aggByUser.set(row.assignedToId, row);
 
   const metrics = agents.map((agent) => {
-    const tasks = agent.assignedTasks;
+    const agg = aggByUser.get(agent.id);
+    const completed = agg ? Number(agg.completed) : 0;
+    const open = agg ? Number(agg.open) : 0;
+    const breached = agg ? Number(agg.breached) : 0;
+    const slaCompliant = agg ? Number(agg.sla_compliant) : 0;
+    const urgentBreaches = agg ? Number(agg.urgent_breaches) : 0;
+    const avgCompletionMinutes = agg && agg.avg_completion_minutes !== null
+      ? Math.round(Number(agg.avg_completion_minutes))
+      : null;
 
-    const completedInRange = tasks.filter(
-      (t) => t.status === TaskStatus.COMPLETED && t.completedAt && t.completedAt >= since
-    );
-
-    const openTasks = tasks.filter(
-      (t) => t.status !== TaskStatus.COMPLETED && t.status !== TaskStatus.CANCELLED
-    );
-
-    const breachedInRange = tasks.filter(
-      (t) => t.slaBreachedAt && t.slaBreachedAt >= since
-    );
-
-    // SLA compliance: completed in range without breach
-    const compliantInRange = completedInRange.filter((t) => !t.slaBreachedAt);
     const slaCompliance =
-      completedInRange.length > 0
-        ? Math.round((compliantInRange.length / completedInRange.length) * 100)
-        : 0;
+      completed > 0 ? Math.round((slaCompliant / completed) * 100) : 0;
 
-    // Average completion time (minutes)
-    const completionTimes = completedInRange
-      .filter((t) => t.assignedAt && t.completedAt)
-      .map((t) => (t.completedAt!.getTime() - t.assignedAt!.getTime()) / 60_000);
-    const avgCompletionMinutes =
-      completionTimes.length > 0
-        ? Math.round(completionTimes.reduce((a, b) => a + b, 0) / completionTimes.length)
-        : null;
+    const schedule = agent.teamMember?.weeklySchedules[0] ?? null;
+    const exception = agent.teamMember?.rosterExceptions[0] ?? null;
+    const rosterStatus = agent.teamMember
+      ? computeRosterStatus(schedule, exception, now)
+      : "OFF";
 
-    // Urgent/high breaches
-    const urgentBreaches = breachedInRange.filter(
-      (t) => t.priority === "URGENT" || t.priority === "HIGH"
-    ).length;
+    const maxConcurrent = agent.teamMember?.maxConcurrentTasks ?? 5;
 
     return {
       userId: agent.id,
       name: agent.name,
       email: agent.email,
       role: agent.role,
-      rosterStatus: calculateRosterStatus(agent.teamMember, now),
-      maxConcurrentTasks: agent.teamMember?.maxConcurrentTasks ?? 5,
+      rosterStatus,
+      maxConcurrentTasks: maxConcurrent,
       storeIds: agent.teamMember?.storeAssignments.map((a) => a.storeId) ?? [],
       // metrics
-      completedCount: completedInRange.length,
-      openCount: openTasks.length,
-      breachedCount: breachedInRange.length,
+      completedCount: completed,
+      openCount: open,
+      breachedCount: breached,
       urgentBreaches,
       slaCompliance,
       avgCompletionMinutes,
-      // load %
-      loadPercent:
-        (agent.teamMember?.maxConcurrentTasks ?? 5) > 0
-          ? Math.round((openTasks.length / (agent.teamMember?.maxConcurrentTasks ?? 5)) * 100)
-          : 0,
+      loadPercent: maxConcurrent > 0 ? Math.round((open / maxConcurrent) * 100) : 0,
     };
   });
 

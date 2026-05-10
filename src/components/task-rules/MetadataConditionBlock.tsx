@@ -20,7 +20,7 @@ export default function MetadataConditionBlock({
   onRemove,
 }: MetadataConditionBlockProps) {
   const selectedField = metadataFields.find(f => f.fieldPath === condition.fieldPath);
-  const availableOperators = selectedField?.operators || [
+  const availableOperators: string[] = selectedField?.operators || [
     'exists', 'not_exists', 'equals', 'not_equals',
     'contains', 'starts_with', 'ends_with',
     '>', '>=', '<', '<='

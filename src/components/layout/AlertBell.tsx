@@ -10,30 +10,48 @@ interface AlertTask {
 
 interface Alert {
   id: number;
-  type: string;
+  // The DB column (and Prisma field) is `alertType`. The legacy field name
+  // `type` is accepted as a fallback in case any older API response shape
+  // is still in flight after a deploy.
+  alertType?: string;
+  type?: string;
   message: string;
   createdAt: string;
   task: AlertTask | null;
 }
 
+function alertTypeOf(a: Alert): string {
+  return a.alertType ?? a.type ?? "UNKNOWN";
+}
+
 const ALERT_TYPE_COLOR: Record<string, string> = {
-  SLA_BREACH: "text-red-400",
+  SLA_BREACHED: "text-red-400",
+  SLA_BREACH: "text-red-400",       // legacy alias
   SLA_WARNING: "text-amber-400",
+  SLA_URGENT: "text-orange-400",
   ESCALATION: "text-orange-400",
-  UNASSIGNED_TASK: "text-yellow-400",
+  TASK_UNASSIGNED: "text-yellow-400",
+  UNASSIGNED_TASK: "text-yellow-400", // legacy alias
   AGENT_AT_CAPACITY: "text-blue-400",
   ORDER_STUCK: "text-purple-400",
+  SKILL_GAP: "text-pink-400",
   DAILY_SUMMARY: "text-zinc-400",
+  SOURCE_HEALTH: "text-amber-400",
 };
 
 const ALERT_TYPE_DOT: Record<string, string> = {
+  SLA_BREACHED: "bg-red-500",
   SLA_BREACH: "bg-red-500",
   SLA_WARNING: "bg-amber-500",
+  SLA_URGENT: "bg-orange-500",
   ESCALATION: "bg-orange-500",
+  TASK_UNASSIGNED: "bg-yellow-500",
   UNASSIGNED_TASK: "bg-yellow-500",
   AGENT_AT_CAPACITY: "bg-blue-500",
   ORDER_STUCK: "bg-purple-500",
+  SKILL_GAP: "bg-pink-500",
   DAILY_SUMMARY: "bg-zinc-500",
+  SOURCE_HEALTH: "bg-amber-500",
 };
 
 function timeAgo(dateStr: string): string {
@@ -168,15 +186,17 @@ export default function AlertBell() {
                 <p className="text-xs text-zinc-500">No unread alerts</p>
               </div>
             ) : (
-              alerts.map((alert) => (
+              alerts.map((alert) => {
+                const t = alertTypeOf(alert);
+                return (
                 <div key={alert.id} className="px-4 py-3 hover:bg-zinc-800/40 transition-colors group">
                   <div className="flex items-start gap-2.5">
                     <div
-                      className={`mt-1.5 w-1.5 h-1.5 rounded-full shrink-0 ${ALERT_TYPE_DOT[alert.type] ?? "bg-zinc-500"}`}
+                      className={`mt-1.5 w-1.5 h-1.5 rounded-full shrink-0 ${ALERT_TYPE_DOT[t] ?? "bg-zinc-500"}`}
                     />
                     <div className="flex-1 min-w-0">
-                      <p className={`text-xs font-medium leading-snug ${ALERT_TYPE_COLOR[alert.type] ?? "text-zinc-300"}`}>
-                        {alert.type.replace(/_/g, " ")}
+                      <p className={`text-xs font-medium leading-snug ${ALERT_TYPE_COLOR[t] ?? "text-zinc-300"}`}>
+                        {t.replace(/_/g, " ")}
                       </p>
                       <p className="text-xs text-zinc-400 mt-0.5 leading-relaxed">{alert.message}</p>
                       <p className="text-[10px] text-zinc-600 mt-1">{timeAgo(alert.createdAt)}</p>
@@ -192,7 +212,8 @@ export default function AlertBell() {
                     </button>
                   </div>
                 </div>
-              ))
+                );
+              })
             )}
           </div>
 

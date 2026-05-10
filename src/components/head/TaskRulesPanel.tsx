@@ -26,26 +26,44 @@ interface SkillTag {
   label: string;
 }
 
-interface TaskType {
-  id: number;
-  name: string;
-  label: string;
-}
-
 interface EscalationChain {
   id: number;
   name: string;
 }
 
+interface DataSource {
+  id: string;
+  sourceId: string;
+  displayName: string;
+  tableReference: string;
+  typeFieldName: string;
+  statusFieldName: string;
+  isActive: boolean;
+  pollingIntervalMinutes: number;
+}
+
+interface SourceScope {
+  id: number;
+  dataSourceId: string;
+  dataSource: { id: string; displayName: string; sourceId: string };
+  allowedTypes: string[];
+  allowedStatuses: string[];
+  assignmentStrategy: string;
+}
+
 interface TaskRule {
   id: string;
   name: string;
-  orderType: string;
+  dataSourceId: string;
+  dataSource: { id: string; sourceId: string; displayName: string } | null;
+  allowedTypes: string[];
+  allowedStatuses: string[];
+  pollingIntervalMinutes: number;
   priority: string;
   slaMinutes: number;
   isActive: boolean;
   titleTemplate: string;
-  taskType: { name: string; label: string };
+  assignmentStrategy: string;
   requiredSkills: SkillTag[];
   escalationChain: { id: number; name: string } | null;
   totalTasksCreated: number;
@@ -79,10 +97,28 @@ function fmtSla(mins: number): string {
   return `${Math.floor(mins / 60)}h ${mins % 60}m`;
 }
 
+// W4.3 — compact rendering of a sample value inside the autocomplete dropdown.
+// Browsers truncate <option> labels; keep them short and readable.
+function formatSampleForOption(v: unknown): string {
+  if (v === null || v === undefined) return "—";
+  const s = typeof v === "string" ? v : JSON.stringify(v);
+  return s.length > 40 ? s.slice(0, 40) + "…" : s;
+}
+
 function fmtOffset(mins: number): string {
   if (mins < 60) return `${mins} min`;
   if (mins % 60 === 0) return `${mins / 60} hr`;
   return `${Math.floor(mins / 60)}h ${mins % 60}m`;
+}
+
+// W4.3 — observed metadata keys (from /api/data-sources/[id]/metadata-keys).
+// Drives the autocomplete on the Field Path input so authors can't typo a
+// field that doesn't exist on the source.
+interface SourceKey {
+  path: string;
+  type: "string" | "number" | "boolean" | "timestamp" | "object" | "array" | "null";
+  sampleValue: unknown;
+  observedIn: number;
 }
 
 function TriggerBuilder({
@@ -90,11 +126,13 @@ function TriggerBuilder({
   onChange,
   metadataFields = [],
   orderStatuses = [],
+  sourceKeys = [],
 }: {
   value?: TriggerCondition;
   onChange: (v: TriggerCondition) => void;
   metadataFields?: any[];
   orderStatuses?: string[];
+  sourceKeys?: SourceKey[];
 }) {
   const [showMetadata, setShowMetadata] = useState(false);
 
@@ -230,14 +268,47 @@ function TriggerBuilder({
               <div key={idx} className="p-3 bg-zinc-800 border border-zinc-700 rounded-lg space-y-2">
                 <div className="grid grid-cols-4 gap-2">
                   <div>
-                    <label className="text-[10px] text-zinc-400 block mb-1">Field Path</label>
-                    <input
-                      type="text"
-                      value={cond.fieldPath}
-                      onChange={(e) => updateMetadataCondition(idx, { fieldPath: e.target.value })}
-                      placeholder="e.g., patient.age"
-                      className="w-full px-2 py-1.5 bg-zinc-700 border border-zinc-600 rounded text-xs text-white placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                    />
+                    {/* W4.3 — autocomplete from observed source keys. The <datalist>
+                       gives the input native combobox behaviour (free-text + dropdown
+                       suggestions); a green check appears when the typed path matches
+                       an observed key. Catches typos that previously silently no-op'd. */}
+                    {(() => {
+                      const matched = sourceKeys.find((k) => k.path === cond.fieldPath);
+                      return (
+                        <>
+                          <label className="text-[10px] text-zinc-400 mb-1 flex items-center justify-between">
+                            <span>Field Path</span>
+                            {cond.fieldPath && (
+                              matched
+                                ? <span className="text-emerald-400 normal-case">✓ {matched.type}</span>
+                                : <span className="text-amber-400 normal-case" title="Field not observed in recent orders">⚠ not seen</span>
+                            )}
+                          </label>
+                          <input
+                            type="text"
+                            list={`mdkeys-${idx}`}
+                            value={cond.fieldPath}
+                            onChange={(e) => updateMetadataCondition(idx, { fieldPath: e.target.value })}
+                            placeholder={sourceKeys.length > 0 ? "Pick or type a path…" : "e.g., patient.age"}
+                            className="w-full px-2 py-1.5 bg-zinc-700 border border-zinc-600 rounded text-xs text-white placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                          />
+                          {sourceKeys.length > 0 && (
+                            <datalist id={`mdkeys-${idx}`}>
+                              {sourceKeys.map((k) => (
+                                <option key={k.path} value={k.path}>
+                                  {`${k.type} · seen ${k.observedIn}× · e.g. ${formatSampleForOption(k.sampleValue)}`}
+                                </option>
+                              ))}
+                            </datalist>
+                          )}
+                          {matched?.sampleValue !== undefined && matched?.sampleValue !== null && (
+                            <div className="text-[9px] text-zinc-600 mt-0.5 truncate" title={String(matched.sampleValue)}>
+                              e.g. {formatSampleForOption(matched.sampleValue)}
+                            </div>
+                          )}
+                        </>
+                      );
+                    })()}
                   </div>
                   <div>
                     <label className="text-[10px] text-zinc-400 block mb-1">Operator</label>
@@ -406,28 +477,46 @@ const EMPTY_TRIGGER: TriggerCondition = {
   metadataConditions: [],
 };
 
+// W5.2 — RuleDrawer reports a "Simulate" click back to the panel which
+// owns the modal state. Lifting the modal up means the simulator survives
+// closing the drawer (so authors can reference it while making edits).
+interface RuleDrawerProps_OnSimulate { onSimulate?: (req: SimRequest) => void }
 interface RuleDrawerProps {
   rule: TaskRule | null;
-  taskTypes: TaskType[];
   allTags: SkillTag[];
   chains: EscalationChain[];
   metadataFields: any[];
-  orderTypes: string[];
   orderStatuses: string[];
   onClose: () => void;
   onSaved: () => void;
+  onSimulate?: (req: SimRequest) => void;
 }
 
-function RuleDrawer({ rule, taskTypes, allTags, chains, metadataFields, orderTypes, orderStatuses, onClose, onSaved }: RuleDrawerProps) {
+// W4.2 — descriptions surface what each strategy actually does so authors
+// don't have to guess. The engine uses these names verbatim (see
+// pickAssignee in lib/engine/taskCreator.ts).
+const ASSIGNMENT_STRATEGIES = [
+  { value: "default",        label: "Default (Least Loaded + Round Robin)",
+    description: "Pick the agent with the fewest open tasks; if tied, rotate." },
+  { value: "least_loaded",   label: "Least Loaded",
+    description: "Same as Default — pick the agent with the fewest open tasks." },
+  { value: "round_robin",    label: "Round Robin",
+    description: "Rotate evenly across all eligible agents, ignoring current load." },
+  { value: "store_affinity", label: "Store Affinity",
+    description: "Prefer agents assigned to the order's store; least-loaded among them." },
+  { value: "skill_based",    label: "Skill Based",
+    description: "Prefer agents matching the most required skills; least-loaded among them." },
+];
+
+function RuleDrawer({ rule, allTags, chains, metadataFields, orderStatuses, onClose, onSaved, onSimulate }: RuleDrawerProps) {
   const isCreate = rule === null;
 
   const [form, setForm] = useState({
     name: rule?.name ?? "",
-    orderType: rule?.orderType ?? "HOME_SAMPLE",
-    taskTypeId: rule ? String(taskTypes.find((t) => t.label === rule.taskType.label)?.id ?? taskTypes[0]?.id ?? "") : String(taskTypes[0]?.id ?? ""),
     titleTemplate: rule?.titleTemplate ?? "{{patientName}} — ",
     slaMinutes: rule?.slaMinutes ?? 30,
     priority: rule?.priority ?? "HIGH",
+    pollingIntervalMinutes: rule?.pollingIntervalMinutes ?? 15,
     escalationChainId: rule?.escalationChain?.id ? String(rule.escalationChain.id) : "",
   });
   const [trigger, setTrigger] = useState<TriggerCondition>(
@@ -436,11 +525,67 @@ function RuleDrawer({ rule, taskTypes, allTags, chains, metadataFields, orderTyp
   const [skillIds, setSkillIds] = useState<Set<number>>(
     new Set(rule?.requiredSkills.map((s) => s.id) ?? [])
   );
+
+  // Data source state
+  const [dataSources, setDataSources] = useState<DataSource[]>([]);
+  const [loadingSources, setLoadingSources] = useState(false);
+  const [dataSourceId, setDataSourceId] = useState<string>(rule?.dataSourceId ?? "");
+  const [selectedSource, setSelectedSource] = useState<DataSource | null>(null);
+  const [availableTypes, setAvailableTypes] = useState<string[]>([]);
+  const [availableStatuses, setAvailableStatuses] = useState<string[]>([]);
+  const [loadingEnums, setLoadingEnums] = useState(false);
+  // W4.3 — observed metadata keys from the chosen source (last 25 rows).
+  const [sourceKeys, setSourceKeys] = useState<SourceKey[]>([]);
+  const [allowedTypes, setAllowedTypes] = useState<string[]>(rule?.allowedTypes ?? []);
+  const [allowedStatuses, setAllowedStatuses] = useState<string[]>(rule?.allowedStatuses ?? []);
+  const [assignmentStrategy, setAssignmentStrategy] = useState<string>(rule?.assignmentStrategy ?? "default");
+
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [deleting, setDeleting] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const [activeTab, setActiveTab] = useState<"basics" | "trigger" | "assignment">("basics");
+  const [activeTab, setActiveTab] = useState<"source" | "trigger" | "basics" | "assignment">("source");
+
+  // Load data sources immediately on mount
+  useEffect(() => {
+    setLoadingSources(true);
+    fetch("/api/data-sources")
+      .then((r) => r.ok ? r.json() : { dataSources: [] })
+      .then((d) => {
+        const active: DataSource[] = (d.dataSources ?? []).filter((s: DataSource) => s.isActive);
+        setDataSources(active);
+        // Pre-select existing source if editing
+        if (dataSourceId) {
+          const found = active.find((s) => s.id === dataSourceId) ?? null;
+          setSelectedSource(found);
+        }
+      })
+      .finally(() => setLoadingSources(false));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Load entity types & statuses when source is selected
+  useEffect(() => {
+    if (!selectedSource) {
+      setAvailableTypes([]);
+      setAvailableStatuses([]);
+      setSourceKeys([]);
+      return;
+    }
+    // Strip schema prefix (public."Table" → "Table") then strip surrounding quotes ("Table" → Table)
+    const table = selectedSource.tableReference.replace(/^.*\./, "").replace(/^"(.+)"$/, "$1");
+    setLoadingEnums(true);
+    Promise.all([
+      fetch(`/api/data-sources/column-enums?table=${encodeURIComponent(table)}&column=${encodeURIComponent(selectedSource.typeFieldName)}`).then((r) => r.ok ? r.json() : { values: [] }),
+      fetch(`/api/data-sources/column-enums?table=${encodeURIComponent(table)}&column=${encodeURIComponent(selectedSource.statusFieldName)}`).then((r) => r.ok ? r.json() : { values: [] }),
+      // W4.3 — observed metadata-key autocomplete data
+      fetch(`/api/data-sources/${selectedSource.id}/metadata-keys?sample=25`).then((r) => r.ok ? r.json() : { keys: [] }),
+    ]).then(([typeData, statusData, keysData]) => {
+      setAvailableTypes(typeData.values ?? []);
+      setAvailableStatuses(statusData.values ?? []);
+      setSourceKeys(keysData.keys ?? []);
+    }).finally(() => setLoadingEnums(false));
+  }, [selectedSource]);
 
   function toggleSkill(id: number) {
     const next = new Set(skillIds);
@@ -449,27 +594,65 @@ function RuleDrawer({ rule, taskTypes, allTags, chains, metadataFields, orderTyp
     setSkillIds(next);
   }
 
-  async function submit(e: React.FormEvent) {
+  function toggleType(type: string) {
+    setAllowedTypes((prev) => prev.includes(type) ? prev.filter((t) => t !== type) : [...prev, type]);
+  }
+
+  function toggleStatus(status: string) {
+    setAllowedStatuses((prev) => prev.includes(status) ? prev.filter((s) => s !== status) : [...prev, status]);
+  }
+
+  function handleSourceSelect(id: string) {
+    setDataSourceId(id);
+    const src = dataSources.find((s) => s.id === id) ?? null;
+    setSelectedSource(src);
+    setAllowedTypes([]);
+    setAllowedStatuses([]);
+  }
+
+  async function submit(e: React.FormEvent, opts?: { asDraft?: boolean }) {
     e.preventDefault();
     setError("");
-    if (!(trigger?.statusIn?.length ?? 0)) {
-      setError("Trigger condition must have at least one order status selected.");
-      setActiveTab("trigger");
+
+    // Validate source is selected (must be first — every other field's
+    // validity depends on it)
+    if (!dataSourceId) {
+      setError("Please select a data source first.");
+      setActiveTab("source");
       return;
+    }
+
+    // Drafts skip the "must have at least one status" requirement so the
+    // author can save partial work and come back to it. The API still
+    // requires statusIn on save (to keep the data shape valid) — for drafts
+    // we send a placeholder that the engine won't match (empty array isn't
+    // allowed by the schema).
+    const isDraft = opts?.asDraft === true;
+    if (!isDraft) {
+      if (!(trigger?.statusIn?.length ?? 0)) {
+        setError("Select at least one status in the Trigger tab.");
+        setActiveTab("trigger");
+        return;
+      }
     }
 
     setSaving(true);
     try {
-      const payload = {
+      const payload: Record<string, unknown> = {
         name: form.name,
-        orderType: form.orderType,
-        taskTypeId: Number(form.taskTypeId),
         titleTemplate: form.titleTemplate,
         slaMinutes: Number(form.slaMinutes),
         priority: form.priority,
-        triggerCondition: trigger,
+        // pollingIntervalMinutes intentionally omitted on save — it lives on
+        // the data source. Kept in form state for display only.
+        triggerCondition: trigger?.statusIn?.length ? trigger : { ...trigger, statusIn: ["__DRAFT__"] },
         escalationChainId: form.escalationChainId ? Number(form.escalationChainId) : null,
         skillTagIds: Array.from(skillIds),
+        dataSourceId: dataSourceId || null,
+        allowedTypes,
+        allowedStatuses,
+        assignmentStrategy,
+        isDraft,
       };
 
       const url = isCreate ? "/api/task-rules" : `/api/task-rules/${rule!.id}`;
@@ -481,7 +664,12 @@ function RuleDrawer({ rule, taskTypes, allTags, chains, metadataFields, orderTyp
         body: JSON.stringify(payload),
       });
       const data = await res.json();
-      if (!res.ok) { setError(data.error ?? "Save failed"); return; }
+      if (!res.ok) {
+        // zod gives us per-field reasons — show the first one if available
+        const r = data.details?.reason ? ` (${data.details.field}: ${data.details.reason})` : "";
+        setError((data.error ?? "Save failed") + r);
+        return;
+      }
       onSaved();
       onClose();
     } finally {
@@ -504,9 +692,10 @@ function RuleDrawer({ rule, taskTypes, allTags, chains, metadataFields, orderTyp
   }
 
   const TABS = [
-    { key: "basics", label: "Basics" },
-    { key: "trigger", label: "Trigger Condition" },
-    { key: "assignment", label: "Assignment & Escalation" },
+    { key: "source",      label: "Data Source" },
+    { key: "trigger",     label: "Trigger" },
+    { key: "basics",      label: "Basics" },
+    { key: "assignment",  label: "Assignment" },
   ] as const;
 
   return (
@@ -531,23 +720,45 @@ function RuleDrawer({ rule, taskTypes, allTags, chains, metadataFields, orderTyp
           </div>
 
           <div className="flex gap-0">
-            {TABS.map((tab) => (
-              <button
-                key={tab.key}
-                type="button"
-                onClick={() => setActiveTab(tab.key)}
-                className={`px-4 py-2 text-xs font-medium border-b-2 transition-colors ${
-                  activeTab === tab.key
-                    ? "border-blue-500 text-blue-400"
-                    : "border-transparent text-zinc-500 hover:text-zinc-300"
-                }`}
-              >
-                {tab.label}
-                {tab.key === "trigger" && trigger?.statusIn?.length === 0 && (
-                  <span className="ml-1 w-1.5 h-1.5 rounded-full bg-red-500 inline-block align-middle" />
-                )}
-              </button>
-            ))}
+            {TABS.map((tab) => {
+              // W3.1: Trigger / Basics / Assignment are useless until a Source
+              // is picked (statuses+types come from the source). Disable the
+              // tab buttons rather than showing a low-fidelity dead-end.
+              const isLocked = tab.key !== "source" && !dataSourceId;
+              const isActive = activeTab === tab.key;
+              return (
+                <button
+                  key={tab.key}
+                  type="button"
+                  onClick={() => !isLocked && setActiveTab(tab.key)}
+                  disabled={isLocked}
+                  title={isLocked ? "Pick a data source first" : undefined}
+                  className={`px-4 py-2 text-xs font-medium border-b-2 transition-colors ${
+                    isActive
+                      ? "border-blue-500 text-blue-400"
+                      : isLocked
+                        ? "border-transparent text-zinc-700 cursor-not-allowed"
+                        : "border-transparent text-zinc-500 hover:text-zinc-300"
+                  }`}
+                >
+                  {tab.label}
+                  {isLocked && (
+                    <svg className="ml-1 w-3 h-3 inline-block align-middle" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                    </svg>
+                  )}
+                  {tab.key === "source" && !dataSourceId && !isLocked && (
+                    <span className="ml-1 w-1.5 h-1.5 rounded-full bg-red-500 inline-block align-middle" title="Required" />
+                  )}
+                  {tab.key === "source" && dataSourceId && (
+                    <span className="ml-1 w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block align-middle" />
+                  )}
+                  {tab.key === "trigger" && !isLocked && trigger?.statusIn?.length === 0 && (
+                    <span className="ml-1 w-1.5 h-1.5 rounded-full bg-amber-500 inline-block align-middle" />
+                  )}
+                </button>
+              );
+            })}
           </div>
         </div>
 
@@ -569,34 +780,22 @@ function RuleDrawer({ rule, taskTypes, allTags, chains, metadataFields, orderTyp
                   />
                 </div>
 
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-xs text-zinc-400 mb-1.5 font-medium">
-                      Order Type <span className="text-red-400">*</span>
-                    </label>
-                    <select
-                      value={form.orderType}
-                      onChange={(e) => setForm({ ...form, orderType: e.target.value })}
-                      className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
-                    >
-                      {(orderTypes.length > 0 ? orderTypes : []).map((t) => (
-                        <option key={t} value={t}>{t.replace(/_/g, " ")}</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-xs text-zinc-400 mb-1.5 font-medium">
-                      Task Type <span className="text-red-400">*</span>
-                    </label>
-                    <select
-                      value={form.taskTypeId}
-                      onChange={(e) => setForm({ ...form, taskTypeId: e.target.value })}
-                      className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
-                    >
-                      {taskTypes.map((t) => (
-                        <option key={t.id} value={t.id}>{t.label}</option>
-                      ))}
-                    </select>
+                <div>
+                  <label className="block text-xs text-zinc-400 mb-1.5 font-medium">
+                    Polling Interval
+                  </label>
+                  {/*
+                    W3.3 — The polling cadence is a property of the data source,
+                    not the rule. Showing the source's value as read-only here
+                    so authors aren't misled into thinking the rule overrides it.
+                  */}
+                  <div className="px-3 py-2 bg-zinc-800/50 border border-zinc-700 rounded-lg text-sm text-zinc-400 flex items-center justify-between">
+                    <span>
+                      Every <span className="text-zinc-200 font-medium">{selectedSource?.pollingIntervalMinutes ?? "—"} min</span>
+                    </span>
+                    <span className="text-[10px] text-zinc-600">
+                      governed by data source
+                    </span>
                   </div>
                 </div>
 
@@ -665,11 +864,50 @@ function RuleDrawer({ rule, taskTypes, allTags, chains, metadataFields, orderTyp
             )}
 
             {activeTab === "trigger" && (
-              <TriggerBuilder value={trigger} onChange={setTrigger} metadataFields={metadataFields} orderStatuses={orderStatuses} />
+              <>
+                {!dataSourceId && (
+                  <div className="mb-4 flex items-center gap-2 px-3 py-2 bg-amber-500/10 border border-amber-500/30 rounded-lg">
+                    <svg className="w-3.5 h-3.5 text-amber-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                    </svg>
+                    <p className="text-xs text-amber-400">
+                      Select a data source first — the status list will be loaded from your source's schema.
+                    </p>
+                  </div>
+                )}
+                <TriggerBuilder
+                  value={trigger}
+                  onChange={setTrigger}
+                  metadataFields={metadataFields}
+                  sourceKeys={sourceKeys}
+                  orderStatuses={availableStatuses.length > 0 ? availableStatuses : orderStatuses}
+                />
+              </>
             )}
 
             {activeTab === "assignment" && (
               <div className="space-y-6">
+                <div>
+                  <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wider">
+                    Assignment Strategy
+                  </label>
+                  <p className="text-[10px] text-zinc-600 mb-3">
+                    How tasks created by this rule are distributed among eligible agents.
+                  </p>
+                  <select
+                    value={assignmentStrategy}
+                    onChange={(e) => setAssignmentStrategy(e.target.value)}
+                    className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  >
+                    {ASSIGNMENT_STRATEGIES.map((s) => (
+                      <option key={s.value} value={s.value}>{s.label}</option>
+                    ))}
+                  </select>
+                  <p className="text-[10px] text-zinc-500 mt-2 italic">
+                    {ASSIGNMENT_STRATEGIES.find((s) => s.value === assignmentStrategy)?.description}
+                  </p>
+                </div>
+
                 <div>
                   <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wider">
                     Required Skills
@@ -707,7 +945,7 @@ function RuleDrawer({ rule, taskTypes, allTags, chains, metadataFields, orderTyp
                     Escalation Chain
                   </label>
                   <p className="text-[10px] text-zinc-600 mb-3">
-                    When a task from this rule breaches SLA, which escalation chain should fire?
+                    When a task from this rule breaches SLA, which chain should fire?
                   </p>
                   <select
                     value={form.escalationChainId}
@@ -723,6 +961,105 @@ function RuleDrawer({ rule, taskTypes, allTags, chains, metadataFields, orderTyp
                     <p className="text-[10px] text-zinc-600 mt-1.5">No chains defined. Create them in the Escalations section.</p>
                   )}
                 </div>
+              </div>
+            )}
+
+            {activeTab === "source" && (
+              <div className="space-y-5">
+                {/* Step instruction */}
+                <div className="flex items-start gap-3 px-3 py-3 bg-blue-600/10 border border-blue-700/30 rounded-lg">
+                  <svg className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  <p className="text-[11px] text-blue-300 leading-relaxed">
+                    Start by picking the data source this rule monitors. The entity types and statuses below are loaded directly from that source's schema.
+                  </p>
+                </div>
+
+                {/* Data source picker */}
+                <div>
+                  <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wider">
+                    Data Source <span className="text-red-400 normal-case font-normal ml-1">required</span>
+                  </label>
+                  {loadingSources ? (
+                    <div className="text-zinc-500 text-xs py-2">Loading sources…</div>
+                  ) : dataSources.length === 0 ? (
+                    <div className="px-3 py-2 bg-amber-500/10 border border-amber-500/30 rounded-lg text-xs text-amber-400">
+                      No active data sources found. Register one in the Data Sources panel first.
+                    </div>
+                  ) : (
+                    <select
+                      value={dataSourceId}
+                      onChange={(e) => handleSourceSelect(e.target.value)}
+                      className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    >
+                      <option value="">— Select a data source —</option>
+                      {dataSources.map((s) => (
+                        <option key={s.id} value={s.id}>{s.displayName} ({s.sourceId})</option>
+                      ))}
+                    </select>
+                  )}
+
+                  {selectedSource && (
+                    <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-zinc-500">
+                      <span>Table: <code className="bg-zinc-800 px-1 rounded text-zinc-400">{selectedSource.tableReference}</code></span>
+                      <span>Type field: <code className="bg-zinc-800 px-1 rounded text-zinc-400">{selectedSource.typeFieldName}</code></span>
+                      <span>Status field: <code className="bg-zinc-800 px-1 rounded text-zinc-400">{selectedSource.statusFieldName}</code></span>
+                    </div>
+                  )}
+                </div>
+
+                {selectedSource && (
+                  <>
+                    {/* Entity type filter */}
+                    <div>
+                      <label className="block text-xs font-semibold text-zinc-400 mb-1 uppercase tracking-wider">
+                        Filter by Entity Type
+                      </label>
+                      <p className="text-[10px] text-zinc-600 mb-2">Only process entities of these types. Leave empty to match all.</p>
+                      {loadingEnums ? (
+                        <div className="text-zinc-500 text-xs">Loading…</div>
+                      ) : availableTypes.length === 0 ? (
+                        <div className="text-zinc-600 text-xs italic">No enum values found — all types will match</div>
+                      ) : (
+                        <div className="flex flex-wrap gap-2">
+                          {availableTypes.map((type) => (
+                            <button
+                              key={type}
+                              type="button"
+                              onClick={() => toggleType(type)}
+                              className={`text-xs px-3 py-1.5 rounded-full border transition-colors font-medium ${
+                                allowedTypes.includes(type)
+                                  ? "bg-blue-600/25 border-blue-500/50 text-blue-300"
+                                  : "bg-zinc-800 border-zinc-700 text-zinc-500 hover:border-blue-500/40 hover:text-zinc-300"
+                              }`}
+                            >
+                              {allowedTypes.includes(type) && <span className="mr-1">✓</span>}
+                              {type}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                      {allowedTypes.length === 0 && availableTypes.length > 0 && (
+                        <p className="text-[10px] text-zinc-500 mt-1.5">All entity types will be evaluated</p>
+                      )}
+                    </div>
+
+                    {/* Next step nudge */}
+                    <div className="pt-2 flex justify-end">
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab("trigger")}
+                        className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-blue-400 hover:text-blue-300 hover:bg-blue-500/10 rounded-lg transition-colors"
+                      >
+                        Next: Configure Trigger
+                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                        </svg>
+                      </button>
+                    </div>
+                  </>
+                )}
               </div>
             )}
           </div>
@@ -760,6 +1097,62 @@ function RuleDrawer({ rule, taskTypes, allTags, chains, metadataFields, orderTyp
           <button type="button" onClick={onClose} className="px-4 py-2 text-xs text-zinc-400 hover:text-zinc-200 transition-colors">
             Cancel
           </button>
+
+          {/*
+            W5.2 — Simulate. Sends the current form state (unsaved) to the
+            simulator so authors can verify a change before clicking Save.
+            For an EXISTING rule, sends the saved ruleId so dedup info is
+            included in the simulation.
+          */}
+          {onSimulate && (
+            <button
+              type="button"
+              onClick={() => {
+                if (!isCreate && rule) {
+                  onSimulate({ ruleId: rule.id, limit: 100 });
+                  return;
+                }
+                if (!dataSourceId || !(trigger?.statusIn?.length)) {
+                  setError("Pick a data source and at least one status to simulate.");
+                  return;
+                }
+                onSimulate({
+                  rule: {
+                    dataSourceId,
+                    allowedTypes,
+                    allowedStatuses,
+                    triggerType: "TIME",
+                    triggerCondition: trigger,
+                    titleTemplate: form.titleTemplate || "{{patientName}} — {{orderId}}",
+                  },
+                  limit: 100,
+                });
+              }}
+              disabled={saving || !dataSourceId}
+              title={!dataSourceId ? "Pick a data source first" : "Dry-run against last 100 orders — no tasks created"}
+              className="px-4 py-2 bg-blue-600/20 hover:bg-blue-600/30 border border-blue-600/40 text-blue-300 text-xs font-medium rounded-lg disabled:opacity-50 transition-colors"
+            >
+              ▶ Simulate
+            </button>
+          )}
+
+          {/*
+            W3.2 — Save-as-Draft. The rule lands inactive (won't fire) but
+            persisted, so authors can step away and resume. The API skips
+            the per-source status-validation for drafts so partial work
+            (no source-specific status picked yet) can still save.
+          */}
+          {isCreate && (
+            <button
+              type="button"
+              onClick={(e) => submit(e as unknown as React.FormEvent, { asDraft: true })}
+              disabled={saving || !dataSourceId}
+              title={!dataSourceId ? "Pick a data source first" : "Save inactive draft — won't fire until activated"}
+              className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-medium rounded-lg disabled:opacity-50 transition-colors"
+            >
+              {saving ? "Saving…" : "Save as Draft"}
+            </button>
+          )}
           <button
             type="submit"
             form="rule-form"
@@ -797,27 +1190,25 @@ function TriggerSummary({ cond }: { cond: TriggerCondition }) {
 
 export default function TaskRulesPanel() {
   const [rules, setRules] = useState<TaskRule[]>([]);
-  const [taskTypes, setTaskTypes] = useState<TaskType[]>([]);
   const [allTags, setAllTags] = useState<SkillTag[]>([]);
   const [chains, setChains] = useState<EscalationChain[]>([]);
   const [metadataFields, setMetadataFields] = useState<any[]>([]);
-  const [orderTypes, setOrderTypes] = useState<string[]>([]);
   const [orderStatuses, setOrderStatuses] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState<string | null>(null);
   const [drawerRule, setDrawerRule] = useState<TaskRule | "create" | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  // W5.2 — simulator modal target. Either a saved ruleId or an inline rule body.
+  const [simulatorRequest, setSimulatorRequest] = useState<SimRequest | null>(null);
 
   const fetchAll = useCallback(async () => {
     setLoading(true);
     try {
-      const [rulesRes, typesRes, tagsRes, chainsRes, fieldsRes, orderTypesRes, orderStatusesRes] = await Promise.all([
+      const [rulesRes, tagsRes, chainsRes, fieldsRes, orderStatusesRes] = await Promise.all([
         fetch("/api/task-rules"),
-        fetch("/api/task-types"),
         fetch("/api/skill-tags"),
         fetch("/api/escalations"),
         fetch("/api/task-rules/metadata-fields"),
-        fetch("/api/order-types"),
         fetch("/api/order-statuses"),
       ]);
 
@@ -829,12 +1220,8 @@ export default function TaskRulesPanel() {
       } else {
         const rulesData = await rulesRes.json();
         console.log("Task rules response:", rulesData);
-        setRules(rulesData.rules ?? rulesData ?? []);
-      }
-
-      if (typesRes.ok) {
-        const typesData = await typesRes.json();
-        setTaskTypes(typesData.types ?? []);
+        const fetchedRules = (rulesData.rules ?? rulesData ?? []) as TaskRule[];
+        setRules(fetchedRules);
       }
 
       if (tagsRes.ok) {
@@ -850,11 +1237,6 @@ export default function TaskRulesPanel() {
       if (fieldsRes.ok) {
         const fieldsData = await fieldsRes.json();
         setMetadataFields(fieldsData.fields ?? []);
-      }
-
-      if (orderTypesRes.ok) {
-        const orderTypesData = await orderTypesRes.json();
-        setOrderTypes(orderTypesData.orderTypes ?? []);
       }
 
       if (orderStatusesRes.ok) {
@@ -885,9 +1267,11 @@ export default function TaskRulesPanel() {
   }
 
   const activeCount = rules.filter((r) => r.isActive).length;
+  // Group rules by data source display name
   const grouped = rules.reduce((acc, r) => {
-    acc[r.orderType] = acc[r.orderType] ?? [];
-    acc[r.orderType].push(r);
+    const groupKey = r.dataSource?.displayName ?? r.dataSourceId ?? "Unknown Source";
+    acc[groupKey] = acc[groupKey] ?? [];
+    acc[groupKey].push(r);
     return acc;
   }, {} as Record<string, TaskRule[]>);
 
@@ -943,11 +1327,11 @@ export default function TaskRulesPanel() {
         </div>
       ) : (
         <div className="space-y-6">
-          {Object.entries(grouped).map(([orderType, typeRules]) => (
-            <div key={orderType}>
+          {Object.entries(grouped).map(([sourceLabel, typeRules]) => (
+            <div key={sourceLabel}>
               <div className="flex items-center gap-2 mb-3">
-                <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-semibold border ${ORDER_TYPE_COLORS[orderType] ?? "text-zinc-400 bg-zinc-800 border-zinc-700"}`}>
-                  {orderType.replace(/_/g, " ")}
+                <span className="px-2.5 py-0.5 rounded-full text-[10px] font-semibold border text-blue-300 bg-blue-600/10 border-blue-700/40">
+                  {sourceLabel}
                 </span>
                 <span className="text-xs text-zinc-600">{typeRules.length} rules</span>
               </div>
@@ -981,9 +1365,14 @@ export default function TaskRulesPanel() {
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2 flex-wrap">
                             <span className="text-xs font-medium text-zinc-200">{rule.name}</span>
-                            <span className="text-[10px] text-zinc-500 bg-zinc-800 px-1.5 py-0.5 rounded">
-                              {rule.taskType.label}
-                            </span>
+                            {rule.dataSource && (
+                              <span className="text-[10px] text-emerald-400 bg-emerald-900/20 border border-emerald-700/30 px-1.5 py-0.5 rounded-full flex items-center gap-0.5">
+                                <svg className="w-2.5 h-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                  <path strokeLinecap="round" strokeLinejoin="round" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4" />
+                                </svg>
+                                {rule.dataSource.displayName}
+                              </span>
+                            )}
                           </div>
                         </div>
 
@@ -1002,6 +1391,39 @@ export default function TaskRulesPanel() {
                         >
                           <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                             <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                          </svg>
+                        </button>
+
+                        {/* W4.1 — Clone rule. Lands as inactive copy; opens edit drawer for review. */}
+                        <button
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            const res = await fetch(`/api/task-rules/${rule.id}/clone`, { method: "POST" });
+                            const data = await res.json();
+                            if (!res.ok) { alert(data.error ?? "Clone failed"); return; }
+                            await fetchAll();
+                            // Open the new clone in the drawer so author can tweak immediately
+                            setDrawerRule(data.rule);
+                          }}
+                          className="shrink-0 p-1.5 rounded-lg text-zinc-600 hover:text-zinc-300 hover:bg-zinc-800 transition-colors"
+                          title="Clone rule"
+                        >
+                          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                          </svg>
+                        </button>
+
+                        {/* W5.2 — Simulate the saved rule against the last 100 orders. */}
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSimulatorRequest({ ruleId: rule.id, limit: 100 });
+                          }}
+                          className="shrink-0 p-1.5 rounded-lg text-zinc-600 hover:text-blue-300 hover:bg-zinc-800 transition-colors"
+                          title="Simulate — dry-run against recent orders"
+                        >
+                          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                           </svg>
                         </button>
 
@@ -1027,10 +1449,41 @@ export default function TaskRulesPanel() {
 
                       {isExpanded && (
                         <div className="border-t border-zinc-800 px-4 py-3 bg-zinc-900/50 space-y-3">
+                          {/* Data source info */}
+                          {rule.dataSource && (
+                            <div className="flex flex-wrap gap-1.5">
+                              <span className="flex items-center gap-1 text-[10px] bg-emerald-900/30 border border-emerald-700/40 text-emerald-400 px-2 py-0.5 rounded-full">
+                                <svg className="w-2.5 h-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                  <path strokeLinecap="round" strokeLinejoin="round" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4" />
+                                </svg>
+                                {rule.dataSource.displayName}
+                                {rule.allowedTypes.length > 0 && (
+                                  <span className="text-emerald-600">· {rule.allowedTypes.join(", ")}</span>
+                                )}
+                                {rule.allowedStatuses.length > 0 && (
+                                  <span className="text-emerald-600">· {rule.allowedStatuses.join(", ")}</span>
+                                )}
+                              </span>
+                            </div>
+                          )}
                           <div>
                             <div className="text-[10px] text-zinc-600 mb-2 font-semibold uppercase tracking-wider">Trigger Conditions</div>
                             <TriggerSummary cond={rule.triggerCondition} />
                           </div>
+
+                          {/* W5.1 — Rule metrics. Sits above Recent fires so the
+                              author sees aggregate health before drilling into examples. */}
+                          <RuleMetricsPanel ruleId={rule.id} />
+
+                          {/* W3.4 — Recent fires: last 10 tasks this rule created. Lazy fetch on expand. */}
+                          <div>
+                            <div className="text-[10px] text-zinc-600 mb-2 font-semibold uppercase tracking-wider flex items-center justify-between">
+                              <span>Recent fires</span>
+                              <span className="text-zinc-700 normal-case font-normal">last 10</span>
+                            </div>
+                            <RecentFiresPanel ruleId={rule.id} />
+                          </div>
+
                           <div className="flex items-start gap-6 text-xs">
                             <div>
                               <div className="text-[10px] text-zinc-600 mb-1 font-semibold uppercase tracking-wider">Skills</div>
@@ -1069,16 +1522,479 @@ export default function TaskRulesPanel() {
       {drawerRule !== null && (
         <RuleDrawer
           rule={drawerRuleObj}
-          taskTypes={taskTypes}
           allTags={allTags}
           chains={chains}
           metadataFields={metadataFields}
-          orderTypes={orderTypes}
           orderStatuses={orderStatuses}
           onClose={() => setDrawerRule(null)}
           onSaved={fetchAll}
+          onSimulate={(req) => setSimulatorRequest(req)}
         />
       )}
+
+      {/* W5.2 — simulator modal */}
+      {simulatorRequest && (
+        <SimulatorModal request={simulatorRequest} onClose={() => setSimulatorRequest(null)} />
+      )}
+    </div>
+  );
+}
+
+// ── Recent fires panel (W3.4) ────────────────────────────────────────────────
+// Lazily fetches /api/task-rules/{id}/recent-fires when the user expands a
+// rule card, so the rule list never pays for it on first paint.
+function RecentFiresPanel({ ruleId }: { ruleId: string }) {
+  const [fires, setFires] = useState<Array<{
+    taskId: number;
+    entityId: number;
+    title: string;
+    status: string;
+    createdAt: string;
+    isArchived: boolean;
+    assignedToName: string | null;
+  }> | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    fetch(`/api/task-rules/${ruleId}/recent-fires?limit=10`)
+      .then((r) => r.ok ? r.json() : Promise.reject(`HTTP ${r.status}`))
+      .then((d) => { if (!cancelled) setFires(d.fires ?? []); })
+      .catch((e) => { if (!cancelled) setError(String(e)); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [ruleId]);
+
+  if (loading) {
+    return (
+      <div className="text-[11px] text-zinc-600 italic">Loading recent fires…</div>
+    );
+  }
+  if (error) {
+    return <div className="text-[11px] text-red-400">Failed to load: {error}</div>;
+  }
+  if (!fires || fires.length === 0) {
+    return <div className="text-[11px] text-zinc-600">No tasks created yet.</div>;
+  }
+
+  return (
+    <div className="space-y-1">
+      {fires.map((f) => (
+        <div key={f.taskId} className="flex items-center gap-2 text-[11px] text-zinc-400 hover:text-zinc-200 transition-colors">
+          <span className={`shrink-0 w-1.5 h-1.5 rounded-full ${statusDot(f.status)}`} title={f.status} />
+          <span className="font-mono text-[10px] text-zinc-600 shrink-0">#{f.entityId}</span>
+          <span className="truncate">{f.title}</span>
+          <span className="ml-auto shrink-0 text-[10px] text-zinc-600">{relativeTime(f.createdAt)}</span>
+          {f.assignedToName && (
+            <span className="shrink-0 text-[10px] text-zinc-500">→ {f.assignedToName}</span>
+          )}
+          {f.isArchived && (
+            <span className="shrink-0 text-[9px] text-zinc-700">archived</span>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function statusDot(status: string): string {
+  switch (status) {
+    case "COMPLETED": return "bg-emerald-500";
+    case "ASSIGNED":
+    case "IN_PROGRESS": return "bg-blue-500";
+    case "BLOCKED":
+    case "BREACHED": return "bg-red-500";
+    case "CANCELLED": return "bg-zinc-600";
+    default: return "bg-zinc-500";
+  }
+}
+
+function relativeTime(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime();
+  const m = Math.floor(diff / 60000);
+  if (m < 1) return "just now";
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
+
+// ── Rule metrics panel (W5.1) ───────────────────────────────────────────────
+// Per-rule operational stats. Fetches /api/task-rules/{id}/metrics?range=7d
+// when the user expands the card. Surfaces:
+//   - completion / cancellation / breach rates (cancellation == false-positive proxy)
+//   - average minutes-to-complete
+//   - a tiny sparkline of fires-per-day so the author can see "is this rule
+//     trending up or down" at a glance.
+function RuleMetricsPanel({ ruleId }: { ruleId: string }) {
+  const [range, setRange] = useState<"24h" | "7d" | "30d">("7d");
+  const [data, setData] = useState<{
+    totals: { fires: number; completed: number; cancelled: number; breached: number; active: number };
+    ratios: { completionRate: number; cancelRate: number; breachRate: number };
+    avgMinutesToComplete: number | null;
+    firesByDay: Array<{ day: string; count: number }>;
+  } | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    fetch(`/api/task-rules/${ruleId}/metrics?range=${range}`)
+      .then((r) => r.ok ? r.json() : Promise.reject(`HTTP ${r.status}`))
+      .then((d) => { if (!cancelled) setData(d); })
+      .catch((e) => { if (!cancelled) setError(String(e)); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [ruleId, range]);
+
+  return (
+    <div>
+      <div className="text-[10px] text-zinc-600 mb-2 font-semibold uppercase tracking-wider flex items-center justify-between">
+        <span>Metrics</span>
+        <div className="flex gap-1 normal-case font-normal">
+          {(["24h", "7d", "30d"] as const).map((r) => (
+            <button
+              key={r}
+              onClick={() => setRange(r)}
+              className={`text-[10px] px-1.5 py-0.5 rounded transition-colors ${
+                range === r ? "bg-blue-600/30 text-blue-300" : "text-zinc-600 hover:text-zinc-400"
+              }`}
+            >
+              {r}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="text-[11px] text-zinc-600 italic">Loading metrics…</div>
+      ) : error ? (
+        <div className="text-[11px] text-red-400">Failed to load: {error}</div>
+      ) : !data || data.totals.fires === 0 ? (
+        <div className="text-[11px] text-zinc-600">No fires in the last {range}.</div>
+      ) : (
+        <div className="space-y-2">
+          {/* Totals + ratio chips */}
+          <div className="grid grid-cols-5 gap-2 text-[10px]">
+            <Stat label="Fires"     value={data.totals.fires}     />
+            <Stat label="Done"      value={data.totals.completed} hint={`${data.ratios.completionRate}%`} valueClass="text-emerald-400" />
+            <Stat label="Cancelled" value={data.totals.cancelled} hint={`${data.ratios.cancelRate}%`}     valueClass={data.ratios.cancelRate > 20 ? "text-amber-400" : "text-zinc-400"} title={data.ratios.cancelRate > 20 ? "False-positive rate is high — consider tightening the trigger" : undefined} />
+            <Stat label="Breached"  value={data.totals.breached}  hint={`${data.ratios.breachRate}%`}     valueClass={data.totals.breached > 0 ? "text-red-400" : "text-zinc-400"} />
+            <Stat label="Open"      value={data.totals.active}    valueClass="text-blue-400" />
+          </div>
+
+          <div className="flex items-center gap-3 text-[10px] text-zinc-500">
+            {data.avgMinutesToComplete != null && (
+              <span>Avg time to complete: <span className="text-zinc-300">{fmtAvgMins(data.avgMinutesToComplete)}</span></span>
+            )}
+          </div>
+
+          {/* Sparkline — bars normalised to the largest day's count */}
+          {data.firesByDay.length > 1 && (
+            <div className="pt-1">
+              <div className="text-[9px] text-zinc-700 mb-1 uppercase tracking-wider">Fires per day</div>
+              <div className="flex items-end gap-0.5 h-8">
+                {(() => {
+                  const max = Math.max(...data.firesByDay.map((d) => d.count));
+                  return data.firesByDay.map((d) => (
+                    <div
+                      key={d.day}
+                      className="flex-1 bg-blue-500/40 hover:bg-blue-500/70 transition-colors rounded-t"
+                      style={{ height: max > 0 ? `${(d.count / max) * 100}%` : "0%", minHeight: "2px" }}
+                      title={`${d.day}: ${d.count}`}
+                    />
+                  ));
+                })()}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Stat({ label, value, hint, valueClass = "text-zinc-300", title }: {
+  label: string;
+  value: number;
+  hint?: string;
+  valueClass?: string;
+  title?: string;
+}) {
+  return (
+    <div className="bg-zinc-800/40 rounded px-2 py-1.5" title={title}>
+      <div className={`text-xs font-semibold ${valueClass}`}>{value}</div>
+      <div className="text-[9px] text-zinc-600 leading-tight">
+        {label}{hint && <span className="ml-1 text-zinc-700">{hint}</span>}
+      </div>
+    </div>
+  );
+}
+
+function fmtAvgMins(mins: number): string {
+  if (mins < 60) return `${mins.toFixed(1)} min`;
+  const h = Math.floor(mins / 60);
+  const m = Math.round(mins - h * 60);
+  return m === 0 ? `${h}h` : `${h}h ${m}m`;
+}
+
+// ── Simulator Modal (W5.2) ───────────────────────────────────────────────────
+// "Run this rule against the last N orders, show me which would fire and why."
+// Accepts either a saved ruleId OR an inline rule body so authors can simulate
+// edits before clicking Save.
+type SimResult = {
+  entityId: number;
+  orderType: string;
+  orderStatus: string;
+  appointmentTime: string | null;
+  patientName: string | null;
+  storeName: string | null;
+  wouldFire: boolean;
+  wouldDedup: boolean;
+  renderedTitle?: string;
+  reason?: string;
+  failedCheck?: string;
+};
+
+type SimRequest =
+  | { ruleId: string; limit: number }
+  | { rule: {
+      dataSourceId: string;
+      allowedTypes: string[];
+      allowedStatuses: string[];
+      triggerType: "TIME" | "STATUS";
+      triggerCondition: TriggerCondition;
+      titleTemplate: string;
+    }; limit: number };
+
+function SimulatorModal({
+  request,
+  onClose,
+}: {
+  request: SimRequest;
+  onClose: () => void;
+}) {
+  const [data, setData] = useState<{
+    ruleName: string;
+    summary: {
+      sampled: number;
+      availableOrders: number;
+      wouldFire: number;
+      wouldDedup: number;
+      wouldNotFire: number;
+      failedChecks: Record<string, number>;
+    };
+    results: SimResult[];
+  } | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [filter, setFilter] = useState<"all" | "fire" | "skip" | "dedup">("all");
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    fetch("/api/task-rules/simulate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+    })
+      .then(async (r) => {
+        const body = await r.json();
+        if (!r.ok) throw new Error(body?.details?.reason || body?.error || `HTTP ${r.status}`);
+        return body;
+      })
+      .then((d) => { if (!cancelled) setData(d); })
+      .catch((e) => { if (!cancelled) setError(e instanceof Error ? e.message : String(e)); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [JSON.stringify(request)]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Esc to close
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const filtered = data?.results.filter((r) => {
+    if (filter === "all") return true;
+    if (filter === "fire") return r.wouldFire;
+    if (filter === "dedup") return r.wouldDedup;
+    if (filter === "skip") return !r.wouldFire && !r.wouldDedup;
+    return true;
+  }) ?? [];
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70" onClick={onClose}>
+      <div
+        className="w-full max-w-5xl max-h-[90vh] bg-zinc-900 border border-zinc-700 rounded-xl shadow-2xl flex flex-col overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-zinc-700">
+          <div>
+            <h3 className="text-sm font-semibold text-white">Rule Simulator</h3>
+            <p className="text-[10px] text-zinc-500 mt-0.5">
+              Dry-run the rule against recent orders — no tasks are created.
+            </p>
+          </div>
+          <button onClick={onClose} className="p-1.5 rounded-md text-zinc-400 hover:text-white hover:bg-zinc-700 transition-colors">
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-auto">
+          {loading ? (
+            <div className="flex items-center justify-center py-16 text-zinc-400 gap-3">
+              <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+              <span className="text-sm">Simulating against orders…</span>
+            </div>
+          ) : error ? (
+            <div className="px-5 py-8">
+              <div className="text-sm text-red-400 mb-2">Simulation failed</div>
+              <code className="text-[11px] text-zinc-500 break-all">{error}</code>
+            </div>
+          ) : !data ? (
+            <div className="px-5 py-8 text-center text-sm text-zinc-500">No data</div>
+          ) : (
+            <div className="p-5 space-y-4">
+              {/* Summary chips */}
+              <div className="grid grid-cols-4 gap-2">
+                <SummaryStat label="Sampled" value={data.summary.sampled} sub={`of ${data.summary.availableOrders} available`} />
+                <SummaryStat label="Would Fire" value={data.summary.wouldFire} valueClass="text-emerald-400" />
+                <SummaryStat label="Would Dedup" value={data.summary.wouldDedup} valueClass="text-amber-400" sub="already has open task" />
+                <SummaryStat label="Would Skip" value={data.summary.wouldNotFire} valueClass="text-zinc-400" />
+              </div>
+
+              {/* Failed-check breakdown */}
+              {Object.values(data.summary.failedChecks).some((n) => n > 0) && (
+                <div className="bg-zinc-800/40 border border-zinc-700/50 rounded-lg p-3">
+                  <div className="text-[10px] text-zinc-500 uppercase tracking-wider mb-2">Why orders didn't match</div>
+                  <div className="flex flex-wrap gap-2">
+                    {Object.entries(data.summary.failedChecks)
+                      .filter(([, n]) => n > 0)
+                      .sort((a, b) => b[1] - a[1])
+                      .map(([check, n]) => (
+                        <span key={check} className="text-[11px] px-2 py-0.5 bg-zinc-800 border border-zinc-700 rounded text-zinc-300">
+                          {check}: <strong>{n}</strong>
+                        </span>
+                      ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Filter tabs */}
+              <div className="flex items-center gap-2 border-b border-zinc-800">
+                {([
+                  ["all",   `All (${data.results.length})`],
+                  ["fire",  `Would Fire (${data.summary.wouldFire})`],
+                  ["dedup", `Dedup (${data.summary.wouldDedup})`],
+                  ["skip",  `Skip (${data.summary.wouldNotFire})`],
+                ] as const).map(([key, label]) => (
+                  <button
+                    key={key}
+                    onClick={() => setFilter(key)}
+                    className={`px-3 py-1.5 text-xs font-medium border-b-2 transition-colors ${
+                      filter === key
+                        ? "border-blue-500 text-blue-400"
+                        : "border-transparent text-zinc-500 hover:text-zinc-300"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Results table */}
+              {filtered.length === 0 ? (
+                <div className="text-center py-8 text-sm text-zinc-500">No orders in this bucket.</div>
+              ) : (
+                <table className="w-full text-[11px]">
+                  <thead className="text-[10px] text-zinc-500 uppercase tracking-wider">
+                    <tr>
+                      <th className="text-left px-2 py-1.5 w-16"></th>
+                      <th className="text-left px-2 py-1.5">Order</th>
+                      <th className="text-left px-2 py-1.5">Type</th>
+                      <th className="text-left px-2 py-1.5">Status</th>
+                      <th className="text-left px-2 py-1.5">Result</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filtered.map((r) => (
+                      <tr key={r.entityId} className="border-t border-zinc-800/60 hover:bg-zinc-800/40">
+                        <td className="px-2 py-2">
+                          {r.wouldFire ? (
+                            <span className="inline-block px-1.5 py-0.5 text-[9px] rounded bg-emerald-500/20 text-emerald-400 border border-emerald-700/50">FIRE</span>
+                          ) : r.wouldDedup ? (
+                            <span className="inline-block px-1.5 py-0.5 text-[9px] rounded bg-amber-500/20 text-amber-400 border border-amber-700/50">DEDUP</span>
+                          ) : (
+                            <span className="inline-block px-1.5 py-0.5 text-[9px] rounded bg-zinc-700 text-zinc-400">SKIP</span>
+                          )}
+                        </td>
+                        <td className="px-2 py-2 text-zinc-300">
+                          <div className="font-mono">#{r.entityId}</div>
+                          {r.patientName && <div className="text-zinc-500 text-[10px]">{r.patientName}</div>}
+                        </td>
+                        <td className="px-2 py-2 text-zinc-400">{r.orderType}</td>
+                        <td className="px-2 py-2 text-zinc-400">{r.orderStatus}</td>
+                        <td className="px-2 py-2 text-zinc-400">
+                          {r.wouldFire && r.renderedTitle && (
+                            <div className="text-zinc-300 truncate max-w-md" title={r.renderedTitle}>
+                              → {r.renderedTitle}
+                            </div>
+                          )}
+                          {r.wouldDedup && (
+                            <div className="text-amber-400/80 text-[10px]">
+                              already has an open task for this rule
+                            </div>
+                          )}
+                          {r.reason && (
+                            <div className="text-zinc-500 text-[10px]">
+                              {r.failedCheck && <span className="text-zinc-600 mr-1">[{r.failedCheck}]</span>}
+                              {r.reason}
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        {data && (
+          <div className="px-5 py-2 border-t border-zinc-800 text-[10px] text-zinc-600">
+            {data.ruleName} · simulator does not create tasks · pickAssignee not run
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function SummaryStat({ label, value, valueClass = "text-zinc-200", sub }: {
+  label: string;
+  value: number;
+  valueClass?: string;
+  sub?: string;
+}) {
+  return (
+    <div className="bg-zinc-800/50 border border-zinc-700/50 rounded-lg px-3 py-2">
+      <div className={`text-lg font-semibold ${valueClass}`}>{value}</div>
+      <div className="text-[10px] text-zinc-500 leading-tight">{label}</div>
+      {sub && <div className="text-[9px] text-zinc-600 mt-0.5">{sub}</div>}
     </div>
   );
 }

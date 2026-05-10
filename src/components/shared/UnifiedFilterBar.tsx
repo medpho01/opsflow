@@ -6,6 +6,7 @@ interface FilterSchema {
   statuses: string[];
   priorities: string[];
   assignees: Array<{ id: number; name: string; avatar: string | null; isActive: boolean }>;
+  dataSources: Array<{ id: string; sourceId: string; displayName: string }>;
   dateRangePresets: Array<{ label: string; value: string }>;
 }
 
@@ -13,6 +14,7 @@ interface AppliedFilters {
   status?: string[];
   priority?: string[];
   assigneeId?: number[];
+  dataSourceId?: string[];
   dateFrom?: string;
   dateTo?: string;
   slaRiskOnly?: boolean;
@@ -97,6 +99,14 @@ export default function UnifiedFilterBar({
     onFilterChange({ ...appliedFilters, assigneeId: updated.length > 0 ? updated : undefined });
   };
 
+  const handleDataSourceChange = (dataSourceId: string) => {
+    const current = appliedFilters.dataSourceId || [];
+    const updated = current.includes(dataSourceId)
+      ? current.filter((d) => d !== dataSourceId)
+      : [...current, dataSourceId];
+    onFilterChange({ ...appliedFilters, dataSourceId: updated.length > 0 ? updated : undefined });
+  };
+
   const handleSlaRiskToggle = () => {
     onFilterChange({ ...appliedFilters, slaRiskOnly: !appliedFilters.slaRiskOnly });
   };
@@ -110,6 +120,8 @@ export default function UnifiedFilterBar({
       handlePriorityChange(value as string);
     } else if (filterType === "assigneeId" && value) {
       handleAssigneeChange(value as number);
+    } else if (filterType === "dataSourceId" && value) {
+      handleDataSourceChange(value as string);
     } else if (filterType === "dateFrom") {
       onFilterChange({ ...appliedFilters, dateFrom: undefined });
     } else if (filterType === "dateTo") {
@@ -156,6 +168,8 @@ export default function UnifiedFilterBar({
 
   const filterCount = Object.values(appliedFilters).filter((v) => v && (Array.isArray(v) ? v.length > 0 : true)).length;
   const getAssigneeName = (id: number) => schema?.assignees.find((a) => a.id === id)?.name || `Agent ${id}`;
+  const getDataSourceName = (id: string) =>
+    schema?.dataSources.find((d) => d.id === id)?.displayName || id;
 
   return (
     <div className="px-6 py-3 border-b border-zinc-800 space-y-3">
@@ -230,6 +244,26 @@ export default function UnifiedFilterBar({
                 </div>
               </div>
 
+              {/* Data Sources */}
+              {schema.dataSources && schema.dataSources.length > 0 && (
+                <div className="mb-4">
+                  <label className="text-xs font-semibold text-zinc-400 uppercase mb-2 block">Data Source</label>
+                  <div className="space-y-2 max-h-40 overflow-y-auto">
+                    {schema.dataSources.map((ds) => (
+                      <label key={ds.id} className="flex items-center gap-2 text-sm cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={appliedFilters.dataSourceId?.includes(ds.id) || false}
+                          onChange={() => handleDataSourceChange(ds.id)}
+                          className="w-4 h-4 rounded border-zinc-600 bg-zinc-800 text-blue-600"
+                        />
+                        <span className="text-zinc-300">{ds.displayName}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {/* SLA Risk Only */}
               <div className="mb-4">
                 <label className="flex items-center gap-2 text-sm cursor-pointer">
@@ -287,6 +321,18 @@ export default function UnifiedFilterBar({
             <button
               onClick={() => handleRemoveFilter("assigneeId", id)}
               className="ml-1 text-cyan-400 hover:text-cyan-200 font-bold"
+            >
+              ✕
+            </button>
+          </div>
+        ))}
+
+        {appliedFilters.dataSourceId && appliedFilters.dataSourceId.map((id) => (
+          <div key={`ds-${id}`} className="px-2.5 py-1 bg-emerald-500/20 border border-emerald-500/50 rounded text-sm text-emerald-300 flex items-center gap-2">
+            <span>📡 {getDataSourceName(id)}</span>
+            <button
+              onClick={() => handleRemoveFilter("dataSourceId", id)}
+              className="ml-1 text-emerald-400 hover:text-emerald-200 font-bold"
             >
               ✕
             </button>

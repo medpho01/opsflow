@@ -35,17 +35,18 @@ function getDateStr(offset = 0): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
-export default function DailySummaryPanel() {
+export default function DailySummaryPanel({ dataSourceId = null }: { dataSourceId?: string | null }) {
   const [data, setData] = useState<SummaryData | null>(null);
   const [selectedDate, setSelectedDate] = useState(getDateStr(0));
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchSummary = useCallback(async (date: string) => {
+  const fetchSummary = useCallback(async (date: string, ds: string | null) => {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/analytics/summary?date=${date}`);
+      const dsParam = ds ? `&dataSourceId=${encodeURIComponent(ds)}` : "";
+      const res = await fetch(`/api/analytics/summary?date=${date}${dsParam}`);
       if (!res.ok) throw new Error("Failed to load summary");
       setData(await res.json());
     } catch (e) {
@@ -55,7 +56,7 @@ export default function DailySummaryPanel() {
     }
   }, []);
 
-  useEffect(() => { fetchSummary(selectedDate); }, [selectedDate, fetchSummary]);
+  useEffect(() => { fetchSummary(selectedDate, dataSourceId); }, [selectedDate, dataSourceId, fetchSummary]);
 
   const quickDates = [
     { label: "Today", value: getDateStr(0) },

@@ -24,6 +24,11 @@ export interface DatabaseSourceConfig {
   metadataFieldMapping?: Record<string, string>; // Maps output names to DB column names
 }
 
+/** Double-quote a PostgreSQL identifier (table or column name) */
+function qi(ident: string): string {
+  return `"${ident.replace(/"/g, '""')}"`;
+}
+
 export class DatabaseSourceHandler implements ISourceHandler {
   private config: DatabaseSourceConfig;
 
@@ -121,38 +126,25 @@ export class DatabaseSourceHandler implements ISourceHandler {
   }
 
   /**
-   * Sync task status back to the source table
+   * Sync task status back to the source table.
+   *
+   * Intentional no-op. Source databases (notably labstack's `public` schema)
+   * are READ-ONLY from OpsFlow. The previous implementation issued
+   * `UPDATE <table> SET updated_at = NOW()` on task completion, which
+   * mutated the source row. That has been removed; OpsFlow records all
+   * task lifecycle facts on its own side (taskos.task_history,
+   * taskos.tasks). If a future feature genuinely needs to push state
+   * back, do it through a sanctioned external API — never raw SQL into
+   * the source schema.
    */
   async syncTaskStatusToSource(
-    taskId: number,
-    sourceEntityId: number | string,
-    newStatus: string,
-    context: Record<string, unknown>
+    _taskId: number,
+    _sourceEntityId: number | string,
+    _newStatus: string,
+    _context: Record<string, unknown>
   ): Promise<void> {
-    try {
-      const [schema, table] = this.config.tableReference.split(".");
-
-      // For now, only update on completion
-      if (newStatus === "COMPLETED") {
-        const updateQuery = `
-          UPDATE ${this.config.tableReference}
-          SET updated_at = NOW()
-          WHERE ${this.config.primaryKeyField} = ${Number(sourceEntityId)}
-        `;
-
-        await prisma.$executeRawUnsafe(updateQuery);
-
-        console.log(
-          `[DatabaseSourceHandler] Synced task #${taskId} (status: ${newStatus}) to ${this.config.sourceId} entity #${sourceEntityId}`
-        );
-      }
-    } catch (error) {
-      console.error(
-        `[DatabaseSourceHandler] Error syncing task #${taskId} to ${this.config.sourceId} entity #${sourceEntityId}:`,
-        error
-      );
-      throw error;
-    }
+    // no-op by design — see docblock
+    return;
   }
 
   /**
@@ -197,16 +189,16 @@ export class DatabaseSourceHandler implements ISourceHandler {
     try {
       // Fetch distinct type and status values
       const typesQuery = `
-        SELECT DISTINCT ${this.config.typeFieldName} as type
+        SELECT DISTINCT ${qi(this.config.typeFieldName)} as type
         FROM ${this.config.tableReference}
-        WHERE ${this.config.typeFieldName} IS NOT NULL
+        WHERE ${qi(this.config.typeFieldName)} IS NOT NULL
         LIMIT 100
       `;
 
       const statusesQuery = `
-        SELECT DISTINCT ${this.config.statusFieldName} as status
+        SELECT DISTINCT ${qi(this.config.statusFieldName)} as status
         FROM ${this.config.tableReference}
-        WHERE ${this.config.statusFieldName} IS NOT NULL
+        WHERE ${qi(this.config.statusFieldName)} IS NOT NULL
         LIMIT 100
       `;
 

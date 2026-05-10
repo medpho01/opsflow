@@ -56,7 +56,7 @@ export async function DELETE(
   const body = await request.json();
   const levelId = parseInt(body.levelId, 10);
 
-  await prisma.escalationLevel.delete({ where: { id: levelId, chainId } });
+  await prisma.escalationLevel.delete({ where: { id: levelId } });
 
   // Re-sequence remaining levels
   const remaining = await prisma.escalationLevel.findMany({

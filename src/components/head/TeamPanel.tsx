@@ -1,12 +1,18 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import ScheduleTab from "@/components/roster/ScheduleTab";
 
 interface Store {
   id: number;
   storeName: string;
   city?: string | null;
+}
+
+interface DataSource {
+  id: string;
+  sourceId: string;
+  displayName: string;
 }
 
 interface TeamMember {
@@ -22,19 +28,138 @@ interface TeamMember {
   storeId: number;
   stores: number[];
   storeCount: number;
-  orderTypes: { orderType: string; assignedAt: string }[];
-  orderTypeCount: number;
+  capabilities: { dataSourceId: string; dataSource?: DataSource; assignedAt: string }[];
+  capabilityCount: number;
   teamMember?: {
     id: number;
     maxConcurrentTasks: number;
     storeAssignments: { storeId: number }[];
     dailyRosters: { status: string; date: string; updatedAt: string }[];
-    orderTypes?: { orderType: string; assignedAt: string }[];
+    capabilities?: { dataSourceId: string; dataSource?: DataSource; assignedAt: string }[];
     skills?: Array<{ skillTag: { id: number; name: string; label: string } }>;
   };
   dailyRosters?: { status: string; date: string; updatedAt: string }[];
   rosterStatus?: string;
   hasException?: boolean;
+}
+
+// ── Store filter dropdown ─────────────────────────────────────────────────
+// Replaces the native <select> in the Team header so the popover matches
+// the rest of the app (dark zinc bg, blue ring, custom panel) instead of
+// rendering with the OS-native select chrome. Searchable because the
+// stores list is ~80 entries long.
+function StoreFilterDropdown({
+  stores,
+  value,
+  onChange,
+}: {
+  stores: { id: number; storeName: string; city?: string | null }[];
+  value: number | null;
+  onChange: (v: number | null) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  // Outside-click closes the popover. Mousedown rather than click so a click
+  // inside the popover doesn't race against the outside-click teardown.
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
+
+  // Esc to close
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open]);
+
+  const selected = value !== null ? stores.find((s) => s.id === value) : null;
+  const lc = search.trim().toLowerCase();
+  const filtered = lc
+    ? stores.filter((s) => (s.storeName ?? "").toLowerCase().includes(lc) || (s.city ?? "").toLowerCase().includes(lc))
+    : stores;
+
+  return (
+    <div ref={wrapRef} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="flex items-center gap-2 px-3 py-1.5 bg-zinc-900 border border-zinc-700 text-zinc-300 text-xs rounded-lg hover:bg-zinc-800 transition-colors min-w-[10rem] justify-between"
+        title={selected ? `Filtered to ${selected.storeName}` : "Filter team to one store"}
+      >
+        <span className="truncate">{selected ? selected.storeName : "All stores"}</span>
+        <svg className={`w-3 h-3 text-zinc-500 transition-transform ${open ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+
+      {open && (
+        <div className="absolute right-0 top-full mt-1 w-72 bg-zinc-900 border border-zinc-700 rounded-lg shadow-2xl z-50 overflow-hidden">
+          <div className="p-2 border-b border-zinc-800">
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search stores…"
+              autoFocus
+              className="w-full px-2 py-1.5 bg-zinc-800 border border-zinc-700 rounded text-xs text-white placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+          </div>
+          <div className="max-h-64 overflow-y-auto py-1">
+            <button
+              type="button"
+              onClick={() => { onChange(null); setOpen(false); setSearch(""); }}
+              className={`w-full text-left px-3 py-1.5 text-xs flex items-center justify-between hover:bg-zinc-800 transition-colors ${value === null ? "text-blue-400" : "text-zinc-300"}`}
+            >
+              <span>All stores</span>
+              {value === null && <span className="text-blue-500">✓</span>}
+            </button>
+            <div className="border-t border-zinc-800/60 my-1" />
+            {filtered.length === 0 ? (
+              <div className="px-3 py-2 text-[11px] text-zinc-600 italic">No stores match "{search}"</div>
+            ) : (
+              filtered.map((s) => (
+                <button
+                  key={s.id}
+                  type="button"
+                  onClick={() => { onChange(s.id); setOpen(false); setSearch(""); }}
+                  className={`w-full text-left px-3 py-1.5 text-xs flex items-center justify-between hover:bg-zinc-800 transition-colors ${value === s.id ? "text-blue-400" : "text-zinc-300"}`}
+                >
+                  <span className="truncate">
+                    {s.storeName}
+                    {s.city && <span className="text-zinc-600 ml-1.5">· {s.city}</span>}
+                  </span>
+                  {value === s.id && <span className="text-blue-500 ml-2">✓</span>}
+                </button>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Date helpers ──────────────────────────────────────────────────────────
+// Heatmaps render lots of dates inline; format DD/MM for column labels and
+// DD/MM/YYYY for range headers. Both work on ISO YYYY-MM-DD strings (which
+// is what the API returns) so there's no Date-object timezone surprise.
+function fmtDdMm(iso: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
+  return m ? `${m[3]}/${m[2]}` : iso;
+}
+function fmtDdMmYyyy(iso: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : iso;
 }
 
 const roleLabel: Record<string, string> = { OPS_AGENT: "Ops Agent", STORE_ADMIN: "Store Admin" };
@@ -51,13 +176,15 @@ function EditDrawer({
   stores,
   onClose,
   onSaved,
+  onDeleted,
 }: {
   member: TeamMember;
   stores: Store[];
   onClose: () => void;
   onSaved: () => void;
+  onDeleted: () => void;
 }) {
-  const [activeTab, setActiveTab] = useState<"profile" | "order-types" | "stores" | "schedule">("profile");
+  const [activeTab, setActiveTab] = useState<"profile" | "sources" | "stores" | "schedule">("profile");
   const [form, setForm] = useState({
     name: member.name,
     email: member.email,
@@ -70,23 +197,34 @@ function EditDrawer({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+  const [deleteConfirm, setDeleteConfirm] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   const [assignedStoreIds, setAssignedStoreIds] = useState<Set<number>>(
     new Set(member.stores ?? [])
   );
-  const [assignedOrderTypes, setAssignedOrderTypes] = useState<Set<string>>(
-    new Set(member.orderTypes?.map((ot) => ot.orderType) ?? [])
+  const [assignedCapabilities, setAssignedCapabilities] = useState<Set<string>>(
+    new Set(member.capabilities?.map((c) => c.dataSourceId) ?? [])
   );
+  const [allSources, setAllSources] = useState<DataSource[]>([]);
 
   const [currentSchedule, setCurrentSchedule] = useState<any[]>([]);
+
+  // Fetch available data sources for Sources tab
+  useEffect(() => {
+    fetch("/api/data-sources")
+      .then((r) => r.json())
+      .then((d) => { if (d.dataSources) setAllSources(d.dataSources); })
+      .catch(() => {});
+  }, []);
 
   // Sync state when member prop changes (e.g., after API refresh)
   useEffect(() => {
     setAssignedStoreIds(new Set(member.stores ?? []));
-    setAssignedOrderTypes(
-      new Set(member.orderTypes?.map((ot) => ot.orderType) ?? [])
+    setAssignedCapabilities(
+      new Set(member.capabilities?.map((c) => c.dataSourceId) ?? [])
     );
-  }, [member.userId, member.stores, member.orderTypes]);
+  }, [member.userId, member.stores, member.capabilities]);
 
   // Auto-dismiss success message after 2.5 seconds
   useEffect(() => {
@@ -119,52 +257,36 @@ function EditDrawer({
       const data = await res.json();
       if (!res.ok) { setError(data.error ?? "Profile save failed"); return; }
 
-      // 2. Save store assignments (get current, then sync)
-      if (member.stores && member.stores.length > 0) {
-        const currentStores = new Set(member.stores);
-        const toAdd = Array.from(assignedStoreIds).filter(id => !currentStores.has(id));
-        const toRemove = Array.from(currentStores).filter(id => !assignedStoreIds.has(id));
-
-        for (const storeId of toAdd) {
-          const storeRes = await fetch(`/api/team/${member.userId}/stores`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ storeId }),
-          });
-          if (!storeRes.ok) { setError("Failed to add store"); return; }
-        }
-
-        for (const storeId of toRemove) {
-          const storeRes = await fetch(`/api/team/${member.userId}/stores`, {
-            method: "DELETE",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ storeId }),
-          });
-          if (!storeRes.ok) { setError("Failed to remove store"); return; }
-        }
+      // 2. Save store assignments — single PUT replaces entire set atomically
+      {
+        const storeRes = await fetch(`/api/team/${member.userId}/stores`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ storeIds: Array.from(assignedStoreIds) }),
+        });
+        if (!storeRes.ok) { setError("Failed to save store assignments"); return; }
       }
 
-      // 3. Save order type assignments (get current, then sync)
-      if (member.orderTypes && member.orderTypes.length > 0) {
-        const currentOrderTypes = new Set(member.orderTypes.map(ot => ot.orderType));
-        const toAdd = Array.from(assignedOrderTypes).filter(ot => !currentOrderTypes.has(ot));
-        const toRemove = Array.from(currentOrderTypes).filter(ot => !assignedOrderTypes.has(ot));
+      // 3. Save data source capability assignments (sync)
+      {
+        const currentCaps = new Set(member.capabilities?.map(c => c.dataSourceId) ?? []);
+        const toAdd = Array.from(assignedCapabilities).filter(id => !currentCaps.has(id));
+        const toRemove = Array.from(currentCaps).filter(id => !assignedCapabilities.has(id));
 
-        for (const orderType of toAdd) {
-          const otRes = await fetch(`/api/team/${member.userId}/order-types`, {
+        for (const dataSourceId of toAdd) {
+          const capRes = await fetch(`/api/team/${member.userId}/order-types`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ orderType }),
+            body: JSON.stringify({ dataSourceId }),
           });
-          if (!otRes.ok) { setError("Failed to add order type"); return; }
+          if (!capRes.ok) { setError("Failed to add data source"); return; }
         }
 
-        for (const orderType of toRemove) {
-          const otRes = await fetch(`/api/team/${member.userId}/order-types/${orderType}`, {
+        for (const dataSourceId of toRemove) {
+          const capRes = await fetch(`/api/team/${member.userId}/order-types/${dataSourceId}`, {
             method: "DELETE",
-            headers: { "Content-Type": "application/json" },
           });
-          if (!otRes.ok) { setError("Failed to remove order type"); return; }
+          if (!capRes.ok) { setError("Failed to remove data source"); return; }
         }
       }
 
@@ -190,6 +312,45 @@ function EditDrawer({
     }
   }
 
+  // ── Quick deactivate (no drawer close, just toggles isActive) ───
+  async function deactivateAccount() {
+    setError(""); setSaving(true);
+    try {
+      const res = await fetch(`/api/team/${member.userId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ isActive: false }),
+      });
+      const data = await res.json();
+      if (!res.ok) { setError(data.error ?? "Failed to deactivate"); return; }
+      setForm((f) => ({ ...f, isActive: false }));
+      setSuccess("Account deactivated");
+      onSaved();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  // ── Permanent delete ─────────────────────────────────────────
+  async function deleteMember() {
+    setDeleting(true); setError("");
+    let deleted = false;
+    try {
+      const res = await fetch(`/api/team/${member.userId}`, { method: "DELETE" });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error ?? "Delete failed");
+        setDeleteConfirm(false);
+        return;
+      }
+      deleted = true;
+    } finally {
+      setDeleting(false);
+    }
+    // Call onDeleted AFTER finally so state is clean before unmount
+    if (deleted) onDeleted();
+  }
+
   // ── Store assignment toggle (draft only, no API call) ────────
   function toggleStore(storeId: number, has: boolean) {
     const newSet = new Set(assignedStoreIds);
@@ -199,13 +360,13 @@ function EditDrawer({
     // Changes will be saved when "Save Changes" button is clicked
   }
 
-  // ── Order type toggle (draft only, no API call) ──────────────
-  function toggleOrderType(orderType: string) {
-    const has = assignedOrderTypes.has(orderType);
-    const newSet = new Set(assignedOrderTypes);
-    if (has) newSet.delete(orderType);
-    else newSet.add(orderType);
-    setAssignedOrderTypes(newSet);
+  // ── Capability toggle (draft only, no API call) ──────────────
+  function toggleCapability(dataSourceId: string) {
+    const has = assignedCapabilities.has(dataSourceId);
+    const newSet = new Set(assignedCapabilities);
+    if (has) newSet.delete(dataSourceId);
+    else newSet.add(dataSourceId);
+    setAssignedCapabilities(newSet);
     // Changes will be saved when "Save Changes" button is clicked
   }
 
@@ -248,7 +409,7 @@ function EditDrawer({
         <div className="px-4 py-3 border-b border-zinc-800 flex gap-2 overflow-x-auto bg-zinc-800/30">
           {[
             { id: "profile", label: "Profile" },
-            { id: "order-types", label: "Order Types" },
+            { id: "sources", label: "Sources" },
             { id: "stores", label: "Stores" },
             { id: "schedule", label: "Schedule" },
           ].map((tab) => (
@@ -349,37 +510,122 @@ function EditDrawer({
                 </div>
               </div>
 
+              {/* Danger Zone */}
+              <div className="border border-red-500/20 rounded-lg p-4 bg-red-500/5">
+                <h3 className="text-xs font-semibold text-red-400/80 uppercase tracking-wider mb-3">Danger Zone</h3>
+                <div className="space-y-2">
+                  {/* Deactivate — only show if currently active */}
+                  {form.isActive && (
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <div className="text-xs font-medium text-zinc-300">Deactivate Account</div>
+                        <div className="text-[10px] text-zinc-500">Block login without deleting data</div>
+                      </div>
+                      <button
+                        onClick={deactivateAccount}
+                        disabled={saving}
+                        className="px-3 py-1.5 text-xs bg-zinc-800 hover:bg-amber-500/20 text-amber-400 border border-amber-500/30 rounded-lg transition-colors disabled:opacity-50"
+                      >
+                        Deactivate
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Delete */}
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="text-xs font-medium text-zinc-300">Delete Member</div>
+                      <div className="text-[10px] text-zinc-500">Permanently remove account and all data</div>
+                    </div>
+                    {deleteConfirm ? (
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[10px] text-red-400">Sure?</span>
+                        <button
+                          onClick={deleteMember}
+                          disabled={deleting}
+                          className="px-2.5 py-1 text-xs bg-red-600 hover:bg-red-500 text-white rounded transition-colors disabled:opacity-50"
+                        >
+                          {deleting ? "Deleting…" : "Yes, Delete"}
+                        </button>
+                        <button
+                          onClick={() => setDeleteConfirm(false)}
+                          disabled={deleting}
+                          className="px-2.5 py-1 text-xs bg-zinc-700 hover:bg-zinc-600 text-zinc-300 rounded transition-colors"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => setDeleteConfirm(true)}
+                        className="px-3 py-1.5 text-xs bg-zinc-800 hover:bg-red-500/20 text-red-400 border border-red-500/30 rounded-lg transition-colors"
+                      >
+                        Delete
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+
             </>
           )}
 
           {/* ORDER TYPES TAB */}
-          {activeTab === "order-types" && (
+          {activeTab === "sources" && (
             <div>
-              <h3 className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-3">Order Types</h3>
-              <p className="text-xs text-zinc-500 mb-4">Select which order types this team member can handle</p>
-              <div className="flex flex-wrap gap-2">
-                {["HOME_SAMPLE", "CENTER_VISIT", "INJECTION"].map((orderType) => (
-                  <button
-                    key={orderType}
-                    onClick={() => toggleOrderType(orderType)}
-                    className={`text-xs px-2.5 py-1 rounded-full border transition-colors font-medium ${
-                      assignedOrderTypes.has(orderType)
-                        ? "bg-green-600/20 border-green-500/40 text-green-300 hover:bg-red-500/20 hover:border-red-500/40 hover:text-red-300"
-                        : "bg-zinc-800 border-zinc-700 text-zinc-500 hover:border-zinc-600 hover:text-zinc-300"
-                    }`}
-                  >
-                    {assignedOrderTypes.has(orderType) ? "✓ " : "+ "}{orderType}
-                  </button>
-                ))}
-              </div>
+              <h3 className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-3">Data Sources</h3>
+              <p className="text-xs text-zinc-500 mb-4">Select which data sources this member can handle tasks from</p>
+              {allSources.length === 0 ? (
+                <p className="text-xs text-zinc-600">No data sources configured</p>
+              ) : (
+                <div className="flex flex-wrap gap-2">
+                  {allSources.map((source) => (
+                    <button
+                      key={source.id}
+                      onClick={() => toggleCapability(source.id)}
+                      className={`text-xs px-2.5 py-1 rounded-full border transition-colors font-medium ${
+                        assignedCapabilities.has(source.id)
+                          ? "bg-green-600/20 border-green-500/40 text-green-300 hover:bg-red-500/20 hover:border-red-500/40 hover:text-red-300"
+                          : "bg-zinc-800 border-zinc-700 text-zinc-500 hover:border-zinc-600 hover:text-zinc-300"
+                      }`}
+                    >
+                      {assignedCapabilities.has(source.id) ? "✓ " : "+ "}{source.displayName}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           )}
 
           {/* STORES TAB */}
           {activeTab === "stores" && (
             <div>
-              <h3 className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-3">Store Access</h3>
-              <p className="text-xs text-zinc-500 mb-4">Assign this team member to stores</p>
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">Store Access</h3>
+                {stores.length > 0 && (
+                  <button
+                    onClick={() => {
+                      const allSelected = stores.every((s) => assignedStoreIds.has(s.id));
+                      if (allSelected) {
+                        setAssignedStoreIds(new Set());
+                      } else {
+                        setAssignedStoreIds(new Set(stores.map((s) => s.id)));
+                      }
+                    }}
+                    className="text-[11px] text-blue-400 hover:text-blue-300 transition-colors"
+                  >
+                    {stores.every((s) => assignedStoreIds.has(s.id)) ? "Deselect All" : "Select All"}
+                  </button>
+                )}
+              </div>
+              <p className="text-xs text-zinc-500 mb-4">
+                Assign this team member to stores
+                {stores.length > 0 && (
+                  <span className="ml-1.5 text-zinc-600">
+                    ({assignedStoreIds.size}/{stores.length} selected)
+                  </span>
+                )}
+              </p>
               {stores.length === 0 ? (
                 <p className="text-xs text-zinc-600">No stores configured yet</p>
               ) : (
@@ -450,11 +696,16 @@ export default function TeamPanel() {
   const [selectedForException, setSelectedForException] = useState<{ member: TeamMember; action: "leave" | "sick" | "off" } | null>(null);
   const [exceptionNote, setExceptionNote] = useState("");
   const [exceptionLoading, setExceptionLoading] = useState(false);
+  // W2 — store-first lens. `null` = "All stores" (no filter).
+  const [storeFilter, setStoreFilter] = useState<number | null>(null);
 
   const fetchAll = useCallback(async () => {
     try {
+      const teamUrl = storeFilter !== null
+        ? `/api/team?storeId=${storeFilter}`
+        : "/api/team";
       const [teamRes, storeRes] = await Promise.all([
-        fetch("/api/team"),
+        fetch(teamUrl),
         fetch("/api/stores"),
       ]);
       const [teamData, storeData] = await Promise.all([
@@ -466,7 +717,7 @@ export default function TeamPanel() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [storeFilter]);
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
 
@@ -623,9 +874,20 @@ export default function TeamPanel() {
       <div className="px-6 pt-5 pb-4 border-b border-zinc-800 flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-base font-semibold text-white">Team</h1>
-          <p className="text-xs text-zinc-500 mt-0.5">{members.length} members</p>
+          <p className="text-xs text-zinc-500 mt-0.5">
+            {members.length} {storeFilter !== null ? "members at this store" : "members"}
+          </p>
         </div>
         <div className="flex items-center gap-3">
+          {/* W2 — store-first lens. Custom dropdown matches the rest of the app
+              (the previous native <select> rendered with OS-native chrome which
+              looked out-of-place against the dark theme). Searchable because the
+              store list is long. */}
+          <StoreFilterDropdown
+            stores={stores}
+            value={storeFilter}
+            onChange={setStoreFilter}
+          />
           <button
             onClick={() => setShowAddForm(!showAddForm)}
             className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium rounded-lg transition-colors"
@@ -639,20 +901,61 @@ export default function TeamPanel() {
       </div>
 
       <div className="flex-1 overflow-auto px-6 py-5">
-        {/* Roster Analytics */}
-        {!loading && members.length > 0 && (
-          <div className="grid grid-cols-2 gap-2 mb-5">
-            {[
-              { label: "Active", status: "ACTIVE", color: "bg-green-600/20 border-green-600/30 text-green-400", count: members.filter((m) => m.rosterStatus === "ACTIVE").length },
-              { label: "Off", status: "OFF", color: "bg-zinc-600/20 border-zinc-600/30 text-zinc-400", count: members.filter((m) => m.rosterStatus === "OFF").length },
-            ].map((item) => (
-              <div key={item.status} className={`${item.color} border rounded-lg p-3 text-center`}>
-                <div className="text-xl font-semibold">{item.count}</div>
-                <div className="text-xs mt-1">{item.label}</div>
+        {/* W4 — Performance leaderboard (collapsed by default; lives inline so heads
+            don't have to bounce to Analytics) */}
+        {!loading && members.length > 0 && <LeaderboardPanel />}
+
+        {/* W5 — Weekly heatmap (agents × days). Shows scheduled coverage and exceptions
+            in one view; flags coverage gaps and low-coverage days. */}
+        {!loading && members.length > 0 && <WeeklyHeatmap />}
+
+        {/* W5b — Coverage by hour. Answers "is anyone working at 7pm Tuesday?".
+            Hour-of-day × day grid with concurrent-agent counts so the head can
+            spot intra-day gaps when planning shift patterns. */}
+        {!loading && members.length > 0 && <CoverageHeatmap />}
+
+        {/* Roster + Capacity Analytics */}
+        {!loading && members.length > 0 && (() => {
+          // W3 — team-wide capacity summary so heads can balance load at a glance.
+          const activeMembers = members.filter((m) => m.rosterStatus === "ACTIVE");
+          const totalLoad = members.reduce((sum, m) => sum + (m.currentLoad ?? 0), 0);
+          const totalCapacity = activeMembers.reduce((sum, m) => sum + (m.maxConcurrentTasks ?? 5), 0);
+          const utilization = totalCapacity > 0 ? Math.round((totalLoad / totalCapacity) * 100) : 0;
+          const nearCapacity = members.filter((m) => {
+            const cap = m.maxConcurrentTasks ?? 5;
+            return cap > 0 && (m.currentLoad ?? 0) / cap >= 0.8;
+          }).length;
+
+          return (
+            <div className="grid grid-cols-4 gap-2 mb-5">
+              <div className="bg-green-600/20 border border-green-600/30 text-green-400 rounded-lg p-3 text-center">
+                <div className="text-xl font-semibold">{activeMembers.length}</div>
+                <div className="text-xs mt-1">Active now</div>
               </div>
-            ))}
-          </div>
-        )}
+              <div className="bg-zinc-600/20 border border-zinc-600/30 text-zinc-400 rounded-lg p-3 text-center">
+                <div className="text-xl font-semibold">
+                  {members.filter((m) => m.rosterStatus === "OFF").length}
+                </div>
+                <div className="text-xs mt-1">Off</div>
+              </div>
+              <div className={`${
+                utilization >= 80 ? "bg-red-600/20 border-red-600/30 text-red-400" :
+                utilization >= 60 ? "bg-amber-600/20 border-amber-600/30 text-amber-400" :
+                "bg-blue-600/20 border-blue-600/30 text-blue-400"
+              } border rounded-lg p-3 text-center`} title={`${totalLoad} open tasks across ${totalCapacity} active capacity`}>
+                <div className="text-xl font-semibold">{utilization}%</div>
+                <div className="text-xs mt-1">Team utilization</div>
+                <div className="text-[10px] opacity-70 mt-0.5">{totalLoad} / {totalCapacity}</div>
+              </div>
+              <div className={`${
+                nearCapacity > 0 ? "bg-amber-600/20 border-amber-600/30 text-amber-400" : "bg-zinc-600/20 border-zinc-600/30 text-zinc-400"
+              } border rounded-lg p-3 text-center`} title="Members at ≥80% of their max-concurrent-tasks">
+                <div className="text-xl font-semibold">{nearCapacity}</div>
+                <div className="text-xs mt-1">Near capacity</div>
+              </div>
+            </div>
+          );
+        })()}
 
         {/* Add member form */}
         {showAddForm && (
@@ -890,7 +1193,584 @@ export default function TeamPanel() {
           stores={stores}
           onClose={() => setEditMember(null)}
           onSaved={onSaved}
+          onDeleted={() => { setEditMember(null); fetchAll(); }}
         />
+      )}
+    </div>
+  );
+}
+
+// ── Leaderboard Panel (W4) ───────────────────────────────────────────────────
+// Per-agent performance ranking surfaced INSIDE the Team page (not buried in
+// Analytics). Collapsible — defaults closed so the team grid stays the
+// primary content; opens when the head wants to compare/coach.
+type LeaderboardEntry = {
+  userId: number;
+  name: string;
+  role: string;
+  totalAssigned: number;
+  completed: number;
+  cancelled: number;
+  breached: number;
+  active: number;
+  slaCompliance: number | null;
+  avgMinutesToComplete: number | null;
+  currentLoad: number;
+  maxConcurrentTasks: number;
+  utilizationPct: number;
+  rank: { byCompleted: number | null; bySlaCompliance: number | null; byVolume: number | null };
+};
+
+export function LeaderboardPanel() {
+  const [open, setOpen] = useState(false);
+  const [range, setRange] = useState<"24h" | "7d" | "30d">("7d");
+  const [sortBy, setSortBy] = useState<"completed" | "sla" | "load">("completed");
+  const [data, setData] = useState<LeaderboardEntry[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    setLoading(true); setError(null);
+    fetch(`/api/team/leaderboard?range=${range}`)
+      .then((r) => r.ok ? r.json() : Promise.reject(`HTTP ${r.status}`))
+      .then((d) => { if (!cancelled) setData(d.entries ?? []); })
+      .catch((e) => { if (!cancelled) setError(String(e)); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [open, range]);
+
+  const sorted = [...data].sort((a, b) => {
+    if (sortBy === "completed") return b.completed - a.completed;
+    if (sortBy === "load")      return b.utilizationPct - a.utilizationPct;
+    // sla: nulls last
+    const av = a.slaCompliance ?? -1;
+    const bv = b.slaCompliance ?? -1;
+    return bv - av;
+  });
+
+  return (
+    <div className="mb-5 border border-zinc-800 rounded-lg bg-zinc-900/40">
+      <button
+        onClick={() => setOpen(!open)}
+        className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-zinc-800/40 transition-colors"
+      >
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-semibold text-white">Performance leaderboard</span>
+          <span className="text-[10px] text-zinc-500">range, sort, and ranks per agent</span>
+        </div>
+        <svg className={`w-4 h-4 text-zinc-500 transition-transform ${open ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+
+      {open && (
+        <div className="border-t border-zinc-800 p-4 space-y-3">
+          <div className="flex items-center justify-between gap-3 text-xs flex-wrap">
+            <div className="flex gap-1">
+              {(["24h","7d","30d"] as const).map((r) => (
+                <button
+                  key={r}
+                  onClick={() => setRange(r)}
+                  className={`px-2 py-1 rounded text-[11px] transition-colors ${range===r ? "bg-blue-600 text-white" : "bg-zinc-800 text-zinc-400 hover:text-zinc-200"}`}
+                >{r}</button>
+              ))}
+            </div>
+            <div className="flex gap-1">
+              <span className="text-zinc-600 text-[10px] uppercase tracking-wider self-center mr-1">Sort</span>
+              {([["completed","Completed"],["sla","SLA"],["load","Load %"]] as const).map(([k, l]) => (
+                <button
+                  key={k}
+                  onClick={() => setSortBy(k)}
+                  className={`px-2 py-1 rounded text-[11px] transition-colors ${sortBy===k ? "bg-zinc-700 text-white" : "bg-zinc-800 text-zinc-400 hover:text-zinc-200"}`}
+                >{l}</button>
+              ))}
+            </div>
+          </div>
+
+          {loading ? (
+            <div className="text-[11px] text-zinc-600 italic py-4 text-center">Loading…</div>
+          ) : error ? (
+            <div className="text-[11px] text-red-400 py-4 text-center">Failed: {error}</div>
+          ) : sorted.length === 0 ? (
+            <div className="text-[11px] text-zinc-600 py-4 text-center">No team activity in the last {range}.</div>
+          ) : (
+            <table className="w-full text-[11px]">
+              <thead className="text-[9px] text-zinc-600 uppercase tracking-wider">
+                <tr>
+                  <th className="text-left px-2 py-1">Agent</th>
+                  <th className="text-right px-2 py-1">Completed</th>
+                  <th className="text-right px-2 py-1">Breached</th>
+                  <th className="text-right px-2 py-1">Cancel</th>
+                  <th className="text-right px-2 py-1">SLA %</th>
+                  <th className="text-right px-2 py-1">Avg Time</th>
+                  <th className="text-right px-2 py-1">Load</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sorted.map((e) => {
+                  const slaClass = e.slaCompliance == null ? "text-zinc-600" :
+                    e.slaCompliance >= 90 ? "text-emerald-400" :
+                    e.slaCompliance >= 70 ? "text-amber-400" : "text-red-400";
+                  const loadClass = e.utilizationPct >= 80 ? "text-red-400" :
+                                    e.utilizationPct >= 60 ? "text-amber-400" : "text-zinc-300";
+                  return (
+                    <tr key={e.userId} className="border-t border-zinc-800/60 hover:bg-zinc-800/40">
+                      <td className="px-2 py-1.5">
+                        <div className="text-zinc-200">{e.name}</div>
+                        <div className="text-[9px] text-zinc-600">
+                          rank: done #{e.rank.byCompleted ?? "—"} · sla #{e.rank.bySlaCompliance ?? "—"} · vol #{e.rank.byVolume ?? "—"}
+                        </div>
+                      </td>
+                      <td className="px-2 py-1.5 text-right text-emerald-300 font-semibold">{e.completed}</td>
+                      <td className={`px-2 py-1.5 text-right ${e.breached>0 ? "text-red-400" : "text-zinc-500"}`}>{e.breached}</td>
+                      <td className={`px-2 py-1.5 text-right ${e.cancelled>0 ? "text-amber-400" : "text-zinc-500"}`}>{e.cancelled}</td>
+                      <td className={`px-2 py-1.5 text-right ${slaClass}`}>
+                        {e.slaCompliance == null ? "—" : `${e.slaCompliance}%`}
+                      </td>
+                      <td className="px-2 py-1.5 text-right text-zinc-400">
+                        {e.avgMinutesToComplete == null ? "—" : `${e.avgMinutesToComplete.toFixed(0)}m`}
+                      </td>
+                      <td className={`px-2 py-1.5 text-right ${loadClass}`}>
+                        {e.currentLoad}/{e.maxConcurrentTasks} <span className="text-zinc-600">({e.utilizationPct}%)</span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Weekly Heatmap (W5) ──────────────────────────────────────────────────────
+// Agents × 7-day grid. Each cell tells you whether that agent is working,
+// off, on exception, or unscheduled for that date — at a glance. Day-level
+// conflict flags (low coverage / everyone off) light up the column header
+// red so the head spots gaps without scanning every cell.
+type HeatCell = {
+  status: "WORKING" | "OFF" | "EXCEPTION" | "UNSCHEDULED";
+  shift?: { start: string; end: string; breakStart: string | null; breakEnd: string | null };
+  exception?: { kind: string; note?: string };
+};
+
+type HeatDay = {
+  date: string;
+  dayOfWeek: number;
+  dayName: string;
+  totals: { working: number; off: number; exception: number; unscheduled: number };
+  lowCoverage: boolean;
+  everyoneOff: boolean;
+};
+
+type HeatAgent = { userId: number; name: string; role: string; cells: HeatCell[] };
+
+export function WeeklyHeatmap() {
+  const [open, setOpen] = useState(false);
+  // weekStart = the Monday of the displayed week. null = "this week".
+  const [weekOffset, setWeekOffset] = useState(0); // -1 = last week, 0 = this, +1 = next, ...
+  const [data, setData] = useState<{ weekStart: string; weekEnd: string; minCoverage: number; days: HeatDay[]; agents: HeatAgent[] } | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Compute the displayed Monday from `weekOffset`
+  const displayedWeekStart = (() => {
+    const now = new Date();
+    const today = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()));
+    const dow = today.getUTCDay();
+    const offsetToMon = (dow + 6) % 7;
+    const monday = new Date(today);
+    monday.setUTCDate(monday.getUTCDate() - offsetToMon + weekOffset * 7);
+    return monday.toISOString().slice(0, 10);
+  })();
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    setLoading(true); setError(null);
+    fetch(`/api/team/heatmap?weekStart=${displayedWeekStart}`)
+      .then((r) => r.ok ? r.json() : Promise.reject(`HTTP ${r.status}`))
+      .then((d) => { if (!cancelled) setData(d); })
+      .catch((e) => { if (!cancelled) setError(String(e)); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [open, displayedWeekStart]);
+
+  return (
+    <div className="mb-5 border border-zinc-800 rounded-lg bg-zinc-900/40">
+      <button
+        onClick={() => setOpen(!open)}
+        className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-zinc-800/40 transition-colors"
+      >
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-semibold text-white">Weekly heatmap</span>
+          <span className="text-[10px] text-zinc-500">agents × days, with coverage warnings</span>
+        </div>
+        <svg className={`w-4 h-4 text-zinc-500 transition-transform ${open ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+
+      {open && (
+        <div className="border-t border-zinc-800 p-4 space-y-3">
+          {/* Week navigator */}
+          <div className="flex items-center justify-between text-xs">
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setWeekOffset((w) => w - 1)}
+                className="px-2 py-1 rounded bg-zinc-800 text-zinc-400 hover:text-white transition-colors"
+                title="Previous week"
+              >
+                ‹
+              </button>
+              <span className="text-zinc-300 font-medium px-2">
+                {data ? `${fmtDdMmYyyy(data.weekStart)} → ${fmtDdMmYyyy(data.weekEnd)}` : fmtDdMmYyyy(displayedWeekStart)}
+                {weekOffset === 0 && <span className="text-[9px] text-emerald-500 ml-2 uppercase tracking-wider">this week</span>}
+                {weekOffset < 0 && <span className="text-[9px] text-zinc-600 ml-2">{weekOffset}w ago</span>}
+                {weekOffset > 0 && <span className="text-[9px] text-zinc-600 ml-2">+{weekOffset}w</span>}
+              </span>
+              <button
+                onClick={() => setWeekOffset((w) => w + 1)}
+                className="px-2 py-1 rounded bg-zinc-800 text-zinc-400 hover:text-white transition-colors"
+                title="Next week"
+              >
+                ›
+              </button>
+              <button
+                onClick={() => setWeekOffset(0)}
+                disabled={weekOffset === 0}
+                className="px-2 py-1 rounded bg-zinc-800 text-zinc-400 hover:text-white transition-colors text-[10px] disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-zinc-400"
+                title={weekOffset === 0 ? "Already on this week" : "Jump to this week"}
+              >
+                Today
+              </button>
+            </div>
+            {/* Legend */}
+            <div className="flex items-center gap-3 text-[10px] text-zinc-500">
+              <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded bg-emerald-600" /> Working</span>
+              <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded bg-zinc-700" /> Off</span>
+              <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded bg-amber-600" /> Exception</span>
+              <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded border border-zinc-700" /> Unscheduled</span>
+            </div>
+          </div>
+
+          {loading ? (
+            <div className="text-[11px] text-zinc-600 italic py-4 text-center">Loading…</div>
+          ) : error ? (
+            <div className="text-[11px] text-red-400 py-4 text-center">Failed: {error}</div>
+          ) : !data || data.agents.length === 0 ? (
+            <div className="text-[11px] text-zinc-600 py-4 text-center">No agents to show.</div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-[11px] border-separate" style={{ borderSpacing: "2px" }}>
+                <thead>
+                  <tr>
+                    <th className="text-left text-[10px] text-zinc-600 uppercase tracking-wider px-2 py-1 sticky left-0 bg-zinc-900/40 z-10">Agent</th>
+                    {data.days.map((day) => {
+                      const flagged = day.everyoneOff || day.lowCoverage;
+                      return (
+                        <th
+                          key={day.date}
+                          className={`text-center text-[10px] px-2 py-1 ${flagged ? "text-red-400" : "text-zinc-500"}`}
+                          title={
+                            day.everyoneOff ? "Coverage gap — no agent working this day" :
+                            day.lowCoverage ? `Low coverage — only ${day.totals.working} working` :
+                            `${day.totals.working} working`
+                          }
+                        >
+                          <div className="font-semibold">{day.dayName}</div>
+                          <div className="text-[9px] font-normal">{fmtDdMm(day.date)}</div>
+                          <div className="text-[9px] font-mono mt-0.5">
+                            {flagged && "⚠ "}
+                            <span className={day.totals.working === 0 ? "text-red-400" : "text-emerald-400"}>{day.totals.working}</span>
+                            <span className="text-zinc-700">/</span>
+                            <span className="text-zinc-500">{data.agents.length}</span>
+                          </div>
+                        </th>
+                      );
+                    })}
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.agents.map((a) => (
+                    <tr key={a.userId}>
+                      <td className="text-zinc-300 text-[11px] px-2 py-1.5 sticky left-0 bg-zinc-900/40 z-10 whitespace-nowrap">
+                        {a.name}
+                      </td>
+                      {a.cells.map((cell, idx) => {
+                        const cls =
+                          cell.status === "WORKING"  ? "bg-emerald-600/40 text-emerald-200 border-emerald-700/40" :
+                          cell.status === "OFF"      ? "bg-zinc-800 text-zinc-600 border-zinc-700/40" :
+                          cell.status === "EXCEPTION" ? "bg-amber-600/40 text-amber-200 border-amber-700/40" :
+                          "bg-transparent text-zinc-700 border-zinc-800 border-dashed";
+                        const tooltip =
+                          cell.status === "WORKING" && cell.shift ? `${cell.shift.start}–${cell.shift.end}${cell.shift.breakStart ? ` (break ${cell.shift.breakStart}–${cell.shift.breakEnd})` : ""}${cell.exception ? ` · exception: ${cell.exception.kind}` : ""}` :
+                          cell.status === "EXCEPTION" && cell.exception ? `${cell.exception.kind}${cell.exception.note ? `: ${cell.exception.note}` : ""}` :
+                          cell.status === "OFF" ? "Off" :
+                          "Unscheduled — no shift defined";
+                        return (
+                          <td
+                            key={idx}
+                            className={`text-center text-[10px] px-2 py-1.5 border rounded ${cls}`}
+                            title={tooltip}
+                          >
+                            {cell.status === "WORKING" && cell.shift ? (
+                              <div className="leading-tight">
+                                <div className="font-mono">{cell.shift.start.slice(0, 5)}</div>
+                                <div className="font-mono opacity-70">{cell.shift.end.slice(0, 5)}</div>
+                              </div>
+                            ) : cell.status === "EXCEPTION" && cell.exception ? (
+                              cell.exception.kind.slice(0, 4)
+                            ) : cell.status === "OFF" ? (
+                              "·"
+                            ) : (
+                              "—"
+                            )}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+
+              {/* Conflict summary */}
+              {data.days.some((d) => d.everyoneOff || d.lowCoverage) && (
+                <div className="mt-3 px-3 py-2 rounded bg-red-950/40 border border-red-900/40 text-[11px] text-red-300">
+                  <strong>Coverage warnings:</strong>{" "}
+                  {data.days.filter((d) => d.everyoneOff || d.lowCoverage).map((d, i, arr) => (
+                    <span key={d.date}>
+                      {d.dayName} {fmtDdMm(d.date)} ({d.everyoneOff ? "no agents" : `only ${d.totals.working}`})
+                      {i < arr.length - 1 && ", "}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Coverage Heatmap (W5b — hour × day) ─────────────────────────────────────
+// Answers the question the agent×day heatmap can't: "is anyone working at
+// 7pm Tuesday?". Rows = half-hour slots inside the operating window
+// (default 06:00–22:30); columns = days of the week. Each cell shows the
+// number of agents on-shift at that exact slot. Colour-coded so the head
+// can spot gaps (red) and over-coverage (deep green) at a glance.
+type CoverageSlot = { time: string; dayCounts: number[] };
+type CoveragePayload = {
+  weekStart: string;
+  weekEnd: string;
+  hourFrom: string;
+  hourTo: string;
+  intervalMinutes: number;
+  lowCoverageThreshold: number;
+  days: string[];
+  dates: string[];
+  slots: CoverageSlot[];
+  summary: { totalSlots: number; gapSlots: number; lowCoverageSlots: number; peakConcurrent: number; agentsConsidered: number };
+};
+
+export function CoverageHeatmap() {
+  const [open, setOpen] = useState(false);
+  const [weekOffset, setWeekOffset] = useState(0);
+  const [hourFrom, setHourFrom] = useState("06:00");
+  const [hourTo, setHourTo] = useState("22:30");
+  const [interval, setIntervalMin] = useState<15 | 30 | 60>(30);
+  const [lowCoverage, setLowCoverage] = useState(1);
+  const [data, setData] = useState<CoveragePayload | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const displayedWeekStart = (() => {
+    const now = new Date();
+    const today = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()));
+    const dow = today.getUTCDay();
+    const offsetToMon = (dow + 6) % 7;
+    const monday = new Date(today);
+    monday.setUTCDate(monday.getUTCDate() - offsetToMon + weekOffset * 7);
+    return monday.toISOString().slice(0, 10);
+  })();
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    setLoading(true); setError(null);
+    const qs = new URLSearchParams({
+      weekStart: displayedWeekStart,
+      hourFrom, hourTo,
+      interval: String(interval),
+      lowCoverage: String(lowCoverage),
+    });
+    fetch(`/api/team/coverage?${qs}`)
+      .then((r) => r.ok ? r.json() : Promise.reject(`HTTP ${r.status}`))
+      .then((d) => { if (!cancelled) setData(d); })
+      .catch((e) => { if (!cancelled) setError(String(e)); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [open, displayedWeekStart, hourFrom, hourTo, interval, lowCoverage]);
+
+  // Colour each cell by count vs the peak so the gradient adapts to the team size.
+  const cellClass = (count: number, peak: number, threshold: number) => {
+    if (count === 0) return "bg-red-900/60 text-red-200";
+    if (count < threshold) return "bg-amber-700/40 text-amber-100";
+    if (peak <= 0) return "bg-zinc-800 text-zinc-300";
+    const ratio = count / peak;
+    if (ratio >= 0.8) return "bg-emerald-600/70 text-emerald-50";
+    if (ratio >= 0.5) return "bg-emerald-700/50 text-emerald-100";
+    return "bg-emerald-800/40 text-emerald-200";
+  };
+
+  return (
+    <div className="mb-5 border border-zinc-800 rounded-lg bg-zinc-900/40">
+      <button
+        onClick={() => setOpen(!open)}
+        className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-zinc-800/40 transition-colors"
+      >
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-semibold text-white">Coverage by hour</span>
+          <span className="text-[10px] text-zinc-500">how many agents are on-shift each half-hour — find your gaps</span>
+        </div>
+        <svg className={`w-4 h-4 text-zinc-500 transition-transform ${open ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+
+      {open && (
+        <div className="border-t border-zinc-800 p-4 space-y-3">
+          {/* Controls */}
+          <div className="flex flex-wrap items-center gap-4 text-xs">
+            <div className="flex items-center gap-1">
+              <button onClick={() => setWeekOffset((w) => w - 1)} className="px-2 py-1 rounded bg-zinc-800 text-zinc-400 hover:text-white transition-colors" title="Previous week">‹</button>
+              <span className="text-zinc-300 font-medium px-2">
+                {data ? `${fmtDdMmYyyy(data.weekStart)} → ${fmtDdMmYyyy(data.weekEnd)}` : fmtDdMmYyyy(displayedWeekStart)}
+                {weekOffset === 0 && <span className="text-[9px] text-emerald-500 ml-2 uppercase tracking-wider">this week</span>}
+                {weekOffset < 0 && <span className="text-[9px] text-zinc-600 ml-2">{weekOffset}w ago</span>}
+                {weekOffset > 0 && <span className="text-[9px] text-zinc-600 ml-2">+{weekOffset}w</span>}
+              </span>
+              <button onClick={() => setWeekOffset((w) => w + 1)} className="px-2 py-1 rounded bg-zinc-800 text-zinc-400 hover:text-white transition-colors" title="Next week">›</button>
+              <button
+                onClick={() => setWeekOffset(0)}
+                disabled={weekOffset === 0}
+                className="ml-1 px-2 py-1 rounded bg-zinc-800 text-zinc-400 hover:text-white transition-colors text-[10px] disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-zinc-400"
+                title={weekOffset === 0 ? "Already on this week" : "Jump to this week"}
+              >Today</button>
+            </div>
+
+            <label className="flex items-center gap-2 text-zinc-500">
+              From
+              <input
+                type="time"
+                value={hourFrom}
+                onChange={(e) => setHourFrom(e.target.value || "06:00")}
+                step={1800}
+                className="px-2 py-1 bg-zinc-800 border border-zinc-700 rounded text-zinc-200 text-[11px] [color-scheme:dark]"
+              />
+            </label>
+
+            <label className="flex items-center gap-2 text-zinc-500">
+              To
+              <input
+                type="time"
+                value={hourTo}
+                onChange={(e) => setHourTo(e.target.value || "22:30")}
+                step={1800}
+                className="px-2 py-1 bg-zinc-800 border border-zinc-700 rounded text-zinc-200 text-[11px] [color-scheme:dark]"
+              />
+            </label>
+
+            <div className="flex items-center gap-1">
+              <span className="text-zinc-600 text-[10px] uppercase tracking-wider">Slot</span>
+              {([15, 30, 60] as const).map((m) => (
+                <button
+                  key={m}
+                  onClick={() => setIntervalMin(m)}
+                  className={`px-2 py-1 rounded text-[11px] transition-colors ${interval === m ? "bg-blue-600 text-white" : "bg-zinc-800 text-zinc-400 hover:text-zinc-200"}`}
+                >{m}m</button>
+              ))}
+            </div>
+
+            <label className="flex items-center gap-2 text-zinc-500" title="Slots with fewer than this many agents are flagged as low-coverage.">
+              Low cov &lt;
+              <input
+                type="number" min={1} max={20}
+                value={lowCoverage}
+                onChange={(e) => setLowCoverage(Math.max(1, Math.min(20, Number(e.target.value) || 1)))}
+                className="w-12 px-2 py-1 bg-zinc-800 border border-zinc-700 rounded text-zinc-200 text-[11px] text-center"
+              />
+            </label>
+          </div>
+
+          {/* Body */}
+          {loading ? (
+            <div className="text-[11px] text-zinc-600 italic py-4 text-center">Loading…</div>
+          ) : error ? (
+            <div className="text-[11px] text-red-400 py-4 text-center">Failed: {error}</div>
+          ) : !data || data.slots.length === 0 ? (
+            <div className="text-[11px] text-zinc-600 py-4 text-center">No data.</div>
+          ) : (
+            <>
+              {/* Summary chips */}
+              <div className="flex flex-wrap gap-2 text-[11px]">
+                <span className="px-2 py-1 rounded bg-zinc-800 border border-zinc-700 text-zinc-300">
+                  {data.summary.agentsConsidered} agents
+                </span>
+                <span className="px-2 py-1 rounded bg-zinc-800 border border-zinc-700 text-zinc-300">
+                  Peak: <strong className="text-emerald-400">{data.summary.peakConcurrent}</strong> concurrent
+                </span>
+                <span className={`px-2 py-1 rounded border ${data.summary.gapSlots > 0 ? "bg-red-900/30 border-red-900 text-red-300" : "bg-zinc-800 border-zinc-700 text-zinc-400"}`}>
+                  Gaps: <strong>{data.summary.gapSlots}</strong> slots with <strong>0</strong> coverage
+                </span>
+                <span className={`px-2 py-1 rounded border ${data.summary.lowCoverageSlots > 0 ? "bg-amber-900/30 border-amber-900 text-amber-300" : "bg-zinc-800 border-zinc-700 text-zinc-400"}`}>
+                  Low cov: <strong>{data.summary.lowCoverageSlots}</strong> slots &lt; {data.lowCoverageThreshold}
+                </span>
+              </div>
+
+              {/* Heatmap table */}
+              <div className="overflow-x-auto">
+                <table className="text-[10px] border-separate" style={{ borderSpacing: "1px" }}>
+                  <thead>
+                    <tr>
+                      <th className="text-left px-2 py-1 sticky left-0 bg-zinc-900/40 z-10 text-zinc-600 uppercase tracking-wider"></th>
+                      {data.days.map((day, i) => (
+                        <th key={i} className="text-center px-2 py-1 text-zinc-500 min-w-[3rem]">
+                          <div className="font-semibold">{day}</div>
+                          <div className="text-[9px] font-normal">{fmtDdMm(data.dates[i])}</div>
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.slots.map((slot) => (
+                      <tr key={slot.time}>
+                        <td className="text-right pr-2 py-1 sticky left-0 bg-zinc-900/40 z-10 font-mono text-zinc-500 text-[10px]">
+                          {slot.time}
+                        </td>
+                        {slot.dayCounts.map((count, dayIdx) => (
+                          <td
+                            key={dayIdx}
+                            className={`text-center font-mono text-[11px] ${cellClass(count, data.summary.peakConcurrent, data.lowCoverageThreshold)}`}
+                            title={`${data.days[dayIdx]} ${data.dates[dayIdx]} ${slot.time} — ${count} agent${count === 1 ? "" : "s"} on-shift`}
+                            style={{ minWidth: "3rem" }}
+                          >
+                            {count}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+        </div>
       )}
     </div>
   );

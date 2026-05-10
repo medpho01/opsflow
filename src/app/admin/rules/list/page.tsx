@@ -19,22 +19,21 @@ export default function RulesListPage() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    fetchRules();
+    const load = async () => {
+      try {
+        setLoading(true);
+        const res = await fetch('/api/task-rules');
+        if (!res.ok) throw new Error('Failed to fetch rules');
+        const data = await res.json();
+        setRules(data.rules || []);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to load rules');
+      } finally {
+        setLoading(false);
+      }
+    };
+    load();
   }, []);
-
-  const fetchRules = async () => {
-    try {
-      setLoading(true);
-      const res = await fetch('/api/task-rules');
-      if (!res.ok) throw new Error('Failed to fetch rules');
-      const data = await res.json();
-      setRules(data.rules || []);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load rules');
-    } finally {
-      setLoading(false);
-    }
-  };
 
   const priorityColor = (priority: string) => {
     switch (priority) {

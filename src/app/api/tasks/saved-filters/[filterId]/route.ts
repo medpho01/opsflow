@@ -8,13 +8,14 @@ import prisma from "@/lib/db/client";
 
 export async function DELETE(
   request: NextRequest,
-  { params }: { params: { filterId: string } }
+  { params }: { params: Promise<{ filterId: string }> }
 ) {
   const user = await getSessionFromRequest(request);
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   try {
-    const filterId = parseInt(params.filterId.replace("filter_", ""), 10);
+    const { filterId: filterIdStr } = await params;
+    const filterId = parseInt(filterIdStr.replace("filter_", ""), 10);
     if (isNaN(filterId)) {
       return NextResponse.json({ error: "Invalid filter ID" }, { status: 400 });
     }
@@ -44,13 +45,14 @@ export async function DELETE(
 
 export async function PATCH(
   request: NextRequest,
-  { params }: { params: { filterId: string } }
+  { params }: { params: Promise<{ filterId: string }> }
 ) {
   const user = await getSessionFromRequest(request);
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   try {
-    const filterId = parseInt(params.filterId.replace("filter_", ""), 10);
+    const { filterId: filterIdStr } = await params;
+    const filterId = parseInt(filterIdStr.replace("filter_", ""), 10);
     if (isNaN(filterId)) {
       return NextResponse.json({ error: "Invalid filter ID" }, { status: 400 });
     }

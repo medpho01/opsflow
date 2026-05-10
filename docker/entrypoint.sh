@@ -47,8 +47,18 @@ for i in $(seq 1 60); do
   sleep 1
 done
 
-echo "→ Applying schema (prisma db push)…"
-node node_modules/prisma/build/index.js db push --accept-data-loss --skip-generate
+# `prisma db push` reconciles the running schema to schema.prisma. On a
+# fresh `taskos` schema this just creates everything (the production
+# case). On a database whose `taskos` schema has accumulated drift from
+# manual SQL (orphaned enum values, etc.), Prisma may fail trying to
+# alter an enum that's referenced by a column default. In that case
+# set SKIP_PRISMA_PUSH=true and bring the schema in line yourself.
+if [ "${SKIP_PRISMA_PUSH:-false}" = "true" ]; then
+  echo "→ Skipping prisma db push (SKIP_PRISMA_PUSH=true)"
+else
+  echo "→ Applying schema (prisma db push)…"
+  node node_modules/prisma/build/index.js db push --accept-data-loss --skip-generate
+fi
 
 echo "→ Seeding admin user…"
 node node_modules/.bin/tsx docker/seed-admin.ts

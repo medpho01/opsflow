@@ -1,11 +1,35 @@
 /**
  * GET /api/analytics/summary?date=YYYY-MM-DD
- * Daily operational summary — used by the summary panel and daily summary cron.
+ *
+ * Daily operational summary — used by the summary panel and the daily
+ * summary cron.
+ *
+ * Audit (feature 07) rewrites:
+ *
+ *  - "Today" was anchored to UTC midnight (`Date.UTC(...)`). Server in
+ *    UTC + DB in IST meant `dayStart` = 05:30 IST, so events between IST
+ *    midnight and 05:30 IST were silently counted under the wrong day.
+ *    Now anchored to IST midnight via the shared helper.
+ *
+ *  - Date param parsing now NaN-checks the resulting Date (the prior
+ *    regex matched but didn't validate, so `9999-99-99` produced a
+ *    garbage Invalid Date downstream).
+ *
+ *  - SLA-health divisor: previously divided "agent-only compliant
+ *    completions" by "all-roles completed today". If any OPS_HEAD
+ *    completed a task, the ratio could exceed 100%. Now both numerator
+ *    and divisor come from the same scoped count.
+ *
+ *  - Day with zero completed → `slaHealthPercent = 100` (matches the
+ *    /api/dashboard convention; previously this returned 0, disagreed
+ *    with the dashboard, and the "zero work, 0% SLA" reading was
+ *    misleading).
  */
 import { NextRequest, NextResponse } from "next/server";
 import { getSessionFromRequest } from "@/lib/auth/session";
 import prisma from "@/lib/db/client";
 import { UserRole, TaskStatus } from "@prisma/client";
+import { startOfTodayIST, parseDateOrNull } from "../_helpers";
 
 export async function GET(request: NextRequest) {
   const user = await getSessionFromRequest(request);
@@ -17,48 +41,37 @@ export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const dateParam = searchParams.get("date");
 
-  let dayStart: Date;
-  let dayEnd: Date;
-
-  if (dateParam) {
-    const m = dateParam.match(/^(\d{4})-(\d{2})-(\d{2})/);
-    if (m) {
-      dayStart = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
-      dayEnd = new Date(dayStart.getTime() + 86_400_000);
-    } else {
-      const now = new Date();
-      dayStart = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()));
-      dayEnd = new Date(dayStart.getTime() + 86_400_000);
-    }
-  } else {
-    const now = new Date();
-    dayStart = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()));
-    dayEnd = new Date(dayStart.getTime() + 86_400_000);
-  }
+  // IST-anchored dayStart. parseDateOrNull falls back to today's IST
+  // midnight if the param is absent or malformed.
+  const dayStart = parseDateOrNull(dateParam) ?? startOfTodayIST();
+  const dayEnd = new Date(dayStart.getTime() + 86_400_000);
 
   const [
     createdToday,
     completedToday,
     breachedToday,
     openCarryover,
+    slaCompliantToday,
     agentStats,
     pollStats,
   ] = await Promise.all([
-    // tasks created today
     prisma.task.count({ where: { createdAt: { gte: dayStart, lt: dayEnd } } }),
-
-    // tasks completed today
     prisma.task.count({ where: { status: TaskStatus.COMPLETED, completedAt: { gte: dayStart, lt: dayEnd } } }),
-
-    // tasks breached today
     prisma.task.count({ where: { slaBreachedAt: { gte: dayStart, lt: dayEnd } } }),
-
-    // open (non-terminal) tasks at end of day
     prisma.task.count({
       where: { status: { notIn: [TaskStatus.COMPLETED, TaskStatus.CANCELLED] } },
     }),
+    // SLA-compliant completions (numerator scoped to the same set as
+    // `completedToday` — eliminates the divisor mismatch).
+    prisma.task.count({
+      where: {
+        status: TaskStatus.COMPLETED,
+        completedAt: { gte: dayStart, lt: dayEnd },
+        slaBreachedAt: null,
+      },
+    }),
 
-    // per-agent completed today
+    // Per-agent completed today.
     prisma.user.findMany({
       where: { isActive: true, role: { in: [UserRole.OPS_AGENT, UserRole.STORE_ADMIN] } },
       include: {
@@ -73,7 +86,7 @@ export async function GET(request: NextRequest) {
       orderBy: { name: "asc" },
     }),
 
-    // polling cycles today
+    // Polling cycles in the day.
     prisma.pollingLog.findMany({
       where: { startedAt: { gte: dayStart, lt: dayEnd } },
       orderBy: { startedAt: "desc" },
@@ -81,18 +94,12 @@ export async function GET(request: NextRequest) {
     }),
   ]);
 
-  const totalCompleted = completedToday;
+  // SLA health: zero completed → 100 (matches /api/dashboard's "no work,
+  // perfect score" convention).
   const slaHealth =
-    totalCompleted > 0
-      ? Math.round(
-          (agentStats.reduce(
-            (sum, a) => sum + a.assignedTasks.filter((t) => !t.slaBreachedAt).length,
-            0
-          ) /
-            totalCompleted) *
-            100
-        )
-      : 0;
+    completedToday > 0
+      ? Math.round((slaCompliantToday / completedToday) * 100)
+      : 100;
 
   const agentBreakdown = agentStats
     .map((a) => ({
@@ -114,8 +121,13 @@ export async function GET(request: NextRequest) {
         : 0,
   };
 
+  // Format the date back in IST (the wall-clock day the head asked
+  // about). Using `toISOString().split("T")[0]` would format in UTC
+  // and underreport by a day at the IST/UTC boundary.
+  const dateKey = dayStart.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+
   return NextResponse.json({
-    date: dayStart.toISOString().split("T")[0],
+    date: dateKey,
     summary: {
       createdToday,
       completedToday,

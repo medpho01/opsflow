@@ -32,6 +32,12 @@ services:
       # reaches the host machine on macOS / Windows; on Linux pass
       # --add-host=host.docker.internal:host-gateway or use the host IP.
       DATABASE_URL: ${DATABASE_URL}
+      # Constrains glibc's per-thread malloc arenas to 2. Without this,
+      # the Prisma library engine (a Node native addon) trips
+      # "malloc(): unaligned tcache chunk detected" on Debian bookworm's
+      # glibc 2.36, crashing the process mid-request. Documented Prisma /
+      # Node native-addon workaround.
+      MALLOC_ARENA_MAX: "2"
       JWT_SECRET: ${JWT_SECRET:-please-change-me-in-production}
       JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-8h}
       NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:3000}

@@ -8,10 +8,14 @@
 #   2. `runner`  — minimal Alpine + node_modules + build output. Runs as
 #      a non-root user.
 #
-# Node 22 explicitly: this app's dependencies (Next 15.5, Prisma 4.16,
-# zod 4) all require Node ≥ 18; we pin 22 because the local dev story
-# established that v12 / v16 paths fail at runtime.
-ARG NODE_VERSION=22-bookworm-slim
+# Node 20 LTS on Debian bullseye (glibc 2.31). Prisma 4.16's query
+# engine binary heap-corrupts on glibc 2.36 (bookworm) — both library
+# and binary engines trip "malloc(): unaligned tcache chunk detected"
+# / "malloc_consolidate(): invalid chunk size" within a few queries.
+# Prisma 4.16 was released against bullseye-era glibc and runs cleanly
+# there. jemalloc LD_PRELOAD didn't help because the Rust engine has
+# its own statically-linked allocator.
+ARG NODE_VERSION=20-bullseye-slim
 
 # ── Build stage ───────────────────────────────────────────────────────
 FROM node:${NODE_VERSION} AS builder

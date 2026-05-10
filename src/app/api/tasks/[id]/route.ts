@@ -75,7 +75,16 @@ export async function GET(
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
-  return NextResponse.json({ task });
+  return NextResponse.json({ task: serializeTask(task) });
+}
+
+// Task.sourceEntityId is BigInt in Postgres; NextResponse.json → JSON.stringify
+// throws on BigInt. Mirror the cast used in the list route (api/tasks/route.ts).
+function serializeTask<T extends { sourceEntityId: bigint | null }>(task: T) {
+  return {
+    ...task,
+    sourceEntityId: task.sourceEntityId != null ? task.sourceEntityId.toString() : null,
+  };
 }
 
 export async function PATCH(
@@ -246,5 +255,5 @@ export async function PATCH(
     },
   });
 
-  return NextResponse.json({ task: updated });
+  return NextResponse.json({ task: serializeTask(updated) });
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import Link from "next/link";
 import SlaCountdown from "@/components/shared/SlaCountdown";
 import PriorityBadge from "@/components/shared/PriorityBadge";
@@ -82,8 +82,44 @@ interface DashboardData {
   lastPollAt: string | null;
 }
 
+/**
+ * Plays a short two-tone beep via Web Audio. No asset to ship, runs only
+ * after a user gesture-triggered audio enable (browsers gate audio
+ * autoplay; the toggle button itself counts as the gesture). Fails
+ * silently if AudioContext isn't available (older browsers / SSR path).
+ */
+function playBreachBeep() {
+  try {
+    const Ctx = (window.AudioContext ||
+      // @ts-expect-error — webkit prefix on older Safari
+      window.webkitAudioContext) as typeof AudioContext | undefined;
+    if (!Ctx) return;
+    const ctx = new Ctx();
+    const tones = [880, 660]; // descending two-tone, alarm-like
+    const duration = 0.18;
+    tones.forEach((freq, i) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.frequency.value = freq;
+      osc.type = "sine";
+      gain.gain.setValueAtTime(0, ctx.currentTime + i * duration);
+      gain.gain.linearRampToValueAtTime(0.18, ctx.currentTime + i * duration + 0.02);
+      gain.gain.linearRampToValueAtTime(0, ctx.currentTime + i * duration + duration);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(ctx.currentTime + i * duration);
+      osc.stop(ctx.currentTime + i * duration + duration);
+    });
+    // Tear down the context after the beeps finish.
+    setTimeout(() => ctx.close().catch(() => undefined), 1000);
+  } catch {
+    // No-op — audio is best-effort.
+  }
+}
+
 const ALERT_TYPE_COLORS: Record<string, string> = {
   SLA_BREACH: "text-red-400",
+  SLA_BREACHED: "text-red-400",
   SLA_WARNING: "text-amber-400",
   UNASSIGNED_TASK: "text-blue-400",
   ESCALATION: "text-purple-400",
@@ -241,6 +277,24 @@ export default function HeadCommandCenter() {
   // server defaults to today when no `range` is passed), so users who
   // never touch the control see the same dashboard as before.
   const [range, setRange] = useState<"today" | "shift" | "week">("today");
+  // W5 — audio alert on new BREACHED. Persisted in localStorage so the
+  // preference survives reloads. Defaults to OFF — head explicitly opts
+  // in via the bell button so we never beep without consent.
+  const [audioEnabled, setAudioEnabled] = useState(false);
+  // Set of alert IDs we've already seen. Initialised from the FIRST
+  // fetch (so we don't beep for every alert that already existed when
+  // the page loaded — only new arrivals trigger sound).
+  const seenAlertIdsRef = useRef<Set<number> | null>(null);
+
+  // Restore the audioEnabled preference. Run once on mount.
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("opsflow.cc.audioEnabled");
+      if (saved === "true") setAudioEnabled(true);
+    } catch {
+      // localStorage unavailable (SSR / private mode) — default OFF stays.
+    }
+  }, []);
 
   const fetchDashboard = useCallback(async () => {
     try {
@@ -251,13 +305,66 @@ export default function HeadCommandCenter() {
         return;
       }
       const json = await res.json();
+
+      // W5 — detect new BREACHED alerts since the last fetch.
+      // First fetch initialises the seen set (no beep for pre-existing
+      // alerts). Subsequent fetches diff and beep on any newly-arrived
+      // SLA_BREACHED entries.
+      const incoming: Alert[] = json.recentAlerts ?? [];
+      const incomingIds = new Set(incoming.map((a) => a.id));
+      if (seenAlertIdsRef.current === null) {
+        seenAlertIdsRef.current = incomingIds;
+      } else {
+        const seen = seenAlertIdsRef.current;
+        const newBreaches = incoming.filter(
+          (a) => !seen.has(a.id) && /BREACH/.test(alertTypeOf(a))
+        );
+        if (newBreaches.length > 0 && audioEnabled) {
+          playBreachBeep();
+          // Best-effort browser notification — silently no-ops if the
+          // user never granted permission.
+          if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+            try {
+              new Notification(
+                newBreaches.length === 1
+                  ? "SLA breached"
+                  : `${newBreaches.length} new SLA breaches`,
+                {
+                  body: newBreaches[0].message,
+                  tag: "opsflow-breach",
+                }
+              );
+            } catch { /* ignore */ }
+          }
+        }
+        seenAlertIdsRef.current = incomingIds;
+      }
+
       setData(json);
     } catch (error) {
       console.error("[Dashboard] Error:", error);
     } finally {
       setLoading(false);
     }
-  }, [range]);
+  }, [range, audioEnabled]);
+
+  // Toggle audio + persist + (on enable) request browser notification permission.
+  const toggleAudio = useCallback(() => {
+    setAudioEnabled((prev) => {
+      const next = !prev;
+      try { localStorage.setItem("opsflow.cc.audioEnabled", String(next)); } catch { /* ignore */ }
+      // Test-fire the beep on enable so the user knows the volume + that
+      // it's wired up. The user gesture also unlocks the AudioContext
+      // for browsers that gate autoplay behind a click.
+      if (next) {
+        playBreachBeep();
+        if (typeof Notification !== "undefined" && Notification.permission === "default") {
+          Notification.requestPermission().catch(() => undefined);
+        }
+      }
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     fetchDashboard();
@@ -325,6 +432,28 @@ export default function HeadCommandCenter() {
               <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
             </svg>
             Create Task
+          </button>
+          {/* W5 — Audio alert toggle. Beeps + (if permission granted)
+              fires a desktop notification on new BREACHED alerts. */}
+          <button
+            onClick={toggleAudio}
+            title={audioEnabled ? "Audio alerts on — click to silence" : "Audio alerts off — click to enable"}
+            className={`flex items-center gap-1.5 px-3 py-1.5 border rounded-lg text-xs transition-colors ${
+              audioEnabled
+                ? "bg-amber-500/10 border-amber-500/40 text-amber-300 hover:bg-amber-500/15"
+                : "bg-zinc-900 border-zinc-700 text-zinc-400 hover:text-zinc-200 hover:border-zinc-600"
+            }`}
+          >
+            {audioEnabled ? (
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
+              </svg>
+            ) : (
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15zM17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" />
+              </svg>
+            )}
+            {audioEnabled ? "Alerts on" : "Alerts off"}
           </button>
           <button
             onClick={() => setRefreshKey((k) => k + 1)}

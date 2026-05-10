@@ -119,41 +119,42 @@ export default function StoreBoard({ user }: StoreBoardProps) {
     }
   }, [page, statusFilter, buildQuery]);
 
+  // Selected-store metadata (resolved from the overview endpoint, used in
+  // the page title so a multi-store admin can tell at a glance which one
+  // they're looking at without re-opening the dropdown).
+  const [selectedStoreMeta, setSelectedStoreMeta] = useState<Store | null>(null);
+
+  // Audit fix (feature 06): replaces the prior 4-fetch fan-out and the
+  // limit=50 client-side filtering. One round-trip; the counts are real
+  // SQL counts so "Unassigned" is no longer capped at 50.
   const fetchStats = useCallback(async () => {
-    const storeQuery = storeId ? `?storeId=${storeId}` : "";
-    const [openRes, breachedRes, completedRes] = await Promise.all([
-      fetch(`/api/tasks?status=CREATED,ASSIGNED,IN_PROGRESS,BLOCKED${storeQuery ? "&" + storeQuery.slice(1) : ""}&limit=1`),
-      fetch(`/api/tasks?status=BREACHED${storeQuery ? "&" + storeQuery.slice(1) : ""}&limit=1`),
-      fetch(`/api/tasks?status=COMPLETED${storeQuery ? "&" + storeQuery.slice(1) : ""}&limit=1`),
-    ]);
-
-    const [openData, breachedData, completedData] = await Promise.all([
-      openRes.ok ? openRes.json() : { pagination: { total: 0 } },
-      breachedRes.ok ? breachedRes.json() : { pagination: { total: 0 } },
-      completedRes.ok ? completedRes.json() : { pagination: { total: 0 } },
-    ]);
-
-    const now = new Date();
-    const warnThreshold = new Date(now.getTime() + 10 * 60_000);
-
-    // Count warnings from the open tasks
-    const warnRes = await fetch(`/api/tasks?status=CREATED,ASSIGNED,IN_PROGRESS,BLOCKED${storeQuery ? "&" + storeQuery.slice(1) : ""}&limit=50`);
-    const warnData = warnRes.ok ? await warnRes.json() : { tasks: [] };
-    const warningCount = (warnData.tasks as Task[]).filter(
-      (t) => new Date(t.slaDeadline) <= warnThreshold && new Date(t.slaDeadline) > now
-    ).length;
-    const unassignedCount = (warnData.tasks as Task[]).filter(
-      (t) => t.status === "CREATED" && !t.assignedTo
-    ).length;
-
-    setStats({
-      open: openData.pagination?.total ?? 0,
-      breached: breachedData.pagination?.total ?? 0,
-      completed: completedData.pagination?.total ?? 0,
-      warning: warningCount,
-      unassigned: unassignedCount,
-    });
-  }, [storeId, user.role]);
+    const url = storeId === null
+      ? `/api/stores/overview`
+      : `/api/stores/overview?storeId=${storeId}`;
+    try {
+      const res = await fetch(url);
+      if (!res.ok) {
+        // Server-side scoping rejected the request (e.g. STORE_ADMIN
+        // asking for a store outside their assignments). Reset rather
+        // than show stale numbers.
+        setStats({ open: 0, breached: 0, warning: 0, completed: 0, unassigned: 0 });
+        setSelectedStoreMeta(null);
+        return;
+      }
+      const data = await res.json();
+      setStats({
+        open: data.counts?.open ?? 0,
+        breached: data.counts?.breached ?? 0,
+        warning: data.counts?.warning ?? 0,
+        unassigned: data.counts?.unassigned ?? 0,
+        completed: data.counts?.completed ?? 0,
+      });
+      setSelectedStoreMeta(data.store ?? null);
+    } catch {
+      setStats({ open: 0, breached: 0, warning: 0, completed: 0, unassigned: 0 });
+      setSelectedStoreMeta(null);
+    }
+  }, [storeId]);
 
   useEffect(() => {
     fetchTasks();
@@ -177,6 +178,30 @@ export default function StoreBoard({ user }: StoreBoardProps) {
     { label: "Completed", value: "COMPLETED" },
   ];
 
+  // STORE_ADMIN with no store assignments: the engine can't show them
+  // anything meaningful here. Render an explicit empty state instead of
+  // the previous behaviour where the dropdown said "All Stores", the
+  // counts were 0, and the table was blank with no explanation.
+  const isStoreAdminWithNoStores =
+    user.role === "STORE_ADMIN" &&
+    !storesLoading &&
+    (!user.storeIds || user.storeIds.length === 0);
+  if (isStoreAdminWithNoStores) {
+    return (
+      <div className="p-8">
+        <h1 className="text-2xl font-bold text-white">Store Overview</h1>
+        <div className="mt-8 max-w-lg rounded-lg border border-zinc-800 bg-zinc-900/40 p-6">
+          <h2 className="text-sm font-semibold text-zinc-200">No stores assigned to you</h2>
+          <p className="text-xs text-zinc-500 mt-2 leading-relaxed">
+            Your account is set up as a Store Admin but no stores have
+            been linked to it yet. Ask Ops Head to add you to one or more
+            stores from the Team page.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="p-8 space-y-8">
       {/* Sticky Header Section.
@@ -188,11 +213,25 @@ export default function StoreBoard({ user }: StoreBoardProps) {
         {/* Header with Store Selector */}
         <div className="flex items-start justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-white">Store Overview</h1>
+          {/* Audit UX nit (feature 06): the title used to read "Store
+              Overview" regardless of which store was selected, so a
+              multi-store admin could only tell what they were looking
+              at by re-opening the dropdown. Now the selected store
+              name is the title. */}
+          <h1 className="text-2xl font-bold text-white">
+            {selectedStoreId === null
+              ? "Store Overview · All Stores"
+              : selectedStoreMeta?.storeName
+              ? `Store Overview · ${selectedStoreMeta.storeName}`
+              : "Store Overview"}
+          </h1>
           <p className="text-sm text-zinc-400 mt-2">
             {user.role === "STORE_ADMIN"
               ? `Tasks for your store${user.storeIds?.length && user.storeIds.length > 1 ? "s" : ""}`
               : "Store-level task breakdown"}
+            {selectedStoreId !== null && selectedStoreMeta?.city && (
+              <span className="text-zinc-500"> · {selectedStoreMeta.city}</span>
+            )}
           </p>
         </div>
         <div className="relative" ref={storeDropdownRef}>

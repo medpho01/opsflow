@@ -23,7 +23,7 @@
  *   Trends       — W3 — time-series charts
  *   Cohorts      — W4 — agents grouped by hire-month
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import AgentPerformancePanel from "./AgentPerformancePanel";
 import DailySummaryPanel from "./DailySummaryPanel";
 import BreakdownPanel from "./BreakdownPanel";
@@ -53,6 +53,11 @@ export default function AnalyticsTabs() {
   const [tab, setTab] = useState<Tab>("agents");
   const [dataSourceId, setDataSourceId] = useState<string | null>(null);
   const [sources, setSources] = useState<DataSource[]>([]);
+  // Custom popover for the source dropdown — the native <select> opens
+  // an OS-themed white panel that breaks the dark UI; same dark-styled
+  // pattern as SavedViewsDropdown / StoreBoard's selector.
+  const [sourceMenuOpen, setSourceMenuOpen] = useState(false);
+  const sourceMenuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     fetch("/api/data-sources")
@@ -68,6 +73,20 @@ export default function AnalyticsTabs() {
       .catch(() => undefined);
   }, []);
 
+  // Close on outside click — matches the SavedViewsDropdown pattern.
+  useEffect(() => {
+    if (!sourceMenuOpen) return;
+    function onDoc(e: MouseEvent) {
+      if (sourceMenuRef.current && !sourceMenuRef.current.contains(e.target as Node)) {
+        setSourceMenuOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [sourceMenuOpen]);
+
+  const selectedSource = dataSourceId ? sources.find((s) => s.id === dataSourceId) : null;
+
   return (
     <div className="space-y-6">
       <div className="flex items-end justify-between gap-4 flex-wrap">
@@ -76,19 +95,55 @@ export default function AnalyticsTabs() {
           <p className="text-sm text-zinc-500 mt-1">Performance breakdowns across the operation.</p>
         </div>
 
-        {/* W5 — Source slicer scopes every panel below. */}
+        {/* W5 — Source slicer scopes every panel below. Custom dark
+            popover so the OS's native white <select> menu doesn't
+            break the theme. */}
         <div className="flex items-center gap-2">
           <span className="text-[10px] text-zinc-600 uppercase tracking-wider font-semibold">Source</span>
-          <select
-            value={dataSourceId ?? ""}
-            onChange={(e) => setDataSourceId(e.target.value || null)}
-            className="px-3 py-1.5 text-sm bg-zinc-900 border border-zinc-800 rounded-lg text-zinc-200 hover:border-zinc-700 focus:outline-none focus:ring-1 focus:ring-blue-500"
-          >
-            <option value="">All sources</option>
-            {sources.map((s) => (
-              <option key={s.id} value={s.id}>{s.displayName}</option>
-            ))}
-          </select>
+          <div className="relative" ref={sourceMenuRef}>
+            <button
+              onClick={() => setSourceMenuOpen((o) => !o)}
+              className="inline-flex items-center gap-2 min-w-[180px] px-3 py-1.5 text-sm bg-zinc-900 border border-zinc-800 hover:border-zinc-700 rounded-lg text-zinc-200 transition-colors focus:outline-none focus:ring-1 focus:ring-blue-500"
+            >
+              <span className="flex-1 text-left truncate">
+                {selectedSource ? selectedSource.displayName : "All sources"}
+              </span>
+              <svg className={`w-3 h-3 text-zinc-500 shrink-0 transition-transform ${sourceMenuOpen ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+
+            {sourceMenuOpen && (
+              <div className="absolute right-0 top-full mt-1.5 min-w-[220px] bg-zinc-900 border border-zinc-700 rounded-lg shadow-xl z-30 overflow-hidden py-1">
+                {[
+                  { id: null as string | null, label: "All sources" },
+                  ...sources.map((s) => ({ id: s.id as string | null, label: s.displayName })),
+                ].map((opt) => {
+                  const isSelected = opt.id === dataSourceId;
+                  return (
+                    <button
+                      key={opt.id ?? "all"}
+                      onClick={() => { setDataSourceId(opt.id); setSourceMenuOpen(false); }}
+                      className={`w-full flex items-center gap-2.5 px-3.5 py-2 text-sm transition-colors text-left ${
+                        isSelected
+                          ? "bg-blue-600/20 text-blue-400"
+                          : "text-zinc-300 hover:bg-zinc-800 hover:text-white"
+                      }`}
+                    >
+                      {isSelected ? (
+                        <svg className="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                        </svg>
+                      ) : (
+                        <span className="w-3.5 h-3.5 shrink-0" />
+                      )}
+                      <span className="truncate">{opt.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         </div>
       </div>
 

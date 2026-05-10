@@ -13,7 +13,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSessionFromRequest } from "@/lib/auth/session";
 import prisma from "@/lib/db/client";
-import { UserRole } from "@prisma/client";
+import { Prisma, UserRole } from "@prisma/client";
 
 interface CohortRow {
   cohort_month: string;
@@ -31,6 +31,17 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
+  const dataSourceId = request.nextUrl.searchParams.get("dataSourceId"); // W5
+  // Source filter scopes the per-task aggregates without filtering out
+  // agents themselves (a hire-month cohort still exists even if those
+  // agents have no tasks for the selected source).
+  const sourceFilter = dataSourceId
+    ? Prisma.sql`AND EXISTS (
+        SELECT 1 FROM taskos.task_rules tr
+        WHERE tr.id = t."taskRuleId" AND tr."dataSourceId" = ${dataSourceId}
+      )`
+    : Prisma.empty;
+
   const rows = await prisma.$queryRaw<CohortRow[]>`
     SELECT
       to_char(
@@ -47,6 +58,7 @@ export async function GET(request: NextRequest) {
     FROM taskos.users u
     LEFT JOIN taskos.tasks t
       ON t."assignedToId" = u.id AND t."isArchived" = false
+      ${sourceFilter}
     WHERE u.role IN ('OPS_AGENT', 'STORE_ADMIN')
       AND u."isActive" = true
     GROUP BY 1

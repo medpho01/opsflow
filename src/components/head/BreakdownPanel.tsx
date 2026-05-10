@@ -52,7 +52,13 @@ function slaBarCls(pct: number) {
   return "bg-red-500";
 }
 
-export default function BreakdownPanel({ dimension }: { dimension: Dimension }) {
+export default function BreakdownPanel({
+  dimension,
+  dataSourceId,
+}: {
+  dimension: Dimension;
+  dataSourceId: string | null;
+}) {
   const [range, setRange] = useState<Range>("week");
   const [data, setData] = useState<BreakdownResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -60,7 +66,8 @@ export default function BreakdownPanel({ dimension }: { dimension: Dimension }) 
   useEffect(() => {
     setLoading(true);
     let cancelled = false;
-    fetch(`/api/analytics/breakdown?dimension=${dimension}&range=${range}`)
+    const ds = dataSourceId ? `&dataSourceId=${encodeURIComponent(dataSourceId)}` : "";
+    fetch(`/api/analytics/breakdown?dimension=${dimension}&range=${range}${ds}`)
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
         if (!cancelled) setData(d);
@@ -68,7 +75,7 @@ export default function BreakdownPanel({ dimension }: { dimension: Dimension }) 
       .catch(() => { if (!cancelled) setData(null); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [dimension, range]);
+  }, [dimension, range, dataSourceId]);
 
   const labels = DIMENSION_LABELS[dimension];
 

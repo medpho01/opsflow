@@ -28,7 +28,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSessionFromRequest } from "@/lib/auth/session";
 import prisma from "@/lib/db/client";
-import { UserRole, TaskStatus } from "@prisma/client";
+import { Prisma, UserRole } from "@prisma/client";
 import { computeRosterStatus, getUTCDayOfWeek } from "@/lib/roster/availability";
 import { getRangeStart, startOfTodayIST } from "../_helpers";
 
@@ -51,11 +51,21 @@ export async function GET(request: NextRequest) {
 
   const { searchParams } = new URL(request.url);
   const range = searchParams.get("range") ?? "today";
+  const dataSourceId = searchParams.get("dataSourceId"); // W5 — optional source slicer
   const since = getRangeStart(range);
   const now = new Date();
   const dayStart = startOfTodayIST();
   const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
   const dayOfWeek = getUTCDayOfWeek(now);
+
+  // Conditional SQL clause that scopes the aggregate to a single data
+  // source. Empty fragment (no filter) when dataSourceId is null.
+  const sourceFilter = dataSourceId
+    ? Prisma.sql`AND EXISTS (
+        SELECT 1 FROM taskos.task_rules tr
+        WHERE tr.id = t."taskRuleId" AND tr."dataSourceId" = ${dataSourceId}
+      )`
+    : Prisma.empty;
 
   const [agents, aggregates] = await Promise.all([
     // Light user list — no nested tasks. Just the metadata we need to
@@ -81,20 +91,21 @@ export async function GET(request: NextRequest) {
     // UTC instants the same way so the difference is correct.
     prisma.$queryRaw<AgentAggregate[]>`
       SELECT
-        "assignedToId",
-        COUNT(*) FILTER (WHERE status = 'COMPLETED' AND "completedAt" >= ${since})                                AS completed,
-        COUNT(*) FILTER (WHERE status NOT IN ('COMPLETED','CANCELLED'))                                           AS open,
-        COUNT(*) FILTER (WHERE "slaBreachedAt" >= ${since})                                                       AS breached,
-        COUNT(*) FILTER (WHERE status = 'COMPLETED' AND "completedAt" >= ${since}
-                          AND "slaBreachedAt" IS NULL)                                                            AS sla_compliant,
-        AVG(EXTRACT(EPOCH FROM ("completedAt" - "assignedAt")) / 60.0)
-          FILTER (WHERE status = 'COMPLETED' AND "completedAt" >= ${since}
-                  AND "completedAt" IS NOT NULL AND "assignedAt" IS NOT NULL)                                     AS avg_completion_minutes,
-        COUNT(*) FILTER (WHERE "slaBreachedAt" >= ${since}
-                          AND priority IN ('URGENT','HIGH'))                                                      AS urgent_breaches
-      FROM taskos.tasks
-      WHERE "isArchived" = false AND "assignedToId" IS NOT NULL
-      GROUP BY "assignedToId"
+        t."assignedToId"                                                                                            AS "assignedToId",
+        COUNT(*) FILTER (WHERE t.status = 'COMPLETED' AND t."completedAt" >= ${since})                              AS completed,
+        COUNT(*) FILTER (WHERE t.status NOT IN ('COMPLETED','CANCELLED'))                                           AS open,
+        COUNT(*) FILTER (WHERE t."slaBreachedAt" >= ${since})                                                       AS breached,
+        COUNT(*) FILTER (WHERE t.status = 'COMPLETED' AND t."completedAt" >= ${since}
+                          AND t."slaBreachedAt" IS NULL)                                                            AS sla_compliant,
+        AVG(EXTRACT(EPOCH FROM (t."completedAt" - t."assignedAt")) / 60.0)
+          FILTER (WHERE t.status = 'COMPLETED' AND t."completedAt" >= ${since}
+                  AND t."completedAt" IS NOT NULL AND t."assignedAt" IS NOT NULL)                                   AS avg_completion_minutes,
+        COUNT(*) FILTER (WHERE t."slaBreachedAt" >= ${since}
+                          AND t.priority IN ('URGENT','HIGH'))                                                      AS urgent_breaches
+      FROM taskos.tasks t
+      WHERE t."isArchived" = false AND t."assignedToId" IS NOT NULL
+      ${sourceFilter}
+      GROUP BY t."assignedToId"
     `,
   ]);
 

@@ -35,19 +35,21 @@ function slaBarCls(pct: number) {
   return "bg-red-500";
 }
 
-export default function CohortsPanel() {
+export default function CohortsPanel({ dataSourceId }: { dataSourceId: string | null }) {
   const [cohorts, setCohorts] = useState<Cohort[] | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    setLoading(true);
     let cancelled = false;
-    fetch("/api/analytics/cohorts")
+    const ds = dataSourceId ? `?dataSourceId=${encodeURIComponent(dataSourceId)}` : "";
+    fetch(`/api/analytics/cohorts${ds}`)
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => { if (!cancelled) setCohorts(d?.cohorts ?? []); })
       .catch(() => { if (!cancelled) setCohorts(null); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, []);
+  }, [dataSourceId]);
 
   return (
     <div>

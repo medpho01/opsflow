@@ -156,7 +156,7 @@ function BarChart({ series }: { series: Point[] }) {
   );
 }
 
-export default function TrendsPanel() {
+export default function TrendsPanel({ dataSourceId }: { dataSourceId: string | null }) {
   const [range, setRange] = useState<Range>("week");
   const [data, setData] = useState<TimeseriesResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -164,13 +164,14 @@ export default function TrendsPanel() {
   useEffect(() => {
     setLoading(true);
     let cancelled = false;
-    fetch(`/api/analytics/timeseries?range=${range}`)
+    const ds = dataSourceId ? `&dataSourceId=${encodeURIComponent(dataSourceId)}` : "";
+    fetch(`/api/analytics/timeseries?range=${range}${ds}`)
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => { if (!cancelled) setData(d); })
       .catch(() => { if (!cancelled) setData(null); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [range]);
+  }, [range, dataSourceId]);
 
   return (
     <div className="space-y-6">

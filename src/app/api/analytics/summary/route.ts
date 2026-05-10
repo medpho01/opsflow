@@ -40,11 +40,18 @@ export async function GET(request: NextRequest) {
 
   const { searchParams } = new URL(request.url);
   const dateParam = searchParams.get("date");
+  const dataSourceId = searchParams.get("dataSourceId"); // W5
 
   // IST-anchored dayStart. parseDateOrNull falls back to today's IST
   // midnight if the param is absent or malformed.
   const dayStart = parseDateOrNull(dateParam) ?? startOfTodayIST();
   const dayEnd = new Date(dayStart.getTime() + 86_400_000);
+
+  // W5 — Source slicer. Threaded into every count via the Task → TaskRule
+  // relation. Empty object (no-op) when no source is selected.
+  const sourceWhere = dataSourceId
+    ? { taskRule: { dataSourceId } }
+    : {};
 
   const [
     createdToday,
@@ -55,11 +62,11 @@ export async function GET(request: NextRequest) {
     agentStats,
     pollStats,
   ] = await Promise.all([
-    prisma.task.count({ where: { createdAt: { gte: dayStart, lt: dayEnd } } }),
-    prisma.task.count({ where: { status: TaskStatus.COMPLETED, completedAt: { gte: dayStart, lt: dayEnd } } }),
-    prisma.task.count({ where: { slaBreachedAt: { gte: dayStart, lt: dayEnd } } }),
+    prisma.task.count({ where: { createdAt: { gte: dayStart, lt: dayEnd }, ...sourceWhere } }),
+    prisma.task.count({ where: { status: TaskStatus.COMPLETED, completedAt: { gte: dayStart, lt: dayEnd }, ...sourceWhere } }),
+    prisma.task.count({ where: { slaBreachedAt: { gte: dayStart, lt: dayEnd }, ...sourceWhere } }),
     prisma.task.count({
-      where: { status: { notIn: [TaskStatus.COMPLETED, TaskStatus.CANCELLED] } },
+      where: { status: { notIn: [TaskStatus.COMPLETED, TaskStatus.CANCELLED] }, ...sourceWhere },
     }),
     // SLA-compliant completions (numerator scoped to the same set as
     // `completedToday` — eliminates the divisor mismatch).
@@ -68,6 +75,7 @@ export async function GET(request: NextRequest) {
         status: TaskStatus.COMPLETED,
         completedAt: { gte: dayStart, lt: dayEnd },
         slaBreachedAt: null,
+        ...sourceWhere,
       },
     }),
 
@@ -79,6 +87,7 @@ export async function GET(request: NextRequest) {
           where: {
             status: TaskStatus.COMPLETED,
             completedAt: { gte: dayStart, lt: dayEnd },
+            ...sourceWhere,
           },
           select: { id: true, slaBreachedAt: true },
         },

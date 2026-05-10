@@ -17,7 +17,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSessionFromRequest } from "@/lib/auth/session";
 import prisma from "@/lib/db/client";
-import { UserRole } from "@prisma/client";
+import { Prisma, UserRole } from "@prisma/client";
 import { getRangeStart } from "../_helpers";
 
 type Dimension = "source" | "rule" | "store" | "task-type";
@@ -61,7 +61,23 @@ export async function GET(request: NextRequest) {
   }
 
   const range = searchParams.get("range") ?? "today";
+  const dataSourceId = searchParams.get("dataSourceId"); // W5
   const since = getRangeStart(range);
+
+  // Source filter: dimension="source" already groups by source so a
+  // filter would just trivially return one row — we skip it there.
+  // For rule / store / task-type, EXISTS-subquery the matching source.
+  const sourceFilter = dataSourceId && dimension !== "source"
+    ? Prisma.sql`AND EXISTS (
+        SELECT 1 FROM taskos.task_rules tr2
+        WHERE tr2.id = t."taskRuleId" AND tr2."dataSourceId" = ${dataSourceId}
+      )`
+    : Prisma.empty;
+  // For dimension="rule", the GROUP BY already references task_rules tr;
+  // we can filter on tr.dataSourceId directly (cheaper than EXISTS).
+  const ruleSourceFilter = dataSourceId && dimension === "rule"
+    ? Prisma.sql`AND tr."dataSourceId" = ${dataSourceId}`
+    : Prisma.empty;
 
   // Each dimension differs only in (a) which table we group by and
   // (b) the join needed to surface its human-readable name. SQL kept
@@ -102,6 +118,7 @@ export async function GET(request: NextRequest) {
       FROM taskos.task_rules tr
       LEFT JOIN taskos.tasks t ON t."taskRuleId" = tr.id AND t."isArchived" = false
       WHERE tr."isActive" = true
+      ${ruleSourceFilter}
       GROUP BY tr.id, tr.name
       ORDER BY tr.name ASC
     `;
@@ -123,6 +140,7 @@ export async function GET(request: NextRequest) {
       FROM taskos.tasks t
       LEFT JOIN public."Store" s ON s.id = t."storeId"
       WHERE t."isArchived" = false
+      ${sourceFilter}
       GROUP BY t."storeId", s."storeName"
       ORDER BY s."storeName" ASC NULLS LAST
     `;
@@ -140,6 +158,7 @@ export async function GET(request: NextRequest) {
         COUNT(t.id)                                                                                   AS total
       FROM taskos.task_types tt
       LEFT JOIN taskos.tasks t ON t."taskTypeId" = tt.id AND t."isArchived" = false
+      ${sourceFilter}
       GROUP BY tt.id, tt.label
       ORDER BY tt.label ASC
     `;

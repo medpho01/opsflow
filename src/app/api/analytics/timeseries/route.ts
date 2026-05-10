@@ -14,7 +14,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSessionFromRequest } from "@/lib/auth/session";
 import prisma from "@/lib/db/client";
-import { UserRole } from "@prisma/client";
+import { Prisma, UserRole } from "@prisma/client";
 import { getRangeStart, startOfTodayIST } from "../_helpers";
 
 type Range = "week" | "month";
@@ -35,26 +35,36 @@ export async function GET(request: NextRequest) {
 
   const rangeParam = (request.nextUrl.searchParams.get("range") ?? "week") as Range;
   const range: Range = rangeParam === "month" ? "month" : "week";
+  const dataSourceId = request.nextUrl.searchParams.get("dataSourceId"); // W5
   const since = getRangeStart(range);
   const today = startOfTodayIST();
+
+  const sourceFilter = dataSourceId
+    ? Prisma.sql`AND EXISTS (
+        SELECT 1 FROM taskos.task_rules tr
+        WHERE tr.id = t."taskRuleId" AND tr."dataSourceId" = ${dataSourceId}
+      )`
+    : Prisma.empty;
 
   const [completedRows, breachedRows] = await Promise.all([
     prisma.$queryRaw<DayRow[]>`
       SELECT
-        to_char(("completedAt" AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date, 'YYYY-MM-DD') AS day,
+        to_char((t."completedAt" AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date, 'YYYY-MM-DD') AS day,
         COUNT(*)                                              AS completed,
-        COUNT(*) FILTER (WHERE "slaBreachedAt" IS NULL)       AS sla_compliant
-      FROM taskos.tasks
-      WHERE status = 'COMPLETED'
-        AND "completedAt" >= ${since}
+        COUNT(*) FILTER (WHERE t."slaBreachedAt" IS NULL)     AS sla_compliant
+      FROM taskos.tasks t
+      WHERE t.status = 'COMPLETED'
+        AND t."completedAt" >= ${since}
+        ${sourceFilter}
       GROUP BY 1
     `,
     prisma.$queryRaw<DayRow[]>`
       SELECT
-        to_char(("slaBreachedAt" AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date, 'YYYY-MM-DD') AS day,
+        to_char((t."slaBreachedAt" AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date, 'YYYY-MM-DD') AS day,
         COUNT(*) AS breached
-      FROM taskos.tasks
-      WHERE "slaBreachedAt" >= ${since}
+      FROM taskos.tasks t
+      WHERE t."slaBreachedAt" >= ${since}
+        ${sourceFilter}
       GROUP BY 1
     `,
   ]);

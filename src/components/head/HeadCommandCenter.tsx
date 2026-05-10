@@ -90,6 +90,110 @@ const ALERT_TYPE_COLORS: Record<string, string> = {
 };
 
 /**
+ * SourceHealthCard — replaces the prior "source chips" strip with a card
+ * that surfaces per-source open-task counts AND the cycle-level health
+ * signals the audit (feature 08) flagged: last poll, success rate over
+ * the last hour, tasks created last hour. Calls /api/sources/health.
+ */
+interface SourceHealth {
+  cycle: {
+    lastPollAt: string | null;
+    cyclesInLastHour: number;
+    successCount: number;
+    successRate: number | null;
+    health: "green" | "amber" | "red";
+  };
+  sources: Array<{
+    id: string;
+    sourceId: string;
+    displayName: string;
+    openTasks: number;
+    tasksLastHour: number;
+  }>;
+}
+
+function formatRelativeTime(iso: string | null): string {
+  if (!iso) return "never";
+  const d = new Date(iso);
+  const seconds = Math.round((Date.now() - d.getTime()) / 1000);
+  if (seconds < 60) return `${seconds}s ago`;
+  const mins = Math.round(seconds / 60);
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.round(mins / 60);
+  return `${hours}h ago`;
+}
+
+function SourceHealthCard({ refreshKey }: { refreshKey: number }) {
+  const [data, setData] = useState<SourceHealth | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/sources/health")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (!cancelled) setData(d);
+      })
+      .catch(() => { if (!cancelled) setData(null); });
+    return () => { cancelled = true; };
+  }, [refreshKey]);
+
+  if (!data) return null;
+
+  const { cycle, sources } = data;
+  const healthCls =
+    cycle.health === "green" ? "bg-emerald-400" :
+    cycle.health === "amber" ? "bg-amber-400" :
+    "bg-red-400";
+  const healthLabel =
+    cycle.health === "green" ? "healthy" :
+    cycle.health === "amber" ? "degraded" :
+    "unhealthy";
+
+  return (
+    <div className="bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3">
+      {/* Cycle header — global health for the polling cycle. */}
+      <div className="flex items-center gap-3 flex-wrap">
+        <span className="text-[10px] text-zinc-600 uppercase tracking-wider font-semibold">Sources</span>
+        <span className="flex items-center gap-1.5">
+          <span className={`w-1.5 h-1.5 rounded-full ${healthCls}`} />
+          <span className="text-xs text-zinc-300 font-medium capitalize">{healthLabel}</span>
+        </span>
+        <span className="text-xs text-zinc-500">Last poll {formatRelativeTime(cycle.lastPollAt)}</span>
+        {cycle.successRate !== null && (
+          <span className="text-xs text-zinc-500">
+            {cycle.successCount}/{cycle.cyclesInLastHour} cycles ok
+          </span>
+        )}
+      </div>
+
+      {/* Per-source rows — open tasks + last-hour fire count. */}
+      {sources.length > 0 && (
+        <div className="mt-3 flex flex-wrap gap-2">
+          {sources.map((s) => (
+            <div
+              key={s.id}
+              className="flex items-center gap-3 bg-zinc-950/60 border border-zinc-800 rounded-lg px-3 py-1.5"
+            >
+              <svg className="w-3 h-3 text-emerald-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4" />
+              </svg>
+              <span className="text-xs text-zinc-300">{s.displayName}</span>
+              <span className={`text-xs font-semibold ${s.openTasks > 0 ? "text-blue-400" : "text-zinc-600"}`}>
+                {s.openTasks} open
+              </span>
+              <span className="text-[10px] text-zinc-500">·</span>
+              <span className="text-[10px] text-zinc-500">
+                {s.tasksLastHour > 0 ? `+${s.tasksLastHour} last hour` : "no new tasks"}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
  * RosterGlanceTile — single-row breakdown of the team's current
  * rosterStatus values. Buckets match computeRosterStatus's output enum:
  * ACTIVE / ON_LEAVE / SICK / OFF. Renders compactly so it fits between
@@ -304,26 +408,9 @@ export default function HeadCommandCenter() {
           <RosterGlanceTile team={team} />
         )}
 
-        {/* ── Per-source breakdown ── */}
-        {sourceStats.length > 0 && (
-          <div className="flex flex-wrap gap-2 items-center">
-            <span className="text-[10px] text-zinc-600 uppercase tracking-wider font-semibold mr-1">Sources</span>
-            {sourceStats.map((s) => (
-              <div
-                key={s.sourceId}
-                className="flex items-center gap-2 bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-1.5"
-              >
-                <svg className="w-3 h-3 text-emerald-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4" />
-                </svg>
-                <span className="text-xs text-zinc-300">{s.displayName}</span>
-                <span className={`text-xs font-semibold ${s.openTasks > 0 ? "text-blue-400" : "text-zinc-600"}`}>
-                  {s.openTasks} open
-                </span>
-              </div>
-            ))}
-          </div>
-        )}
+        {/* ── Source health card (W3) — replaces the prior plain
+             source-chips strip. Adds cycle health + tasks-last-hour. */}
+        <SourceHealthCard refreshKey={refreshKey} />
 
         <div className="grid grid-cols-3 gap-5">
           {/* ── Risk Zone ── */}

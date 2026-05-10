@@ -56,6 +56,40 @@ function startOfTodayIST(): Date {
   return new Date(`${istDateKey}T00:00:00+05:30`);
 }
 
+/**
+ * Resolve the start-of-range for the dashboard's "Done in range" /
+ * "Breached in range" tiles. Three buckets the head can toggle between
+ * via the W4 segmented control:
+ *
+ *   today  — IST midnight today
+ *   shift  — IST 09:00 today if we're past 09:00; otherwise IST 09:00
+ *            yesterday. India ops typically run a 09:00–21:00 day shift,
+ *            so this captures "what's happened since the shift began".
+ *   week   — IST 00:00 of Monday this week.
+ */
+type DashboardRange = "today" | "shift" | "week";
+
+function startOfRangeIST(range: DashboardRange): Date {
+  const today = startOfTodayIST();
+  if (range === "today") return today;
+
+  if (range === "shift") {
+    // IST 09:00 today.
+    const istDateKey = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+    const shiftStart = new Date(`${istDateKey}T09:00:00+05:30`);
+    if (Date.now() >= shiftStart.getTime()) return shiftStart;
+    // Pre-09:00 IST — the active shift began at 09:00 yesterday.
+    return new Date(shiftStart.getTime() - 24 * 60 * 60 * 1000);
+  }
+
+  // range === "week": Monday 00:00 IST. JS getDay(): Sunday=0..Saturday=6.
+  // Monday = 1; if today is Sunday, Monday is 6 days ago.
+  const istNow = new Date(today);
+  const dow = istNow.getUTCDay(); // today is at IST midnight; UTC dow matches IST dow at midnight.
+  const daysSinceMonday = dow === 0 ? 6 : dow - 1;
+  return new Date(today.getTime() - daysSinceMonday * 24 * 60 * 60 * 1000);
+}
+
 interface TaskCountsRow {
   open_tasks: bigint;
   breached: bigint;
@@ -74,10 +108,18 @@ export async function GET(request: NextRequest) {
 
   const now = new Date();
   const warningThreshold = new Date(now.getTime() + 10 * 60_000); // 10 min
-  const dayStart = startOfTodayIST();
   const dayOfWeek = getUTCDayOfWeek(now);
 
-  // Date range for "today" exception loading — full IST day.
+  // W4 — `range` toggle for the "Done in range" / "Breached in range"
+  // tiles. Defaults to "today" so existing callers behave identically.
+  const rangeParam = request.nextUrl.searchParams.get("range");
+  const range: DashboardRange =
+    rangeParam === "shift" || rangeParam === "week" ? rangeParam : "today";
+  const rangeStart = startOfRangeIST(range);
+
+  // Roster exception window stays anchored to today — rosters are a
+  // calendar-day concept; broadening to "this week" doesn't make sense.
+  const dayStart = startOfTodayIST();
   const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
 
   // Labstack outage marker. The fetchAllActiveOrders count used to silence
@@ -122,8 +164,8 @@ export async function GET(request: NextRequest) {
                           AND "slaDeadline" >  ${now}
                           AND "slaDeadline" <= ${warningThreshold})                                                AS warning,
         COUNT(*) FILTER (WHERE status = 'CREATED' AND "assignedToId" IS NULL)                                      AS unassigned,
-        COUNT(*) FILTER (WHERE status = 'COMPLETED' AND "completedAt" >= ${dayStart})                              AS completed_today,
-        COUNT(*) FILTER (WHERE "slaBreachedAt" >= ${dayStart})                                                     AS breached_today
+        COUNT(*) FILTER (WHERE status = 'COMPLETED' AND "completedAt" >= ${rangeStart})                            AS completed_today,
+        COUNT(*) FILTER (WHERE "slaBreachedAt" >= ${rangeStart})                                                   AS breached_today
       FROM taskos.tasks
       WHERE "isArchived" = false
     `,
@@ -288,6 +330,9 @@ export async function GET(request: NextRequest) {
     team,
     recentAlerts,
     lastPollAt: lastPoll?.finishedAt ?? null,
+    // W4 — echoes the resolved range so the UI can label the affected
+    // tiles ("Done Today" vs "Done This Shift" vs "Done This Week").
+    range: { key: range, since: rangeStart.toISOString() },
     // Surface labstack reachability so the UI can render a "labstack
     // unreachable" banner instead of treating activeOrders=null as 0.
     labstackError,

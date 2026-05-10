@@ -237,10 +237,14 @@ export default function HeadCommandCenter() {
   const [refreshKey, setRefreshKey] = useState(0);
   const [dismissedAlerts, setDismissedAlerts] = useState<Set<number>>(new Set());
   const [showCreateModal, setShowCreateModal] = useState(false);
+  // W4 — date range toggle. "today" matches the prior behaviour (the
+  // server defaults to today when no `range` is passed), so users who
+  // never touch the control see the same dashboard as before.
+  const [range, setRange] = useState<"today" | "shift" | "week">("today");
 
   const fetchDashboard = useCallback(async () => {
     try {
-      const res = await fetch("/api/dashboard");
+      const res = await fetch(`/api/dashboard?range=${range}`);
       if (!res.ok) {
         console.error(`[Dashboard] HTTP ${res.status}:`, res.statusText);
         setLoading(false);
@@ -253,7 +257,7 @@ export default function HeadCommandCenter() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [range]);
 
   useEffect(() => {
     fetchDashboard();
@@ -335,6 +339,28 @@ export default function HeadCommandCenter() {
       </div>
 
       <div className="px-6 py-5 space-y-6">
+        {/* ── W4 Date range toggle — affects the "Done" + "Breached"
+             tiles' counts AND labels. Defaults to "today" (existing
+             behaviour). */}
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] text-zinc-600 uppercase tracking-wider font-semibold">Range</span>
+          <div className="inline-flex rounded-lg bg-zinc-900 border border-zinc-800 p-0.5">
+            {(["today", "shift", "week"] as const).map((r) => (
+              <button
+                key={r}
+                onClick={() => setRange(r)}
+                className={`px-3 py-1 text-xs rounded-md capitalize transition-colors ${
+                  range === r
+                    ? "bg-zinc-700 text-white"
+                    : "text-zinc-400 hover:text-zinc-200"
+                }`}
+              >
+                {r === "today" ? "Today" : r === "shift" ? "This Shift" : "This Week"}
+              </button>
+            ))}
+          </div>
+        </div>
+
         {/* ── Stats bar — each tile drills into /head/tasks pre-filtered.
             "Active Orders" + "SLA Health" stay non-interactive (one is a
             labstack count without a tasks-side equivalent, the other is a
@@ -343,6 +369,16 @@ export default function HeadCommandCenter() {
         <div className="grid grid-cols-4 xl:grid-cols-8 gap-3">
           {(() => {
             const today = todayISTKey();
+            // Suffix to apply to range-bound tiles + drill-in dateFrom.
+            // For "today" we keep the original label "Done Today" /
+            // "Breached Today" so the visual stays familiar; "shift" /
+            // "week" relabel explicitly.
+            const rangeSuffix = range === "today" ? "Today" : range === "shift" ? "This Shift" : "This Week";
+            // For drill-in: today uses today, shift uses today (best
+            // single-date approx — "since 09:00" can't be expressed in
+            // dateFrom alone), week uses today (same caveat). Day-level
+            // drill-in is the closest /head/tasks supports.
+            const drillFrom = today;
             const tiles: Array<{
               label: string;
               value: number | string;
@@ -368,11 +404,11 @@ export default function HeadCommandCenter() {
               { label: "SLA Health",
                 value: `${stats.slaHealthPercent}%`,
                 cls: stats.slaHealthPercent >= 90 ? "text-green-400" : stats.slaHealthPercent >= 70 ? "text-amber-400" : "text-red-400" },
-              { label: "Done Today", value: stats.completedToday, cls: "text-green-400",
-                href: `/head/tasks?status=COMPLETED&dateFrom=${today}&dateTo=${today}` },
-              { label: "Breached Today", value: stats.breachedToday,
+              { label: `Done ${rangeSuffix}`, value: stats.completedToday, cls: "text-green-400",
+                href: `/head/tasks?status=COMPLETED&dateFrom=${drillFrom}&dateTo=${drillFrom}` },
+              { label: `Breached ${rangeSuffix}`, value: stats.breachedToday,
                 cls: stats.breachedToday > 0 ? "text-red-400" : "text-zinc-400",
-                href: `/head/tasks?status=BREACHED&dateFrom=${today}&dateTo=${today}` },
+                href: `/head/tasks?status=BREACHED&dateFrom=${drillFrom}&dateTo=${drillFrom}` },
             ];
             return tiles.map(({ label, value, cls, href }) => {
               const inner = (

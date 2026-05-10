@@ -1,14 +1,27 @@
 import { NextRequest, NextResponse } from "next/server";
 import { unarchiveTask } from "@/lib/engine/taskArchiver";
+import { getSessionFromRequest } from "@/lib/auth/session";
+import { UserRole } from "@prisma/client";
 
 /**
  * PATCH /api/tasks/:id/unarchive
- * Manually restore an archived task to active view
+ * Manually restore an archived task to active view. OPS_HEAD only.
+ *
+ * Audit P0 — previously had no auth check; any anonymous request could
+ * unarchive any task by id. Now mirrors `tasks/archive/route.ts`.
  */
 export async function PATCH(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const user = await getSessionFromRequest(request);
+  if (!user) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (user.role !== UserRole.OPS_HEAD) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+
   try {
     const { id } = await params;
     const taskId = parseInt(id);

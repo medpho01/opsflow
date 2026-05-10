@@ -22,7 +22,7 @@ Audit verdicts (PM · Architect · QA) are copied from each feature file — the
 | 05 | [All Tasks (head + agent)](./features/05-all-tasks.md) | 🟢 head · 🔴 agent | 🟡 | Head board solid (saved-views aside). Drawer fixes: `Failed to fetch` + BigInt 500 fixed; drawer now shows tasks of any entityType bound to the same numeric id, ORDER first | **Agent execution console** — biggest single product gap in the audit. SOPs per task type, "why this task?" panel, customer 360, structured outcome capture, snooze, `tel:`/`wa.me` quick actions. Saved filter views on the head board |
 | 06 | [Store Overview](./features/06-store-overview.md) | 🟡 · 🟡 · 🔴 | 🟢 | **W1** — `/api/stores` scoped to STORE_ADMIN's assignments (closes audit P1); accurate Unassigned count via real SQL; no-stores empty state; new `/api/stores/overview` endpoint (5 fetches/refresh → 2); page title shows selected store; city try/catch surfaces real errors instead of silent empty list. | Product additions (commenting, store closure/blackout, store-vs-peer, KPI drill-in, CSAT tile, PDF) explicitly de-scoped per user — out of scope for this feature. |
 | 07 | [Analytics](./features/07-analytics.md) | 🔴 · 🔴 · 🟡 | 🔴 | — | Source-level + rule-level analytics (the missing dimensions); SLA trend over time; CSV export; **third re-implementation of `computeRosterStatus`** in `analytics/agents/route.ts` references nonexistent columns — silently a no-op |
-| 08 | [Command Center](./features/08-command-center.md) | 🟡 · 🔴 · 🔴 | 🔴 | Per-source chip count fix; AlertBell rendering crash fix | **P0 #1 still live** — Team Status shows whole team OFF because dashboard reads dead `dailyRosters` (`src/app/api/dashboard/route.ts:185`); KPI drill-in; sources-health tile; alerts severity sort + ack-all |
+| 08 | [Command Center](./features/08-command-center.md) | 🟡 · 🔴 · 🔴 | 🟢 | **W1** — 5 audit bugs (dailyRosters → computeRosterStatus, `now.setHours` mutation, role check, IST-anchored "today", silenced labstack outage) + arch (12 queries → 7). **W2** — KPI drill-in on 6/8 tiles + Roster glance tile. **W3** — Source health card via new `/api/sources/health`. **W4** — Today/Shift/Week range toggle. **W5** — Audio alert + browser notification on new BREACHED. | Alerts severity sort / unread badge / ack-all (P1) — explicitly de-scoped from the wave. |
 
 ---
 
@@ -32,14 +32,14 @@ From [p0-fixes.md](./p0-fixes.md). **4 of 12 done.**
 
 | # | Bug | File | Status |
 |---|---|---|---|
-| 1 | Command Center shows whole team OFF (reads dead `dailyRosters`) | `src/app/api/dashboard/route.ts:185` | ❌ |
+| 1 | Command Center shows whole team OFF (reads dead `dailyRosters`) | `src/app/api/dashboard/route.ts:185` | ✅ Command Center W1 |
 | 2 | STORE_ADMIN can read tasks for any store (`where.storeId` overwritten) | `src/app/api/tasks/route.ts:232 → 243` | ❌ |
 | 3 | `/api/tasks/archive` has no authentication | `src/app/api/tasks/archive/route.ts:9` | ❌ |
 | 4 | STORE_ADMIN can PATCH any task (only OPS_AGENT-not-own is checked) | `src/app/api/tasks/[id]/route.ts:63` | ❌ |
 | 5 | DELETE team-member wipes completion audit history | `src/app/api/team/[id]/route.ts` | ✅ Team W1.2 — preserves COMPLETED tasks, stamps `previousAssigneeId` in metadata |
 | 6 | Metadata conditions silently never match (column not selected) | `src/lib/engine/labstack.ts` | ✅ Engine W1.1 |
 | 7 | SQL injection in `data-sources/validate` | `src/app/api/data-sources/validate/route.ts` | ✅ Whitelist validators |
-| 8 | `now.setHours(0,0,0,0)` mutates shared `now` in dashboard | `src/app/api/dashboard/route.ts:67` | ❌ |
+| 8 | `now.setHours(0,0,0,0)` mutates shared `now` in dashboard | `src/app/api/dashboard/route.ts:67` | ✅ Command Center W1 |
 | 9 | `computeRosterStatus` uses local Node TZ via `toTimeString` | `src/lib/roster/availability.ts:57` | ❌ |
 | 10 | Round-robin starvation when candidate set changes (`currentIndex === -1` always picks 0) | `src/lib/engine/taskCreator.ts:385` | ❌ |
 | 11 | Triple roster mechanism (dailyRoster still actively written from 4 places) | `src/app/api/roster/route.ts:93`, `team/me/roster/route.ts:33`, `lib/task-creation/roster-validator.ts:56` | ❌ |

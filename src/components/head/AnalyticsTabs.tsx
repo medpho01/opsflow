@@ -19,8 +19,9 @@ import { useState } from "react";
 import AgentPerformancePanel from "./AgentPerformancePanel";
 import DailySummaryPanel from "./DailySummaryPanel";
 import BreakdownPanel from "./BreakdownPanel";
+import TrendsPanel from "./TrendsPanel";
 
-type Tab = "agents" | "sources" | "rules" | "stores" | "task-types" | "daily";
+type Tab = "agents" | "sources" | "rules" | "stores" | "task-types" | "trends" | "daily";
 
 const TABS: Array<{ key: Tab; label: string }> = [
   { key: "agents",     label: "Agents" },
@@ -28,6 +29,7 @@ const TABS: Array<{ key: Tab; label: string }> = [
   { key: "rules",      label: "Rules" },
   { key: "stores",     label: "Stores" },
   { key: "task-types", label: "Task Types" },
+  { key: "trends",     label: "Trends" },
   { key: "daily",      label: "Daily Summary" },
 ];
 
@@ -63,6 +65,7 @@ export default function AnalyticsTabs() {
         {tab === "rules"      && <BreakdownPanel dimension="rule" />}
         {tab === "stores"     && <BreakdownPanel dimension="store" />}
         {tab === "task-types" && <BreakdownPanel dimension="task-type" />}
+        {tab === "trends"     && <TrendsPanel />}
         {tab === "daily"      && <DailySummaryPanel />}
       </div>
     </div>

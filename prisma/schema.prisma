@@ -1,5 +1,17 @@
 generator client {
-  provider = "prisma-client-js"
+  provider      = "prisma-client-js"
+  // `native` for local dev (darwin-arm64). The Docker image is Debian
+  // bookworm-slim with OpenSSL 3, so both arm64 and x86_64 variants of
+  // the linux glibc target are bundled — Prisma picks the right one at
+  // runtime based on the host arch.
+  binaryTargets = ["native", "linux-arm64-openssl-3.0.x", "debian-openssl-3.0.x"]
+  // Use the binary (subprocess) engine instead of the library (.so
+  // Node-addon) engine. Avoids a glibc heap-corruption crash
+  // ("malloc(): unaligned tcache chunk detected") seen when the
+  // library engine loads inside Debian bookworm's glibc 2.36 in the
+  // production Node 22 image. Slightly more overhead per query
+  // (subprocess IPC) but trades that for stability.
+  engineType    = "binary"
 }
 
 datasource db {

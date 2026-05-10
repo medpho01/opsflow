@@ -1,0 +1,60 @@
+# OpsFlow / TaskOs — local Docker stack.
+#
+# Brings up Postgres + the Next.js app. On first `docker compose up`:
+#   1. Postgres starts and creates the `opsflow` database
+#   2. The app waits for Postgres to be healthy
+#   3. The app's entrypoint runs `prisma db push` to materialise the
+#      taskos schema, seeds one admin user, then starts Next.
+#
+# Subsequent `up`s are no-ops — db push is idempotent, the seed upserts.
+#
+# Usage:
+#   cp .env.example .env
+#   docker compose up --build
+#   open http://localhost:3000
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-opsflow}
+      POSTGRES_USER: ${POSTGRES_USER:-opsflow}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-opsflow_dev_password}
+      # IST timezone matches the convention used throughout the app.
+      # All naive TIMESTAMP columns will be interpreted in IST.
+      TZ: Asia/Kolkata
+      PGTZ: Asia/Kolkata
+    volumes:
+      - opsflow_pgdata:/var/lib/postgresql/data
+    # Default host port 5433 (not 5432) so we don't collide with any
+    # local Postgres install. Containers reach the DB at db:5432.
+    ports:
+      - "${DB_PORT:-5433}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-opsflow} -d ${POSTGRES_DB:-opsflow}"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-opsflow}:${POSTGRES_PASSWORD:-opsflow_dev_password}@db:5432/${POSTGRES_DB:-opsflow}?schema=taskos
+      JWT_SECRET: ${JWT_SECRET:-please-change-me-in-production}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-8h}
+      NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
+      POLLING_INTERVAL_MS: ${POLLING_INTERVAL_MS:-300000}
+      TIMEZONE: Asia/Kolkata
+      # Admin seed (one-time on first boot; idempotent on subsequent boots)
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@opsflow.local}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-changeme123}
+      ADMIN_NAME: ${ADMIN_NAME:-Admin}
+    ports:
+      - "${APP_PORT:-3000}:3000"
+
+volumes:
+  opsflow_pgdata:

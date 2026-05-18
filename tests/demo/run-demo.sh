@@ -30,9 +30,27 @@ psql_in_container() {
   ' bash "$@"
 }
 
-# Copy SQL into the container (since psql in the container can read files
-# only from the container FS) and run it.
-run_sql_file() {
+# Copy SQL into the container and run it against the LABSTACK source DB.
+# Demo seed/cleanup target labstack tables (public.Order, public.Appointment,
+# public.PharmaOrder), so we use LABSTACK_DATABASE_URL when set, falling
+# back to DATABASE_URL when source and taskos share the same DB.
+#
+# verify reads from the taskos schema, so it uses the default Prisma
+# client (DATABASE_URL) via tests/demo/verify.ts.
+run_labstack_sql_file() {
+  local file="$1"
+  local basename
+  basename=$(basename "$file")
+  docker cp "$file" "$APP_CONTAINER:/tmp/$basename" >/dev/null
+  $COMPOSE exec -T app sh -c "
+    URL=\${LABSTACK_DATABASE_URL:-\$DATABASE_URL}
+    CLEAN_URL=\$(echo \"\$URL\" | sed 's/?schema=[^&]*//; s/&schema=[^&]*//')
+    psql \"\$CLEAN_URL\" -v ON_ERROR_STOP=1 -f /tmp/$basename
+  "
+}
+
+# Same but against the TASKOS DB (DATABASE_URL).
+run_taskos_sql_file() {
   local file="$1"
   local basename
   basename=$(basename "$file")
@@ -45,12 +63,13 @@ run_sql_file() {
 
 cmd_seed() {
   echo "→ Seeding demo orders…"
-  run_sql_file "$DEMO_DIR/seed-orders.sql"
+  run_labstack_sql_file "$DEMO_DIR/seed-orders.sql"
 }
 
 cmd_cleanup() {
-  echo "→ Cleaning up demo orders + tasks…"
-  run_sql_file "$DEMO_DIR/cleanup.sql"
+  echo "→ Cleaning up demo orders (labstack) + tasks (taskos)…"
+  run_labstack_sql_file "$DEMO_DIR/cleanup.sql"
+  run_taskos_sql_file "$DEMO_DIR/cleanup-tasks.sql"
 }
 
 cmd_poll() {

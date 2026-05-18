@@ -17,6 +17,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSessionFromRequest } from "@/lib/auth/session";
 import prisma from "@/lib/db/client";
+import labstack from "@/lib/db/labstack";
 import { Prisma, UserRole } from "@prisma/client";
 import { getRangeStart } from "../_helpers";
 
@@ -123,14 +124,15 @@ export async function GET(request: NextRequest) {
       ORDER BY tr.name ASC
     `;
   } else if (dimension === "store") {
-    // Store names live in labstack public schema; left-join across
-    // schemas works because the FK is nominal (Task.storeId is just a
-    // number — no FK constraint to public."Store"). Tasks with no store
-    // collapse into a "(no store)" bucket.
-    rows = await prisma.$queryRaw<AggRow[]>`
+    // Two-step lookup so this works when taskos and labstack are on
+    // different physical databases (a cross-DB JOIN would fail there).
+    // 1) Aggregate task counts by storeId on the taskos DB.
+    // 2) Resolve store names from labstack for the storeIds we saw.
+    // Tasks with no store collapse into a "(no store)" bucket.
+    const aggRows = await prisma.$queryRaw<Array<Omit<AggRow, "name"> & { storeId: number | null }>>`
       SELECT
         COALESCE(t."storeId", -1)::text                                                               AS key,
-        COALESCE(s."storeName", '(no store)')                                                         AS name,
+        t."storeId"                                                                                   AS "storeId",
         COUNT(t.id) FILTER (WHERE t.status NOT IN ('COMPLETED','CANCELLED'))                          AS open,
         COUNT(t.id) FILTER (WHERE t.status = 'COMPLETED' AND t."completedAt" >= ${since})             AS completed,
         COUNT(t.id) FILTER (WHERE t."slaBreachedAt" >= ${since})                                      AS breached,
@@ -138,12 +140,26 @@ export async function GET(request: NextRequest) {
                             AND t."slaBreachedAt" IS NULL)                                            AS sla_compliant,
         COUNT(t.id)                                                                                   AS total
       FROM taskos.tasks t
-      LEFT JOIN public."Store" s ON s.id = t."storeId"
       WHERE t."isArchived" = false
       ${sourceFilter}
-      GROUP BY t."storeId", s."storeName"
-      ORDER BY s."storeName" ASC NULLS LAST
+      GROUP BY t."storeId"
     `;
+
+    const storeIds = aggRows.map((r) => r.storeId).filter((id): id is number => id !== null);
+    const storeNameById = new Map<number, string>();
+    if (storeIds.length > 0) {
+      const stores = await labstack.$queryRaw<Array<{ id: number; storeName: string }>>`
+        SELECT id, "storeName" FROM public."Store" WHERE id = ANY(${storeIds}::int[])
+      `;
+      for (const s of stores) storeNameById.set(s.id, s.storeName);
+    }
+
+    rows = aggRows
+      .map((r) => ({
+        ...r,
+        name: r.storeId == null ? "(no store)" : (storeNameById.get(r.storeId) ?? "(no store)"),
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name));
   } else {
     // task-type
     rows = await prisma.$queryRaw<AggRow[]>`

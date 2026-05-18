@@ -32,6 +32,11 @@ services:
       # reaches the host machine on macOS / Windows; on Linux pass
       # --add-host=host.docker.internal:host-gateway or use the host IP.
       DATABASE_URL: ${DATABASE_URL}
+      # Optional. Where source-of-truth data lives (orders, appointments,
+      # users, stores). Falls back to DATABASE_URL if unset. Set when
+      # labstack runs on a different Postgres instance than the taskos
+      # schema.
+      LABSTACK_DATABASE_URL: ${LABSTACK_DATABASE_URL:-}
       # Constrains glibc's per-thread malloc arenas to 2. Without this,
       # the Prisma library engine (a Node native addon) trips
       # "malloc(): unaligned tcache chunk detected" on Debian bookworm's

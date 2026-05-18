@@ -31,12 +31,7 @@
  * statusUpdatedAt, appointmentTime) — the ones the engine itself
  * reasons about — are the ones we cast.
  */
-import prisma from "@/lib/db/client";
-
-// Raw query helper — reads from labstack's public schema
-async function labstackQuery<T>(sql: string, params: unknown[] = []): Promise<T[]> {
-  return prisma.$queryRawUnsafe<T[]>(sql, ...params);
-}
+import { labstackQuery } from "@/lib/db/labstack";
 
 export interface RawOrder {
   id: number;

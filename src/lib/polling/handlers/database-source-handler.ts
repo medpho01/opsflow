@@ -5,6 +5,7 @@
  */
 
 import prisma from "@/lib/db/client";
+import labstack from "@/lib/db/labstack";
 import {
   ISourceHandler,
   SourceEntity,
@@ -65,7 +66,7 @@ export class DatabaseSourceHandler implements ISourceHandler {
       );
 
       // Execute the query
-      const rows = await prisma.$queryRawUnsafe(query) as any[];
+      const rows = await labstack.$queryRawUnsafe(query) as any[];
 
       if (!rows || rows.length === 0) {
         return [];
@@ -154,7 +155,7 @@ export class DatabaseSourceHandler implements ISourceHandler {
     try {
       // Try to count rows in the table
       const countQuery = `SELECT COUNT(*) as count FROM ${this.config.tableReference}`;
-      const result = await prisma.$queryRawUnsafe<[{ count: number }]>(countQuery);
+      const result = await labstack.$queryRawUnsafe<[{ count: number }]>(countQuery);
 
       return {
         ok: true,
@@ -202,8 +203,8 @@ export class DatabaseSourceHandler implements ISourceHandler {
         LIMIT 100
       `;
 
-      const types = await prisma.$queryRawUnsafe<Array<{ type: string }>>(typesQuery);
-      const statuses = await prisma.$queryRawUnsafe<Array<{ status: string }>>(
+      const types = await labstack.$queryRawUnsafe<Array<{ type: string }>>(typesQuery);
+      const statuses = await labstack.$queryRawUnsafe<Array<{ status: string }>>(
         statusesQuery
       );
 

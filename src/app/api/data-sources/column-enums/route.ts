@@ -7,7 +7,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSessionFromRequest } from "@/lib/auth/session";
 import { UserRole } from "@prisma/client";
-import prisma from "@/lib/db/client";
+import labstack from "@/lib/db/labstack";
 import { Prisma } from "@prisma/client";
 
 /**
@@ -58,7 +58,7 @@ export async function GET(req: NextRequest) {
     }
 
     // Get the column data type and udt_name from information_schema
-    const columnInfo = await prisma.$queryRaw<
+    const columnInfo = await labstack.$queryRaw<
       Array<{
         data_type: string;
         udt_name: string;
@@ -97,7 +97,7 @@ export async function GET(req: NextRequest) {
 
     // If it's a USER-DEFINED type (enum), fetch the enum values
     if (dataType === "USER-DEFINED" && udtName) {
-      const enumValues = await prisma.$queryRaw<
+      const enumValues = await labstack.$queryRaw<
         Array<{ enumlabel: string }>
       >(
         Prisma.sql`
@@ -128,7 +128,7 @@ export async function GET(req: NextRequest) {
     // This covers cases where the source uses string columns instead of enums
     if (dataType === "character varying" || dataType === "text") {
       try {
-        const distinctValues = await prisma.$queryRawUnsafe<Array<Record<string, string>>>(
+        const distinctValues = await labstack.$queryRawUnsafe<Array<Record<string, string>>>(
           `SELECT DISTINCT "${columnClean}" as val FROM "${tableClean}" WHERE "${columnClean}" IS NOT NULL ORDER BY "${columnClean}" LIMIT 100`
         );
         const values = distinctValues.map((r) => String(r.val)).filter(Boolean);

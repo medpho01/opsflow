@@ -3,7 +3,7 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { getSessionFromRequest } from "@/lib/auth/session";
-import prisma from "@/lib/db/client";
+import labstack from "@/lib/db/labstack";
 
 interface RawOrderDetail {
   id: number;
@@ -36,7 +36,7 @@ export async function GET(
   const orderId = parseInt(id, 10);
   if (isNaN(orderId)) return NextResponse.json({ error: "Invalid order ID" }, { status: 400 });
 
-  const rows = await prisma.$queryRawUnsafe<RawOrderDetail[]>(`
+  const rows = await labstack.$queryRawUnsafe<RawOrderDetail[]>(`
     SELECT
       o.id,
       o."orderType",

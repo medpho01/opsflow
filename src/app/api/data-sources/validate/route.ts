@@ -13,7 +13,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSessionFromRequest } from "@/lib/auth/session";
 import { Prisma, UserRole } from "@prisma/client";
-import prisma from "@/lib/db/client";
+import labstack from "@/lib/db/labstack";
 import {
   isValidSourceId,
   isValidTableReference,
@@ -77,7 +77,7 @@ export async function POST(req: NextRequest) {
     const bareTable = bareTableName(tableReference);
     const requiredColumns = [primaryKeyField, typeFieldName, statusFieldName];
 
-    const tableInfo = await prisma.$queryRaw<
+    const tableInfo = await labstack.$queryRaw<
       Array<{ column_name: string; data_type: string }>
     >(Prisma.sql`
       SELECT column_name, data_type

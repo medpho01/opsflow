@@ -34,6 +34,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { Prisma, UserRole } from "@prisma/client";
 import { getSessionFromRequest } from "@/lib/auth/session";
 import prisma from "@/lib/db/client";
+import labstack from "@/lib/db/labstack";
 import { isValidTableReference, bareTableName } from "@/lib/validation/data-sources";
 import { newRequestId, logAndBuildErrorBody } from "@/lib/observability/request-id";
 
@@ -85,7 +86,7 @@ export async function GET(
     // tableReference + primaryKeyField were validated when the source was
     // registered (see lib/validation/data-sources.ts). The values reach
     // Prisma.raw via that whitelist. The LIMIT is a number param.
-    const rows = await prisma.$queryRaw<Array<Record<string, unknown>>>(Prisma.sql`
+    const rows = await labstack.$queryRaw<Array<Record<string, unknown>>>(Prisma.sql`
       SELECT * FROM ${Prisma.raw(dataSource.tableReference)}
       ORDER BY ${Prisma.raw(`"${dataSource.primaryKeyField}"`)} DESC
       LIMIT ${sampleSize}

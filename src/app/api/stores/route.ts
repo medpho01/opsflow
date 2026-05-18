@@ -16,6 +16,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSessionFromRequest } from "@/lib/auth/session";
 import prisma from "@/lib/db/client";
+import labstack from "@/lib/db/labstack";
 import { UserRole } from "@prisma/client";
 
 interface RawStore {
@@ -48,10 +49,10 @@ export async function GET(request: NextRequest) {
 
   try {
     const stores = allowedStoreIds === null
-      ? await prisma.$queryRawUnsafe<RawStore[]>(
+      ? await labstack.$queryRawUnsafe<RawStore[]>(
           `SELECT id, "storeName", city FROM public."Store" ORDER BY "storeName" ASC LIMIT 200`
         )
-      : await prisma.$queryRawUnsafe<RawStore[]>(
+      : await labstack.$queryRawUnsafe<RawStore[]>(
           // pg expands an int[] param via ANY($1::int[])
           `SELECT id, "storeName", city FROM public."Store"
             WHERE id = ANY($1::int[]) ORDER BY "storeName" ASC LIMIT 200`,

@@ -25,6 +25,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getSessionFromRequest } from "@/lib/auth/session";
 import { Prisma, UserRole } from "@prisma/client";
 import prisma from "@/lib/db/client";
+import labstack from "@/lib/db/labstack";
 import {
   isValidTableReference,
   bareTableName,
@@ -95,7 +96,7 @@ export async function GET(
 
     // ─── Discover columns to pick a sensible ORDER BY ─────────────────────
     // Prefer `updated_at` (canonical), then `updatedAt`, then the primary key.
-    const columns = await prisma.$queryRaw<
+    const columns = await labstack.$queryRaw<
       Array<{ column_name: string; data_type: string; ordinal_position: number }>
     >(Prisma.sql`
       SELECT column_name, data_type, ordinal_position
@@ -134,7 +135,7 @@ export async function GET(
       ? Prisma.sql`ORDER BY ${Prisma.raw(`"${orderByColumn}"`)} DESC NULLS LAST`
       : Prisma.empty;
 
-    const rows = await prisma.$queryRaw<Array<Record<string, unknown>>>(Prisma.sql`
+    const rows = await labstack.$queryRaw<Array<Record<string, unknown>>>(Prisma.sql`
       SELECT * FROM ${Prisma.raw(dataSource.tableReference)}
       ${orderByClause}
       LIMIT ${limit}

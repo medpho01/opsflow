@@ -90,6 +90,42 @@ const p = new PrismaClient();
 docker compose logs -f app
 ```
 
+## Splitting source DB from taskos DB
+
+OpsFlow reads source data (orders, appointments, users, stores) from
+labstack's `public` schema and writes its own data (tasks, alerts,
+sessions, rules) into the `taskos` schema. These can live in **two
+different Postgres instances** if you want.
+
+```env
+# .env — taskos schema (OpsFlow owns this, writes here)
+DATABASE_URL=postgresql://opsflow:secret@taskos-db:5432/opsflow?schema=taskos
+
+# .env — labstack source (read-only; OpsFlow never writes)
+LABSTACK_DATABASE_URL=postgresql://reader:secret@labstack-prod:5432/labstack?sslmode=require
+```
+
+When `LABSTACK_DATABASE_URL` is unset, it falls back to `DATABASE_URL` —
+single-DB deployments don't need to set anything new.
+
+To grant the labstack reader credential only what it needs:
+
+```sql
+CREATE USER opsflow_reader WITH PASSWORD '...';
+GRANT CONNECT ON DATABASE labstack TO opsflow_reader;
+GRANT USAGE ON SCHEMA public TO opsflow_reader;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO opsflow_reader;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO opsflow_reader;
+```
+
+OpsFlow never writes to labstack; SELECT-only is sufficient.
+
+What cross-DB looks like at runtime:
+- Engine fetches orders → labstack DB
+- Engine creates tasks → taskos DB
+- Dashboard "active orders" count → labstack DB (degrades to 0 + warning if labstack is unreachable)
+- Store-name labels in analytics → taskos query for ids, then labstack lookup for names (two-step; no cross-DB JOIN)
+
 ## Connecting to a Postgres on the host (macOS / Windows / Linux)
 
 In `.env`, point `DATABASE_URL` at `host.docker.internal` instead of

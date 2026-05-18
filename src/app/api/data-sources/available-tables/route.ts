@@ -8,7 +8,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSessionFromRequest } from "@/lib/auth/session";
 import { UserRole } from "@prisma/client";
-import prisma from "@/lib/db/client";
+import labstack from "@/lib/db/labstack";
 import { Prisma } from "@prisma/client";
 
 export async function GET(req: NextRequest) {
@@ -23,7 +23,7 @@ export async function GET(req: NextRequest) {
 
   try {
     // Query to get all tables from public schema
-    const result = await prisma.$queryRaw<Array<{ table_name: string }>>(
+    const result = await labstack.$queryRaw<Array<{ table_name: string }>>(
       Prisma.sql`
         SELECT table_name
         FROM information_schema.tables

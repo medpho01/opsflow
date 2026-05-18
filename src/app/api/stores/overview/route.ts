@@ -24,6 +24,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSessionFromRequest } from "@/lib/auth/session";
 import prisma from "@/lib/db/client";
+import labstack from "@/lib/db/labstack";
 import { TaskStatus, UserRole } from "@prisma/client";
 
 interface StoreRow {
@@ -89,7 +90,7 @@ export async function GET(request: NextRequest) {
   let store: StoreRow | null = null;
   if (storeId !== null) {
     try {
-      const rows = await prisma.$queryRawUnsafe<StoreRow[]>(
+      const rows = await labstack.$queryRawUnsafe<StoreRow[]>(
         `SELECT id, "storeName", city FROM public."Store" WHERE id = $1 LIMIT 1`,
         storeId
       );

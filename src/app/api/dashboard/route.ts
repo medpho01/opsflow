@@ -41,6 +41,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSessionFromRequest } from "@/lib/auth/session";
 import prisma from "@/lib/db/client";
+import labstack from "@/lib/db/labstack";
 import { TaskStatus, UserRole } from "@prisma/client";
 import { computeRosterStatus, getUTCDayOfWeek } from "@/lib/roster/availability";
 
@@ -140,7 +141,7 @@ export async function GET(request: NextRequest) {
     // 1. Labstack active-order count via a real COUNT(*). One index scan
     //    over the status filter — no multi-join, no row materialisation.
     //    Wrapped so a labstack outage doesn't take down the whole dashboard.
-    prisma.$queryRaw<Array<{ count: bigint }>>`
+    labstack.$queryRaw<Array<{ count: bigint }>>`
       SELECT COUNT(*)::bigint AS count
       FROM public."Order"
       WHERE "orderStatus" NOT IN ('CANCELED', 'REPORT_DELIVERED', 'PATIENT_MISSED')

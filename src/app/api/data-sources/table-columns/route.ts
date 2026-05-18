@@ -8,7 +8,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSessionFromRequest } from "@/lib/auth/session";
 import { UserRole } from "@prisma/client";
-import prisma from "@/lib/db/client";
+import labstack from "@/lib/db/labstack";
 import { Prisma } from "@prisma/client";
 
 export async function GET(req: NextRequest) {
@@ -40,7 +40,7 @@ export async function GET(req: NextRequest) {
 
   try {
     // Query to get columns for the table
-    const result = await prisma.$queryRaw<
+    const result = await labstack.$queryRaw<
       Array<{ column_name: string; data_type: string; is_nullable: string }>
     >(
       Prisma.sql`

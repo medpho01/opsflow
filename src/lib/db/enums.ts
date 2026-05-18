@@ -3,14 +3,14 @@
  * Fetches enum values directly from the database
  */
 
-import prisma from "./client";
+import labstack from "./labstack";
 
 /**
  * Get all OrderType enum values from the database
  */
 export async function getOrderTypesFromDB(): Promise<string[]> {
   try {
-    const result = await prisma.$queryRawUnsafe(
+    const result = await labstack.$queryRawUnsafe(
       `SELECT enumlabel FROM pg_enum WHERE enumtypid = 'public."OrderType"'::regtype ORDER BY enumsortorder`
     );
 
@@ -28,7 +28,7 @@ export async function getOrderTypesFromDB(): Promise<string[]> {
  */
 export async function getOrderStatusesFromDB(): Promise<string[]> {
   try {
-    const result = await prisma.$queryRawUnsafe(
+    const result = await labstack.$queryRawUnsafe(
       `SELECT enumlabel FROM pg_enum WHERE enumtypid = 'public."OrderStatus"'::regtype ORDER BY enumsortorder`
     );
 

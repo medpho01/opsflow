@@ -13,7 +13,7 @@
  *   and vice-versa. Splitting into two clients does that cleanly.
  *
  * Backward compatibility:
- *   When LABSTACK_DATABASE_URL is unset, it falls back to DATABASE_URL.
+ *   When SOURCE_DATABASE_URL is unset, it falls back to DATABASE_URL.
  *   Existing single-DB deployments work unchanged.
  *
  * Lazy initialization:
@@ -32,14 +32,14 @@
 import { PrismaClient } from "@prisma/client";
 
 function resolveLabstackUrl(): string {
-  const explicit = process.env.LABSTACK_DATABASE_URL;
+  const explicit = process.env.SOURCE_DATABASE_URL;
   if (explicit && explicit.length > 0) return explicit;
 
   const fallback = process.env.DATABASE_URL;
   if (!fallback) {
     throw new Error(
-      "Neither LABSTACK_DATABASE_URL nor DATABASE_URL is set. " +
-      "Set LABSTACK_DATABASE_URL when the labstack source DB is separate " +
+      "Neither SOURCE_DATABASE_URL nor DATABASE_URL is set. " +
+      "Set SOURCE_DATABASE_URL when the labstack source DB is separate " +
       "from the taskos DB, or set DATABASE_URL to a single shared DB."
     );
   }

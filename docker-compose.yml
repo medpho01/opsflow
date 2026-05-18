@@ -36,7 +36,7 @@ services:
       # users, stores). Falls back to DATABASE_URL if unset. Set when
       # labstack runs on a different Postgres instance than the taskos
       # schema.
-      LABSTACK_DATABASE_URL: ${LABSTACK_DATABASE_URL:-}
+      SOURCE_DATABASE_URL: ${SOURCE_DATABASE_URL:-}
       # Constrains glibc's per-thread malloc arenas to 2. Without this,
       # the Prisma library engine (a Node native addon) trips
       # "malloc(): unaligned tcache chunk detected" on Debian bookworm's

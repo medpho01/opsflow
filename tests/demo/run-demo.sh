@@ -32,7 +32,7 @@ psql_in_container() {
 
 # Copy SQL into the container and run it against the LABSTACK source DB.
 # Demo seed/cleanup target labstack tables (public.Order, public.Appointment,
-# public.PharmaOrder), so we use LABSTACK_DATABASE_URL when set, falling
+# public.PharmaOrder), so we use SOURCE_DATABASE_URL when set, falling
 # back to DATABASE_URL when source and taskos share the same DB.
 #
 # verify reads from the taskos schema, so it uses the default Prisma
@@ -43,7 +43,7 @@ run_labstack_sql_file() {
   basename=$(basename "$file")
   docker cp "$file" "$APP_CONTAINER:/tmp/$basename" >/dev/null
   $COMPOSE exec -T app sh -c "
-    URL=\${LABSTACK_DATABASE_URL:-\$DATABASE_URL}
+    URL=\${SOURCE_DATABASE_URL:-\$DATABASE_URL}
     CLEAN_URL=\$(echo \"\$URL\" | sed 's/?schema=[^&]*//; s/&schema=[^&]*//')
     psql \"\$CLEAN_URL\" -v ON_ERROR_STOP=1 -f /tmp/$basename
   "

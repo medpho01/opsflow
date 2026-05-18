@@ -102,10 +102,10 @@ different Postgres instances** if you want.
 DATABASE_URL=postgresql://opsflow:secret@taskos-db:5432/opsflow?schema=taskos
 
 # .env — labstack source (read-only; OpsFlow never writes)
-LABSTACK_DATABASE_URL=postgresql://reader:secret@labstack-prod:5432/labstack?sslmode=require
+SOURCE_DATABASE_URL=postgresql://reader:secret@labstack-prod:5432/labstack?sslmode=require
 ```
 
-When `LABSTACK_DATABASE_URL` is unset, it falls back to `DATABASE_URL` —
+When `SOURCE_DATABASE_URL` is unset, it falls back to `DATABASE_URL` —
 single-DB deployments don't need to set anything new.
 
 To grant the labstack reader credential only what it needs:

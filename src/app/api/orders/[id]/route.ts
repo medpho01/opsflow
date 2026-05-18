@@ -3,6 +3,7 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { getSessionFromRequest } from "@/lib/auth/session";
+import prisma from "@/lib/db/client";
 import labstack from "@/lib/db/labstack";
 
 interface RawOrderDetail {

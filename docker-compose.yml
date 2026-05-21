@@ -1,41 +1,87 @@
 # OpsFlow / TaskOs — production-ish Docker compose.
 #
-# This file assumes the database ALREADY EXISTS (the labstack DB the
-# real deployment connects to). The app container points at it via
-# DATABASE_URL, and on first boot the entrypoint:
+# Default shape: SELF-CONTAINED.
+#   • A `db` Postgres 16 container holds OpsFlow's own data (the `taskos`
+#     schema: tasks, alerts, sessions, rules, history, etc.).
+#   • The `app` container connects to it via DATABASE_URL.
+#   • Source-of-truth data (labstack: orders, appointments, users,
+#     stores) is read from SOURCE_DATABASE_URL — set this in `.env` to
+#     your existing source DB. Leave it blank for a pure-local stack
+#     (the engine then has nothing to poll, but the UI works).
 #
-#   1. Connects to the existing DB.
-#   2. Runs `prisma db push` to materialise the `taskos` schema and its
-#      tables — no-op if already present, idempotent.
+# On first boot the app entrypoint:
+#   1. Waits for the `db` container (or whatever DATABASE_URL points at).
+#   2. Runs `prisma db push` — materialises the `taskos` schema + tables
+#      (idempotent; no-op when already present).
 #   3. Seeds exactly one OPS_HEAD admin user (idempotent upsert).
 #   4. Starts Next.js on port 3000.
 #
-# The `public` schema (labstack data) is not touched — the engine only
-# reads from it.
+# ── Usage ────────────────────────────────────────────────────────────
 #
-# Usage:
-#   cp .env.example .env             # set DATABASE_URL to your real DB
-#   docker compose up --build
+#   # 1. Copy the example and (optionally) edit SOURCE_DATABASE_URL to
+#   #    point at your source data:
+#   cp .env.example .env
+#   $EDITOR .env
+#
+#   # 2. Bring up the stack (db + app):
+#   docker compose up -d --build
 #   open http://localhost:3000
 #
-# For a purely local stack (Postgres in a container too — no real
-# labstack data), use the dev override:
-#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+# ── Alternative shapes ───────────────────────────────────────────────
+#
+# • External taskos DB (skip the bundled Postgres):
+#     - In .env, set DATABASE_URL to your external taskos DB
+#     - Then bring up only the app:
+#         docker compose up -d app
+#
+# • Single-DB mode (taskos schema lives inside the source DB):
+#     - In .env: DATABASE_URL=postgresql://USER:PASS@labstack-host:5432/labstack?schema=taskos
+#     - Leave SOURCE_DATABASE_URL blank (auto-falls-back to DATABASE_URL)
+#     - Bring up only the app: docker compose up -d app
+
 services:
+  # ── OpsFlow's own Postgres (taskos schema) ──────────────────────────
+  # Holds tasks, alerts, sessions, rules, history. Data persists across
+  # restarts in the `opsflow_taskos_data` named volume. Skip this service
+  # if you'd rather use an external Postgres for taskos — `docker compose
+  # up -d app` brings only the app up.
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-opsflow}
+      POSTGRES_USER: ${POSTGRES_USER:-opsflow}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-opsflow_dev_password}
+      TZ: ${TIMEZONE:-Asia/Kolkata}
+      PGTZ: ${TIMEZONE:-Asia/Kolkata}
+    volumes:
+      - opsflow_taskos_data:/var/lib/postgresql/data
+    ports:
+      # Exposed on host port 5433 by default (5432 reserved for the
+      # user's own Postgres if they run one). Override with DB_PORT.
+      - "${DB_PORT:-5433}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-opsflow} -d ${POSTGRES_DB:-opsflow}"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # ── The OpsFlow app ─────────────────────────────────────────────────
   app:
     build: .
     restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+        required: false   # Allow `docker compose up app` (no db service)
     environment:
-      # Required. Point at your existing labstack DB. The `?schema=taskos`
-      # tells Prisma which schema to manage; the public schema is left
-      # untouched. From inside the container, host.docker.internal
-      # reaches the host machine on macOS / Windows; on Linux pass
-      # --add-host=host.docker.internal:host-gateway or use the host IP.
-      DATABASE_URL: ${DATABASE_URL}
-      # Optional. Where source-of-truth data lives (orders, appointments,
-      # users, stores). Falls back to DATABASE_URL if unset. Set when
-      # labstack runs on a different Postgres instance than the taskos
-      # schema.
+      # Where OpsFlow OWNS and WRITES its data — the `taskos` schema.
+      # Defaults to the bundled `db` container above. Override in `.env`
+      # to point at an external Postgres if you don't want the bundled one.
+      DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-opsflow}:${POSTGRES_PASSWORD:-opsflow_dev_password}@db:5432/${POSTGRES_DB:-opsflow}?schema=taskos}
+      # Optional: where source data (orders, appointments, etc.) lives.
+      # Falls back to DATABASE_URL if blank. Set when you have a labstack
+      # / source Postgres separate from the taskos DB.
       SOURCE_DATABASE_URL: ${SOURCE_DATABASE_URL:-}
       # Constrains glibc's per-thread malloc arenas to 2. Without this,
       # the Prisma library engine (a Node native addon) trips
@@ -47,18 +93,24 @@ services:
       JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-8h}
       NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
       POLLING_INTERVAL_MS: ${POLLING_INTERVAL_MS:-300000}
-      TIMEZONE: Asia/Kolkata
+      TIMEZONE: ${TIMEZONE:-Asia/Kolkata}
       # Admin seed (one-time on first boot; idempotent on subsequent boots)
       ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@opsflow.local}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-changeme123}
       ADMIN_NAME: ${ADMIN_NAME:-Admin}
-      # Skip the `prisma db push` step. Set true when pointing at a DB
-      # whose `taskos` schema already exists and you don't want Prisma
-      # to try reconciling drift. Default false — fresh DBs need it.
+      # Skip the `prisma db push` step. Default false (fresh DBs need it).
+      # Set true when pointing at a DB whose `taskos` schema already
+      # exists and you don't want Prisma to try reconciling drift.
       SKIP_PRISMA_PUSH: ${SKIP_PRISMA_PUSH:-false}
     ports:
       - "${APP_PORT:-3000}:3000"
     # Required for host.docker.internal to resolve on Linux (no-op on
     # macOS / Windows where Docker Desktop adds it automatically).
+    # Useful when SOURCE_DATABASE_URL points at a Postgres on the host.
     extra_hosts:
       - "host.docker.internal:host-gateway"
+
+volumes:
+  # Named so `docker compose down` does NOT wipe data — it's removed only
+  # by `docker compose down -v`. Move/back-up with standard volume tools.
+  opsflow_taskos_data:

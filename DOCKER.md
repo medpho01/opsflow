@@ -1,74 +1,134 @@
 # Running OpsFlow in Docker
 
-The shipping setup assumes the **database already exists** — typically
-the labstack Postgres your real deployment connects to. Docker just
-runs the app container, which:
+The default Docker setup is **self-contained**: it spins up its own
+Postgres for the `taskos` schema (tasks, alerts, sessions, rules,
+history) and connects to your existing source DB (labstack — orders,
+appointments, users, stores) read-only.
 
-1. Connects to the existing DB via `DATABASE_URL`.
-2. Applies the `taskos` schema (`prisma db push`) — creates the
-   schema + tables if missing, no-op if already present. The labstack
-   `public` schema is never touched (the engine only reads from it).
+On first boot the app container:
+
+1. Waits for its Postgres (`db` service) to accept connections.
+2. Applies the `taskos` schema (`prisma db push`) — idempotent.
 3. Seeds exactly one OPS_HEAD admin user (idempotent upsert).
 4. Starts Next.js on port 3000.
 
-## Quickstart (production-ish — points at your real DB)
+The source DB (`SOURCE_DATABASE_URL`) is read-only and never modified by
+OpsFlow.
+
+## Quickstart
 
 ```bash
-# 1. Copy the example and edit DATABASE_URL to your real DB
+# 1. Copy the example and (optionally) set SOURCE_DATABASE_URL to your
+#    existing labstack DB:
 cp .env.example .env
-# →  edit .env: DATABASE_URL=postgresql://user:pass@host:5432/labstack?schema=taskos
+$EDITOR .env
+#   ↳ Most users only need to set SOURCE_DATABASE_URL.
+#     DATABASE_URL defaults to the bundled Postgres container.
 
-# 2. Bring up the app
-docker compose up --build
+# 2. Bring up the stack (db + app)
+docker compose up -d --build
+
+# 3. Open
+open http://localhost:3000
 ```
 
-When you see `→ Starting Next.js on :3000…`, open
-<http://localhost:3000>. Default login:
+Default login:
 
 | Field | Default |
 |---|---|
 | Email | `admin@opsflow.local` |
 | Password | `changeme123` |
 
-Change either before exposing the app to anyone — `ADMIN_EMAIL` /
+Change either before exposing the app — set `ADMIN_EMAIL` /
 `ADMIN_PASSWORD` in `.env` (only effective on **first** boot; see
 "Resetting the admin password" below for after).
 
-## Quickstart (purely-local stack — fresh Postgres in a container too)
+## What lives where
 
-If you don't have a labstack DB to point at and just want to spin a
-clean stack to play with:
+| | Where it's stored | Set by |
+|---|---|---|
+| Tasks, alerts, sessions, rules, history | `db` container (`taskos` schema) | `DATABASE_URL` |
+| Orders, appointments, users, stores, labs | Your existing labstack DB | `SOURCE_DATABASE_URL` |
 
-```bash
-docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+If `SOURCE_DATABASE_URL` is blank, the engine reads from `DATABASE_URL`
+instead — useful for a purely-local stack with no real source data,
+where the rule engine just has nothing to act on but the UI works.
+
+## Alternative shapes
+
+### External taskos DB (skip bundled Postgres)
+
+If you have an existing Postgres you want OpsFlow to use for `taskos`:
+
+```env
+# .env
+DATABASE_URL=postgresql://opsflow:secret@your-host:5432/opsflow?schema=taskos
+SOURCE_DATABASE_URL=postgresql://reader:secret@labstack-prod:5432/labstack
 ```
 
-The dev overlay adds a `db` service running Postgres 16 and overrides
-`DATABASE_URL` to point at it. The polling engine has nothing to act
-on (no labstack data) but the rest of the UI works.
+Then start only the app (skip the bundled `db`):
 
-## What the bootstrap creates
+```bash
+docker compose up -d app
+```
 
-- `taskos` schema with all tables described in `prisma/schema.prisma`
-- One OPS_HEAD admin user
+### Single-DB mode (taskos lives inside the source DB)
 
-That's it. Skill tags, task types, task rules, data sources are all
-configured from the UI after you log in.
+If you'd rather have OpsFlow create the `taskos` schema **inside** your
+labstack DB (the original deployment shape):
+
+```env
+DATABASE_URL=postgresql://USER:PASS@labstack-host:5432/labstack?schema=taskos
+SOURCE_DATABASE_URL=     # leave blank — falls back to DATABASE_URL
+```
+
+```bash
+docker compose up -d app
+```
+
+Then `prisma db push` creates the `taskos` schema next to `public` in
+the same database, and reads source data from the same connection.
+
+### Managed Postgres (RDS / Supabase / Aiven / etc.)
+
+Add `?sslmode=require` to both URLs:
+
+```env
+DATABASE_URL=postgresql://opsflow:pass@db.example.com:5432/opsflow?schema=taskos&sslmode=require
+SOURCE_DATABASE_URL=postgresql://reader:pass@labstack.example.com:5432/labstack?sslmode=require
+```
 
 ## Subsequent runs
 
 ```bash
-docker compose up
+docker compose up -d
 ```
 
-Both `prisma db push` and the admin seed are idempotent; nothing is
+Both `prisma db push` and the admin seed are idempotent — nothing is
 overwritten.
+
+## Data persistence
+
+Taskos data lives in the named volume `opsflow_taskos_data` and survives
+`docker compose down`. It's only removed by an explicit `down -v`:
+
+```bash
+docker compose down       # stop containers; KEEP data
+docker compose down -v    # stop containers AND wipe taskos DB
+```
+
+Back up the volume with standard Docker tools:
+
+```bash
+docker run --rm -v opsflow_taskos_data:/data -v "$PWD:/backup" alpine \
+  tar czf /backup/taskos-backup-$(date +%F).tar.gz -C /data .
+```
 
 ## Resetting the admin password
 
 The seed only sets the password on **first** boot — subsequent boots
-don't overwrite it (so a deploy doesn't reset your password). To
-change it:
+don't overwrite it (so a deploy doesn't reset your password). To change
+it later:
 
 ```bash
 docker compose exec app node -e "
@@ -88,68 +148,27 @@ const p = new PrismaClient();
 
 ```bash
 docker compose logs -f app
+docker compose logs -f db
 ```
 
-## Splitting source DB from taskos DB
+## Connecting to a Postgres on the host
 
-OpsFlow reads source data (orders, appointments, users, stores) from
-labstack's `public` schema and writes its own data (tasks, alerts,
-sessions, rules) into the `taskos` schema. These can live in **two
-different Postgres instances** if you want.
-
-```env
-# .env — taskos schema (OpsFlow owns this, writes here)
-DATABASE_URL=postgresql://opsflow:secret@taskos-db:5432/opsflow?schema=taskos
-
-# .env — labstack source (read-only; OpsFlow never writes)
-SOURCE_DATABASE_URL=postgresql://reader:secret@labstack-prod:5432/labstack?sslmode=require
-```
-
-When `SOURCE_DATABASE_URL` is unset, it falls back to `DATABASE_URL` —
-single-DB deployments don't need to set anything new.
-
-To grant the labstack reader credential only what it needs:
-
-```sql
-CREATE USER opsflow_reader WITH PASSWORD '...';
-GRANT CONNECT ON DATABASE labstack TO opsflow_reader;
-GRANT USAGE ON SCHEMA public TO opsflow_reader;
-GRANT SELECT ON ALL TABLES IN SCHEMA public TO opsflow_reader;
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO opsflow_reader;
-```
-
-OpsFlow never writes to labstack; SELECT-only is sufficient.
-
-What cross-DB looks like at runtime:
-- Engine fetches orders → labstack DB
-- Engine creates tasks → taskos DB
-- Dashboard "active orders" count → labstack DB (degrades to 0 + warning if labstack is unreachable)
-- Store-name labels in analytics → taskos query for ids, then labstack lookup for names (two-step; no cross-DB JOIN)
-
-## Connecting to a Postgres on the host (macOS / Windows / Linux)
-
-In `.env`, point `DATABASE_URL` at `host.docker.internal` instead of
+When `SOURCE_DATABASE_URL` points at a Postgres running on your host
+machine (not in Docker), use `host.docker.internal` instead of
 `localhost`:
 
-```
-DATABASE_URL=postgresql://USER:PASS@host.docker.internal:5432/labstack?schema=taskos
+```env
+SOURCE_DATABASE_URL=postgresql://USER:PASS@host.docker.internal:5432/labstack
 ```
 
-The compose file already adds the `host-gateway` mapping for Linux,
-where `host.docker.internal` doesn't resolve by default.
-
-## Connecting to managed Postgres (RDS, Supabase, etc.)
-
-Most providers require SSL. Add `?sslmode=require` to `DATABASE_URL`:
-
-```
-DATABASE_URL=postgresql://user:pass@db.example.com:5432/labstack?schema=taskos&sslmode=require
-```
+The compose file adds the `host-gateway` mapping for Linux, where
+`host.docker.internal` doesn't resolve by default on plain Docker
+(Docker Desktop adds it automatically on macOS/Windows).
 
 ## Troubleshooting
 
-**`✘ DATABASE_URL is not set`** — `.env` missing or `DATABASE_URL` not
-filled in. Check `cat .env | grep DATABASE_URL`.
+**`✘ DATABASE_URL is not set`** — `.env` missing entirely. Run
+`cp .env.example .env`.
 
 **`✘ database not reachable after 60s`** — the app container can't
 reach the DB host you configured. Test from inside:
@@ -159,13 +178,13 @@ docker compose exec app sh
 pg_isready -h <host> -p <port>
 ```
 
-If you're pointing at a host-machine Postgres, make sure it's actually
-listening on the IP Docker sees (typically `0.0.0.0`, not just
-`localhost`).
+For the bundled `db`, the host is literally `db`. For external, make
+sure the DB is actually listening on the right IP (often `0.0.0.0`, not
+just `localhost`).
 
 **`prisma db push` complains about drift** — your DB has columns the
-schema doesn't know about. Either accept (`--accept-data-loss` is
-already passed) or drop the schema:
+schema doesn't know about. Either accept the drift (`--accept-data-loss`
+is already passed by the entrypoint) or drop the schema and restart:
 
 ```bash
 docker compose exec app sh -c '
@@ -176,3 +195,12 @@ p.\$executeRawUnsafe(\"DROP SCHEMA IF EXISTS taskos CASCADE\").then(() => { cons
 "'
 docker compose restart app
 ```
+
+**Bundled `db` won't start** — port `5433` is already in use on the
+host (e.g., another Postgres). Override with `DB_PORT=5434` in `.env`,
+or remove the `ports:` mapping from the `db` service if you don't need
+host access.
+
+**Tasks disappeared after restart** — you probably ran
+`docker compose down -v` which wipes the volume. Use plain
+`docker compose down` to keep data.

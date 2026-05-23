@@ -37,18 +37,27 @@ export async function GET(
   const orderId = parseInt(id, 10);
   if (isNaN(orderId)) return NextResponse.json({ error: "Invalid order ID" }, { status: 400 });
 
+  // ── IST → UTC at the SQL boundary ──────────────────────────────────
+  // Labstack stores timestamps as naive IST values (TIMESTAMP WITHOUT TIME
+  // ZONE, session tz = Asia/Kolkata). Without an explicit cast, pg deserialises
+  // them as if they were UTC, leaving every Date 5h30 ahead of reality — so
+  // the drawer would show times 5:30 later than the task row (which goes
+  // through the engine path that already applies this cast in labstack.ts).
+  //
+  // `col AT TIME ZONE 'Asia/Kolkata'` interprets the naive value as IST and
+  // produces the correct UTC instant. Mirrors the engine's fetcher exactly.
   const rows = await labstack.$queryRawUnsafe<RawOrderDetail[]>(`
     SELECT
       o.id,
       o."orderType",
       o."orderStatus",
-      o."appointmentTime",
+      (o."appointmentTime" AT TIME ZONE 'Asia/Kolkata') AS "appointmentTime",
       o."storeId",
       o."labId",
       o."userId",
-      o."createdAt",
-      o."updatedAt",
-      o."statusUpdatedAt",
+      (o."createdAt"       AT TIME ZONE 'Asia/Kolkata') AS "createdAt",
+      (o."updatedAt"       AT TIME ZONE 'Asia/Kolkata') AS "updatedAt",
+      (o."statusUpdatedAt" AT TIME ZONE 'Asia/Kolkata') AS "statusUpdatedAt",
       o."internalNotes",
       o.notes,
       o."phleboName",

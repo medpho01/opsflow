@@ -9,27 +9,32 @@
  * (taskos.task_history). If you need to record something about an order,
  * record it in taskos — never reach into labstack.
  *
- * W5 — IST → UTC at the SQL boundary.
- * Labstack stores naive timestamps in IST (TIMESTAMP WITHOUT TIME ZONE,
- * DB session tz = Asia/Kolkata). Prisma deserialises naive values as if
- * they were UTC, leaving every Date object 5h30 ahead of reality. The
- * historical fix (`correctISTTimestamp` in taskCreator.ts) subtracted the
- * offset in JS — a band-aid that had to be applied at every call site.
+ * ────────────────────────────────────────────────────────────────────
+ * Timestamp handling (corrected May 2026).
  *
- * The new fix: cast at SELECT time. `col AT TIME ZONE 'Asia/Kolkata'`
- * applied to a TIMESTAMP returns a TIMESTAMPTZ that *interprets the input
- * as IST* and produces the correct UTC instant. Prisma then reads it as a
- * JS Date pointing at the right wall-clock time. Engines downstream can
- * just use the value — no per-call shim, no chance of forgetting it.
+ * Labstack timestamp columns (appointmentTime, createdAt, updatedAt,
+ * statusUpdatedAt) are TIMESTAMP WITHOUT TIME ZONE, but the values are
+ * stored as **naive UTC** — i.e. the column value `2026-05-24 00:30:00`
+ * literally represents the UTC instant `2026-05-24T00:30:00Z`, which
+ * corresponds to 06:00 AM IST on 24 May. (Verified against the LabStack
+ * console UI which shows IST wall-clock to users while the database
+ * stores the UTC instant.)
  *
- * Caveat: `to_jsonb(o.*) AS metadata` still embeds the raw naive
- * timestamps, since to_jsonb sees the column types directly. Authors of
- * metadataCondition rules that compare timestamp fields should be aware
- * that those values are still IST-naive strings. This is intentional —
- * fixing the metadata blob would mean rewriting every key name a rule
- * author might reference. The top-level fields (createdAt, updatedAt,
- * statusUpdatedAt, appointmentTime) — the ones the engine itself
- * reasons about — are the ones we cast.
+ * Because pg reads naive timestamps as UTC by default, plain SELECTs
+ * produce a JS Date pointing at the correct UTC instant. No cast is
+ * required, and `Date.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })`
+ * renders the expected IST wall-clock.
+ *
+ * Earlier versions of this file applied `col AT TIME ZONE 'Asia/Kolkata'`
+ * under the (wrong) assumption that the values were naive IST. That cast
+ * re-interpreted the already-UTC naive timestamp as IST and shifted every
+ * read 5h30 backwards — visible bug: tasks with a 6 AM appointment were
+ * stored as 12:30 AM the night before, and the My Work / Today view
+ * mis-bucketed them. The cast is removed. Do not re-add it.
+ *
+ * If a future labstack table genuinely stores naive IST, cast THAT
+ * column locally. Do not blanket-cast at the fetcher level.
+ * ────────────────────────────────────────────────────────────────────
  */
 import { labstackQuery } from "@/lib/db/labstack";
 
@@ -70,13 +75,13 @@ export async function fetchActiveHomeSampleOrders(): Promise<RawOrder[]> {
       o.id,
       o."orderType",
       o."orderStatus",
-      (o."appointmentTime" AT TIME ZONE 'Asia/Kolkata') AS "appointmentTime",
+      o."appointmentTime",
       o."storeId",
       o."labId",
       o."userId",
-      (o."createdAt"       AT TIME ZONE 'Asia/Kolkata') AS "createdAt",
-      (o."updatedAt"       AT TIME ZONE 'Asia/Kolkata') AS "updatedAt",
-      (o."statusUpdatedAt" AT TIME ZONE 'Asia/Kolkata') AS "statusUpdatedAt",
+      o."createdAt",
+      o."updatedAt",
+      o."statusUpdatedAt",
       COALESCE(o."internalNotes", '') AS "internalNotes",
       COALESCE(o.notes, '')           AS notes,
       COALESCE(o."phleboName", '')    AS "phleboName",
@@ -113,13 +118,13 @@ export async function fetchAllActiveOrders(since?: Date | null): Promise<RawOrde
       o.id,
       o."orderType",
       o."orderStatus",
-      (o."appointmentTime" AT TIME ZONE 'Asia/Kolkata') AS "appointmentTime",
+      o."appointmentTime",
       o."storeId",
       o."labId",
       o."userId",
-      (o."createdAt"        AT TIME ZONE 'Asia/Kolkata') AS "createdAt",
-      (o."updatedAt"        AT TIME ZONE 'Asia/Kolkata') AS "updatedAt",
-      (o."statusUpdatedAt"  AT TIME ZONE 'Asia/Kolkata') AS "statusUpdatedAt",
+      o."createdAt",
+      o."updatedAt",
+      o."statusUpdatedAt",
       COALESCE(o."internalNotes", '') AS "internalNotes",
       COALESCE(o.notes, '')           AS notes,
       COALESCE(o."phleboName", '')    AS "phleboName",
@@ -134,8 +139,8 @@ export async function fetchAllActiveOrders(since?: Date | null): Promise<RawOrde
     LEFT JOIN public."Store" s ON s.id = o."storeId"
     WHERE o."orderStatus" NOT IN ('CANCELED', 'REPORT_DELIVERED', 'PATIENT_MISSED')
       AND (
-        (o."updatedAt"       AT TIME ZONE 'Asia/Kolkata') >= $1
-        OR (o."statusUpdatedAt" AT TIME ZONE 'Asia/Kolkata') >= $1
+        o."updatedAt"       >= $1
+        OR o."statusUpdatedAt" >= $1
       )
     ORDER BY o."appointmentTime" ASC
       `,
@@ -148,13 +153,13 @@ export async function fetchAllActiveOrders(since?: Date | null): Promise<RawOrde
       o.id,
       o."orderType",
       o."orderStatus",
-      (o."appointmentTime" AT TIME ZONE 'Asia/Kolkata') AS "appointmentTime",
+      o."appointmentTime",
       o."storeId",
       o."labId",
       o."userId",
-      (o."createdAt"       AT TIME ZONE 'Asia/Kolkata') AS "createdAt",
-      (o."updatedAt"       AT TIME ZONE 'Asia/Kolkata') AS "updatedAt",
-      (o."statusUpdatedAt" AT TIME ZONE 'Asia/Kolkata') AS "statusUpdatedAt",
+      o."createdAt",
+      o."updatedAt",
+      o."statusUpdatedAt",
       COALESCE(o."internalNotes", '') AS "internalNotes",
       COALESCE(o.notes, '')           AS notes,
       COALESCE(o."phleboName", '')    AS "phleboName",

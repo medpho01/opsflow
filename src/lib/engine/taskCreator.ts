@@ -970,7 +970,51 @@ export async function evaluateAndCreateTasks(
       // same (rule, order) — vanishingly rare, but possible — also dedupes.
       activeTaskKeys.add(key);
 
-      const slaDeadline = new Date(now.getTime() + rule.slaMinutes * 60_000);
+      // ── SLA deadline ────────────────────────────────────────────────
+      // For appointment-anchored time triggers, anchor on the appointment
+      // instead of `now`. The previous behaviour (slaDeadline = now +
+      // slaMinutes) created false urgency on rules that fired hours
+      // before their work was actually due — driving "ack-and-snooze"
+      // theatre to clear breach badges that didn't reflect real intent.
+      //
+      //   minutesAfterAppointment  → deadline = appt + (minutesAfter + slaMinutes)
+      //                              (the rule's grace period beyond the
+      //                              trigger moment)
+      //   minutesBeforeAppointment → deadline = appointmentTime
+      //                              (the implicit "by-then" deadline;
+      //                              slaMinutes is the firing-window, not
+      //                              the deadline grace)
+      //   anything else            → deadline = now + slaMinutes (unchanged;
+      //                              status-only and stale-status triggers
+      //                              still need a fresh ticking clock)
+      //
+      // Safety floor: the resulting deadline is clamped to at least
+      // now + 1 minute so a late poll cycle doesn't BREACH-at-birth.
+      const triggerCond = (rule.triggerCondition ?? {}) as Record<string, unknown>;
+      const minutesAfterAppt =
+        typeof triggerCond.minutesAfterAppointment === "number"
+          ? triggerCond.minutesAfterAppointment
+          : null;
+      const minutesBeforeAppt =
+        typeof triggerCond.minutesBeforeAppointment === "number"
+          ? triggerCond.minutesBeforeAppointment
+          : null;
+
+      let slaDeadline: Date;
+      if (minutesAfterAppt !== null && appointmentTs) {
+        slaDeadline = new Date(
+          appointmentTs.getTime() + (minutesAfterAppt + rule.slaMinutes) * 60_000
+        );
+      } else if (minutesBeforeAppt !== null && appointmentTs) {
+        slaDeadline = appointmentTs;
+      } else {
+        slaDeadline = new Date(now.getTime() + rule.slaMinutes * 60_000);
+      }
+      // Clamp: never set a deadline already in the past at creation.
+      const minDeadline = now.getTime() + 60_000;
+      if (slaDeadline.getTime() < minDeadline) {
+        slaDeadline = new Date(minDeadline);
+      }
 
       // Use the shared, regex-based substituter — handles repeated tokens
       // (the inline `.replace(string, ...)` only swapped the first match)

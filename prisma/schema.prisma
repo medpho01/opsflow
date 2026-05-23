@@ -484,6 +484,7 @@ model PollingLock {
   lockKey      Int       @unique // Fixed value = 1000
   lockedAt     DateTime  @default(now())
   lockedUntil  DateTime
+  lockedBy     String    @default("")
 
   @@map("polling_locks")
 }

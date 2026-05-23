@@ -37,8 +37,13 @@ interface Task {
 }
 
 const STATUS_TABS = [
-  { key: "active", label: "Active", statuses: "ASSIGNED,IN_PROGRESS,CREATED" },
-  { key: "blocked", label: "Blocked", statuses: "BLOCKED,BREACHED" },
+  // BREACHED tasks belong in Active — they're still the agent's work to
+  // do, just late. The breach is surfaced via the row's red SLA badge.
+  // Previously they were lumped into "Blocked", which was misleading:
+  //   Blocked  = explicitly waiting on something external
+  //   Breached = late, agent should act faster, not set aside
+  { key: "active", label: "Active", statuses: "ASSIGNED,IN_PROGRESS,CREATED,BREACHED" },
+  { key: "blocked", label: "Blocked", statuses: "BLOCKED" },
   { key: "done", label: "Done", statuses: "COMPLETED,CANCELLED" },
 ];
 

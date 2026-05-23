@@ -19,6 +19,9 @@ interface Task {
   assignedTo: { id: number; name: string } | null;
   taskType: { label: string } | null;
   dataSource?: { id: string; displayName: string } | null;
+  // Joined from labstack in /api/tasks — see route.ts. Null when the task
+  // has no storeId or the labstack join failed.
+  store?: { id: number; storeName: string; city: string | null } | null;
 }
 
 interface StoreStats {
@@ -360,10 +363,11 @@ export default function StoreBoard({ user }: StoreBoardProps) {
               </thead>
               <tbody>
                 {tasks.map((task) => {
-                  // Resolve store name from the already-fetched stores list.
-                  // No new API call — uses the same `stores` array driving
-                  // the store-selector dropdown above.
-                  const store = task.storeId == null ? null : stores.find((s) => s.id === task.storeId);
+                  // Prefer the server-joined store (always accurate,
+                  // unbounded). Fall back to the local stores list for
+                  // backward compatibility on rare cases where the join
+                  // didn't run (e.g. cached older responses).
+                  const store = task.store ?? (task.storeId == null ? null : stores.find((s) => s.id === task.storeId) ?? null);
                   return (
                   <tr key={task.id} className="border-b border-zinc-800 hover:bg-zinc-800/50 transition-colors">
                     <td className="px-4 py-3 text-sm">

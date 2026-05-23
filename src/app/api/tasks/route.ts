@@ -22,6 +22,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSessionFromRequest } from "@/lib/auth/session";
 import prisma from "@/lib/db/client";
+import labstack from "@/lib/db/labstack";
 import { TaskStatus, TaskPriority, UserRole } from "@prisma/client";
 
 // Whitelist of valid sort fields (Phase 1 MVP)
@@ -484,6 +485,32 @@ export async function GET(request: NextRequest) {
     prisma.task.count({ where }),
   ]);
 
+  // ── Store name join (against labstack public.Store) ───────────────
+  // The taskos Task table holds a bare storeId Int? with no Prisma relation
+  // to the Store model (Store lives in the labstack schema, taskos has only
+  // the id reference). To avoid every consumer doing a fragile client-side
+  // lookup against /api/stores (which is LIMIT 200 and STORE_ADMIN-scoped),
+  // fetch the referenced stores in bulk here and attach store:{id,
+  // storeName, city} to each task. One extra round-trip per page.
+  const storeIdsForLookup = Array.from(
+    new Set(tasks.map((t) => t.storeId).filter((v): v is number => v != null))
+  );
+  type StoreLite = { id: number; storeName: string; city: string | null };
+  const storeMap = new Map<number, StoreLite>();
+  if (storeIdsForLookup.length > 0) {
+    try {
+      const rows = await labstack.$queryRawUnsafe<StoreLite[]>(
+        `SELECT id, "storeName", city FROM public."Store" WHERE id = ANY($1::int[])`,
+        storeIdsForLookup
+      );
+      rows.forEach((r) => storeMap.set(r.id, r));
+    } catch (e) {
+      // Don't fail the whole request if labstack is unreachable — tasks
+      // still render, store column just degrades to "#{storeId}".
+      console.error("[/api/tasks] store join failed:", e);
+    }
+  }
+
   // Foundation Features: Add calculated fields
   const tasksWithMeta = tasks.map((task) => {
     // C3: Color-coded urgency (slaStatus)
@@ -571,6 +598,11 @@ export async function GET(request: NextRequest) {
     // Phase-1 view bucket for My Work navigation.
     const viewBucket = computeViewBucket(appt, task.createdAt, task.status, now);
 
+    // Store name from the bulk labstack lookup above. Falls back to null
+    // when storeId is null or the labstack join failed (consumers render
+    // "#{storeId}" or "—" accordingly).
+    const store = task.storeId != null ? storeMap.get(task.storeId) ?? null : null;
+
     return {
       ...task,
       // sourceEntityId is a BigInt in the DB — convert to string so JSON.stringify doesn't throw
@@ -585,6 +617,7 @@ export async function GET(request: NextRequest) {
       slaContext,
       aging,
       dataSource,
+      store,
       urgencyBucket,
       urgencyLabel,
       viewBucket,

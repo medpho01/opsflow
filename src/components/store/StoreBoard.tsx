@@ -42,6 +42,25 @@ interface Store {
   city?: string | null;
 }
 
+// Per-store breakdown returned by /api/stores/overview when "All Stores"
+// is selected and the user has more than one store in scope. Lets a
+// multi-store admin see side-by-side counts and click into the worst
+// store without flipping the selector dropdown.
+interface PerStoreCounts {
+  open: number;
+  breached: number;
+  completed: number;
+  warning: number;
+  warningCritical: number;
+  unassigned: number;
+}
+interface PerStoreRow {
+  storeId: number;
+  storeName: string | null;
+  city: string | null;
+  counts: PerStoreCounts;
+}
+
 interface StoreBoardProps {
   user: AuthUser;
 }
@@ -50,6 +69,7 @@ export default function StoreBoard({ user }: StoreBoardProps) {
   const [tasks, setTasks] = useState<Task[]>([]);
   const ZERO_STATS: StoreStats = { open: 0, breached: 0, warning: 0, warningCritical: 0, completed: 0, unassigned: 0 };
   const [stats, setStats] = useState<StoreStats>(ZERO_STATS);
+  const [perStore, setPerStore] = useState<PerStoreRow[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState("ALL");
   const [sortBy, setSortBy] = useState<"createdAt" | "appointmentTime" | "slaDeadline" | "status" | "priority">("priority");
@@ -154,9 +174,14 @@ export default function StoreBoard({ user }: StoreBoardProps) {
         // than show stale numbers.
         setStats(ZERO_STATS);
         setSelectedStoreMeta(null);
+        setPerStore(null);
         return;
       }
       const data = await res.json();
+      // Per-store breakdown — present only when "All Stores" is selected
+      // AND the user has more than one store. The backend returns null
+      // otherwise (single-store admins don't need this surface).
+      setPerStore(data.perStore ?? null);
       setStats({
         open: data.counts?.open ?? 0,
         breached: data.counts?.breached ?? 0,
@@ -169,6 +194,7 @@ export default function StoreBoard({ user }: StoreBoardProps) {
     } catch {
       setStats(ZERO_STATS);
       setSelectedStoreMeta(null);
+      setPerStore(null);
     }
   }, [storeId]);
 
@@ -341,6 +367,61 @@ export default function StoreBoard({ user }: StoreBoardProps) {
           </div>
         ))}
       </div>
+
+      {/* Per-store breakdown strip — appears only on "All Stores" view
+          when the user has >1 stores. Sorted by breached desc, open desc
+          so the store needing attention rises. Click a row → that store
+          becomes the selection, the rest of the page narrows to it. */}
+      {perStore && perStore.length > 1 && (
+        <div className="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden">
+          <div className="px-4 py-2.5 border-b border-zinc-800 flex items-center justify-between">
+            <div className="text-xs text-zinc-400 uppercase tracking-wider font-semibold">
+              By Store · {perStore.length}
+            </div>
+            <div className="text-[10px] text-zinc-500">click a row to drill in</div>
+          </div>
+          <div className="divide-y divide-zinc-800">
+            {/* Header row */}
+            <div className="px-4 py-1.5 grid grid-cols-12 gap-2 text-[10px] text-zinc-500 uppercase tracking-wider">
+              <div className="col-span-4">Store</div>
+              <div className="col-span-1 text-right">Open</div>
+              <div className="col-span-2 text-right">Breached</div>
+              <div className="col-span-2 text-right">Near SLA</div>
+              <div className="col-span-1 text-right">Unassigned</div>
+              <div className="col-span-2 text-right">Done Today</div>
+            </div>
+            {perStore.map((row) => (
+              <button
+                key={row.storeId}
+                onClick={() => setSelectedStoreId(row.storeId)}
+                className="w-full px-4 py-2 grid grid-cols-12 gap-2 text-sm hover:bg-zinc-800/40 transition-colors text-left"
+              >
+                <div className="col-span-4 min-w-0">
+                  <div className="font-medium text-zinc-200 truncate">
+                    {row.storeName ?? `#${row.storeId}`}
+                  </div>
+                  {row.city && <div className="text-[10px] text-zinc-500 truncate">{row.city}</div>}
+                </div>
+                <div className="col-span-1 text-right text-zinc-300">{row.counts.open || "—"}</div>
+                <div className={`col-span-2 text-right ${row.counts.breached > 0 ? "text-red-400 font-medium" : "text-zinc-600"}`}>
+                  {row.counts.breached || "—"}
+                </div>
+                <div className={`col-span-2 text-right ${row.counts.warning > 0 ? "text-amber-400" : "text-zinc-600"}`}>
+                  {row.counts.warning > 0
+                    ? `${row.counts.warning}${row.counts.warningCritical > 0 ? ` (${row.counts.warningCritical}!)` : ""}`
+                    : "—"}
+                </div>
+                <div className={`col-span-1 text-right ${row.counts.unassigned > 0 ? "text-yellow-400" : "text-zinc-600"}`}>
+                  {row.counts.unassigned || "—"}
+                </div>
+                <div className="col-span-2 text-right text-emerald-400">
+                  {row.counts.completed || "—"}
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Filter tabs and Order ID search */}
       <div className="space-y-2">

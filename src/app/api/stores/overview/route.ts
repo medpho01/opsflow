@@ -184,6 +184,112 @@ export async function GET(request: NextRequest) {
     }),
   ]);
 
+  // ── Per-store breakdown ─────────────────────────────────────────────
+  // Only when no specific store is selected AND the user has more than
+  // one store in scope. Lets a multi-store admin see side-by-side counts
+  // without screenshot-diffing between selector clicks. One SQL query
+  // (GROUP BY storeId) + one labstack bulk name lookup. For single-store
+  // admins or specific-store views, perStore stays null (the dropdown is
+  // the existing nav).
+  interface PerStoreRow {
+    store_id: number;
+    open: bigint;
+    breached: bigint;
+    completed: bigint;
+    warning: bigint;
+    warning_critical: bigint;
+    unassigned: bigint;
+  }
+  interface PerStoreOut {
+    storeId: number;
+    storeName: string | null;
+    city: string | null;
+    counts: {
+      open: number; breached: number; completed: number;
+      warning: number; warningCritical: number; unassigned: number;
+    };
+  }
+  let perStore: PerStoreOut[] | null = null;
+  const shouldGroupPerStore =
+    storeId === null && (scopedStoreIds === null || scopedStoreIds.length > 1);
+  if (shouldGroupPerStore) {
+    // The scope filter is the same as baseWhere minus null check (we
+    // explicitly exclude null storeIds — the per-store strip is about
+    // stores, and tasks without one don't fit a row).
+    const scopeFilter =
+      scopedStoreIds !== null
+        ? prisma.$queryRaw<PerStoreRow[]>`
+            SELECT
+              "storeId" AS store_id,
+              COUNT(*) FILTER (WHERE status IN ('CREATED','ASSIGNED','IN_PROGRESS','BLOCKED'))                                    AS open,
+              COUNT(*) FILTER (WHERE status = 'BREACHED')                                                                        AS breached,
+              COUNT(*) FILTER (WHERE status = 'COMPLETED' AND "completedAt" >= ${rangeStart})                                   AS completed,
+              COUNT(*) FILTER (WHERE status IN ('CREATED','ASSIGNED','IN_PROGRESS','BLOCKED')
+                                AND "slaDeadline" > ${now} AND "slaDeadline" <= ${warningCutoff})                                AS warning,
+              COUNT(*) FILTER (WHERE status IN ('CREATED','ASSIGNED','IN_PROGRESS','BLOCKED')
+                                AND "slaDeadline" > ${now} AND "slaDeadline" <= ${criticalCutoff})                               AS warning_critical,
+              COUNT(*) FILTER (WHERE status = 'CREATED' AND "assignedToId" IS NULL)                                              AS unassigned
+            FROM taskos.tasks
+            WHERE "isArchived" = false
+              AND "storeId" IS NOT NULL
+              AND "storeId" = ANY(${scopedStoreIds}::int[])
+            GROUP BY "storeId"
+            ORDER BY breached DESC, open DESC
+          `
+        : prisma.$queryRaw<PerStoreRow[]>`
+            SELECT
+              "storeId" AS store_id,
+              COUNT(*) FILTER (WHERE status IN ('CREATED','ASSIGNED','IN_PROGRESS','BLOCKED'))                                    AS open,
+              COUNT(*) FILTER (WHERE status = 'BREACHED')                                                                        AS breached,
+              COUNT(*) FILTER (WHERE status = 'COMPLETED' AND "completedAt" >= ${rangeStart})                                   AS completed,
+              COUNT(*) FILTER (WHERE status IN ('CREATED','ASSIGNED','IN_PROGRESS','BLOCKED')
+                                AND "slaDeadline" > ${now} AND "slaDeadline" <= ${warningCutoff})                                AS warning,
+              COUNT(*) FILTER (WHERE status IN ('CREATED','ASSIGNED','IN_PROGRESS','BLOCKED')
+                                AND "slaDeadline" > ${now} AND "slaDeadline" <= ${criticalCutoff})                               AS warning_critical,
+              COUNT(*) FILTER (WHERE status = 'CREATED' AND "assignedToId" IS NULL)                                              AS unassigned
+            FROM taskos.tasks
+            WHERE "isArchived" = false
+              AND "storeId" IS NOT NULL
+            GROUP BY "storeId"
+            ORDER BY breached DESC, open DESC
+          `;
+    const rows = await scopeFilter;
+
+    // Bulk look up store names. If labstack is unreachable, fall back to
+    // null name; UI shows "#{storeId}" instead of going blank.
+    const ids = rows.map((r) => Number(r.store_id));
+    let nameMap = new Map<number, { storeName: string; city: string | null }>();
+    if (ids.length > 0) {
+      try {
+        const storeRows = await labstack.$queryRawUnsafe<StoreRow[]>(
+          `SELECT id, "storeName", city FROM public."Store" WHERE id = ANY($1::int[])`,
+          ids
+        );
+        nameMap = new Map(storeRows.map((s) => [s.id, { storeName: s.storeName, city: s.city }]));
+      } catch {
+        // leave nameMap empty
+      }
+    }
+
+    perStore = rows.map((r) => {
+      const sid = Number(r.store_id);
+      const meta = nameMap.get(sid);
+      return {
+        storeId: sid,
+        storeName: meta?.storeName ?? null,
+        city: meta?.city ?? null,
+        counts: {
+          open: Number(r.open),
+          breached: Number(r.breached),
+          completed: Number(r.completed),
+          warning: Number(r.warning),
+          warningCritical: Number(r.warning_critical),
+          unassigned: Number(r.unassigned),
+        },
+      };
+    });
+  }
+
   return NextResponse.json({
     store,
     scope: {
@@ -201,5 +307,6 @@ export async function GET(request: NextRequest) {
       unassigned,
       completed,                     // within the range window (today by default)
     },
+    perStore,                        // null when a specific store is selected or only one in scope
   });
 }

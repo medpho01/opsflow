@@ -22,6 +22,12 @@ import { formatISTTimestamp } from "@/lib/utils/timezone";
 import OrderQuickView from "@/components/shared/OrderQuickView";
 
 // ─── Types ─────────────────────────────────────────────────────────────
+interface Agent {
+  id: number;
+  name: string;
+  role: string;
+}
+
 interface Task {
   id: number;
   title: string;
@@ -93,15 +99,125 @@ function fmtHourHeader(hour24: number): string {
   return `${h} ${period}`;
 }
 
+// ─── Assignee chip ────────────────────────────────────────────────────
+// Stable colour per name (hash → palette index) so the same agent reads as
+// the same colour across rows without us hand-maintaining a map.
+const AVATAR_PALETTE = [
+  "bg-blue-700", "bg-purple-700", "bg-green-700", "bg-pink-700",
+  "bg-orange-700", "bg-teal-700", "bg-indigo-700", "bg-rose-700",
+];
+function avatarColor(name: string): string {
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
+  return AVATAR_PALETTE[h % AVATAR_PALETTE.length];
+}
+function initials(name: string): string {
+  const parts = name.trim().split(/\s+/);
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
+
+function AssigneeChip({
+  task,
+  agents,
+  onReassign,
+}: {
+  task: Task;
+  agents: Agent[];
+  onReassign: (taskId: number, agentId: number | null) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  // Close popover on outside click (stops propagation to row's onClick too).
+  useEffect(() => {
+    if (!open) return;
+    const close = () => setOpen(false);
+    // Defer so the click that opened the popover doesn't immediately close it.
+    const t = setTimeout(() => window.addEventListener("click", close), 0);
+    return () => {
+      clearTimeout(t);
+      window.removeEventListener("click", close);
+    };
+  }, [open]);
+
+  const handlePick = async (agentId: number | null) => {
+    setBusy(true);
+    try {
+      await onReassign(task.id, agentId);
+    } finally {
+      setBusy(false);
+      setOpen(false);
+    }
+  };
+
+  return (
+    <div className="relative shrink-0" onClick={(e) => e.stopPropagation()}>
+      {task.assignedTo ? (
+        <button
+          onClick={() => setOpen((v) => !v)}
+          className="flex items-center gap-1.5 px-1.5 py-0.5 rounded hover:bg-zinc-700/50 transition-colors"
+          title="Click to reassign"
+        >
+          <span
+            className={`w-5 h-5 rounded-full ${avatarColor(task.assignedTo.name)} flex items-center justify-center text-[9px] font-semibold text-white`}
+          >
+            {initials(task.assignedTo.name)}
+          </span>
+          <span className="text-xs text-zinc-300 max-w-[80px] truncate">{task.assignedTo.name}</span>
+        </button>
+      ) : (
+        <button
+          onClick={() => setOpen((v) => !v)}
+          className="px-2 py-0.5 rounded text-[11px] bg-yellow-900/40 text-yellow-300 border border-yellow-900/40 hover:bg-yellow-900/60 transition-colors"
+          title="Click to assign"
+        >
+          ⚠ Unassigned
+        </button>
+      )}
+
+      {open && (
+        <div className="absolute right-0 top-full mt-1 z-20 w-56 bg-zinc-900 border border-zinc-700 rounded-lg shadow-xl py-1 max-h-72 overflow-y-auto">
+          <div className="px-3 py-1.5 text-[10px] uppercase tracking-wider text-zinc-500 border-b border-zinc-800">
+            {busy ? "Reassigning…" : task.assignedTo ? "Reassign to" : "Assign to"}
+          </div>
+          {agents.length === 0 ? (
+            <div className="px-3 py-3 text-xs text-zinc-500 italic">No team members loaded.</div>
+          ) : (
+            agents.map((a) => (
+              <button
+                key={a.id}
+                onClick={() => handlePick(a.id)}
+                disabled={busy || a.id === task.assignedTo?.id}
+                className="w-full text-left px-3 py-2 flex items-center gap-2 text-sm text-zinc-200 hover:bg-zinc-800 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <span className={`w-5 h-5 rounded-full ${avatarColor(a.name)} flex items-center justify-center text-[9px] font-semibold text-white`}>
+                  {initials(a.name)}
+                </span>
+                <span className="flex-1 truncate">{a.name}</span>
+                {a.id === task.assignedTo?.id && <span className="text-[10px] text-zinc-500">current</span>}
+              </button>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Row renderer ──────────────────────────────────────────────────────
 function TaskRow({
   task,
   now,
+  agents,
   onClick,
+  onReassign,
 }: {
   task: Task;
   now: Date;
+  agents: Agent[];
   onClick: () => void;
+  onReassign: (taskId: number, agentId: number | null) => void;
 }) {
   const appt = task.appointmentTime ? new Date(task.appointmentTime) : null;
   const diffMin = appt ? Math.round((appt.getTime() - now.getTime()) / 60_000) : null;
@@ -134,7 +250,7 @@ function TaskRow({
 
   return (
     <div
-      className="flex items-center gap-4 px-5 py-3 border-b border-zinc-800 cursor-pointer hover:bg-zinc-800/40 transition-colors"
+      className="flex items-center gap-3 px-5 py-3 border-b border-zinc-800 cursor-pointer hover:bg-zinc-800/40 transition-colors"
       onClick={onClick}
       role="button"
       tabIndex={0}
@@ -146,27 +262,26 @@ function TaskRow({
         </div>
       </div>
 
-      <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider ${typeStyle(task.orderType)}`}>
+      <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider shrink-0 ${typeStyle(task.orderType)}`}>
         {typeLabel(task.orderType)}
       </span>
 
       <div className="flex-1 min-w-0">
         <div className="font-medium text-sm text-zinc-100 truncate">{task.title}</div>
-        <div className="text-xs text-zinc-500 mt-0.5">
-          #{task.entityId}
-          {task.assignedTo ? <> · <span className="text-zinc-400">{task.assignedTo.name}</span></> : <> · <span className="text-yellow-500">unassigned</span></>}
-        </div>
+        <div className="text-xs text-zinc-500 mt-0.5">#{task.entityId}</div>
       </div>
 
+      <AssigneeChip task={task} agents={agents} onReassign={onReassign} />
+
       {task.slaStatus === "breached" ? (
-        <span className="px-2 py-0.5 rounded text-[11px] bg-red-900/60 text-red-300">SLA breached</span>
+        <span className="px-2 py-0.5 rounded text-[11px] bg-red-900/60 text-red-300 shrink-0">SLA breached</span>
       ) : task.slaStatus === "critical" ? (
-        <span className="px-2 py-0.5 rounded text-[11px] bg-orange-900/60 text-orange-300">SLA critical</span>
+        <span className="px-2 py-0.5 rounded text-[11px] bg-orange-900/60 text-orange-300 shrink-0">SLA critical</span>
       ) : task.slaStatus === "warning" ? (
-        <span className="px-2 py-0.5 rounded text-[11px] bg-yellow-900/40 text-yellow-300">SLA warning</span>
+        <span className="px-2 py-0.5 rounded text-[11px] bg-yellow-900/40 text-yellow-300 shrink-0">SLA warning</span>
       ) : null}
 
-      <span className="text-zinc-600 text-xl">›</span>
+      <span className="text-zinc-600 text-xl shrink-0">›</span>
     </div>
   );
 }
@@ -211,11 +326,13 @@ function SectionCard({
 }
 
 // ─── Today view: NOW / PREP / LATER / DONE ─────────────────────────────
-function TodayView({ tasks, tomorrowTasks, now, onRowClick }: {
+function TodayView({ tasks, tomorrowTasks, now, agents, onRowClick, onReassign }: {
   tasks: Task[];
   tomorrowTasks: Task[];
   now: Date;
+  agents: Agent[];
   onRowClick: (task: Task) => void;
+  onReassign: (taskId: number, agentId: number | null) => void;
 }) {
   const nowMinIST = istMinutesSinceMidnight(now);
   const windowEndMin = nowMinIST + NOW_WINDOW_MIN;
@@ -307,7 +424,7 @@ function TodayView({ tasks, tomorrowTasks, now, onRowClick }: {
             Nothing urgent right now. Enjoy the breather. ☕
           </div>
         ) : (
-          nowTasks.map(t => <TaskRow key={t.id} task={t} now={now} onClick={() => onRowClick(t)} />)
+          nowTasks.map(t => <TaskRow key={t.id} task={t} now={now} agents={agents} onClick={() => onRowClick(t)} onReassign={onReassign} />)
         )}
       </SectionCard>
 
@@ -329,7 +446,7 @@ function TodayView({ tasks, tomorrowTasks, now, onRowClick }: {
               </span>
             </summary>
             <div className="border-t border-amber-900/30">
-              {prepTasks.map(t => <TaskRow key={t.id} task={t} now={now} onClick={() => onRowClick(t)} />)}
+              {prepTasks.map(t => <TaskRow key={t.id} task={t} now={now} agents={agents} onClick={() => onRowClick(t)} onReassign={onReassign} />)}
             </div>
           </details>
         </div>
@@ -351,7 +468,7 @@ function TodayView({ tasks, tomorrowTasks, now, onRowClick }: {
               <div className="px-5 py-2 bg-zinc-950/40 border-b border-zinc-800 text-[11px] text-zinc-500 uppercase tracking-wider font-semibold">
                 ── {fmtHourHeader(h)} · {laterByHour.get(h)!.length} task{laterByHour.get(h)!.length > 1 ? "s" : ""} ──
               </div>
-              {laterByHour.get(h)!.map(t => <TaskRow key={t.id} task={t} now={now} onClick={() => onRowClick(t)} />)}
+              {laterByHour.get(h)!.map(t => <TaskRow key={t.id} task={t} now={now} agents={agents} onClick={() => onRowClick(t)} onReassign={onReassign} />)}
             </div>
           ))
         )}
@@ -374,7 +491,7 @@ function TodayView({ tasks, tomorrowTasks, now, onRowClick }: {
           {doneTasks.length === 0 ? (
             <div className="px-5 py-3 text-center text-xs text-zinc-500">Nothing completed yet today.</div>
           ) : (
-            doneTasks.slice(0, 20).map(t => <TaskRow key={t.id} task={t} now={now} onClick={() => onRowClick(t)} />)
+            doneTasks.slice(0, 20).map(t => <TaskRow key={t.id} task={t} now={now} agents={agents} onClick={() => onRowClick(t)} onReassign={onReassign} />)
           )}
         </div>
       </details>
@@ -383,10 +500,12 @@ function TodayView({ tasks, tomorrowTasks, now, onRowClick }: {
 }
 
 // ─── Tomorrow view ─────────────────────────────────────────────────────
-function TomorrowView({ tasks, now, onRowClick }: {
+function TomorrowView({ tasks, now, agents, onRowClick, onReassign }: {
   tasks: Task[];
   now: Date;
+  agents: Agent[];
   onRowClick: (task: Task) => void;
+  onReassign: (taskId: number, agentId: number | null) => void;
 }) {
   const early: Task[] = [];
   const morning: Task[] = [];
@@ -434,7 +553,7 @@ function TomorrowView({ tasks, now, onRowClick }: {
             </span>
           </div>
           <div className="bg-zinc-900 border-t border-amber-900/30">
-            {early.map(t => <TaskRow key={t.id} task={t} now={now} onClick={() => onRowClick(t)} />)}
+            {early.map(t => <TaskRow key={t.id} task={t} now={now} agents={agents} onClick={() => onRowClick(t)} onReassign={onReassign} />)}
           </div>
         </div>
       )}
@@ -458,10 +577,12 @@ function TomorrowView({ tasks, now, onRowClick }: {
 }
 
 // ─── Stuck view: flat list with age + type filters ─────────────────────
-function StuckView({ tasks, now, onRowClick }: {
+function StuckView({ tasks, now, agents, onRowClick, onReassign }: {
   tasks: Task[];
   now: Date;
+  agents: Agent[];
   onRowClick: (task: Task) => void;
+  onReassign: (taskId: number, agentId: number | null) => void;
 }) {
   const [ageFilter, setAgeFilter] = useState<"all" | "today" | "yesterday" | "older">("all");
   const [typeFilter, setTypeFilter] = useState<string>("all");
@@ -580,7 +701,7 @@ function StuckView({ tasks, now, onRowClick }: {
               <div className="absolute top-3 right-12 z-10">
                 <span className={`px-2 py-0.5 rounded text-[11px] ${ageStyle(ageOf(t))}`}>{ageLabel(t)}</span>
               </div>
-              <TaskRow task={t} now={now} onClick={() => onRowClick(t)} />
+              <TaskRow task={t} now={now} agents={agents} onClick={() => onRowClick(t)} onReassign={onReassign} />
             </div>
           ))
         )}
@@ -593,17 +714,68 @@ function StuckView({ tasks, now, onRowClick }: {
 export default function MyWorkBoard() {
   const [tab, setTab] = useState<Tab>("today");
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [agents, setAgents] = useState<Agent[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [now, setNow] = useState<Date>(new Date());
   const [lastUpdated, setLastUpdated] = useState<Date>(new Date());
   const [quickViewOrderId, setQuickViewOrderId] = useState<number | null>(null);
 
+  // ── Filter state (Lead's main tool for slicing the workspace) ───────
+  const [filterAssigneeId, setFilterAssigneeId] = useState<"all" | "unassigned" | number>("all");
+  const [filterTypes, setFilterTypes] = useState<Set<string>>(new Set()); // empty = all
+
   // Keep "now" fresh so the sliding NOW window slides on its own.
   useEffect(() => {
     const id = setInterval(() => setNow(new Date()), 60_000); // tick every minute
     return () => clearInterval(id);
   }, []);
+
+  // Load team members once for the assignee dropdown + reassign popovers.
+  useEffect(() => {
+    fetch("/api/team")
+      .then((r) => r.json())
+      .then((d) => {
+        setAgents(
+          (d.members ?? []).map((m: { userId: number; name: string; role: string }) => ({
+            id: m.userId, name: m.name, role: m.role,
+          }))
+        );
+      })
+      .catch((err) => console.error("[MyWork] team fetch failed:", err));
+  }, []);
+
+  // Reassign handler — used by the AssigneeChip popover on every row.
+  // Optimistic update + server call; on failure, revert + show error.
+  // (Unassign is not supported by /api/tasks/bulk yet — popover hides the
+  // option. When the endpoint adds an `unassign` action, accept agentId=null
+  // here and branch.)
+  const handleReassign = useCallback(async (taskId: number, agentId: number | null) => {
+    if (agentId == null) return; // unassign not implemented server-side
+    const prev = tasks;
+    const agent = agents.find((a) => a.id === agentId);
+    if (!agent) return;
+    setTasks((ts) =>
+      ts.map((t) =>
+        t.id === taskId ? { ...t, assignedTo: { id: agent.id, name: agent.name } } : t
+      )
+    );
+    try {
+      const res = await fetch("/api/tasks/bulk", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: [taskId], action: "reassign", assignedToId: agentId }),
+      });
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({}));
+        throw new Error(errBody.error ?? `HTTP ${res.status}`);
+      }
+    } catch (e) {
+      console.error("[MyWork] reassign failed:", e);
+      setTasks(prev); // revert optimistic update
+      setError(`Reassign failed: ${e instanceof Error ? e.message : "unknown error"}`);
+    }
+  }, [tasks, agents]);
 
   const fetchTasks = useCallback(async () => {
     setLoading(true);
@@ -632,21 +804,49 @@ export default function MyWorkBoard() {
 
   useEffect(() => { fetchTasks(); }, [fetchTasks]);
 
+  // Apply filters first, then bucket. Filters narrow the entire workspace
+  // (today/tomorrow/stuck counts all update together).
+  const filteredTasks = useMemo(() => {
+    return tasks.filter((t) => {
+      // Assignee filter
+      if (filterAssigneeId === "unassigned" && t.assignedTo) return false;
+      if (typeof filterAssigneeId === "number" && t.assignedTo?.id !== filterAssigneeId) return false;
+      // Order-type filter (empty set = all)
+      if (filterTypes.size > 0 && !filterTypes.has(t.orderType)) return false;
+      return true;
+    });
+  }, [tasks, filterAssigneeId, filterTypes]);
+
   const byBucket = useMemo(() => {
     const t = { today: [] as Task[], tomorrow: [] as Task[], stuck: [] as Task[] };
-    for (const x of tasks) {
+    for (const x of filteredTasks) {
       if (x.viewBucket === "today" || x.viewBucket === "done") t.today.push(x);
       else if (x.viewBucket === "tomorrow") t.tomorrow.push(x);
       else if (x.viewBucket === "stuck") t.stuck.push(x);
     }
     return t;
-  }, [tasks]);
+  }, [filteredTasks]);
 
   const counts = {
     today: byBucket.today.length,
     tomorrow: byBucket.tomorrow.length,
     stuck: byBucket.stuck.length,
   };
+
+  // Set of order types present in the unfiltered workspace — chips render
+  // dynamically so we only show chips for types that exist.
+  const availableTypes = useMemo(() => {
+    const s = new Set<string>();
+    for (const t of tasks) s.add(t.orderType);
+    return Array.from(s).sort();
+  }, [tasks]);
+
+  // Unassigned count for the chip badge (always reflects the unfiltered
+  // workspace so the user sees the real "you have N unassigned" pulse).
+  const unassignedCount = useMemo(
+    () => tasks.filter((t) => !t.assignedTo).length,
+    [tasks]
+  );
 
   const lastUpdatedRel = useMemo(() => {
     const sec = Math.floor((now.getTime() - lastUpdated.getTime()) / 1000);
@@ -674,6 +874,79 @@ export default function MyWorkBoard() {
         >
           ⟳ Refresh
         </button>
+      </div>
+
+      {/* Filter bar — Lead's main tool for slicing the workspace.
+          Sits above tabs so filters persist across Today/Tomorrow/Stuck. */}
+      <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-3 mb-4 flex items-center gap-3 flex-wrap">
+        {/* Assignee selector */}
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] text-zinc-500 uppercase tracking-wider">Assignee</span>
+          <select
+            value={typeof filterAssigneeId === "number" ? String(filterAssigneeId) : filterAssigneeId}
+            onChange={(e) => {
+              const v = e.target.value;
+              if (v === "all" || v === "unassigned") setFilterAssigneeId(v);
+              else setFilterAssigneeId(parseInt(v, 10));
+            }}
+            className="bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-sm text-zinc-100 focus:outline-none focus:ring-1 focus:ring-blue-500"
+          >
+            <option value="all">All team ({tasks.length})</option>
+            <option value="unassigned">⚠ Unassigned ({unassignedCount})</option>
+            <optgroup label="Team members">
+              {agents.map((a) => (
+                <option key={a.id} value={a.id}>{a.name}</option>
+              ))}
+            </optgroup>
+          </select>
+        </div>
+
+        {/* Order-type chips */}
+        {availableTypes.length > 1 && (
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-[10px] text-zinc-500 uppercase tracking-wider mr-1">Type</span>
+            <button
+              onClick={() => setFilterTypes(new Set())}
+              className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
+                filterTypes.size === 0
+                  ? "bg-blue-600 border-blue-600 text-white"
+                  : "bg-zinc-900 border-zinc-700 text-zinc-400 hover:text-zinc-200"
+              }`}
+            >
+              All
+            </button>
+            {availableTypes.map((t) => {
+              const active = filterTypes.has(t);
+              return (
+                <button
+                  key={t}
+                  onClick={() => {
+                    const next = new Set(filterTypes);
+                    if (active) next.delete(t); else next.add(t);
+                    setFilterTypes(next);
+                  }}
+                  className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
+                    active
+                      ? "bg-blue-600 border-blue-600 text-white"
+                      : "bg-zinc-900 border-zinc-700 text-zinc-400 hover:text-zinc-200"
+                  }`}
+                >
+                  {typeLabel(t)}
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Reset (only shows when something is filtered) */}
+        {(filterAssigneeId !== "all" || filterTypes.size > 0) && (
+          <button
+            onClick={() => { setFilterAssigneeId("all"); setFilterTypes(new Set()); }}
+            className="text-xs text-zinc-500 hover:text-zinc-200 ml-auto"
+          >
+            Clear filters
+          </button>
+        )}
       </div>
 
       {/* Tab strip */}
@@ -720,21 +993,27 @@ export default function MyWorkBoard() {
               tasks={byBucket.today}
               tomorrowTasks={byBucket.tomorrow}
               now={now}
+              agents={agents}
               onRowClick={(t) => setQuickViewOrderId(t.entityId)}
+              onReassign={handleReassign}
             />
           )}
           {tab === "tomorrow" && (
             <TomorrowView
               tasks={byBucket.tomorrow}
               now={now}
+              agents={agents}
               onRowClick={(t) => setQuickViewOrderId(t.entityId)}
+              onReassign={handleReassign}
             />
           )}
           {tab === "stuck" && (
             <StuckView
               tasks={byBucket.stuck}
               now={now}
+              agents={agents}
               onRowClick={(t) => setQuickViewOrderId(t.entityId)}
+              onReassign={handleReassign}
             />
           )}
         </>

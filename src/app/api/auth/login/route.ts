@@ -41,10 +41,14 @@ export async function POST(request: NextRequest) {
       data: { userId: user.id, token, expiresAt },
     });
 
-    // Determine redirect based on role
+    // Determine post-login landing page based on role.
+    // Agents land on Smart View (the new bucketed task surface) rather
+    // than the legacy /agent list — Smart View is the primary workflow
+    // and matches how Leads experience the product. The legacy /agent
+    // page is still reachable from the sidebar's "All Tasks" entry.
     const redirectPath =
       user.role === "OPS_HEAD" ? "/head" :
-      user.role === "STORE_ADMIN" ? "/store" : "/agent";
+      user.role === "STORE_ADMIN" ? "/store" : "/agent/smart-view";
 
     const response = NextResponse.json({
       user: { id: user.id, name: user.name, email: user.email, role: user.role },

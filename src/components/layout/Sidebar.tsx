@@ -192,11 +192,14 @@ export default function Sidebar({ user }: SidebarProps) {
       {/* Nav */}
       <nav className="flex-1 px-2 py-3 space-y-0.5 overflow-y-auto">
         {visibleNav.map((item) => {
-          // Exact match for /head to avoid matching /head/tasks, /head/roster, etc.
-          const active =
-            item.href === "/head"
-              ? pathname === "/head"
-              : pathname === item.href || pathname.startsWith(item.href + "/");
+          // Exact-match the role-root routes ("/head", "/agent") so they
+          // don't also light up when the user is on a child route like
+          // /head/tasks or /agent/smart-view. Everything else uses prefix
+          // match so deep sub-pages still highlight their parent nav.
+          const EXACT_MATCH_ROUTES = new Set(["/head", "/agent"]);
+          const active = EXACT_MATCH_ROUTES.has(item.href)
+            ? pathname === item.href
+            : pathname === item.href || pathname.startsWith(item.href + "/");
           return (
             <Link
               key={item.href}

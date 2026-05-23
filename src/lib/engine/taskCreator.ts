@@ -660,7 +660,7 @@ async function createTask(payload: CreateTaskPayload): Promise<PickAssigneeOutco
   const {
     taskRuleId, taskTypeId, title, entityType, entityId,
     storeId, orderType, dataSourceId, priority, slaDeadline, metadata, checklistSteps,
-    assignmentStrategy,
+    assignmentStrategy, appointmentTime,
   } = payload;
 
   // W1.9 — defence in depth on SLA deadline. The API already bounds
@@ -714,6 +714,7 @@ async function createTask(payload: CreateTaskPayload): Promise<PickAssigneeOutco
         orderType,
         priority,
         slaDeadline,
+        appointmentTime,
         // Stash the assignment outcome on the task's metadata so the operator
         // can see WHY a task is unassigned without grepping logs.
         metadata: {
@@ -1001,6 +1002,12 @@ export async function evaluateAndCreateTasks(
         assignmentStrategy: rule.assignmentStrategy as CreateTaskPayload["assignmentStrategy"],
         priority: rule.priority,
         slaDeadline,
+        // Propagate the source order's scheduled time onto the Task row so
+        // downstream sorting/bucketing (today/tomorrow/stuck in MyWorkBoard)
+        // can use it directly without parsing metadata. Previously only
+        // present in metadata, which left task.appointmentTime always null
+        // and broke the new My Work view's time-based bucketing.
+        appointmentTime: appointmentTs,
         metadata: {
           orderId: order.id,
           orderStatus: order.orderStatus,

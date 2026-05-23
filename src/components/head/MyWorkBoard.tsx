@@ -220,7 +220,19 @@ function TodayView({ tasks, tomorrowTasks, now, onRowClick }: {
   const nowMinIST = istMinutesSinceMidnight(now);
   const windowEndMin = nowMinIST + NOW_WINDOW_MIN;
 
-  // Bucket today's tasks by sub-section
+  // Bucket today's tasks by sub-section.
+  //
+  // The rule:
+  //   - tasks WITH an appointmentTime → bucket by that time (NOW / LATER / DONE)
+  //   - tasks WITHOUT appointmentTime → fall back to slaDeadline:
+  //       SLA breached / due within 90 min → NOW (it's actually urgent)
+  //       otherwise → LATER TODAY (don't dump unscheduled work into NOW just
+  //       because we lack a time anchor)
+  //
+  // Earlier shipped behaviour put every no-appt task into NOW. Combined with
+  // an engine bug that left appointmentTime null on every task, that meant
+  // ALL tasks showed in NOW. Fixed defensively here so a missing field never
+  // produces "everything is urgent" again.
   const nowTasks: Task[] = [];
   const laterTasks: Task[] = [];
   const doneTasks: Task[] = [];
@@ -228,19 +240,26 @@ function TodayView({ tasks, tomorrowTasks, now, onRowClick }: {
   for (const t of tasks) {
     if (t.viewBucket === "done") { doneTasks.push(t); continue; }
     const appt = t.appointmentTime ? new Date(t.appointmentTime) : null;
+
     if (!appt) {
-      // No-appt tasks: surface in NOW (they're typically reactive work)
-      nowTasks.push(t);
+      // No appointment time → bucket by SLA urgency
+      const sla = new Date(t.slaDeadline);
+      const slaMinFromNow = (sla.getTime() - now.getTime()) / 60_000;
+      if (slaMinFromNow <= NOW_WINDOW_MIN) {
+        nowTasks.push(t);                          // SLA is imminent or breached
+      } else {
+        laterTasks.push(t);                        // No appt + comfortable SLA → not urgent
+      }
       continue;
     }
+
     const apptMin = istMinutesSinceMidnight(appt);
     if (apptMin < nowMinIST - 15) {
-      // Past appointment but still today — already in done or stuck per server
-      doneTasks.push(t);
+      doneTasks.push(t);                           // past appointment, server bucketed as done/stuck
     } else if (apptMin < windowEndMin) {
-      nowTasks.push(t);
+      nowTasks.push(t);                            // within next 90 min
     } else {
-      laterTasks.push(t);
+      laterTasks.push(t);                          // later today
     }
   }
 
@@ -254,12 +273,12 @@ function TodayView({ tasks, tomorrowTasks, now, onRowClick }: {
       })
     : [];
 
-  // Sort each bucket by appt time
-  const byTime = (a: Task, b: Task) => {
-    const at = a.appointmentTime ? new Date(a.appointmentTime).getTime() : Infinity;
-    const bt = b.appointmentTime ? new Date(b.appointmentTime).getTime() : Infinity;
-    return at - bt;
-  };
+  // Sort each bucket by appt time, falling back to slaDeadline when an appt
+  // is missing (so no-appt tasks interleave by urgency rather than all
+  // landing at the bottom).
+  const sortAnchor = (t: Task) =>
+    t.appointmentTime ? new Date(t.appointmentTime).getTime() : new Date(t.slaDeadline).getTime();
+  const byTime = (a: Task, b: Task) => sortAnchor(a) - sortAnchor(b);
   nowTasks.sort(byTime);
   laterTasks.sort(byTime);
   doneTasks.sort(byTime);

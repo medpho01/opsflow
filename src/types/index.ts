@@ -143,6 +143,11 @@ export interface CreateTaskPayload {
   assignmentStrategy?: "default" | "round_robin" | "store_affinity" | "skill_based" | "least_loaded";
   priority: TaskPriority;
   slaDeadline: Date;
+  // Source order's scheduled time, propagated onto the Task row so all
+  // downstream sorting/bucketing (today/tomorrow/stuck) can use it without
+  // digging through `metadata`. Null when the source has no scheduled time
+  // (e.g. walk-in orders, some pharmacy deliveries).
+  appointmentTime: Date | null;
   metadata: Record<string, unknown>;
   checklistSteps: { stepOrder: number; stepText: string; isRequired: boolean }[];
 }

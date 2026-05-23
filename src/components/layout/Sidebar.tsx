@@ -50,12 +50,13 @@ const navItems: NavItem[] = [
     ),
   },
   {
-    label: "My Tasks (Legacy)",
+    label: "All Tasks",
     href: "/agent",
     roles: ["OPS_AGENT"],
     icon: (
-      // Older single-task list view, kept as fallback while Smart View
-      // is validated. Remove once the team has switched over.
+      // Older single-task list view, kept alongside Smart View as the
+      // full-list lens. Same label as the Head's "All Tasks" — different
+      // route per role, no collision since the sidebar filters by role.
       <svg className="w-4.5 h-4.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.75}>
         <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 10h16M4 14h16M4 18h16" />
       </svg>

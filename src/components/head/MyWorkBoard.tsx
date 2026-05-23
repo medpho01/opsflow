@@ -329,13 +329,41 @@ function TaskRow({
 
       {rightBadge}
 
-      {task.slaStatus === "breached" ? (
-        <span className="px-2 py-0.5 rounded text-[11px] bg-red-900/60 text-red-300 shrink-0">SLA breached</span>
-      ) : task.slaStatus === "critical" ? (
-        <span className="px-2 py-0.5 rounded text-[11px] bg-orange-900/60 text-orange-300 shrink-0">SLA critical</span>
-      ) : task.slaStatus === "warning" ? (
-        <span className="px-2 py-0.5 rounded text-[11px] bg-yellow-900/40 text-yellow-300 shrink-0">SLA warning</span>
-      ) : null}
+      {/* SLA / status pill — one urgency channel per row.
+          Rules:
+          - BLOCKED or snoozed → grey "Paused" chip. The breach-as-stick
+            is the wrong signal when an agent is correctly waiting on an
+            external party; rendering a red breach pill drives clear-not-
+            resolve theatre.
+          - Time block already coloured (appt within 90 min) → no SLA pill.
+            The time block IS the urgency signal. A second red badge
+            duplicates and dilutes it.
+          - Otherwise → original SLA pill for breached/critical/warning. */}
+      {(() => {
+        const isSnoozed = task.snoozedUntil ? new Date(task.snoozedUntil) > now : false;
+        const isPaused = task.status === "BLOCKED" || isSnoozed;
+        if (isPaused) {
+          return (
+            <span className="px-2 py-0.5 rounded text-[11px] bg-zinc-800 text-zinc-400 shrink-0">
+              {isSnoozed ? "Snoozed" : "Paused"}
+            </span>
+          );
+        }
+        // Suppress SLA pill when the time block is already telegraphing urgency
+        // (red/orange/yellow time means the appointment is within 90 min).
+        const timeBlockIsUrgent = appt && diffMin !== null && diffMin >= -15 && diffMin <= 90;
+        if (timeBlockIsUrgent && task.slaStatus !== "breached") return null;
+        if (task.slaStatus === "breached") {
+          return <span className="px-2 py-0.5 rounded text-[11px] bg-red-900/60 text-red-300 shrink-0">SLA breached</span>;
+        }
+        if (task.slaStatus === "critical") {
+          return <span className="px-2 py-0.5 rounded text-[11px] bg-orange-900/60 text-orange-300 shrink-0">SLA critical</span>;
+        }
+        if (task.slaStatus === "warning") {
+          return <span className="px-2 py-0.5 rounded text-[11px] bg-yellow-900/40 text-yellow-300 shrink-0">SLA warning</span>;
+        }
+        return null;
+      })()}
 
       <span className="text-zinc-600 text-xl shrink-0">›</span>
     </div>
@@ -485,7 +513,7 @@ function TodayView({ tasks, tomorrowTasks, now, agents, canReassign, onRowClick,
         )}
       </SectionCard>
 
-      {prepTasks.length > 0 && (
+      {prepTasks.length > 0 ? (
         <div className="rounded-lg border border-amber-900/40 ring-1 ring-amber-900/30">
           <details open className="bg-zinc-900">
             <summary className="px-5 py-4 bg-amber-950/20 flex items-center justify-between cursor-pointer list-none [&::-webkit-details-marker]:hidden">
@@ -507,7 +535,25 @@ function TodayView({ tasks, tomorrowTasks, now, agents, canReassign, onRowClick,
             </div>
           </details>
         </div>
-      )}
+      ) : !showPrep ? (
+        // Pre-4 PM stub. The section materialises with content after 4 PM
+        // IST; without this stub a new user has no idea it exists. Visible
+        // but dim — clearly disabled, teaches the surface.
+        <div className="rounded-lg border border-zinc-800 bg-zinc-900/40 px-5 py-3 flex items-center justify-between">
+          <div className="flex items-center gap-3 opacity-60">
+            <span className="text-lg">🌙</span>
+            <div>
+              <div className="text-sm font-medium text-zinc-400">Tonight's prep</div>
+              <div className="text-xs text-zinc-600 mt-0.5">
+                tomorrow's early-morning confirmations will surface here after 4 PM
+              </div>
+            </div>
+          </div>
+          <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-zinc-800 text-zinc-500">
+            unlocks at 4 PM
+          </span>
+        </div>
+      ) : null}
 
       <SectionCard
         icon="📋"
@@ -742,12 +788,25 @@ function StuckView({ tasks, now, agents, canReassign, onRowClick, onReassign }: 
         </div>
       </div>
 
-      <div className="bg-red-950/30 border border-red-900/50 rounded-lg p-4">
-        <div className="text-sm font-medium text-red-300">{filtered.length} orders not progressing</div>
-        <div className="text-xs text-red-400/80 mt-1">
-          Past their service window without lifecycle advancement. Sorted oldest first.
+      {/* Banner — alarm tone when something is actually stuck, neutral
+          tone when the filter slice happens to be empty. Previously this
+          rendered a red "0 orders not progressing" panic box on any
+          zero-result filter, training users to distrust the colour. */}
+      {filtered.length > 0 ? (
+        <div className="bg-red-950/30 border border-red-900/50 rounded-lg p-4">
+          <div className="text-sm font-medium text-red-300">{filtered.length} orders not progressing</div>
+          <div className="text-xs text-red-400/80 mt-1">
+            Past their service window without lifecycle advancement. Sorted oldest first.
+          </div>
         </div>
-      </div>
+      ) : (
+        <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-4">
+          <div className="text-sm font-medium text-zinc-300">No stuck tasks match your filters</div>
+          <div className="text-xs text-zinc-500 mt-1">
+            Try widening Age or Type. Default view is "All / All" — start there if you suspect something is hiding.
+          </div>
+        </div>
+      )}
 
       <div className="bg-zinc-900 border border-zinc-800 rounded-lg">
         {filtered.length === 0 ? (

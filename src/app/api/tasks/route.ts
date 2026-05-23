@@ -104,6 +104,59 @@ const URGENCY_LABELS: Record<number, string> = {
 };
 
 /**
+ * Phase-1 view bucket — coarser than urgencyBucket, designed for the
+ * Today / Tomorrow / Stuck navigation in the My Work view.
+ *
+ *   "today"    appt is today IST AND appt+30min has not passed
+ *              OR no appt + created today + not completed
+ *   "tomorrow" appt is tomorrow IST
+ *   "stuck"    appt+30min has passed AND task status is non-terminal
+ *              OR explicit BREACHED status with non-terminal state
+ *   "future"   appt is 2+ days out (visible only when explicitly requested)
+ *   "done"     task is in a terminal status (COMPLETED / CANCELLED / RESOLVED)
+ *              — handled separately, kept out of the live buckets
+ *
+ * Sliding-window subdivisions inside "today" (NOW / LATER / PREP / DONE_TODAY)
+ * are computed on the client where the page can react to real-time clock ticks
+ * without re-hitting the API.
+ */
+type ViewBucket = "today" | "tomorrow" | "stuck" | "future" | "done";
+
+const TERMINAL_STATUSES_FOR_BUCKET = new Set<string>([
+  "COMPLETED", "CANCELLED", "RESOLVED",
+]);
+
+function computeViewBucket(
+  appt: Date | null,
+  createdAt: Date,
+  status: string,
+  now: Date,
+): ViewBucket {
+  if (TERMINAL_STATUSES_FOR_BUCKET.has(status)) return "done";
+
+  const stuckGraceMs = 30 * 60 * 1000;
+  const nowDay = istDayKey(now);
+  const tomorrowDay = istDayKey(new Date(now.getTime() + 24 * 60 * 60 * 1000));
+
+  if (appt && !isNaN(appt.getTime())) {
+    const apptDay = istDayKey(appt);
+    const pastGrace = now.getTime() - appt.getTime() > stuckGraceMs;
+
+    if (pastGrace) return "stuck"; // missed appt, lifecycle didn't advance
+    if (apptDay === nowDay) return "today";
+    if (apptDay === tomorrowDay) return "tomorrow";
+    return "future";
+  }
+
+  // No appointment → fall back to createdAt for day bucketing
+  const createdDay = istDayKey(createdAt);
+  if (createdDay === nowDay) return "today";
+  if (createdDay === tomorrowDay) return "tomorrow";
+  // Older-than-today, no appt, not terminal → treat as stuck (something to revisit)
+  return "stuck";
+}
+
+/**
  * Build the orderBy clause for Prisma query based on sortBy parameter
  * Handles tiebreakers (e.g., same priority → sort by createdAt)
  * Handles NULL values appropriately (e.g., appointmentTime NULL → end of results)
@@ -192,6 +245,9 @@ export async function GET(request: NextRequest) {
   const sourceParam = searchParams.get("source");
   const sourceTypeParam = searchParams.get("sourceType");
   const dataSourceIdParam = searchParams.get("dataSourceId");
+  // Phase-1 My Work view: filter to a coarse bucket (today/tomorrow/stuck).
+  // Accepts comma-separated values for combined views if needed later.
+  const viewParam = searchParams.get("view"); // "today" | "tomorrow" | "stuck" | "future" | null = all
   // Default sort: urgency bucket — puts imminent appointments first, then
   // today's upcoming tasks, then tomorrow, then future, then past.
   // This surfaces tasks that need immediate attention without requiring the
@@ -410,11 +466,15 @@ export async function GET(request: NextRequest) {
     },
   } as const;
 
-  // Urgency sort: fetch ALL matching tasks (no DB-level pagination), sort in
-  // memory by urgency bucket + appointmentTime, then slice for the page.
-  // This is safe for typical task list sizes (<500 tasks per workspace).
+  // Fetch-all mode when we need to sort/filter post-compute:
+  //   - urgency sort (computed bucket, can't ORDER BY in SQL)
+  //   - view filter (Today/Tomorrow/Stuck is computed, not a DB column)
+  // For typical workspaces (<500 active tasks) this is fine.
+  const isViewFilter = !!viewParam;
+  const isFullFetch = isUrgencySort || isViewFilter;
+
   const [tasks, total] = await Promise.all([
-    isUrgencySort
+    isFullFetch
       ? prisma.task.findMany({ where, include, orderBy: [{ appointmentTime: "asc" }] })
       : prisma.task.findMany({ where, include, orderBy, skip: (page - 1) * limit, take: limit }),
     prisma.task.count({ where }),
@@ -504,6 +564,9 @@ export async function GET(request: NextRequest) {
     const urgencyBucket = computeUrgencyBucket(appt, now);
     const urgencyLabel = URGENCY_LABELS[urgencyBucket] ?? "—";
 
+    // Phase-1 view bucket for My Work navigation.
+    const viewBucket = computeViewBucket(appt, task.createdAt, task.status, now);
+
     return {
       ...task,
       // sourceEntityId is a BigInt in the DB — convert to string so JSON.stringify doesn't throw
@@ -520,17 +583,25 @@ export async function GET(request: NextRequest) {
       dataSource,
       urgencyBucket,
       urgencyLabel,
+      viewBucket,
     };
   });
 
-  // For urgency sort: sort all tasks in memory, then slice for the page.
-  // Buckets 0–1 (imminent, today-upcoming) sort ASC by appointmentTime (soonest first).
-  // Buckets 2, 5 (past) sort DESC (most recent past first — most actionable).
-  // Buckets 3–4 (tomorrow, future) sort ASC.
-  // Bucket 6 (no appt) falls to the end.
   let filteredTasks = tasksWithMeta;
+
+  // ── view filter (Today / Tomorrow / Stuck / Future) ───────────────
+  // Computed bucket can't be a SQL WHERE; filter post-meta. Updates `total`
+  // to the filtered count so pagination semantics stay correct.
+  let effectiveTotal = total;
+  if (isViewFilter) {
+    const wantedBuckets = viewParam!.split(",").map(v => v.trim());
+    filteredTasks = filteredTasks.filter(t => wantedBuckets.includes(t.viewBucket));
+    effectiveTotal = filteredTasks.length;
+  }
+
+  // ── urgency sort (in-memory bucket sort + tiebreakers) ────────────
   if (isUrgencySort) {
-    filteredTasks = [...tasksWithMeta].sort((a, b) => {
+    filteredTasks = [...filteredTasks].sort((a, b) => {
       if (a.urgencyBucket !== b.urgencyBucket) return a.urgencyBucket - b.urgencyBucket;
       const at = a.appointmentTime ? new Date(a.appointmentTime).getTime() : null;
       const bt = b.appointmentTime ? new Date(b.appointmentTime).getTime() : null;
@@ -540,6 +611,10 @@ export async function GET(request: NextRequest) {
       const pastBucket = a.urgencyBucket === 2 || a.urgencyBucket === 5;
       return pastBucket ? bt - at : at - bt; // DESC for past, ASC for future
     });
+  }
+
+  // ── pagination slice for any full-fetch path ──────────────────────
+  if (isFullFetch) {
     filteredTasks = filteredTasks.slice((page - 1) * limit, page * limit);
   }
 
@@ -555,12 +630,13 @@ export async function GET(request: NextRequest) {
   if (sourceFilter?.length) appliedFilters.source = sourceFilter;
   if (sourceTypeFilter?.length) appliedFilters.sourceType = sourceTypeFilter;
   if (dataSourceIdFilter?.length) appliedFilters.dataSourceId = dataSourceIdFilter;
+  if (viewParam) appliedFilters.view = viewParam;
 
   const filterCount = Object.keys(appliedFilters).length;
 
   return NextResponse.json({
     tasks: filteredTasks,
-    pagination: { page, limit, total, pages: Math.ceil(total / limit) },
+    pagination: { page, limit, total: effectiveTotal, pages: Math.ceil(effectiveTotal / limit) },
     sorting: { sortBy, sortOrder },
     appliedFilters,
     filterCount,

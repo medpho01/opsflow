@@ -1,0 +1,1583 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>OpsFlow · My Work (Mockup v3 · Abstract)</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  .tab-active { background: #18181b; border-bottom: 2px solid #60a5fa; color: #fff; }
+  .tab-inactive { color: #71717a; }
+  .tab-inactive:hover { color: #d4d4d8; }
+  .section-card { background: #18181b; border: 1px solid #27272a; }
+  .row { cursor: pointer; transition: background .12s; }
+  .row:hover { background: #1f1f23; }
+  .row:hover .chev { color: #d4d4d8; transform: translateX(2px); }
+  .chev { color: #52525b; transition: all .15s; }
+  .pill { padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 500; }
+  .type-badge { padding: 1px 6px; border-radius: 4px; font-size: 10px; font-weight: 600; letter-spacing: .05em; }
+  .type-hsc    { background: #1e293b; color: #93c5fd; }
+  .type-cons   { background: #1e1b4b; color: #c4b5fd; }
+  .type-pharma { background: #14532d; color: #86efac; }
+  .type-radio  { background: #4c1d95; color: #ddd6fe; }
+  .btn { padding: 6px 12px; border-radius: 6px; font-size: 13px; font-weight: 500; transition: all .12s; }
+  .btn-ghost { background: #27272a; color: #d4d4d8; border: 1px solid #3f3f46; }
+  .btn-ghost:hover { background: #3f3f46; }
+  details > summary { list-style: none; cursor: pointer; }
+  details > summary::-webkit-details-marker { display: none; }
+  .chevron { transition: transform .2s; }
+  details[open] .chevron { transform: rotate(90deg); }
+  /* Drawer */
+  .drawer-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 40; opacity: 0; pointer-events: none; transition: opacity .2s; }
+  .drawer-backdrop.open { opacity: 1; pointer-events: auto; }
+  .drawer { position: fixed; top: 0; right: 0; height: 100vh; width: 500px; max-width: 95vw; background: #0a0a0a; border-left: 1px solid #27272a; z-index: 50; transform: translateX(100%); transition: transform .25s ease-out; display: flex; flex-direction: column; }
+  .drawer.open { transform: translateX(0); }
+  .info-row { display: grid; grid-template-columns: 100px 1fr; gap: 12px; padding: 5px 0; font-size: 13px; }
+  .info-label { color: #71717a; }
+  .info-val { color: #e4e4e7; }
+  .copy-link { cursor: pointer; color: #60a5fa; }
+  .copy-link:hover { color: #93c5fd; text-decoration: underline; }
+  .outcome-btn { padding: 10px 14px; border-radius: 8px; font-size: 13px; font-weight: 500; flex: 1; transition: all .12s; border: 1px solid #3f3f46; background: #18181b; color: #e4e4e7; }
+  .outcome-btn:hover { background: #27272a; }
+  .outcome-btn.primary { background: #16a34a; border-color: #16a34a; color: white; }
+  .outcome-btn.primary:hover { background: #15803d; }
+  .stakeholder { padding: 10px 12px; background: #0f0f10; border: 1px solid #27272a; border-radius: 6px; margin-bottom: 6px; }
+  /* Banner variants */
+  .banner-breached { background: rgba(127, 29, 29, 0.4); border-bottom: 1px solid rgba(127, 29, 29, 0.4); }
+  .banner-imminent { background: rgba(154, 52, 18, 0.4); border-bottom: 1px solid rgba(154, 52, 18, 0.4); }
+  .banner-normal   { background: rgba(30, 58, 138, 0.3); border-bottom: 1px solid rgba(30, 58, 138, 0.3); }
+  .banner-info     { background: rgba(63, 63, 70, 0.4); border-bottom: 1px solid rgba(63, 63, 70, 0.4); }
+  .banner-breached .banner-title { color: #fca5a5; }
+  .banner-imminent .banner-title { color: #fdba74; }
+  .banner-normal   .banner-title { color: #93c5fd; }
+  .banner-info     .banner-title { color: #d4d4d8; }
+  /* Filter chips */
+  .chip { padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 500; border: 1px solid #3f3f46; background: #18181b; color: #a1a1aa; cursor: pointer; transition: all .12s; }
+  .chip:hover { color: #e4e4e7; border-color: #52525b; }
+  .chip.active { background: #2563eb; border-color: #2563eb; color: white; }
+  /* Sidebar nav item */
+  .nav-item { padding: 8px 12px; border-radius: 6px; color: #a1a1aa; cursor: pointer; transition: background .12s; display: flex; align-items: center; gap: 8px; font-size: 14px; }
+  .nav-item:hover { background: #27272a; color: #e4e4e7; }
+  .nav-item.active { background: #27272a; color: white; border-left: 2px solid #3b82f6; padding-left: 10px; }
+  /* Agent card */
+  .agent-card { background: #18181b; border: 1px solid #27272a; border-radius: 8px; padding: 14px; transition: border-color .12s; }
+  .agent-card:hover { border-color: #3f3f46; }
+  .progress-bar { height: 4px; background: #27272a; border-radius: 999px; overflow: hidden; }
+  .progress-bar > div { height: 100%; border-radius: 999px; }
+</style>
+</head>
+<body class="bg-zinc-950 text-zinc-100 min-h-screen">
+
+<div class="flex min-h-screen">
+  <!-- Sidebar -->
+  <aside class="w-56 bg-zinc-900 border-r border-zinc-800 p-4 hidden md:block">
+    <div class="flex items-center gap-2 mb-8">
+      <div class="w-8 h-8 rounded-md bg-blue-600 flex items-center justify-center text-sm font-bold">O</div>
+      <div>
+        <div class="text-sm font-semibold">OpsFlow</div>
+        <div class="text-xs text-zinc-500">LabStack Ops</div>
+      </div>
+    </div>
+    <div class="text-[10px] text-zinc-600 uppercase tracking-wider px-3 mb-2">View as</div>
+    <select id="role-switch" onchange="setRole(this.value)" class="w-full mb-4 bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 text-sm text-zinc-200">
+      <option value="agent">👤 Ops Agent</option>
+      <option value="lead" selected>👔 Team Lead</option>
+      <option value="head">👑 Ops Head</option>
+    </select>
+    <nav class="space-y-1 text-sm">
+      <div class="nav-item active" onclick="showPage('command')" id="nav-command">📊 Command Center</div>
+      <div class="nav-item" onclick="showPage('mywork')" id="nav-mywork">📋 My Work</div>
+      <div class="nav-item" onclick="showPage('mywork'); showTab('stuck')">⚠️ Stuck Queue <span class="ml-auto pill bg-red-900 text-red-300">8</span></div>
+      <div class="border-t border-zinc-800 my-3"></div>
+      <div class="nav-item">📈 Analytics</div>
+      <div class="nav-item">🏪 Store Overview</div>
+      <div class="nav-item">👥 Team</div>
+      <div class="nav-item">⚙️ Task Rules</div>
+      <div class="nav-item">🚨 Escalations</div>
+      <div class="nav-item">🗄 Data Sources</div>
+      <div class="nav-item">🔧 Engine</div>
+    </nav>
+  </aside>
+
+  <!-- Main -->
+  <main class="flex-1 px-8 py-6">
+
+  <!-- ============ COMMAND CENTER PAGE (Team Lead / Ops Head) ============ -->
+  <div id="page-command">
+    <div class="flex items-center justify-between mb-6">
+      <div>
+        <h1 class="text-2xl font-bold">Command Center</h1>
+        <div class="text-sm text-zinc-500 mt-1">
+          Friday, 23 May · 9:30 AM · 6 agents on shift
+        </div>
+      </div>
+      <div class="flex items-center gap-2">
+        <button class="btn btn-ghost">⟳ Refresh</button>
+        <button class="btn btn-ghost">Export</button>
+      </div>
+    </div>
+
+    <!-- PULSE: top-line numbers -->
+    <div class="grid grid-cols-5 gap-3 mb-5">
+      <div class="section-card rounded-lg p-4">
+        <div class="text-xs text-zinc-500 uppercase tracking-wider">Active</div>
+        <div class="text-2xl font-bold mt-1">47</div>
+        <div class="text-[11px] text-zinc-500">across 4 types</div>
+      </div>
+      <div class="section-card rounded-lg p-4">
+        <div class="text-xs text-zinc-500 uppercase tracking-wider">Done today</div>
+        <div class="text-2xl font-bold mt-1 text-green-400">22</div>
+        <div class="text-[11px] text-zinc-500">↑ 4 vs avg</div>
+      </div>
+      <div class="section-card rounded-lg p-4 ring-1 ring-red-900/40">
+        <div class="text-xs text-zinc-500 uppercase tracking-wider">Stuck</div>
+        <div class="text-2xl font-bold mt-1 text-red-400">8</div>
+        <div class="text-[11px] text-red-400">↑ 3 vs yesterday</div>
+      </div>
+      <div class="section-card rounded-lg p-4">
+        <div class="text-xs text-zinc-500 uppercase tracking-wider">Unassigned</div>
+        <div class="text-2xl font-bold mt-1 text-yellow-400">14</div>
+        <div class="text-[11px] text-zinc-500">avg wait: 8m</div>
+      </div>
+      <div class="section-card rounded-lg p-4">
+        <div class="text-xs text-zinc-500 uppercase tracking-wider">SLA hit</div>
+        <div class="text-2xl font-bold mt-1">87%</div>
+        <div class="text-[11px] text-red-400">↓ 5pts vs yesterday</div>
+      </div>
+    </div>
+
+    <!-- NEEDS YOUR ATTENTION: the decision queue -->
+    <div class="section-card rounded-lg mb-5 ring-1 ring-amber-900/30">
+      <div class="px-5 py-3 border-b border-zinc-800 bg-amber-950/15 flex items-center justify-between">
+        <div>
+          <div class="text-sm font-semibold text-amber-200">⚡ Needs your attention</div>
+          <div class="text-xs text-amber-400/70 mt-0.5">Auto-detected interventions — review and act</div>
+        </div>
+        <span class="pill bg-amber-700 text-amber-100">4 prompts</span>
+      </div>
+      <div class="divide-y divide-zinc-800">
+        <div class="row px-5 py-3 flex items-center gap-3">
+          <span class="text-orange-400">🔥</span>
+          <div class="flex-1 text-sm">
+            <span class="text-zinc-200 font-medium">Suresh G</span> is at <span class="text-zinc-100">12 active tasks</span> (team avg is 7). Risk of SLA breaches.
+          </div>
+          <button class="btn btn-ghost text-xs">Reassign 5</button>
+        </div>
+        <div class="row px-5 py-3 flex items-center gap-3">
+          <span class="text-red-400">⚠️</span>
+          <div class="flex-1 text-sm">
+            <span class="text-zinc-200 font-medium">HSC sample handover</span> has broken SLA <span class="text-red-300">3 times today</span> — pattern emerging.
+          </div>
+          <button class="btn btn-ghost text-xs">Investigate</button>
+        </div>
+        <div class="row px-5 py-3 flex items-center gap-3">
+          <span class="text-yellow-400">🕐</span>
+          <div class="flex-1 text-sm">
+            Order <span class="text-zinc-200 font-medium">#53850</span> stuck at Thyrocare for <span class="text-zinc-100">3 days</span> — patient calling daily.
+          </div>
+          <button class="btn btn-ghost text-xs">Escalate to lab</button>
+        </div>
+        <div class="row px-5 py-3 flex items-center gap-3">
+          <span class="text-zinc-400">📞</span>
+          <div class="flex-1 text-sm">
+            Phlebo <span class="text-zinc-200 font-medium">Ravi K</span> marked "not reachable" by 3 agents in the last hour.
+          </div>
+          <button class="btn btn-ghost text-xs">Mark off-duty</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- TEAM GRID -->
+    <div class="mb-5">
+      <div class="flex items-center justify-between mb-3">
+        <h2 class="text-base font-semibold">Team activity</h2>
+        <span class="text-xs text-zinc-500">6 on shift · 1 on break · 2 off</span>
+      </div>
+      <div class="grid grid-cols-3 gap-3">
+
+        <div class="agent-card">
+          <div class="flex items-center justify-between mb-2">
+            <div class="flex items-center gap-2">
+              <div class="w-8 h-8 rounded-full bg-blue-700 flex items-center justify-center text-xs font-semibold">RS</div>
+              <div>
+                <div class="text-sm font-medium">Rohit S</div>
+                <div class="text-[11px] text-zinc-500">Senior Agent · HSC focus</div>
+              </div>
+            </div>
+            <span class="pill bg-green-900/40 text-green-300">⚡ active</span>
+          </div>
+          <div class="grid grid-cols-3 gap-2 text-center mt-3">
+            <div><div class="text-base font-semibold">8</div><div class="text-[10px] text-zinc-500">active</div></div>
+            <div><div class="text-base font-semibold text-green-400">12</div><div class="text-[10px] text-zinc-500">done</div></div>
+            <div><div class="text-base font-semibold">92%</div><div class="text-[10px] text-zinc-500">SLA</div></div>
+          </div>
+          <div class="progress-bar mt-3"><div style="width:80%;background:#16a34a"></div></div>
+        </div>
+
+        <div class="agent-card">
+          <div class="flex items-center justify-between mb-2">
+            <div class="flex items-center gap-2">
+              <div class="w-8 h-8 rounded-full bg-purple-700 flex items-center justify-center text-xs font-semibold">AM</div>
+              <div>
+                <div class="text-sm font-medium">Anita M</div>
+                <div class="text-[11px] text-zinc-500">Agent · Mixed</div>
+              </div>
+            </div>
+            <span class="pill bg-green-900/40 text-green-300">⚡ active</span>
+          </div>
+          <div class="grid grid-cols-3 gap-2 text-center mt-3">
+            <div><div class="text-base font-semibold">9</div><div class="text-[10px] text-zinc-500">active</div></div>
+            <div><div class="text-base font-semibold text-green-400">11</div><div class="text-[10px] text-zinc-500">done</div></div>
+            <div><div class="text-base font-semibold">88%</div><div class="text-[10px] text-zinc-500">SLA</div></div>
+          </div>
+          <div class="progress-bar mt-3"><div style="width:75%;background:#16a34a"></div></div>
+        </div>
+
+        <div class="agent-card">
+          <div class="flex items-center justify-between mb-2">
+            <div class="flex items-center gap-2">
+              <div class="w-8 h-8 rounded-full bg-green-700 flex items-center justify-center text-xs font-semibold">VP</div>
+              <div>
+                <div class="text-sm font-medium">Vikas P</div>
+                <div class="text-[11px] text-zinc-500">Agent · PHARMA</div>
+              </div>
+            </div>
+            <span class="pill bg-green-900/40 text-green-300">⚡ active</span>
+          </div>
+          <div class="grid grid-cols-3 gap-2 text-center mt-3">
+            <div><div class="text-base font-semibold">5</div><div class="text-[10px] text-zinc-500">active</div></div>
+            <div><div class="text-base font-semibold text-green-400">14</div><div class="text-[10px] text-zinc-500">done</div></div>
+            <div><div class="text-base font-semibold">95%</div><div class="text-[10px] text-zinc-500">SLA</div></div>
+          </div>
+          <div class="progress-bar mt-3"><div style="width:90%;background:#16a34a"></div></div>
+        </div>
+
+        <div class="agent-card">
+          <div class="flex items-center justify-between mb-2">
+            <div class="flex items-center gap-2">
+              <div class="w-8 h-8 rounded-full bg-pink-700 flex items-center justify-center text-xs font-semibold">PK</div>
+              <div>
+                <div class="text-sm font-medium">Priya K</div>
+                <div class="text-[11px] text-zinc-500">Agent · VIDEO</div>
+              </div>
+            </div>
+            <span class="pill bg-zinc-700 text-zinc-400">💤 on break</span>
+          </div>
+          <div class="grid grid-cols-3 gap-2 text-center mt-3">
+            <div><div class="text-base font-semibold">0</div><div class="text-[10px] text-zinc-500">active</div></div>
+            <div><div class="text-base font-semibold text-green-400">8</div><div class="text-[10px] text-zinc-500">done</div></div>
+            <div><div class="text-base font-semibold">90%</div><div class="text-[10px] text-zinc-500">SLA</div></div>
+          </div>
+          <div class="progress-bar mt-3"><div style="width:90%;background:#16a34a"></div></div>
+        </div>
+
+        <div class="agent-card ring-1 ring-red-900/50">
+          <div class="flex items-center justify-between mb-2">
+            <div class="flex items-center gap-2">
+              <div class="w-8 h-8 rounded-full bg-orange-700 flex items-center justify-center text-xs font-semibold">SG</div>
+              <div>
+                <div class="text-sm font-medium">Suresh G</div>
+                <div class="text-[11px] text-red-400">⚠ overloaded</div>
+              </div>
+            </div>
+            <span class="pill bg-red-900/60 text-red-300">⚡ slipping</span>
+          </div>
+          <div class="grid grid-cols-3 gap-2 text-center mt-3">
+            <div><div class="text-base font-semibold text-red-300">12</div><div class="text-[10px] text-zinc-500">active</div></div>
+            <div><div class="text-base font-semibold text-green-400">6</div><div class="text-[10px] text-zinc-500">done</div></div>
+            <div><div class="text-base font-semibold text-red-300">71%</div><div class="text-[10px] text-zinc-500">SLA</div></div>
+          </div>
+          <div class="progress-bar mt-3"><div style="width:71%;background:#dc2626"></div></div>
+        </div>
+
+        <div class="agent-card opacity-60">
+          <div class="flex items-center justify-between mb-2">
+            <div class="flex items-center gap-2">
+              <div class="w-8 h-8 rounded-full bg-zinc-700 flex items-center justify-center text-xs font-semibold">KR</div>
+              <div>
+                <div class="text-sm font-medium">Karthik R</div>
+                <div class="text-[11px] text-zinc-500">Agent · evening shift</div>
+              </div>
+            </div>
+            <span class="pill bg-zinc-800 text-zinc-500">⏸ off-shift</span>
+          </div>
+          <div class="grid grid-cols-3 gap-2 text-center mt-3">
+            <div><div class="text-base font-semibold text-zinc-600">—</div><div class="text-[10px] text-zinc-500">active</div></div>
+            <div><div class="text-base font-semibold text-zinc-600">—</div><div class="text-[10px] text-zinc-500">done</div></div>
+            <div><div class="text-base font-semibold text-zinc-600">—</div><div class="text-[10px] text-zinc-500">SLA</div></div>
+          </div>
+          <div class="text-[11px] text-zinc-500 mt-3">Starts shift at 4 PM</div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- BOTTOM ROW: Stuck breakdown + Throughput -->
+    <div class="grid grid-cols-2 gap-4">
+
+      <div class="section-card rounded-lg">
+        <div class="px-5 py-3 border-b border-zinc-800">
+          <div class="text-sm font-semibold">Stuck breakdown</div>
+          <div class="text-xs text-zinc-500 mt-0.5">Click any row to filter the Stuck queue</div>
+        </div>
+        <div class="p-5 space-y-3">
+          <div class="flex items-center gap-3">
+            <span class="type-badge type-hsc shrink-0">HSC</span>
+            <div class="flex-1">
+              <div class="progress-bar"><div style="width:62%;background:#dc2626"></div></div>
+            </div>
+            <span class="text-xs text-zinc-300 w-12 text-right">5 stuck</span>
+          </div>
+          <div class="flex items-center gap-3">
+            <span class="type-badge type-pharma shrink-0">PHARMA</span>
+            <div class="flex-1">
+              <div class="progress-bar"><div style="width:25%;background:#dc2626"></div></div>
+            </div>
+            <span class="text-xs text-zinc-300 w-12 text-right">2 stuck</span>
+          </div>
+          <div class="flex items-center gap-3">
+            <span class="type-badge type-cons shrink-0">VIDEO</span>
+            <div class="flex-1">
+              <div class="progress-bar"><div style="width:12%;background:#dc2626"></div></div>
+            </div>
+            <span class="text-xs text-zinc-300 w-12 text-right">1 stuck</span>
+          </div>
+          <div class="flex items-center gap-3">
+            <span class="type-badge type-radio shrink-0">MRI</span>
+            <div class="flex-1">
+              <div class="progress-bar"><div style="width:0%;background:#dc2626"></div></div>
+            </div>
+            <span class="text-xs text-zinc-500 w-12 text-right">0</span>
+          </div>
+          <div class="border-t border-zinc-800 pt-3 mt-3 text-xs text-zinc-500 flex justify-between">
+            <span>By age:</span>
+            <span><span class="text-zinc-300">2</span> today · <span class="text-zinc-300">5</span> yesterday · <span class="text-red-300">1</span> older</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="section-card rounded-lg">
+        <div class="px-5 py-3 border-b border-zinc-800">
+          <div class="text-sm font-semibold">Throughput today</div>
+          <div class="text-xs text-zinc-500 mt-0.5">Tasks completed per hour</div>
+        </div>
+        <div class="p-5">
+          <div class="flex items-end gap-1 h-24">
+            <div class="flex-1 bg-blue-700 rounded-t" style="height:30%" title="7 AM · 2"></div>
+            <div class="flex-1 bg-blue-700 rounded-t" style="height:50%" title="8 AM · 4"></div>
+            <div class="flex-1 bg-blue-700 rounded-t" style="height:80%" title="9 AM · 7"></div>
+            <div class="flex-1 bg-blue-500 rounded-t" style="height:65%" title="10 AM · 6 (current)"></div>
+            <div class="flex-1 bg-zinc-700 rounded-t" style="height:8%"></div>
+            <div class="flex-1 bg-zinc-700 rounded-t" style="height:8%"></div>
+            <div class="flex-1 bg-zinc-700 rounded-t" style="height:8%"></div>
+            <div class="flex-1 bg-zinc-700 rounded-t" style="height:8%"></div>
+            <div class="flex-1 bg-zinc-700 rounded-t" style="height:8%"></div>
+            <div class="flex-1 bg-zinc-700 rounded-t" style="height:8%"></div>
+          </div>
+          <div class="flex justify-between mt-2 text-[10px] text-zinc-500">
+            <span>7</span><span>8</span><span>9</span><span>10</span><span>11</span><span>12</span><span>1</span><span>2</span><span>3</span><span>4</span>
+          </div>
+          <div class="border-t border-zinc-800 pt-3 mt-3 text-xs text-zinc-500 flex justify-between">
+            <span>Target: 50/day</span>
+            <span><span class="text-zinc-300">22 / 50</span> · on pace ✓</span>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ============ MY WORK PAGE (Agent default, Lead optional) ============ -->
+  <div id="page-mywork" class="hidden">
+    <div class="flex items-center justify-between mb-6">
+      <div>
+        <h1 class="text-2xl font-bold">My Work</h1>
+        <div class="text-sm text-zinc-500 mt-1">
+          Friday, 23 May · Abhishek Rajpoot · Ops Head
+        </div>
+      </div>
+      <div class="flex items-center gap-2">
+        <button class="btn btn-ghost">⟳ Refresh</button>
+        <button class="btn btn-ghost">Filters</button>
+      </div>
+    </div>
+
+    <!-- Team-member filter strip (Lead/Head only) -->
+    <div id="team-filter-strip" class="section-card rounded-lg p-3 mb-4">
+      <div class="flex items-center gap-2 flex-wrap">
+        <span class="text-xs text-zinc-500 uppercase tracking-wider mr-2">Show tasks for</span>
+        <button class="chip active" onclick="setMemberFilter('all', this)">👥 All team <span class="text-zinc-500">(47)</span></button>
+        <button class="chip" onclick="setMemberFilter('unassigned', this)">⚠ Unassigned <span class="text-yellow-400">(14)</span></button>
+        <button class="chip" onclick="setMemberFilter('mine', this)">🧑 Mine <span class="text-zinc-500">(5)</span></button>
+        <span class="text-zinc-700 mx-1">·</span>
+        <button class="chip" onclick="setMemberFilter('rs', this)">RS · Rohit</button>
+        <button class="chip" onclick="setMemberFilter('am', this)">AM · Anita</button>
+        <button class="chip" onclick="setMemberFilter('vp', this)">VP · Vikas</button>
+        <button class="chip" onclick="setMemberFilter('pk', this)">PK · Priya</button>
+        <button class="chip" onclick="setMemberFilter('sg', this)">SG · Suresh <span class="text-red-400">⚠</span></button>
+        <button class="chip" onclick="setMemberFilter('kr', this)">KR · Karthik</button>
+        <span class="ml-auto text-xs text-zinc-500">As Lead/Head you can reassign by clicking any agent badge below.</span>
+      </div>
+    </div>
+
+    <!-- Tabs -->
+    <div class="flex items-center gap-1 border-b border-zinc-800 mb-6">
+      <button onclick="showTab('today')" id="tab-today" class="tab-active px-5 py-3 text-sm font-medium">
+        Today <span class="pill bg-blue-600 text-white ml-2">47</span>
+      </button>
+      <button onclick="showTab('tomorrow')" id="tab-tomorrow" class="tab-inactive px-5 py-3 text-sm font-medium">
+        Tomorrow <span class="pill bg-zinc-700 text-zinc-300 ml-2">32</span>
+      </button>
+      <button onclick="showTab('stuck')" id="tab-stuck" class="tab-inactive px-5 py-3 text-sm font-medium">
+        Stuck <span class="pill bg-red-600 text-white ml-2">8</span>
+      </button>
+      <div class="ml-auto text-xs text-zinc-500 pb-2">✓ 22 done today</div>
+    </div>
+
+    <!-- ============ TODAY TAB ============ -->
+    <div id="panel-today" class="space-y-4">
+
+      <!-- DEMO ONLY: Time picker to show how sections shift -->
+      <div class="bg-zinc-900 border border-zinc-800 rounded-lg p-3 flex items-center gap-3 mb-2">
+        <span class="text-xs text-zinc-500">⏱ Demo · pretend it's:</span>
+        <button onclick="setSimNow(9*60+30)"  class="btn btn-ghost text-xs" id="t-9">9:30 AM</button>
+        <button onclick="setSimNow(13*60)"    class="btn btn-ghost text-xs" id="t-13">1:00 PM</button>
+        <button onclick="setSimNow(17*60)"    class="btn btn-ghost text-xs" id="t-17">5:00 PM</button>
+        <button onclick="setSimNow(20*60)"    class="btn btn-ghost text-xs" id="t-20">8:00 PM</button>
+        <span class="text-xs text-zinc-600 ml-auto">Watch how the sections slide with time.</span>
+      </div>
+
+      <!-- Dynamic sections rendered by JS -->
+      <div id="today-sections"></div>
+    </div>
+
+    <!-- ============ TOMORROW TAB (unchanged from v2) ============ -->
+    <div id="panel-tomorrow" class="hidden space-y-4">
+      <div class="bg-zinc-900 border border-zinc-800 rounded-lg p-5">
+        <div class="text-sm text-zinc-400 mb-1">Looking ahead</div>
+        <div class="flex items-baseline gap-3">
+          <h2 class="text-xl font-bold">Saturday, 24 May</h2>
+          <span class="text-sm text-zinc-500">· 32 actions · across 4 order types</span>
+        </div>
+      </div>
+      <div class="section-card rounded-lg border-amber-900/40 ring-1 ring-amber-900/30">
+        <div class="px-5 py-4 border-b border-zinc-800 bg-amber-950/20">
+          <div class="font-semibold text-amber-200">⚠️ Early-morning items · needs tonight's action</div>
+          <div class="text-xs text-amber-400/70 mt-0.5">
+            HSC bookings before 10 AM · MRI prep instructions · early consultations
+          </div>
+        </div>
+        <div class="px-5 py-4 text-sm text-zinc-500">Same structure as v2 — works across all order types.</div>
+      </div>
+    </div>
+
+    <!-- ============ STUCK TAB (scalable: date + type filters) ============ -->
+    <div id="panel-stuck" class="hidden space-y-4">
+
+      <!-- Filter bar -->
+      <div class="section-card rounded-lg p-4">
+        <div class="flex items-center gap-2 mb-3">
+          <span class="text-xs text-zinc-500 uppercase tracking-wider mr-2">Age</span>
+          <button class="chip active" onclick="setStuckFilter('age', 'all', this)">All</button>
+          <button class="chip" onclick="setStuckFilter('age', 'today', this)">Today</button>
+          <button class="chip" onclick="setStuckFilter('age', 'yesterday', this)">Yesterday</button>
+          <button class="chip" onclick="setStuckFilter('age', 'older', this)">Older <span class="text-red-300">⚠</span></button>
+        </div>
+        <div class="flex items-center gap-2 flex-wrap">
+          <span class="text-xs text-zinc-500 uppercase tracking-wider mr-2">Type</span>
+          <button class="chip active" onclick="setStuckFilter('type', 'all', this)">All types</button>
+          <button class="chip" onclick="setStuckFilter('type', 'HSC', this)">HSC</button>
+          <button class="chip" onclick="setStuckFilter('type', 'VIDEO', this)">VIDEO</button>
+          <button class="chip" onclick="setStuckFilter('type', 'PHARMA', this)">PHARMA</button>
+          <button class="chip" onclick="setStuckFilter('type', 'MRI', this)">MRI</button>
+        </div>
+      </div>
+
+      <div class="bg-red-950/30 border border-red-900/50 rounded-lg p-4">
+        <div class="text-sm font-medium text-red-300"><span id="stuck-count">8</span> orders not progressing</div>
+        <div class="text-xs text-red-400/80 mt-1">Grouped by abstract reason. Same groups span all order types — handoff stalled covers HSC sample handover + pharma pickup + radiology no-show.</div>
+      </div>
+
+      <div id="stuck-content"></div>
+    </div>
+
+    <div class="mt-12 pt-6 border-t border-zinc-800 text-xs text-zinc-500 text-center">
+      Mockup v4 · switch role in the sidebar to see Command Center · click chips in Stuck to filter
+    </div>
+  </div><!-- end #page-mywork -->
+
+  </main>
+</div>
+
+<!-- ============ ABSTRACT TASK DRAWER ============ -->
+<!-- Single template, fully data-driven. Same DOM for every order type. -->
+<div class="drawer-backdrop" id="backdrop" onclick="closeDrawer()"></div>
+<div class="drawer" id="drawer">
+
+  <!-- Header -->
+  <div class="px-5 py-4 border-b border-zinc-800 flex items-start justify-between gap-3">
+    <div class="flex items-start gap-3 min-w-0">
+      <button onclick="closeDrawer()" class="text-zinc-500 hover:text-zinc-100 text-xl shrink-0">←</button>
+      <div class="min-w-0">
+        <div class="flex items-center gap-2 mb-0.5">
+          <span class="text-xs text-zinc-500" id="d-order">Order #54214</span>
+          <span class="type-badge" id="d-type-badge">HSC</span>
+        </div>
+        <div class="text-sm font-semibold" id="d-title">Confirm sample collected</div>
+      </div>
+    </div>
+    <a href="#" class="text-xs text-blue-400 hover:underline shrink-0 pt-1" id="d-source-link">Open in LabStack ↗</a>
+  </div>
+
+  <!-- Banner -->
+  <div class="px-5 py-3 flex items-center gap-3" id="d-banner">
+    <span id="d-banner-icon">🔴</span>
+    <div class="text-xs">
+      <span class="banner-title font-medium" id="d-banner-title">SLA breached 5 min ago</span>
+      <span class="text-zinc-400" id="d-banner-sub"> · auto-promoted to NOW</span>
+    </div>
+  </div>
+
+  <!-- Scrollable body -->
+  <div class="flex-1 overflow-y-auto">
+
+    <!-- PATIENT (always present) -->
+    <div class="px-5 py-4 border-b border-zinc-800">
+      <div class="text-xs text-zinc-500 uppercase tracking-wider mb-3">Patient</div>
+      <div class="text-base font-semibold mb-1" id="d-patient-name"></div>
+      <div class="text-xs text-zinc-500 mb-3" id="d-patient-meta"></div>
+      <div id="d-patient-rows"></div>
+    </div>
+
+    <!-- SCHEDULE — label adapts per order type -->
+    <div class="px-5 py-4 border-b border-zinc-800">
+      <div class="text-xs text-zinc-500 uppercase tracking-wider mb-3" id="d-schedule-label">Appointment</div>
+      <div id="d-schedule-rows"></div>
+    </div>
+
+    <!-- STAKEHOLDERS — dynamic list -->
+    <div class="px-5 py-4 border-b border-zinc-800" id="d-stakeholders-section">
+      <div class="text-xs text-zinc-500 uppercase tracking-wider mb-3">Stakeholders</div>
+      <div id="d-stakeholders-rows"></div>
+    </div>
+
+    <!-- ITEMS — label adapts (Tests / Consultation / Items / Scan) -->
+    <div class="px-5 py-4 border-b border-zinc-800">
+      <div class="text-xs text-zinc-500 uppercase tracking-wider mb-3" id="d-items-label">Tests · ₹1,840</div>
+      <ul class="space-y-1 text-sm" id="d-items-list"></ul>
+    </div>
+
+    <!-- NOTES -->
+    <div class="px-5 py-4 border-b border-zinc-800">
+      <div class="text-xs text-zinc-500 uppercase tracking-wider mb-3">Notes</div>
+      <textarea class="w-full bg-zinc-900 border border-zinc-700 rounded text-sm p-2 text-zinc-200 resize-none" rows="2" placeholder="Add a note (visible to team)"></textarea>
+      <div class="mt-3 text-xs text-zinc-500">Internal notes from source:</div>
+      <div class="mt-1 text-xs text-zinc-400 italic" id="d-internal-note"></div>
+    </div>
+
+    <!-- TIMELINE -->
+    <div class="px-5 py-4">
+      <div class="text-xs text-zinc-500 uppercase tracking-wider mb-3">Timeline</div>
+      <div class="space-y-2 text-xs" id="d-timeline"></div>
+    </div>
+  </div>
+
+  <!-- ACTION FOOTER — IDENTICAL FOR EVERY ORDER TYPE -->
+  <div class="border-t border-zinc-800 px-5 py-4 bg-zinc-900">
+    <div class="text-xs text-zinc-500 mb-3">Mark outcome:</div>
+    <div class="flex gap-2 mb-2">
+      <button class="outcome-btn primary">✓ Completed</button>
+      <button class="outcome-btn">⏰ Snooze 30m</button>
+    </div>
+    <div class="flex gap-2">
+      <button class="outcome-btn text-xs">📞 Not reachable</button>
+      <button class="outcome-btn text-xs">🔁 Reschedule</button>
+      <button class="outcome-btn text-xs">⚠ Escalate</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  // ════════════════════════════════════════════════════════════════
+  // ABSTRACT TASK SCHEMA
+  // Every task — regardless of order type — has this shape.
+  // The drawer renders from this; nothing in the drawer is order-type-specific.
+  // ════════════════════════════════════════════════════════════════
+  //
+  // Task {
+  //   header:  { orderId, title, type: { code, label, color }, sourceLabel, sourceUrl }
+  //   banner:  { variant: 'breached'|'imminent'|'normal'|'info', icon, title, sub }
+  //   patient: { name, meta, rows: [{label, value, copyable?, secondary?}] }
+  //   schedule:{ label, rows: [{label, value, pill?}] }              // label adapts per type
+  //   stakeholders: [{role, name, phone?, detail?}]                  // 0..N rows
+  //   items:   { label, total, list: [string] }                      // label adapts per type
+  //   internalNote: string
+  //   timeline: [{time, event}]
+  // }
+
+  const tasks = {
+
+    // ─── HOME SAMPLE COLLECTION ───────────────────────────────────
+    'hsc-sharath': {
+      header: { orderId: 'Order #54214', title: 'Confirm sample collected',
+                type: { code: 'HSC', label: 'HSC', cls: 'type-hsc' },
+                sourceLabel: 'LabStack' },
+      banner: { variant: 'breached', icon: '🔴',
+                title: 'SLA breached 5 min ago', sub: ' · auto-promoted to NOW' },
+      patient: { name: 'Sharath S', meta: 'Male, 34 · LB-29841',
+                 rows: [
+                   { label: 'Phone',    value: '+91 98765 43210', copyable: true, secondary: '📱 WhatsApp' },
+                   { label: 'Address',  value: 'A-301, Linking Road, Bandra West, Mumbai 400050' },
+                   { label: 'Landmark', value: 'Opposite Lilavati Hospital' },
+                 ]},
+      schedule: { label: 'Appointment',
+                  rows: [
+                    { label: 'Scheduled', value: 'Today, Fri 23 May · 09:30 AM' },
+                    { label: 'Status',    value: 'PHLEBO_DISPATCHED', pill: true, next: '→ awaiting SAMPLE_COLLECTED' },
+                  ]},
+      stakeholders: [
+        { role: 'Phlebotomist', name: 'Ravi Kumar', phone: '+91 98765 12345' },
+        { role: 'Lab',          name: 'Thyrocare', detail: 'Andheri branch' },
+        { role: 'Store',        name: 'Store #5', detail: 'Bandra West' },
+      ],
+      items: { label: 'Tests', total: '₹1,840',
+               list: ['Complete Blood Count (CBC)', 'Lipid Profile', 'HbA1c', 'Vitamin D Total', 'Thyroid Profile (TSH, T3, T4)'] },
+      internalNote: '"Patient prefers morning slots. Has small dog — ring doorbell loudly."',
+      timeline: [
+        { time: '09:15',     event: 'Phlebo dispatched — Ravi K marked en-route' },
+        { time: '08:00',     event: 'Booking confirmed — Patient confirmed by Abhishek' },
+        { time: 'Yesterday', event: 'Order created in LabStack' },
+      ],
+    },
+
+    'hsc-lakshmi': {
+      header: { orderId: 'Order #54107', title: 'Phlebo dispatch check',
+                type: { code: 'HSC', label: 'HSC', cls: 'type-hsc' }, sourceLabel: 'LabStack' },
+      banner: { variant: 'imminent', icon: '🟠', title: 'Due in 60 min', sub: ' · phlebo must confirm dispatch' },
+      patient: { name: 'Lakshmipathi R', meta: 'Male, 52 · LB-31204',
+                 rows: [
+                   { label: 'Phone',    value: '+91 98765 32109', copyable: true, secondary: '📱 WhatsApp' },
+                   { label: 'Address',  value: 'Flat 504, Lokhandwala Complex, Andheri East 400069' },
+                 ]},
+      schedule: { label: 'Appointment',
+                  rows: [
+                    { label: 'Scheduled', value: 'Today, Fri 23 May · 12:00 PM' },
+                    { label: 'Status',    value: 'PHLEBO_ASSIGNED', pill: true, next: '→ awaiting PHLEBO_DISPATCHED' },
+                  ]},
+      stakeholders: [
+        { role: 'Phlebotomist', name: 'Suresh Mahajan', phone: '+91 98765 11122' },
+        { role: 'Lab',          name: 'SRL', detail: 'Powai' },
+      ],
+      items: { label: 'Tests', total: '₹2,100', list: ['Liver Function Test', 'Kidney Function Test', 'Diabetic Profile'] },
+      internalNote: '"Senior patient, please call before arrival."',
+      timeline: [
+        { time: '08:30',     event: 'Phlebo assigned — Suresh M' },
+        { time: 'Yesterday', event: 'Order created' },
+      ],
+    },
+
+    'hsc-shailesh': {
+      header: { orderId: 'Order #54233', title: 'Confirm booking',
+                type: { code: 'HSC', label: 'HSC', cls: 'type-hsc' }, sourceLabel: 'LabStack' },
+      banner: { variant: 'normal', icon: '🔵', title: 'Due before 10:30 AM appointment', sub: '' },
+      patient: { name: 'Shailesh Kumar Sinha', meta: 'Male, 45 · LB-30119',
+                 rows: [
+                   { label: 'Phone',   value: '+91 98765 65432', copyable: true, secondary: '📱 WhatsApp' },
+                   { label: 'Address', value: 'Hiranandani Gardens, Powai, Mumbai 400076' },
+                 ]},
+      schedule: { label: 'Appointment',
+                  rows: [
+                    { label: 'Scheduled', value: 'Today, Fri 23 May · 10:30 AM' },
+                    { label: 'Status',    value: 'ORDER_SCHEDULED', pill: true, next: '→ awaiting PATIENT_CONFIRMED' },
+                  ]},
+      stakeholders: [
+        { role: 'Phlebotomist', name: 'Not yet assigned', detail: 'Will assign post-confirmation' },
+        { role: 'Lab',          name: 'Thyrocare' },
+      ],
+      items: { label: 'Tests', total: '₹650', list: ['Fasting Blood Sugar', 'Postprandial Blood Sugar'] },
+      internalNote: '',
+      timeline: [
+        { time: 'This morning', event: 'Order created in LabStack' },
+      ],
+    },
+
+    // ─── VIDEO CONSULTATION ───────────────────────────────────────
+    'cons-priya': {
+      header: { orderId: 'Consult #87233', title: 'Send video link to patient',
+                type: { code: 'VIDEO', label: 'VIDEO', cls: 'type-cons' }, sourceLabel: 'Practo' },
+      banner: { variant: 'imminent', icon: '🟠', title: 'Due in 8 min', sub: ' · consultation starts at 10:30' },
+      patient: { name: 'Priya Nair', meta: 'Female, 29 · LB-31290',
+                 rows: [
+                   { label: 'Phone',    value: '+91 98765 22334', copyable: true, secondary: '📱 WhatsApp · 📧 Email' },
+                   { label: 'Location', value: 'Video consult (WFH)' },
+                 ]},
+      schedule: { label: 'Consultation',
+                  rows: [
+                    { label: 'Scheduled', value: 'Today, Fri 23 May · 10:30 AM (15 min)' },
+                    { label: 'Status',    value: 'CONFIRMED', pill: true, next: '→ awaiting LINK_SENT' },
+                  ]},
+      stakeholders: [
+        { role: 'Doctor', name: 'Dr. Anjali Mehra', phone: '+91 98765 90001', detail: 'General Physician · MBBS, MD' },
+      ],
+      items: { label: 'Consultation', total: '₹450',
+               list: ['Follow-up consultation (15 min)', 'Topic: BP medication review'] },
+      internalNote: '"Patient mentioned wanting prescription refill discussion."',
+      timeline: [
+        { time: '08:30',     event: 'Booking confirmed by patient' },
+        { time: 'Yesterday', event: 'Consultation slot booked' },
+      ],
+    },
+
+    'cons-arjun': {
+      header: { orderId: 'Consult #87401', title: 'Confirm doctor availability',
+                type: { code: 'VIDEO', label: 'VIDEO', cls: 'type-cons' }, sourceLabel: 'Practo' },
+      banner: { variant: 'normal', icon: '🔵', title: 'Due before 11:30 AM consultation', sub: '' },
+      patient: { name: 'Arjun Reddy', meta: 'Male, 36 · LB-32100',
+                 rows: [
+                   { label: 'Phone',    value: '+91 98765 67788', copyable: true, secondary: '📱 WhatsApp' },
+                   { label: 'Location', value: 'Video consult' },
+                 ]},
+      schedule: { label: 'Consultation',
+                  rows: [
+                    { label: 'Scheduled', value: 'Today, Fri 23 May · 11:30 AM (30 min)' },
+                    { label: 'Status',    value: 'BOOKED', pill: true, next: '→ awaiting DOCTOR_CONFIRMED' },
+                  ]},
+      stakeholders: [
+        { role: 'Doctor', name: 'Dr. Ravi Sundar', phone: '+91 98765 90112', detail: 'Cardiologist · MBBS, MD, DM' },
+      ],
+      items: { label: 'Consultation', total: '₹1,200', list: ['Specialist consultation (30 min)', 'Topic: Chest pain investigation'] },
+      internalNote: '"Doctor sometimes runs late from clinic — confirm specifically that 11:30 slot is held."',
+      timeline: [
+        { time: 'Yesterday', event: 'Slot booked' },
+      ],
+    },
+
+    // ─── PHARMACY DELIVERY ────────────────────────────────────────
+    'pharma-mohan': {
+      header: { orderId: 'PO #11209', title: 'Confirm delivery dispatched',
+                type: { code: 'PHARMA', label: 'PHARMA', cls: 'type-pharma' }, sourceLabel: 'PharmaOS' },
+      banner: { variant: 'imminent', icon: '🟠', title: 'Due in 45 min', sub: ' · promised by 11:30 AM' },
+      patient: { name: 'Mohan Lal', meta: 'Male, 62 · LB-19102',
+                 rows: [
+                   { label: 'Phone',    value: '+91 98765 99883', copyable: true, secondary: '📱 WhatsApp' },
+                   { label: 'Address',  value: 'C-12, Vile Parle West, Mumbai 400056' },
+                   { label: 'Landmark', value: 'Near Cooper Hospital' },
+                 ]},
+      schedule: { label: 'Delivery promise',
+                  rows: [
+                    { label: 'Promised by', value: 'Today, Fri 23 May · by 11:30 AM' },
+                    { label: 'Status',      value: 'PACKED', pill: true, next: '→ awaiting OUT_FOR_DELIVERY' },
+                  ]},
+      stakeholders: [
+        { role: 'Delivery person', name: 'Rakesh Singh', phone: '+91 98765 77665' },
+        { role: 'Pharmacy',        name: 'Apollo Pharmacy', detail: 'Andheri West branch' },
+      ],
+      items: { label: 'Items', total: '₹2,180',
+               list: ['Telmisartan 40mg × 30', 'Metformin 500mg × 60', 'Atorvastatin 10mg × 30'] },
+      internalNote: '"Senior citizen — payment on delivery (cash). Call before arrival."',
+      timeline: [
+        { time: '09:40',     event: 'Order packed at pharmacy' },
+        { time: '08:15',     event: 'Prescription verified' },
+        { time: 'Yesterday', event: 'Order placed via app' },
+      ],
+    },
+
+    'pharma-neha': {
+      header: { orderId: 'PO #11221', title: 'Confirm patient available for delivery',
+                type: { code: 'PHARMA', label: 'PHARMA', cls: 'type-pharma' }, sourceLabel: 'PharmaOS' },
+      banner: { variant: 'normal', icon: '🔵', title: 'Due before 11:45 AM delivery window', sub: '' },
+      patient: { name: 'Neha Sharma', meta: 'Female, 31 · LB-22150',
+                 rows: [
+                   { label: 'Phone',   value: '+91 98765 33445', copyable: true, secondary: '📱 WhatsApp' },
+                   { label: 'Address', value: '802, Pali Hill Apartments, Khar West 400052' },
+                 ]},
+      schedule: { label: 'Delivery promise',
+                  rows: [
+                    { label: 'Promised by', value: 'Today, Fri 23 May · by 11:45 AM' },
+                    { label: 'Status',      value: 'OUT_FOR_DELIVERY', pill: true, next: '→ awaiting DELIVERED' },
+                  ]},
+      stakeholders: [
+        { role: 'Delivery person', name: 'Vikas P', phone: '+91 98765 33990' },
+        { role: 'Pharmacy',        name: 'Wellness Forever', detail: 'Bandra branch' },
+      ],
+      items: { label: 'Items', total: '₹890', list: ['Cetirizine 10mg × 10', 'Paracetamol 500mg × 20', 'Vitamin D3 60K × 4', 'ORS sachets × 5', 'Throat lozenges × 1 pack'] },
+      internalNote: '',
+      timeline: [
+        { time: '10:15',     event: 'Out for delivery' },
+        { time: '09:40',     event: 'Order packed' },
+        { time: 'This morning', event: 'Order placed' },
+      ],
+    },
+
+    // ─── RADIOLOGY (MRI) ──────────────────────────────────────────
+    'radio-kavita': {
+      header: { orderId: 'Scan #4422', title: 'Send pre-scan prep instructions',
+                type: { code: 'MRI', label: 'MRI', cls: 'type-radio' }, sourceLabel: 'LabStack' },
+      banner: { variant: 'info', icon: '🟣', title: 'Due tonight by 9 PM', sub: ' · patient must fast 6h before tomorrow 8 AM scan' },
+      patient: { name: 'Kavita Joshi', meta: 'Female, 47 · LB-22041',
+                 rows: [
+                   { label: 'Phone',    value: '+91 98765 44321', copyable: true, secondary: '📱 WhatsApp' },
+                   { label: 'Address',  value: 'B-208, Ghatkopar East, Mumbai 400077' },
+                   { label: 'Landmark', value: 'Near R-City Mall' },
+                 ]},
+      schedule: { label: 'Scan slot',
+                  rows: [
+                    { label: 'Scheduled', value: 'Tomorrow, Sat 24 May · 08:00 AM' },
+                    { label: 'Status',    value: 'CONFIRMED', pill: true, next: '→ awaiting PREP_SENT' },
+                  ]},
+      stakeholders: [
+        { role: 'Imaging center', name: 'LabStack Imaging', detail: 'Andheri West' },
+        { role: 'Radiologist',    name: 'Dr. Suresh Pillai', detail: 'On-call tomorrow morning' },
+      ],
+      items: { label: 'Scan', total: '₹4,500', list: ['MRI Brain (with contrast)'] },
+      internalNote: '"Send WhatsApp checklist: 6h fasting, no metal accessories, arrive 15 min early."',
+      timeline: [
+        { time: 'This morning', event: 'Scan slot confirmed by center' },
+        { time: 'Yesterday',    event: 'Order created' },
+      ],
+    },
+  };
+
+  // ════════════════════════════════════════════════════════════════
+  // RENDER FUNCTIONS — pure data → HTML.
+  // Same functions for every order type.
+  // ════════════════════════════════════════════════════════════════
+
+  function renderInfoRow(row) {
+    let val = row.value;
+    let extras = '';
+    if (row.pill) val = `<span class="pill bg-blue-900 text-blue-300">${row.value}</span>${row.next ? ' <span class="text-zinc-500 text-xs ml-2">' + row.next + '</span>' : ''}`;
+    if (row.copyable) extras += ' <span class="copy-link text-xs ml-2" onclick="event.stopPropagation()">copy</span>';
+    if (row.secondary) extras += ' <span class="text-zinc-700 mx-1">·</span><span class="copy-link text-xs">' + row.secondary + '</span>';
+    return `<div class="info-row"><span class="info-label">${row.label}</span><span class="info-val">${val}${extras}</span></div>`;
+  }
+
+  function renderStakeholder(s) {
+    return `
+      <div class="stakeholder">
+        <div class="flex items-center justify-between">
+          <div>
+            <div class="text-xs text-zinc-500 uppercase tracking-wider">${s.role}</div>
+            <div class="text-sm text-zinc-200 mt-0.5">${s.name}</div>
+            ${s.detail ? `<div class="text-xs text-zinc-500 mt-0.5">${s.detail}</div>` : ''}
+          </div>
+          ${s.phone ? `<div class="text-xs">
+            <div class="copy-link" onclick="event.stopPropagation()">${s.phone}</div>
+            <div class="copy-link text-right mt-0.5">📱 WhatsApp</div>
+          </div>` : ''}
+        </div>
+      </div>
+    `;
+  }
+
+  function setBanner(banner) {
+    const el = document.getElementById('d-banner');
+    el.className = 'px-5 py-3 flex items-center gap-3 banner-' + banner.variant;
+    document.getElementById('d-banner-icon').textContent = banner.icon;
+    document.getElementById('d-banner-title').textContent = banner.title;
+    document.getElementById('d-banner-sub').textContent = banner.sub;
+  }
+
+  function openDrawer(taskId) {
+    const t = tasks[taskId];
+    if (!t) return;
+
+    // HEADER
+    document.getElementById('d-order').textContent = t.header.orderId;
+    document.getElementById('d-title').textContent = t.header.title;
+    const badge = document.getElementById('d-type-badge');
+    badge.textContent = t.header.type.label;
+    badge.className = 'type-badge ' + t.header.type.cls;
+    document.getElementById('d-source-link').textContent = `Open in ${t.header.sourceLabel} ↗`;
+
+    // BANNER
+    setBanner(t.banner);
+
+    // PATIENT
+    document.getElementById('d-patient-name').textContent = t.patient.name;
+    document.getElementById('d-patient-meta').textContent = t.patient.meta;
+    document.getElementById('d-patient-rows').innerHTML = t.patient.rows.map(renderInfoRow).join('');
+
+    // SCHEDULE
+    document.getElementById('d-schedule-label').textContent = t.schedule.label;
+    document.getElementById('d-schedule-rows').innerHTML = t.schedule.rows.map(renderInfoRow).join('');
+
+    // STAKEHOLDERS
+    if (t.stakeholders && t.stakeholders.length) {
+      document.getElementById('d-stakeholders-section').style.display = '';
+      document.getElementById('d-stakeholders-rows').innerHTML = t.stakeholders.map(renderStakeholder).join('');
+    } else {
+      document.getElementById('d-stakeholders-section').style.display = 'none';
+    }
+
+    // ITEMS
+    document.getElementById('d-items-label').textContent = `${t.items.label} · ${t.items.total}`;
+    document.getElementById('d-items-list').innerHTML = t.items.list.map(i => `<li class="text-zinc-300">• ${i}</li>`).join('');
+
+    // NOTES
+    document.getElementById('d-internal-note').textContent = t.internalNote || '(no internal notes)';
+
+    // TIMELINE
+    document.getElementById('d-timeline').innerHTML = t.timeline.map(e =>
+      `<div class="flex gap-3"><span class="text-zinc-600 w-20 shrink-0">${e.time}</span><span class="text-zinc-400">${e.event}</span></div>`
+    ).join('');
+
+    document.getElementById('drawer').classList.add('open');
+    document.getElementById('backdrop').classList.add('open');
+  }
+
+  function closeDrawer() {
+    document.getElementById('drawer').classList.remove('open');
+    document.getElementById('backdrop').classList.remove('open');
+  }
+
+  function showTab(name) {
+    showPage('mywork');
+    ['today', 'tomorrow', 'stuck'].forEach(t => {
+      const tab = document.getElementById('tab-' + t);
+      const panel = document.getElementById('panel-' + t);
+      if (t === name) { tab.classList.remove('tab-inactive'); tab.classList.add('tab-active'); panel.classList.remove('hidden'); }
+      else { tab.classList.add('tab-inactive'); tab.classList.remove('tab-active'); panel.classList.add('hidden'); }
+    });
+  }
+
+  // ─── Page switching ───────────────────────────────────────────
+  function showPage(name) {
+    ['command', 'mywork'].forEach(p => {
+      const page = document.getElementById('page-' + p);
+      const nav = document.getElementById('nav-' + p);
+      if (p === name) { page.classList.remove('hidden'); if (nav) nav.classList.add('active'); }
+      else { page.classList.add('hidden'); if (nav) nav.classList.remove('active'); }
+    });
+  }
+
+  // ─── Role switcher (changes default landing + reveals team filter) ──
+  let currentRole = 'lead';
+  function setRole(role) {
+    currentRole = role;
+    // Lead/Head see the team filter strip; Agent doesn't
+    document.getElementById('team-filter-strip').style.display = (role === 'agent') ? 'none' : '';
+    // Agent lands on My Work; Lead/Head land on Command Center
+    if (role === 'agent') showPage('mywork');
+    else showPage('command');
+    renderToday();
+  }
+
+  // ═════════════════════════════════════════════════════════════════════
+  // (Removed) LEAD EXCEPTIONS / BY-AGENT PAGE
+  // Simplified per design review: Leads use the same My Work view as Agents,
+  // with added team-member filter and reassignment powers. Exception queue
+  // and dedicated workload view are deferred.
+  // ═════════════════════════════════════════════════════════════════════
+
+  const _UNUSED_EXCEPTIONS = [
+    {
+      key: 'unassigned',
+      title: '⚠ Unassigned',
+      sub: 'Allocation gap — auto-assign failed or no eligible agent',
+      pillClass: 'bg-yellow-900 text-yellow-300',
+      count: 14, expanded: true,
+      action: 'Bulk assign',
+      items: [
+        { time: '11:30', type:'HSC',    title:'Confirm booking',           patient:'Aarav Sharma',   context:'Bandra · 3 tests',  reason:'No HSC agent available in zone' },
+        { time: '12:00', type:'PHARMA', title:'Confirm delivery',          patient:'Rishi Kapoor',   context:'Powai · 2 items',   reason:'All pharma agents at capacity' },
+        { time: '12:45', type:'VIDEO',  title:'Send video link',           patient:'Maya Iyer',      context:'with Dr. Mehra',    reason:'Auto-assign rule disabled' },
+        { time: '13:00', type:'HSC',    title:'Assign phlebo',             patient:'Naveen K',       context:'Andheri · 1 test',  reason:'No HSC agent available in zone' },
+        { time: '13:15', type:'MRI',    title:'Send prep instructions',    patient:'Anjali V',       context:'Ghatkopar · CT',    reason:'MRI agent rotation gap' },
+      ],
+      moreCount: 9,
+    },
+    {
+      key: 'escalated',
+      title: '🚨 Escalated to you',
+      sub: 'An agent flagged this for lead intervention',
+      pillClass: 'bg-red-900 text-red-300',
+      count: 3, expanded: true,
+      action: 'Resolve',
+      items: [
+        { time: '09:18', type:'HSC',    title:'Patient refusing sample',   patient:'Suresh Gupta',   context:'#54180', reason:'Patient claims home visit was cancelled · escalated by Rohit S' },
+        { time: '08:42', type:'PHARMA', title:'Disputed delivery',         patient:'Karan Malhotra', context:'#11098', reason:'Patient says order never arrived; delivery person says it did · escalated by Vikas P' },
+        { time: 'Yest.', type:'VIDEO',  title:'Doctor no-show',            patient:'Tina Banerjee',  context:'#87155', reason:'Dr. Sundar missed 11 AM slot · patient demanding refund · escalated by Anita M' },
+      ],
+    },
+    {
+      key: 'sla-risk',
+      title: '⏰ SLA at risk',
+      sub: 'Within 15 min of breach or just breached — Lead may need to swarm',
+      pillClass: 'bg-orange-900 text-orange-300',
+      count: 6, expanded: false,
+      action: 'Triage',
+      items: [
+        { time: '09:45', type:'HSC',    title:'Confirm sample collected',  patient:'Sharath S',          context:'breached 5m · Suresh G',     reason:'Agent overloaded' },
+        { time: '10:22', type:'VIDEO',  title:'Send video link',            patient:'Priya Nair',         context:'breach in 8m · Anita M',     reason:'On call with another patient' },
+        { time: '10:45', type:'PHARMA', title:'Confirm delivery dispatched',patient:'Mohan Lal',          context:'breach in 12m · Vikas P',    reason:'Awaiting pharmacy confirmation' },
+      ],
+      moreCount: 3,
+    },
+    {
+      key: 'bounced',
+      title: '🔄 Bounced',
+      sub: 'Reassigned 2+ times — problem case, costing 3x normal labor',
+      pillClass: 'bg-purple-900 text-purple-300',
+      count: 2, expanded: false,
+      action: 'Investigate',
+      items: [
+        { time: 'today', type:'HSC',    title:'Confirm booking',           patient:'Deepika Roy',    context:'#54190', reason:'Rohit S → Anita M → Suresh G · 3rd reassignment in 2h' },
+        { time: 'today', type:'PHARMA', title:'Confirm patient available', patient:'Sanjay Verma',   context:'#11215', reason:'Vikas P → Priya K → Anita M · patient unreachable across all attempts' },
+      ],
+    },
+    {
+      key: 'stuckLong',
+      title: '🧊 Stuck > 24h',
+      sub: 'Beyond agent-level recovery — likely needs external escalation',
+      pillClass: 'bg-red-900 text-red-300',
+      count: 1, expanded: false,
+      action: 'Escalate externally',
+      items: [
+        { time: '3d ago', type:'HSC',   title:'Report not delivered',       patient:'Vikram Trivedi', context:'#53850 · Thyrocare', reason:'Sample at lab 3 days · patient calling daily · lab unresponsive to agents' },
+      ],
+    },
+  ];
+
+  function renderLeadExceptions() {
+    document.getElementById('lead-exceptions-content').innerHTML = EXCEPTIONS.map(section => `
+      <details ${section.expanded ? 'open' : ''} class="section-card rounded-lg">
+        <summary class="px-5 py-4 flex items-center justify-between">
+          <div class="flex items-center gap-3">
+            <span class="chevron text-zinc-500">▸</span>
+            <div>
+              <div class="font-semibold">${section.title}</div>
+              <div class="text-xs text-zinc-500 mt-0.5">${section.sub}</div>
+            </div>
+          </div>
+          <div class="flex items-center gap-2">
+            <button class="btn btn-ghost text-xs">${section.action}</button>
+            <span class="pill ${section.pillClass}">${section.count}</span>
+          </div>
+        </summary>
+        <div class="border-t border-zinc-800">
+          ${section.items.map(item => `
+            <div class="row px-5 py-3 border-b border-zinc-800 flex items-start gap-3" onclick="openDrawer('hsc-sharath')">
+              <div class="text-center w-14 shrink-0 pt-0.5">
+                <div class="text-xs font-semibold text-zinc-300">${item.time}</div>
+              </div>
+              <span class="type-badge ${typeBadgeClass(item.type)} shrink-0 mt-1">${item.type}</span>
+              <div class="flex-1 min-w-0">
+                <div class="font-medium text-sm">${item.title} · <span class="text-zinc-400">${item.patient}</span></div>
+                <div class="text-xs text-zinc-500 mt-1">${item.context}</div>
+                <div class="text-xs text-amber-300/80 mt-1 italic">↳ ${item.reason}</div>
+              </div>
+              <span class="chev text-xl">›</span>
+            </div>
+          `).join('')}
+          ${section.moreCount ? `<div class="px-5 py-3 text-center text-xs text-zinc-500 hover:text-zinc-300 cursor-pointer">Show ${section.moreCount} more →</div>` : ''}
+        </div>
+      </details>
+    `).join('');
+  }
+
+  // ═════════════════════════════════════════════════════════════════════
+  // LEAD: BY AGENT (workload view)
+  // ═════════════════════════════════════════════════════════════════════
+
+  const AGENTS = [
+    { id:'rs', initials:'RS', color:'bg-blue-700',   name:'Rohit S',    role:'Senior · HSC focus', active:8,  done:12, sla:92, status:'active',  load:80, next:'11:30 Confirm booking — Aarav Sharma' },
+    { id:'am', initials:'AM', color:'bg-purple-700', name:'Anita M',    role:'Agent · Mixed',      active:9,  done:11, sla:88, status:'active',  load:75, next:'10:45 Send video link — Priya Nair' },
+    { id:'vp', initials:'VP', color:'bg-green-700',  name:'Vikas P',    role:'Agent · PHARMA',     active:5,  done:14, sla:95, status:'active',  load:50, next:'12:00 Delivery check — Mohan Lal' },
+    { id:'pk', initials:'PK', color:'bg-pink-700',   name:'Priya K',    role:'Agent · VIDEO',      active:0,  done:8,  sla:90, status:'break',   load:0,  next:'On break · back at 12:00' },
+    { id:'sg', initials:'SG', color:'bg-orange-700', name:'Suresh G',   role:'Agent · HSC',        active:12, done:6,  sla:71, status:'overload',load:100,next:'09:45 Sample check — Sharath S (BREACHED)' },
+    { id:'kr', initials:'KR', color:'bg-zinc-700',   name:'Karthik R',  role:'Agent · evening',    active:0,  done:0,  sla:0,  status:'off',     load:0,  next:'Off-shift · starts 4 PM' },
+  ];
+
+  function loadColor(load, sla) {
+    if (sla < 80) return '#dc2626';
+    if (load >= 90) return '#f97316';
+    return '#16a34a';
+  }
+  function statusPill(s) {
+    return ({
+      active:   '<span class="pill bg-green-900/40 text-green-300">⚡ active</span>',
+      break:    '<span class="pill bg-zinc-700 text-zinc-400">💤 on break</span>',
+      overload: '<span class="pill bg-red-900/60 text-red-300">⚠ overloaded</span>',
+      off:      '<span class="pill bg-zinc-800 text-zinc-500">⏸ off-shift</span>',
+    })[s] || '';
+  }
+
+  function renderLeadByAgent() {
+    document.getElementById('lead-byagent-content').innerHTML = `
+      <div class="section-card rounded-lg overflow-hidden">
+        <div class="px-5 py-3 border-b border-zinc-800 grid grid-cols-12 gap-3 text-[10px] uppercase tracking-wider text-zinc-500 font-semibold">
+          <div class="col-span-3">Agent</div>
+          <div class="col-span-1 text-center">Active</div>
+          <div class="col-span-1 text-center">Done</div>
+          <div class="col-span-1 text-center">SLA</div>
+          <div class="col-span-2">Load</div>
+          <div class="col-span-3">Next task</div>
+          <div class="col-span-1 text-right">Status</div>
+        </div>
+        ${AGENTS.map(a => `
+          <div class="row px-5 py-3 border-b border-zinc-800 grid grid-cols-12 gap-3 items-center ${a.status==='overload' ? 'bg-red-950/15' : ''}" onclick="showPage('mywork')">
+            <div class="col-span-3 flex items-center gap-3 min-w-0">
+              <div class="w-8 h-8 rounded-full ${a.color} flex items-center justify-center text-xs font-semibold shrink-0">${a.initials}</div>
+              <div class="min-w-0">
+                <div class="text-sm font-medium truncate">${a.name}</div>
+                <div class="text-[11px] text-zinc-500 truncate">${a.role}</div>
+              </div>
+            </div>
+            <div class="col-span-1 text-center text-sm ${a.status==='overload' ? 'text-red-300 font-semibold' : ''}">${a.active || '—'}</div>
+            <div class="col-span-1 text-center text-sm text-green-400">${a.done || '—'}</div>
+            <div class="col-span-1 text-center text-sm ${a.sla && a.sla<80 ? 'text-red-300' : ''}">${a.sla ? a.sla+'%' : '—'}</div>
+            <div class="col-span-2">
+              ${a.status==='off' || a.status==='break' ? '<div class="text-[11px] text-zinc-500">—</div>' :
+                `<div class="progress-bar"><div style="width:${a.load}%;background:${loadColor(a.load, a.sla)}"></div></div>
+                <div class="text-[10px] text-zinc-500 mt-1">${a.load}% capacity</div>`}
+            </div>
+            <div class="col-span-3 text-xs text-zinc-400 truncate" title="${a.next}">${a.next}</div>
+            <div class="col-span-1 text-right">${statusPill(a.status)}</div>
+          </div>
+        `).join('')}
+      </div>
+
+      <!-- Quick rebalance prompt -->
+      <div class="mt-4 section-card rounded-lg p-4 ring-1 ring-amber-900/30 bg-amber-950/10">
+        <div class="text-sm font-semibold text-amber-200 mb-1">💡 Rebalance suggestion</div>
+        <div class="text-xs text-amber-400/80 mb-3">
+          Suresh G has 12 active (avg is 7). Vikas P has 5 active and PHARMA queue is light. Moving 3 of Suresh's HSC tasks to Rohit S (slot for 2 more) and Anita M (slot for 1) would even out the load.
+        </div>
+        <div class="flex gap-2">
+          <button class="btn btn-ghost text-xs">Apply suggestion</button>
+          <button class="btn btn-ghost text-xs">Manual reassign…</button>
+        </div>
+      </div>
+    `;
+  }
+
+  // ═════════════════════════════════════════════════════════════════════
+  // STUCK QUEUE — filterable by age and order type
+  // ═════════════════════════════════════════════════════════════════════
+  const STUCK_ITEMS = [
+    // group: 'handoff', 'window', 'external'
+    { id:53915, type:'HSC',    patient:'Kiran Patel',     group:'handoff', age:'today',     ageLabel:'stuck 9h',  detail:'Phlebo: Suresh M · Lab: Thyrocare · Sample collected today 12:30 AM' },
+    { id:53902, type:'HSC',    patient:'Rajesh Kumar',    group:'handoff', age:'yesterday', ageLabel:'stuck 14h', detail:'Phlebo: Anil P · Lab: SRL · Sample collected last evening 6:15 PM' },
+    { id:53889, type:'HSC',    patient:'Asha Menon',      group:'handoff', age:'yesterday', ageLabel:'stuck 18h', detail:'Phlebo: Suresh M · Lab: Thyrocare · Sample collected yesterday 3:42 PM' },
+    { id:11150, type:'PHARMA', patient:'Suresh Kapoor',   group:'handoff', age:'today',     ageLabel:'stuck 6h',  detail:'Order packed 6h ago · No delivery person picked up' },
+    { id:11098, type:'PHARMA', patient:'Mehul Shah',      group:'handoff', age:'yesterday', ageLabel:'stuck 22h', detail:'Order packed yesterday · Delivery attempt failed once' },
+    { id:53968, type:'HSC',    patient:'Arjun Reddy',     group:'window',  age:'today',     ageLabel:'missed 2h ago',  detail:'Powai · Phlebo: Anil P · Appointment was today 8:00 AM' },
+    { id:53941, type:'HSC',    patient:'Meera Shah',      group:'window',  age:'yesterday', ageLabel:'missed 17h ago', detail:'Bandra · Phlebo: Ravi K · Appointment was yesterday 4:00 PM' },
+    { id:87155, type:'VIDEO',  patient:'Ravi Subramanian',group:'window',  age:'yesterday', ageLabel:'no-show 19h ago',detail:'with Dr. Mehra · Patient did not join video call' },
+    { id:53891, type:'HSC',    patient:'Karthik Iyer',    group:'external',age:'today',     ageLabel:'at lab 28h',     detail:'Lab: Thyrocare · Delivered yesterday morning' },
+    { id:53878, type:'HSC',    patient:'Neha Sharma',     group:'external',age:'yesterday', ageLabel:'at lab 2 days',  detail:'Lab: SRL · Delivered 21 May' },
+    { id:53850, type:'HSC',    patient:'Vikram Trivedi',  group:'external',age:'older',     ageLabel:'at lab 3 days',  detail:'Lab: Thyrocare · Delivered 20 May · Expected report by 22 May' },
+  ];
+
+  const STUCK_GROUPS = {
+    handoff:  { title: 'Handoff stalled',         sub: 'Sample / package / link not transferred to next party' },
+    window:   { title: 'Service window passed',   sub: 'Missed appointments, deliveries, consultations' },
+    external: { title: 'Awaiting external party', sub: 'Lab reports, prescription approvals, scan reports pending' },
+  };
+
+  let stuckFilters = { age: 'all', type: 'all' };
+
+  function setStuckFilter(dim, val, btn) {
+    stuckFilters[dim] = val;
+    // toggle active class on siblings of same dimension
+    btn.parentElement.querySelectorAll('.chip').forEach(c => c.classList.remove('active'));
+    btn.classList.add('active');
+    renderStuck();
+  }
+
+  function ageColor(age) {
+    return { today: 'text-yellow-300 bg-yellow-900/40', yesterday: 'text-orange-300 bg-orange-900/40', older: 'text-red-300 bg-red-900/40' }[age] || 'bg-zinc-800 text-zinc-400';
+  }
+
+  function renderStuck() {
+    const filtered = STUCK_ITEMS.filter(s =>
+      (stuckFilters.age === 'all' || s.age === stuckFilters.age) &&
+      (stuckFilters.type === 'all' || s.type === stuckFilters.type)
+    );
+    document.getElementById('stuck-count').textContent = filtered.length;
+
+    if (!filtered.length) {
+      document.getElementById('stuck-content').innerHTML = `
+        <div class="section-card rounded-lg p-8 text-center text-zinc-500">
+          ✓ Nothing stuck matching these filters.
+        </div>`;
+      return;
+    }
+
+    // FLAT LIST — sorted by age (older first, since those are most urgent)
+    const ageOrder = { older: 0, yesterday: 1, today: 2 };
+    const sorted = [...filtered].sort((a, b) => ageOrder[a.age] - ageOrder[b.age]);
+
+    document.getElementById('stuck-content').innerHTML = `
+      <div class="section-card rounded-lg overflow-hidden">
+        <div class="divide-y divide-zinc-800">
+          ${sorted.map(item => `
+            <div class="row px-5 py-3 flex items-center gap-3" onclick="openDrawer('asha-stuck')">
+              <span class="type-badge ${typeBadgeClass(item.type)} shrink-0">${item.type}</span>
+              <div class="flex-1 min-w-0">
+                <div class="font-medium text-sm">#${item.id} · ${item.patient}</div>
+                <div class="text-xs text-zinc-400 mt-1 truncate">${item.detail}</div>
+              </div>
+              <span class="pill ${ageColor(item.age)} shrink-0">${item.ageLabel}</span>
+              <span class="chev text-xl">›</span>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `;
+  }
+
+  // Drawer fallback for stuck items (reuses existing detail records)
+  if (!tasks['asha-stuck']) {
+    tasks['asha-stuck'] = JSON.parse(JSON.stringify(tasks['hsc-sharath']));
+    tasks['asha-stuck'].header.title = 'Sample handover stalled';
+    tasks['asha-stuck'].banner = { variant:'breached', icon:'🔴', title:'Stuck 18 hours', sub:' · phlebo has not reached lab' };
+  }
+
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDrawer(); });
+
+  // ═════════════════════════════════════════════════════════════════════
+  // SLIDING WINDOW TODAY MODEL
+  // Sections are time-relative, not calendar-relative. They always make
+  // sense regardless of when the user opens the view.
+  //
+  //   NOW            = next 90 min from simulated current time
+  //   TONIGHT'S PREP = conditional, appears after 4 PM
+  //   LATER TODAY    = everything else scheduled today, grouped by hour
+  //   DONE TODAY     = tasks whose time has passed (mockup heuristic)
+  // ═════════════════════════════════════════════════════════════════════
+
+  const NOW_WINDOW_MIN = 90;
+  const PREP_VISIBILITY_HOUR = 16; // 4 PM
+
+  // A realistic spread of mock tasks across the day.
+  // `min` = minutes-since-midnight when the task is due.
+  // `detail` (optional) wires the row to a full drawer record above.
+  // Assignees: rs/am/vp/pk/sg/kr (matches AGENTS), 'me' = current user, null = unassigned
+  const TODAY_TASKS = [
+    { min:  7*60+30, type:'HSC',    title:'Confirm sample collected',          patient:'Asha Menon',         context:'Bandra · Phlebo: Ravi K',                 ord:'54001', detail:null,           assignee:'rs' },
+    { min:  8*60+15, type:'PHARMA', title:'Confirm delivery dispatched',       patient:'Rajesh Iyer',         context:'Powai · 2 items · ₹890',                 ord:'11105', detail:null,           assignee:'vp' },
+    { min:  8*60+45, type:'VIDEO',  title:'Send video link',                   patient:'Riya Mehta',          context:'with Dr. Patel · 15min',                 ord:'87100', detail:null,           assignee:'pk' },
+    { min:  9*60+15, type:'HSC',    title:'Phlebo dispatch check',             patient:'Vikram J',            context:'Juhu · Phlebo: Anil P',                  ord:'54180', detail:null,           assignee:'am' },
+    { min:  9*60+45, type:'HSC',    title:'Confirm sample collected',          patient:'Sharath S',           context:'Bandra · Phlebo: Ravi K',                ord:'54214', detail:'hsc-sharath',  assignee:'sg' },
+    { min: 10*60+22, type:'VIDEO',  title:'Send video link to patient',        patient:'Priya Nair',          context:'with Dr. Anjali Mehra · 15min slot',     ord:'87233', detail:'cons-priya',   assignee:'am' },
+    { min: 10*60+30, type:'HSC',    title:'Confirm booking',                   patient:'Shailesh Kumar Sinha',context:'Powai · 2 tests',                        ord:'54233', detail:'hsc-shailesh', assignee:'rs' },
+    { min: 10*60+45, type:'PHARMA', title:'Confirm delivery dispatched',       patient:'Mohan Lal',           context:'Vile Parle West · 3 items · ₹2,180',     ord:'11209', detail:'pharma-mohan', assignee:'vp' },
+    { min: 11*60+00, type:'HSC',    title:'Phlebo dispatch check',             patient:'Lakshmipathi R',      context:'Andheri East · Phlebo: Suresh M',        ord:'54107', detail:'hsc-lakshmi',  assignee:'sg' },
+    { min: 11*60+15, type:'MRI',    title:'Send prep instructions',            patient:'Kavita Joshi',        context:'Ghatkopar · MRI Brain',                  ord:'4422',  detail:'radio-kavita', assignee:'me' },
+    { min: 11*60+30, type:'VIDEO',  title:'Confirm doctor availability',       patient:'Arjun Reddy',         context:'with Dr. Ravi Sundar · 30min',           ord:'87401', detail:'cons-arjun',   assignee:null },
+    { min: 11*60+45, type:'PHARMA', title:'Confirm patient available',         patient:'Neha Sharma',         context:'Khar · 5 items · ₹890',                  ord:'11221', detail:'pharma-neha',  assignee:'vp' },
+    { min: 12*60+30, type:'HSC',    title:'Confirm booking',                   patient:'Dhruvak Aggarwal',    context:'Bandra · 4 tests',                       ord:'54250', detail:null,           assignee:null },
+    { min: 13*60+00, type:'HSC',    title:'Assign phlebo',                     patient:'Prerana Gawali',      context:'Andheri · 3 tests',                      ord:'54254', detail:null,           assignee:'me' },
+    { min: 13*60+30, type:'PHARMA', title:'Confirm delivery dispatched',       patient:'Karthik Iyer',        context:'Powai · 1 item · ₹450',                  ord:'11240', detail:null,           assignee:'vp' },
+    { min: 14*60+00, type:'VIDEO',  title:'Send video link',                   patient:'Aditi Verma',         context:'with Dr. Pillai · 20min',                ord:'87510', detail:null,           assignee:'pk' },
+    { min: 14*60+30, type:'HSC',    title:'Phlebo dispatch check',             patient:'Shamik Parashar',     context:'Khar · Phlebo: Ravi K',                  ord:'54290', detail:null,           assignee:'sg' },
+    { min: 15*60+00, type:'MRI',    title:'Send prep instructions',            patient:'Meera Shah',          context:'Andheri · CT Abdomen',                   ord:'4501',  detail:null,           assignee:null },
+    { min: 15*60+30, type:'HSC',    title:'Confirm booking',                   patient:'Anand Rao',           context:'Bandra · 6 tests',                       ord:'54310', detail:null,           assignee:'rs' },
+    { min: 16*60+00, type:'PHARMA', title:'Confirm patient available',         patient:'Sunita Joshi',        context:'Juhu · 4 items · ₹1,540',                ord:'11290', detail:null,           assignee:'me' },
+    { min: 16*60+30, type:'HSC',    title:'Sample handover to lab',            patient:'Kiran Patel',         context:'Phlebo: Anil P → Thyrocare',             ord:'54215', detail:null,           assignee:'sg' },
+    { min: 17*60+00, type:'HSC',    title:'Phlebo dispatch check',             patient:'Geetha Krishnan',     context:'Powai · Phlebo: Suresh M',               ord:'54355', detail:null,           assignee:'am' },
+    { min: 17*60+30, type:'VIDEO',  title:'Confirm doctor availability',       patient:'Pankaj Bhatt',        context:'with Dr. Mehra · 15min',                 ord:'87601', detail:null,           assignee:null },
+    { min: 18*60+00, type:'HSC',    title:'Confirm booking',                   patient:'Yashwant K',          context:'Andheri · 2 tests',                      ord:'54390', detail:null,           assignee:'kr' },
+    { min: 18*60+30, type:'PHARMA', title:'Confirm delivery dispatched',       patient:'Lavanya R',           context:'Bandra · 3 items · ₹2,200',              ord:'11315', detail:null,           assignee:null },
+    { min: 19*60+00, type:'HSC',    title:'Report follow-up',                  patient:'Sandeep N',           context:'Lab: SRL · 6h since collection',         ord:'54180', detail:null,           assignee:'me' },
+  ];
+
+  // Member filter state
+  let memberFilter = 'all'; // 'all' | 'unassigned' | 'mine' | agentId
+  function setMemberFilter(val, btn) {
+    memberFilter = val;
+    if (btn) {
+      btn.parentElement.querySelectorAll('.chip').forEach(c => c.classList.remove('active'));
+      btn.classList.add('active');
+    }
+    renderToday();
+  }
+  function filterByMember(tasks) {
+    if (memberFilter === 'all') return tasks;
+    if (memberFilter === 'unassigned') return tasks.filter(t => !t.assignee);
+    if (memberFilter === 'mine') return tasks.filter(t => t.assignee === 'me');
+    return tasks.filter(t => t.assignee === memberFilter);
+  }
+
+  // Evening prep tasks — confirmations for TOMORROW's early appointments.
+  // These only become visible (and addressable) after the prep window opens (~4 PM).
+  const PREP_TASKS = [
+    { min: 18*60+0, type:'HSC',   title:'Confirm tomorrow 7:00 AM appt',  patient:'Dilshaad Muthalif', context:'Bandra · 4 tests',           ord:'53994', detail:null, apptTomorrow:'07:00' },
+    { min: 18*60+0, type:'HSC',   title:'Confirm tomorrow 7:30 AM appt',  patient:'Asha Menon',        context:'Bandra East · 2 tests',      ord:'53996', detail:null, apptTomorrow:'07:30' },
+    { min: 18*60+0, type:'HSC',   title:'Confirm tomorrow 8:00 AM appt',  patient:'Kiran Patel',       context:'Andheri West · 1 test',      ord:'54001', detail:null, apptTomorrow:'08:00' },
+    { min: 18*60+0, type:'HSC',   title:'Confirm tomorrow 8:15 AM appt',  patient:'Aditi Verma',       context:'Bandra West · 3 tests',      ord:'54003', detail:null, apptTomorrow:'08:15' },
+    { min: 18*60+0, type:'MRI',   title:'Send prep for tomorrow 8 AM MRI',patient:'Kavita Joshi',      context:'Ghatkopar · MRI Brain',      ord:'4422',  detail:'radio-kavita', apptTomorrow:'08:00' },
+    { min: 18*60+0, type:'HSC',   title:'Confirm tomorrow 9:00 AM appt',  patient:'Rajesh Kumar',      context:'Powai · 6 tests',            ord:'54007', detail:null, apptTomorrow:'09:00' },
+  ];
+
+  // State
+  let simNow = null; // minutes since midnight; null = use real time
+
+  function fmtTime(min) {
+    const h = Math.floor(min / 60), m = min % 60;
+    const period = h >= 12 ? 'PM' : 'AM';
+    const hr = ((h + 11) % 12) + 1;
+    return `${hr}:${String(m).padStart(2,'0')} ${period}`;
+  }
+  function fmtTimeShort(min) {
+    const h = Math.floor(min / 60), m = min % 60;
+    return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`;
+  }
+  function fmtHourHeader(hour) {
+    const period = hour >= 12 ? 'PM' : 'AM';
+    const hr = ((hour + 11) % 12) + 1;
+    return `${hr} ${period}`;
+  }
+
+  function typeBadgeClass(type) {
+    return ({HSC:'type-hsc', VIDEO:'type-cons', PHARMA:'type-pharma', MRI:'type-radio'})[type] || 'type-hsc';
+  }
+
+  // Agent lookup (initials + color) for assignee badges
+  const AGENTS_MAP = {
+    rs: { initials:'RS', color:'bg-blue-700',   name:'Rohit S' },
+    am: { initials:'AM', color:'bg-purple-700', name:'Anita M' },
+    vp: { initials:'VP', color:'bg-green-700',  name:'Vikas P' },
+    pk: { initials:'PK', color:'bg-pink-700',   name:'Priya K' },
+    sg: { initials:'SG', color:'bg-orange-700', name:'Suresh G' },
+    kr: { initials:'KR', color:'bg-zinc-600',   name:'Karthik R' },
+    me: { initials:'AR', color:'bg-blue-600',   name:'You' },
+  };
+
+  function renderAssigneeBadge(assigneeId) {
+    if (!assigneeId) {
+      // Unassigned — Lead/Head can click to assign
+      const isLead = currentRole !== 'agent';
+      const clickable = isLead ? 'cursor-pointer hover:bg-yellow-800/40' : '';
+      const handler = isLead ? `onclick="event.stopPropagation(); alert('Assign menu (mockup)')"` : '';
+      return `<span class="pill bg-yellow-900/40 text-yellow-300 ${clickable}" ${handler} title="${isLead ? 'Click to assign' : 'Unassigned'}">⚠ unassigned</span>`;
+    }
+    const a = AGENTS_MAP[assigneeId];
+    if (!a) return '';
+    const isLead = currentRole !== 'agent';
+    const clickable = isLead ? 'cursor-pointer hover:ring-1 hover:ring-blue-500' : '';
+    const handler = isLead ? `onclick="event.stopPropagation(); alert('Reassign from ${a.name} (mockup)')"` : '';
+    return `
+      <div class="flex items-center gap-1.5 ${clickable} px-1.5 py-0.5 rounded" ${handler} title="${isLead ? 'Click to reassign · ' + a.name : a.name}">
+        <div class="w-5 h-5 rounded-full ${a.color} flex items-center justify-center text-[9px] font-semibold">${a.initials}</div>
+        <span class="text-xs text-zinc-400">${a.name === 'You' ? 'You' : a.initials}</span>
+      </div>
+    `;
+  }
+
+  function renderRow(t, nowMin) {
+    const diff = t.min - nowMin;
+    let timeColor = 'text-zinc-200', deltaText = '', deltaColor = 'text-zinc-500';
+    if (diff < 0) { timeColor = 'text-zinc-600'; deltaText = `${-diff}m ago`; }
+    else if (diff <= 15) { timeColor = 'text-red-400'; deltaText = `in ${diff}m`; deltaColor = 'text-red-400'; }
+    else if (diff <= 60) { timeColor = 'text-orange-400'; deltaText = `in ${diff}m`; deltaColor = 'text-orange-400'; }
+    else if (diff <= 90) { timeColor = 'text-yellow-400'; deltaText = `in ${diff}m`; }
+    else deltaText = '';
+
+    const handler = t.detail ? `openDrawer('${t.detail}')` : 'openDrawer(\'hsc-sharath\')';
+    return `
+      <div class="row px-5 py-3 border-b border-zinc-800 flex items-center gap-4" onclick="${handler}">
+        <div class="text-center w-16 shrink-0">
+          <div class="text-base font-semibold ${timeColor}">${fmtTimeShort(t.min)}</div>
+          <div class="text-[10px] ${deltaColor} uppercase tracking-wider">${deltaText || 'appt'}</div>
+        </div>
+        <span class="type-badge ${typeBadgeClass(t.type)}">${t.type}</span>
+        <div class="flex-1 min-w-0">
+          <div class="font-medium text-sm">${t.title}</div>
+          <div class="text-xs text-zinc-400 mt-1 truncate">
+            <span class="text-zinc-300">${t.patient}</span> · ${t.context} · #${t.ord}
+          </div>
+        </div>
+        ${renderAssigneeBadge(t.assignee)}
+        <span class="chev text-xl">›</span>
+      </div>
+    `;
+  }
+
+  function renderNowSection(tasks, nowMin) {
+    const windowEnd = nowMin + NOW_WINDOW_MIN;
+    const inWindow = tasks.filter(t => t.min >= nowMin - 15 && t.min < windowEnd);
+    if (!inWindow.length) {
+      return `
+        <details open class="section-card rounded-lg">
+          <summary class="px-5 py-4 flex items-center justify-between">
+            <div class="flex items-center gap-3">
+              <span class="chevron text-zinc-500">▸</span>
+              <span class="text-lg">⚡</span>
+              <div>
+                <div class="font-semibold">NOW</div>
+                <div class="text-xs text-zinc-500">next 90 min · until ${fmtTime(windowEnd)}</div>
+              </div>
+            </div>
+            <span class="pill bg-zinc-700 text-zinc-400">0 tasks</span>
+          </summary>
+          <div class="border-t border-zinc-800 px-5 py-6 text-center text-sm text-zinc-500">
+            Nothing urgent right now. Enjoy the breather. ☕
+          </div>
+        </details>
+      `;
+    }
+    return `
+      <details open class="section-card rounded-lg">
+        <summary class="px-5 py-4 flex items-center justify-between">
+          <div class="flex items-center gap-3">
+            <span class="chevron text-zinc-500">▸</span>
+            <span class="text-lg">⚡</span>
+            <div>
+              <div class="font-semibold">NOW</div>
+              <div class="text-xs text-zinc-500">next 90 min · until ${fmtTime(windowEnd)}</div>
+            </div>
+          </div>
+          <span class="pill bg-red-900 text-red-300">${inWindow.length} urgent</span>
+        </summary>
+        <div class="border-t border-zinc-800">
+          ${inWindow.map(t => renderRow(t, nowMin)).join('')}
+        </div>
+      </details>
+    `;
+  }
+
+  function renderPrepSection(nowMin) {
+    if (nowMin < PREP_VISIBILITY_HOUR * 60) return ''; // hidden before 4 PM
+    return `
+      <details open class="section-card rounded-lg border-amber-900/40 ring-1 ring-amber-900/30">
+        <summary class="px-5 py-4 flex items-center justify-between bg-amber-950/20 rounded-t-lg">
+          <div class="flex items-center gap-3">
+            <span class="chevron text-amber-300/50">▸</span>
+            <span class="text-lg">🌙</span>
+            <div>
+              <div class="font-semibold text-amber-200">TONIGHT'S PREP</div>
+              <div class="text-xs text-amber-400/70">confirmations for tomorrow's early-morning items</div>
+            </div>
+          </div>
+          <span class="pill bg-amber-700 text-amber-100">${PREP_TASKS.length} due tonight</span>
+        </summary>
+        <div class="border-t border-zinc-800">
+          ${PREP_TASKS.map(t => {
+            const handler = t.detail ? `openDrawer('${t.detail}')` : 'openDrawer(\'hsc-sharath\')';
+            return `
+              <div class="row px-5 py-3 border-b border-zinc-800 flex items-center gap-4" onclick="${handler}">
+                <div class="text-center w-20 shrink-0">
+                  <div class="text-base font-semibold text-amber-300">${t.apptTomorrow}</div>
+                  <div class="text-[10px] text-zinc-500">tomorrow</div>
+                </div>
+                <span class="type-badge ${typeBadgeClass(t.type)}">${t.type}</span>
+                <div class="flex-1 min-w-0">
+                  <div class="font-medium text-sm">${t.patient}</div>
+                  <div class="text-xs text-zinc-400 mt-1 truncate">${t.context} · #${t.ord}</div>
+                </div>
+                <span class="chev text-xl">›</span>
+              </div>
+            `;
+          }).join('')}
+        </div>
+      </details>
+    `;
+  }
+
+  function renderLaterSection(tasks, nowMin) {
+    const windowEnd = nowMin + NOW_WINDOW_MIN;
+    const later = tasks.filter(t => t.min >= windowEnd);
+    if (!later.length) {
+      return `
+        <div class="section-card rounded-lg px-5 py-4 text-sm text-zinc-500 text-center">
+          Nothing else scheduled today. Tomorrow starts at 6 AM.
+        </div>
+      `;
+    }
+    // Group by hour
+    const byHour = {};
+    later.forEach(t => {
+      const h = Math.floor(t.min / 60);
+      if (!byHour[h]) byHour[h] = [];
+      byHour[h].push(t);
+    });
+    const hours = Object.keys(byHour).map(Number).sort((a,b) => a-b);
+    return `
+      <details open class="section-card rounded-lg">
+        <summary class="px-5 py-4 flex items-center justify-between">
+          <div class="flex items-center gap-3">
+            <span class="chevron text-zinc-500">▸</span>
+            <span class="text-lg">📋</span>
+            <div>
+              <div class="font-semibold">LATER TODAY</div>
+              <div class="text-xs text-zinc-500">${later.length} more tasks until midnight</div>
+            </div>
+          </div>
+          <span class="pill bg-zinc-700 text-zinc-300">${later.length} tasks</span>
+        </summary>
+        <div class="border-t border-zinc-800">
+          ${hours.map(h => `
+            <div class="px-5 py-2 bg-zinc-900/60 border-b border-zinc-800 text-[11px] text-zinc-500 uppercase tracking-wider font-semibold">
+              ── ${fmtHourHeader(h)} · ${byHour[h].length} task${byHour[h].length>1?'s':''} ──
+            </div>
+            ${byHour[h].map(t => renderRow(t, nowMin)).join('')}
+          `).join('')}
+        </div>
+      </details>
+    `;
+  }
+
+  function renderDoneSection(tasks, nowMin) {
+    const done = tasks.filter(t => t.min < nowMin - 15); // "done" heuristic: past + grace
+    return `
+      <details class="rounded-lg border border-zinc-800 bg-zinc-900/50 mt-6">
+        <summary class="px-5 py-3 flex items-center justify-between">
+          <div class="flex items-center gap-3">
+            <span class="chevron text-zinc-600">▸</span>
+            <span class="text-zinc-400">✓</span>
+            <div>
+              <div class="text-sm font-medium text-zinc-300">Done today</div>
+              <div class="text-xs text-zinc-500">resets at midnight IST</div>
+            </div>
+          </div>
+          <span class="pill bg-green-900 text-green-300">${done.length} completed</span>
+        </summary>
+        <div class="border-t border-zinc-800 px-5 py-3 text-center text-xs text-zinc-500">
+          ${done.length === 0 ? 'Nothing completed yet today.' : `${done.length} completed across mixed order types.`}
+        </div>
+      </details>
+    `;
+  }
+
+  function renderToday() {
+    const realNow = new Date();
+    const nowMin = simNow !== null ? simNow : realNow.getHours() * 60 + realNow.getMinutes();
+    const filtered = filterByMember(TODAY_TASKS);
+    const html =
+      renderNowSection(filtered, nowMin) +
+      '<div class="h-4"></div>' +
+      renderPrepSection(nowMin) +
+      (renderPrepSection(nowMin) ? '<div class="h-4"></div>' : '') +
+      renderLaterSection(filtered, nowMin) +
+      renderDoneSection(filtered, nowMin);
+    document.getElementById('today-sections').innerHTML = html;
+
+    // Highlight active demo button
+    ['t-9','t-13','t-17','t-20'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) { el.classList.remove('bg-blue-700'); el.classList.add('btn-ghost'); }
+    });
+    const active = { 570:'t-9', 780:'t-13', 1020:'t-17', 1200:'t-20' }[simNow];
+    if (active) {
+      const el = document.getElementById(active);
+      el.classList.remove('btn-ghost');
+      el.classList.add('bg-blue-700');
+    }
+  }
+
+  function setSimNow(minutes) {
+    simNow = minutes;
+    renderToday();
+  }
+
+  // Initial render
+  setSimNow(9*60 + 30);          // Today panel anchored at 9:30 AM
+  renderStuck();                  // Stuck panel — flat filterable list
+  setRole('lead');                // Default role = Team Lead (lands on Command Center)
+</script>
+
+</body>
+</html>

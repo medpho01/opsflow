@@ -255,7 +255,11 @@ export async function GET(request: NextRequest) {
   const sortByParam = searchParams.get("sortBy") ?? "urgency";
   const sortOrderParam = searchParams.get("sortOrder") ?? "asc";
   const page = Math.max(1, parseInt(searchParams.get("page") ?? "1", 10));
-  const limit = Math.min(50, Math.max(1, parseInt(searchParams.get("limit") ?? "20", 10)));
+  // Hard cap raised from 50 → 500 so MyWorkBoard can render a full workspace
+  // of buckets without silent truncation. AllTasksBoard still defaults to 20.
+  // 500 covers realistic ops workspaces (~200-400 active tasks); beyond that
+  // pagination kicks in normally. Larger caps risk slow client renders.
+  const limit = Math.min(500, Math.max(1, parseInt(searchParams.get("limit") ?? "20", 10)));
 
   // Foundation Feature: Get current time for SLA calculations
   const now = new Date();

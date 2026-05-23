@@ -609,9 +609,16 @@ export default function MyWorkBoard() {
     setLoading(true);
     setError(null);
     try {
-      // Fetch a generous slice so client-side bucketing has everything it needs.
-      // (Phase 2 will introduce server-side pagination keyed to the active tab.)
-      const res = await fetch("/api/tasks?limit=50&sortBy=appointmentTime&sortOrder=asc");
+      // Fetch a generous slice so client-side bucketing has the full
+      // workspace, not just the first page. The previous limit=50 silently
+      // truncated visible tasks when total > 50 (e.g. a workspace with 133
+      // ORDER_SCHEDULED items showed only 6/7 AM + part of 8 AM, hiding the
+      // rest of Today and all of Stuck behind an invisible page break).
+      //
+      // Phase 2 should split this into per-tab fetches keyed by ?view= so we
+      // can paginate each bucket independently. For now, 500 covers realistic
+      // ops workspaces and keeps client render perf comfortable.
+      const res = await fetch("/api/tasks?limit=500&sortBy=appointmentTime&sortOrder=asc");
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setTasks(data.tasks ?? []);

@@ -245,7 +245,7 @@ export default function StoreBoard({ user }: StoreBoardProps) {
   }
 
   return (
-    <div className="p-8 space-y-8">
+    <div className="px-8 py-6 space-y-6 max-w-7xl mx-auto">
       {/* Sticky Header Section.
           z-30 (not z-10) so the store-selector dropdown panel — which lives
           inside this wrapper — out-stacks the table's sticky <thead> below.

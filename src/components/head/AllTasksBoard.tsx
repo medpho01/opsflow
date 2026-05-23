@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { formatISTTimestamp } from "@/lib/utils/timezone";
 import { useEffect, useState, useCallback } from "react";
 import SlaCountdown from "@/components/shared/SlaCountdown";
 import SLADisplay from "@/components/shared/SLADisplay";
@@ -91,9 +92,9 @@ export default function AllTasksBoard() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
   const [appliedFilters, setAppliedFilters] = useState<AppliedFilters>({});
-  // Default: most imminent appointment first (matches server default).
-  // Surfaces tasks needing attention now; far-future appointments fall to the bottom.
-  const [sortBy, setSortBy] = useState<"createdAt" | "appointmentTime" | "slaDeadline" | "status" | "priority">("appointmentTime");
+  // Default: urgency — buckets tasks as imminent / today / tomorrow / future / past
+  // so the team always sees what needs immediate attention at the top.
+  const [sortBy, setSortBy] = useState<"createdAt" | "appointmentTime" | "slaDeadline" | "status" | "priority" | "urgency">("urgency");
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("asc");
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
@@ -455,6 +456,7 @@ export default function AllTasksBoard() {
             }}
             className="px-3 py-1 text-sm bg-zinc-800 border border-zinc-700 rounded text-zinc-100"
           >
+            <option value="urgency">Sort: Urgency (Smart)</option>
             <option value="appointmentTime">Sort: Appointment Time</option>
             <option value="slaDeadline">Sort: SLA Deadline</option>
             <option value="priority">Sort: Priority</option>
@@ -577,6 +579,7 @@ export default function AllTasksBoard() {
                   />
                 </th>
                 <th className="px-4 py-3 text-left text-xs font-semibold">Task</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold">Appointment</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold">Data Source</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold">Status</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold">Priority</th>
@@ -603,6 +606,27 @@ export default function AllTasksBoard() {
                     />
                   </td>
                   <td className="px-4 py-3 text-sm font-medium">{task.title}</td>
+                  {/* Appointment time with urgency badge */}
+                  <td className="px-4 py-3 text-sm whitespace-nowrap">
+                    {(task as any).appointmentTime ? (
+                      <div className="flex flex-col gap-0.5">
+                        <span className={`text-xs font-medium px-1.5 py-0.5 rounded inline-block w-fit ${
+                          (task as any).urgencyBucket === 0 ? "bg-red-900/60 text-red-300" :
+                          (task as any).urgencyBucket === 1 ? "bg-blue-900/60 text-blue-300" :
+                          (task as any).urgencyBucket === 2 ? "bg-orange-900/40 text-orange-400" :
+                          (task as any).urgencyBucket === 3 ? "bg-zinc-800 text-zinc-300" :
+                          "bg-zinc-900 text-zinc-500"
+                        }`}>
+                          {(task as any).urgencyLabel}
+                        </span>
+                        <span className="text-zinc-400 text-xs">
+                          {formatISTTimestamp((task as any).appointmentTime, { hour: "2-digit", minute: "2-digit", day: "numeric", month: "short" })}
+                        </span>
+                      </div>
+                    ) : (
+                      <span className="text-zinc-600 text-xs">—</span>
+                    )}
+                  </td>
                   <td className="px-4 py-3 text-sm">
                     {task.dataSource ? (
                       <span className="inline-block px-2 py-0.5 text-xs rounded bg-zinc-800 text-zinc-200 border border-zinc-700">

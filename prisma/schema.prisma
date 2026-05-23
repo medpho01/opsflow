@@ -489,6 +489,15 @@ model PollingLock {
   @@map("polling_locks")
 }
 
+model EngineCheckpoint {
+  id          Int      @id @default(autoincrement())
+  sourceKey   String   @unique // e.g. "labstack:orders"
+  lastSeenAt  DateTime
+  updatedAt   DateTime @updatedAt
+
+  @@map("engine_checkpoints")
+}
+
 model TaskChecklistItem {
   id         Int       @id @default(autoincrement())
   taskId     Int

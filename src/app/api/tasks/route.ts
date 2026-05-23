@@ -25,7 +25,7 @@ import prisma from "@/lib/db/client";
 import { TaskStatus, TaskPriority, UserRole } from "@prisma/client";
 
 // Whitelist of valid sort fields (Phase 1 MVP)
-const VALID_SORT_FIELDS = ["createdAt", "appointmentTime", "slaDeadline", "status", "priority"] as const;
+const VALID_SORT_FIELDS = ["createdAt", "appointmentTime", "slaDeadline", "status", "priority", "urgency"] as const;
 type SortField = (typeof VALID_SORT_FIELDS)[number];
 
 // Type-safe sort order
@@ -51,6 +51,57 @@ function getRelativeTime(pastDate: Date, nowDate: Date): string {
   const days = Math.round(hours / 24);
   return `${days}d ago`;
 }
+
+/**
+ * Compute urgency bucket for smart "what needs attention now" ordering.
+ *
+ * Buckets (lower = more urgent):
+ *   0  IMMINENT     appointment within (-15 min … +30 min) of now
+ *   1  TODAY        today IST, more than 30 min in the future
+ *   2  PAST_TODAY   today IST, more than 15 min in the past
+ *   3  TOMORROW     tomorrow IST
+ *   4  FUTURE       2+ days away
+ *   5  PAST_OLD     yesterday or earlier
+ *   6  NO_APPT      null appointmentTime
+ *
+ * All timestamps are treated as proper UTC; IST offsets are applied only for
+ * "which calendar day is this?" comparisons.
+ */
+const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000; // 5h30m in ms
+
+function istDayKey(utcDate: Date): string {
+  const ist = new Date(utcDate.getTime() + IST_OFFSET_MS);
+  return `${ist.getUTCFullYear()}-${ist.getUTCMonth()}-${ist.getUTCDate()}`;
+}
+
+function computeUrgencyBucket(appt: Date | null, now: Date): number {
+  if (!appt || isNaN(appt.getTime())) return 6;
+  const diffMin = (appt.getTime() - now.getTime()) / 60_000;
+
+  if (diffMin >= -15 && diffMin <= 30) return 0; // IMMINENT
+
+  const nowDay = istDayKey(now);
+  const apptDay = istDayKey(appt);
+  const tomorrowDay = istDayKey(new Date(now.getTime() + 24 * 60 * 60 * 1000));
+
+  if (diffMin > 30) {
+    if (apptDay === nowDay) return 1;      // TODAY (upcoming)
+    if (apptDay === tomorrowDay) return 3; // TOMORROW
+    return 4;                              // FUTURE (2+ days)
+  }
+  // diffMin < -15 → past
+  return apptDay === nowDay ? 2 : 5;     // PAST_TODAY or PAST_OLD
+}
+
+const URGENCY_LABELS: Record<number, string> = {
+  0: "⚡ Imminent",
+  1: "📅 Today",
+  2: "⏰ Past (Today)",
+  3: "🔜 Tomorrow",
+  4: "📆 Upcoming",
+  5: "📋 Past",
+  6: "—",
+};
 
 /**
  * Build the orderBy clause for Prisma query based on sortBy parameter
@@ -141,9 +192,11 @@ export async function GET(request: NextRequest) {
   const sourceParam = searchParams.get("source");
   const sourceTypeParam = searchParams.get("sourceType");
   const dataSourceIdParam = searchParams.get("dataSourceId");
-  // Default sort: most imminent appointment first — surfaces tasks that
-  // need attention now ahead of tasks for far-future appointments.
-  const sortByParam = searchParams.get("sortBy") ?? "appointmentTime";
+  // Default sort: urgency bucket — puts imminent appointments first, then
+  // today's upcoming tasks, then tomorrow, then future, then past.
+  // This surfaces tasks that need immediate attention without requiring the
+  // user to think about sort settings.
+  const sortByParam = searchParams.get("sortBy") ?? "urgency";
   const sortOrderParam = searchParams.get("sortOrder") ?? "asc";
   const page = Math.max(1, parseInt(searchParams.get("page") ?? "1", 10));
   const limit = Math.min(50, Math.max(1, parseInt(searchParams.get("limit") ?? "20", 10)));
@@ -341,27 +394,29 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  // Build the orderBy clause with tiebreakers
-  const orderBy = buildOrderBy(sortBy, sortOrder);
+  // Build the orderBy clause with tiebreakers (not used for urgency sort)
+  const orderBy = buildOrderBy(sortBy as SortField, sortOrder);
+  const isUrgencySort = sortBy === "urgency";
 
-  const [tasks, total] = await Promise.all([
-    prisma.task.findMany({
-      where,
-      include: {
-        assignedTo: { select: { id: true, name: true } },
-        checklistItems: { orderBy: { stepOrder: "asc" } },
-        taskType: { select: { name: true, label: true } },
-        taskRule: {
-          select: {
-            dataSourceId: true,
-            dataSource: { select: { id: true, sourceId: true, displayName: true } },
-          },
-        },
+  const include = {
+    assignedTo: { select: { id: true, name: true } },
+    checklistItems: { orderBy: { stepOrder: "asc" } },
+    taskType: { select: { name: true, label: true } },
+    taskRule: {
+      select: {
+        dataSourceId: true,
+        dataSource: { select: { id: true, sourceId: true, displayName: true } },
       },
-      orderBy,
-      skip: (page - 1) * limit,
-      take: limit,
-    }),
+    },
+  } as const;
+
+  // Urgency sort: fetch ALL matching tasks (no DB-level pagination), sort in
+  // memory by urgency bucket + appointmentTime, then slice for the page.
+  // This is safe for typical task list sizes (<500 tasks per workspace).
+  const [tasks, total] = await Promise.all([
+    isUrgencySort
+      ? prisma.task.findMany({ where, include, orderBy: [{ appointmentTime: "asc" }] })
+      : prisma.task.findMany({ where, include, orderBy, skip: (page - 1) * limit, take: limit }),
     prisma.task.count({ where }),
   ]);
 
@@ -443,6 +498,12 @@ export async function GET(request: NextRequest) {
         }
       : null;
 
+    // Urgency bucket — computed for every task regardless of sort mode so
+    // the UI can always display a badge and group tasks visually.
+    const appt = task.appointmentTime ? new Date(task.appointmentTime) : null;
+    const urgencyBucket = computeUrgencyBucket(appt, now);
+    const urgencyLabel = URGENCY_LABELS[urgencyBucket] ?? "—";
+
     return {
       ...task,
       // sourceEntityId is a BigInt in the DB — convert to string so JSON.stringify doesn't throw
@@ -457,12 +518,30 @@ export async function GET(request: NextRequest) {
       slaContext,
       aging,
       dataSource,
+      urgencyBucket,
+      urgencyLabel,
     };
   });
 
-  // SLA-risk filter is now applied at the SQL WHERE level above, so
-  // pagination.total reflects the filtered count.
-  const filteredTasks = tasksWithMeta;
+  // For urgency sort: sort all tasks in memory, then slice for the page.
+  // Buckets 0–1 (imminent, today-upcoming) sort ASC by appointmentTime (soonest first).
+  // Buckets 2, 5 (past) sort DESC (most recent past first — most actionable).
+  // Buckets 3–4 (tomorrow, future) sort ASC.
+  // Bucket 6 (no appt) falls to the end.
+  let filteredTasks = tasksWithMeta;
+  if (isUrgencySort) {
+    filteredTasks = [...tasksWithMeta].sort((a, b) => {
+      if (a.urgencyBucket !== b.urgencyBucket) return a.urgencyBucket - b.urgencyBucket;
+      const at = a.appointmentTime ? new Date(a.appointmentTime).getTime() : null;
+      const bt = b.appointmentTime ? new Date(b.appointmentTime).getTime() : null;
+      if (!at && !bt) return 0;
+      if (!at) return 1;
+      if (!bt) return -1;
+      const pastBucket = a.urgencyBucket === 2 || a.urgencyBucket === 5;
+      return pastBucket ? bt - at : at - bt; // DESC for past, ASC for future
+    });
+    filteredTasks = filteredTasks.slice((page - 1) * limit, page * limit);
+  }
 
   // Build appliedFilters response object for UI
   const appliedFilters: Record<string, unknown> = {};

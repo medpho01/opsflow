@@ -1,19 +1,29 @@
 /**
  * Timezone utility functions
  *
- * Our database stores timestamps as "timestamp without time zone" (naive).
- * PostgreSQL server timezone is set to Asia/Kolkata (IST, UTC+5:30).
- * This means naive timestamps represent IST time.
+ * All timestamps from the source DB (labstack/dhanavantri) are converted to
+ * proper UTC at the SQL boundary via `AT TIME ZONE 'Asia/Kolkata'` (see
+ * src/lib/engine/labstack.ts). Prisma deserialises them as correct UTC Date
+ * objects that the JS Date constructor reads as-is.
  *
- * However, JavaScript's new Date() interprets ISO strings as UTC.
- * This utility corrects for that mismatch.
+ * These helpers simply render a UTC ISO string in IST for display using the
+ * IANA timezone identifier "Asia/Kolkata" (UTC+5:30). No manual arithmetic
+ * is needed — the Intl API handles DST-safety and correct offset application.
+ *
+ * ⚠️  The old approach subtracted IST_OFFSET_MS from the UTC value before
+ * calling toLocaleString. That was a band-aid for an earlier schema where
+ * timestamps were stored as naive IST values and read as UTC without
+ * correction. The AT TIME ZONE fix in labstack.ts made the SQL do the right
+ * thing; subtracting the offset again would show a time 5h30 too early.
+ * Do NOT re-add the manual subtraction.
  */
 
-const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000; // 5:30 in milliseconds
-
 /**
- * Format an IST timestamp (stored as naive in PostgreSQL)
- * Corrects for the UTC interpretation issue
+ * Format a UTC timestamp string for display in IST (Asia/Kolkata).
+ *
+ * @param timestampString - any ISO 8601 / Date-parseable string (UTC)
+ * @param options         - Intl.DateTimeFormatOptions (timeZone is forced to "Asia/Kolkata")
+ * @returns formatted string, e.g. "23 May, 06:00 pm"
  */
 export function formatISTTimestamp(
   timestampString: string,
@@ -24,17 +34,13 @@ export function formatISTTimestamp(
     minute: "2-digit",
   }
 ): string {
-  // Create date treating string as UTC (how JS interprets it)
-  const utcDate = new Date(timestampString);
-
-  // Subtract 5:30 hours to get back to the actual IST time that was stored
-  const istDate = new Date(utcDate.getTime() - IST_OFFSET_MS);
-
-  return istDate.toLocaleString("en-IN", options);
+  const date = new Date(timestampString);
+  if (isNaN(date.getTime())) return "—";
+  return date.toLocaleString("en-IN", { ...options, timeZone: "Asia/Kolkata" });
 }
 
 /**
- * Format just the date part of an IST timestamp
+ * Format just the date portion of a UTC timestamp in IST.
  */
 export function formatISTDate(
   timestampString: string,
@@ -44,13 +50,13 @@ export function formatISTDate(
     year: "numeric",
   }
 ): string {
-  const utcDate = new Date(timestampString);
-  const istDate = new Date(utcDate.getTime() - IST_OFFSET_MS);
-  return istDate.toLocaleDateString("en-IN", options);
+  const date = new Date(timestampString);
+  if (isNaN(date.getTime())) return "—";
+  return date.toLocaleDateString("en-IN", { ...options, timeZone: "Asia/Kolkata" });
 }
 
 /**
- * Format just the time part of an IST timestamp
+ * Format just the time portion of a UTC timestamp in IST.
  */
 export function formatISTTime(
   timestampString: string,
@@ -59,7 +65,7 @@ export function formatISTTime(
     minute: "2-digit",
   }
 ): string {
-  const utcDate = new Date(timestampString);
-  const istDate = new Date(utcDate.getTime() - IST_OFFSET_MS);
-  return istDate.toLocaleTimeString("en-IN", options);
+  const date = new Date(timestampString);
+  if (isNaN(date.getTime())) return "—";
+  return date.toLocaleTimeString("en-IN", { ...options, timeZone: "Asia/Kolkata" });
 }

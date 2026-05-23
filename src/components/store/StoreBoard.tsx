@@ -367,6 +367,7 @@ export default function StoreBoard({ user }: StoreBoardProps) {
           </div>
         ))}
       </div>
+      </div>{/* close sticky wrapper — per-store strip + filter tabs + table scroll naturally below */}
 
       {/* Per-store breakdown strip — appears only on "All Stores" view
           when the user has >1 stores. Sorted by breached desc, open desc
@@ -442,7 +443,6 @@ export default function StoreBoard({ user }: StoreBoardProps) {
           <span className="ml-auto text-xs text-zinc-600 pb-2.5">{total} tasks</span>
         </div>
       </div>
-      </div>
 
       {/* Task table */}
       {loading ? (
@@ -452,8 +452,12 @@ export default function StoreBoard({ user }: StoreBoardProps) {
       ) : tasks.length === 0 ? (
         <div className="text-center py-16 text-zinc-600 text-sm">No tasks found</div>
       ) : (
-        <div className="border-t border-b border-zinc-800 -mx-8 -mt-6">
-          <div className="overflow-y-auto max-h-[calc(100vh-480px)]">
+        <div className="border border-zinc-800 rounded-xl overflow-hidden">
+          {/* Removed the max-h calc clamp that hard-coded the sticky-region
+              height (was max-h-[calc(100vh-480px)]). With the per-store
+              strip and filter tabs now scrolling naturally, the table
+              grows to fit its contents and the page scroll does the work. */}
+          <div className="overflow-x-auto">
             <table className="w-full border-collapse">
               <thead className="sticky top-0 z-10 bg-zinc-950 border-b border-zinc-800">
                 <tr>

@@ -212,12 +212,15 @@ function TaskRow({
   agents,
   onClick,
   onReassign,
+  rightBadge,
 }: {
   task: Task;
   now: Date;
   agents: Agent[];
   onClick: () => void;
   onReassign: (taskId: number, agentId: number | null) => void;
+  // Optional extra pill rendered next to SLA (used by Stuck view for age).
+  rightBadge?: React.ReactNode;
 }) {
   const appt = task.appointmentTime ? new Date(task.appointmentTime) : null;
   const diffMin = appt ? Math.round((appt.getTime() - now.getTime()) / 60_000) : null;
@@ -273,6 +276,8 @@ function TaskRow({
 
       <AssigneeChip task={task} agents={agents} onReassign={onReassign} />
 
+      {rightBadge}
+
       {task.slaStatus === "breached" ? (
         <span className="px-2 py-0.5 rounded text-[11px] bg-red-900/60 text-red-300 shrink-0">SLA breached</span>
       ) : task.slaStatus === "critical" ? (
@@ -305,8 +310,8 @@ function SectionCard({
   children: React.ReactNode;
 }) {
   return (
-    <details open={defaultOpen} className="bg-zinc-900 border border-zinc-800 rounded-lg overflow-hidden">
-      <summary className="px-5 py-4 flex items-center justify-between cursor-pointer list-none [&::-webkit-details-marker]:hidden">
+    <details open={defaultOpen} className="bg-zinc-900 border border-zinc-800 rounded-lg">
+      <summary className="px-5 py-4 flex items-center justify-between cursor-pointer list-none [&::-webkit-details-marker]:hidden rounded-t-lg">
         <div className="flex items-center gap-3">
           <span className="text-lg">{icon}</span>
           <div>
@@ -429,7 +434,7 @@ function TodayView({ tasks, tomorrowTasks, now, agents, onRowClick, onReassign }
       </SectionCard>
 
       {prepTasks.length > 0 && (
-        <div className="rounded-lg border border-amber-900/40 ring-1 ring-amber-900/30 overflow-hidden">
+        <div className="rounded-lg border border-amber-900/40 ring-1 ring-amber-900/30">
           <details open className="bg-zinc-900">
             <summary className="px-5 py-4 bg-amber-950/20 flex items-center justify-between cursor-pointer list-none [&::-webkit-details-marker]:hidden">
               <div className="flex items-center gap-3">
@@ -537,7 +542,7 @@ function TomorrowView({ tasks, now, agents, onRowClick, onReassign }: {
       </div>
 
       {early.length > 0 && (
-        <div className="rounded-lg border border-amber-900/40 ring-1 ring-amber-900/30 overflow-hidden">
+        <div className="rounded-lg border border-amber-900/40 ring-1 ring-amber-900/30">
           <div className="px-5 py-4 bg-amber-950/20 flex items-center justify-between">
             <div className="flex items-center gap-3">
               <span className="text-lg">⚠️</span>
@@ -690,19 +695,26 @@ function StuckView({ tasks, now, agents, onRowClick, onReassign }: {
         </div>
       </div>
 
-      <div className="bg-zinc-900 border border-zinc-800 rounded-lg overflow-hidden">
+      <div className="bg-zinc-900 border border-zinc-800 rounded-lg">
         {filtered.length === 0 ? (
           <div className="px-5 py-8 text-center text-sm text-zinc-500">
             ✓ Nothing stuck matching these filters.
           </div>
         ) : (
           filtered.map(t => (
-            <div key={t.id} className="relative">
-              <div className="absolute top-3 right-12 z-10">
-                <span className={`px-2 py-0.5 rounded text-[11px] ${ageStyle(ageOf(t))}`}>{ageLabel(t)}</span>
-              </div>
-              <TaskRow task={t} now={now} agents={agents} onClick={() => onRowClick(t)} onReassign={onReassign} />
-            </div>
+            <TaskRow
+              key={t.id}
+              task={t}
+              now={now}
+              agents={agents}
+              onClick={() => onRowClick(t)}
+              onReassign={onReassign}
+              rightBadge={
+                <span className={`px-2 py-0.5 rounded text-[11px] shrink-0 ${ageStyle(ageOf(t))}`}>
+                  {ageLabel(t)}
+                </span>
+              }
+            />
           ))
         )}
       </div>
@@ -860,7 +872,7 @@ export default function MyWorkBoard() {
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-2xl font-bold text-zinc-100">My Work</h1>
+          <h1 className="text-2xl font-bold text-zinc-100">Smart View</h1>
           <div className="text-sm text-zinc-500 mt-1">
             {now.toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "long", timeZone: "Asia/Kolkata" })}
             <span className="mx-2">·</span>

@@ -2,7 +2,7 @@ import { redirect } from "next/navigation";
 import { getSession } from "@/lib/auth/session";
 import MyWorkBoard from "@/components/head/MyWorkBoard";
 
-export const metadata = { title: "My Work — OpsFlow" };
+export const metadata = { title: "Smart View — OpsFlow" };
 
 /**
  * Phase-1 My Work view.

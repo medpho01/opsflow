@@ -58,7 +58,7 @@ const navItems: NavItem[] = [
     ),
   },
   {
-    label: "My Work",
+    label: "Smart View",
     href: "/head/my-work",
     roles: ["OPS_HEAD"],
     icon: (
@@ -69,7 +69,7 @@ const navItems: NavItem[] = [
     ),
   },
   {
-    label: "Tasks Archive",
+    label: "All Tasks",
     href: "/head/tasks",
     roles: ["OPS_HEAD"],
     icon: (

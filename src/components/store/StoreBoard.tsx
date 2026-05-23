@@ -349,6 +349,7 @@ export default function StoreBoard({ user }: StoreBoardProps) {
               <thead className="sticky top-0 z-10 bg-zinc-950 border-b border-zinc-800">
                 <tr>
                   <th className="px-4 py-3 text-left text-xs font-semibold text-zinc-100">Task</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-zinc-100">Store</th>
                   <th className="px-4 py-3 text-left text-xs font-semibold text-zinc-100">Data Source</th>
                   <th className="px-4 py-3 text-left text-xs font-semibold text-zinc-100">Status</th>
                   <th className="px-4 py-3 text-left text-xs font-semibold text-zinc-100">Priority</th>
@@ -358,11 +359,28 @@ export default function StoreBoard({ user }: StoreBoardProps) {
                 </tr>
               </thead>
               <tbody>
-                {tasks.map((task) => (
+                {tasks.map((task) => {
+                  // Resolve store name from the already-fetched stores list.
+                  // No new API call — uses the same `stores` array driving
+                  // the store-selector dropdown above.
+                  const store = task.storeId == null ? null : stores.find((s) => s.id === task.storeId);
+                  return (
                   <tr key={task.id} className="border-b border-zinc-800 hover:bg-zinc-800/50 transition-colors">
                     <td className="px-4 py-3 text-sm">
                       <div className="font-medium text-zinc-100">{task.title}</div>
                       <div className="text-xs text-zinc-500 mt-0.5">Order #{task.entityId}</div>
+                    </td>
+                    <td className="px-4 py-3 text-sm">
+                      {store ? (
+                        <div className="text-zinc-200">
+                          <div className="font-medium truncate max-w-[180px]" title={store.storeName}>{store.storeName}</div>
+                          {store.city && <div className="text-xs text-zinc-500 mt-0.5">{store.city}</div>}
+                        </div>
+                      ) : task.storeId != null ? (
+                        <span className="text-xs text-zinc-500">#{task.storeId}</span>
+                      ) : (
+                        <span className="text-xs text-zinc-600">—</span>
+                      )}
                     </td>
                     <td className="px-4 py-3 text-sm">
                       {task.dataSource ? (
@@ -391,7 +409,8 @@ export default function StoreBoard({ user }: StoreBoardProps) {
                       #{task.entityId}
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>

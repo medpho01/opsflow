@@ -20,11 +20,15 @@ interface Stats {
   activeOrders: number;
   openTasks: number;
   breachedTasks: number;
-  warningTasks: number;
+  warningTasks: number;                   // total within 30 min Near-SLA horizon
+  warningCriticalTasks: number;           // subset within 10 min — rendered as "X critical"
   slaHealthPercent: number;
   unassignedTasks: number;
+  oldestUnassignedMin: number | null;     // age of oldest CREATED + null-assignee; leading indicator vs the snapshot count
   completedToday: number;
+  completedPrior: number;                 // same window, one window earlier — for delta render
   breachedToday: number;
+  breachedPrior: number;                  // same as above for breach trend
 }
 
 interface RiskItem {
@@ -508,11 +512,33 @@ export default function HeadCommandCenter() {
             // dateFrom alone), week uses today (same caveat). Day-level
             // drill-in is the closest /head/tasks supports.
             const drillFrom = today;
+            // Build the prior-window comparison string used on Done/Breached
+            // tiles. "+4 vs last week" green for done; red for breach delta.
+            // Suppressed when both current and prior are zero (avoids a
+            // confusing "0 vs 0" sub-label on a quiet day).
+            const fmtDelta = (cur: number, prior: number): { text: string; tone: "good" | "bad" | "neutral" } | null => {
+              if (cur === 0 && prior === 0) return null;
+              const diff = cur - prior;
+              if (diff === 0) return { text: `same as last week`, tone: "neutral" };
+              const sign = diff > 0 ? "+" : "";
+              return { text: `${sign}${diff} vs last week`, tone: diff > 0 ? "bad" : "good" };
+            };
+            const breachedDelta  = fmtDelta(stats.breachedToday, stats.breachedPrior);
+            // Higher Done is good, so flip the tone semantics.
+            const doneDelta      = (() => {
+              const d = fmtDelta(stats.completedToday, stats.completedPrior);
+              if (!d || d.tone === "neutral") return d;
+              return { text: d.text, tone: d.tone === "bad" ? "good" : "bad" } as { text: string; tone: "good" | "bad" | "neutral" };
+            })();
+            const subCls = (tone?: "good" | "bad" | "neutral") =>
+              tone === "good" ? "text-green-400" : tone === "bad" ? "text-red-400" : "text-zinc-500";
+
             const tiles: Array<{
               label: string;
               value: number | string;
               cls: string;
               href?: string;
+              sub?: { text: string; tone?: "good" | "bad" | "neutral" };
             }> = [
               { label: "Active Orders", value: stats.activeOrders, cls: "text-white" },
               { label: "Open Tasks", value: stats.openTasks, cls: "text-white",
@@ -522,28 +548,49 @@ export default function HeadCommandCenter() {
                 href: "/head/tasks?status=BREACHED" },
               { label: "Near SLA", value: stats.warningTasks,
                 cls: stats.warningTasks > 0 ? "text-amber-400" : "text-white",
-                href: "/head/tasks?slaRiskOnly=true" },
+                href: "/head/tasks?slaRiskOnly=true",
+                // Surface the critical (≤10 min) subset of the 30-min Near
+                // SLA total. Previously the warning threshold WAS 10 min —
+                // now broadened to 30 for an actionable horizon, with
+                // critical called out so urgency isn't lost.
+                sub: stats.warningCriticalTasks > 0
+                  ? { text: `${stats.warningCriticalTasks} critical (<10m)`, tone: "bad" }
+                  : { text: "within 30 min", tone: "neutral" } },
               { label: "Unassigned", value: stats.unassignedTasks,
                 cls: stats.unassignedTasks > 0 ? "text-blue-400" : "text-white",
                 // CREATED + no assignee is the dashboard's definition of
                 // "Unassigned"; the table view doesn't have a dedicated
                 // unassigned filter so we narrow to status=CREATED — the
                 // closest single-filter approximation.
-                href: "/head/tasks?status=CREATED" },
+                href: "/head/tasks?status=CREATED",
+                // Age of the oldest unassigned task — a leading indicator
+                // the count alone hides. 90 sec vs 90 min is the difference
+                // between "fine" and "about to breach in 30 min".
+                sub: stats.oldestUnassignedMin != null && stats.unassignedTasks > 0
+                  ? {
+                      text: `oldest ${stats.oldestUnassignedMin}m`,
+                      tone: stats.oldestUnassignedMin >= 30 ? "bad" : stats.oldestUnassignedMin >= 10 ? "neutral" : "good",
+                    }
+                  : undefined },
               { label: "SLA Health",
                 value: `${stats.slaHealthPercent}%`,
                 cls: stats.slaHealthPercent >= 90 ? "text-green-400" : stats.slaHealthPercent >= 70 ? "text-amber-400" : "text-red-400" },
               { label: `Done ${rangeSuffix}`, value: stats.completedToday, cls: "text-green-400",
-                href: `/head/tasks?status=COMPLETED&dateFrom=${drillFrom}&dateTo=${drillFrom}` },
+                href: `/head/tasks?status=COMPLETED&dateFrom=${drillFrom}&dateTo=${drillFrom}`,
+                sub: doneDelta ?? undefined },
               { label: `Breached ${rangeSuffix}`, value: stats.breachedToday,
                 cls: stats.breachedToday > 0 ? "text-red-400" : "text-zinc-400",
-                href: `/head/tasks?status=BREACHED&dateFrom=${drillFrom}&dateTo=${drillFrom}` },
+                href: `/head/tasks?status=BREACHED&dateFrom=${drillFrom}&dateTo=${drillFrom}`,
+                sub: breachedDelta ?? undefined },
             ];
-            return tiles.map(({ label, value, cls, href }) => {
+            return tiles.map(({ label, value, cls, href, sub }) => {
               const inner = (
                 <>
                   <div className="text-xs text-zinc-500 mb-1">{label}</div>
                   <div className={`text-2xl font-bold ${cls}`}>{value}</div>
+                  {sub && (
+                    <div className={`text-[10px] mt-1 ${subCls(sub.tone)}`}>{sub.text}</div>
+                  )}
                 </>
               );
               if (href) {

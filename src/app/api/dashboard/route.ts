@@ -95,9 +95,21 @@ interface TaskCountsRow {
   open_tasks: bigint;
   breached: bigint;
   warning: bigint;
+  // Subset of `warning` within the critical 10-min sub-window. Rendered
+  // alongside the 30-min total as "12 (3 critical)" so the urgency edge
+  // isn't lost when broadening the actionable horizon.
+  warning_critical: bigint;
   unassigned: bigint;
+  // Age-in-minutes of the oldest currently-unassigned task. NULL when
+  // none. Surfaced as a leading indicator on the dashboard — a snapshot
+  // count alone hides whether tasks are sitting for 90 seconds or 90 min.
+  oldest_unassigned_min: number | null;
   completed_today: bigint;
   breached_today: bigint;
+  // Prior-period (same window, one window earlier) counterparts so the UI
+  // can render a delta beside the headline: "23 (+4 vs last week)".
+  completed_prior: bigint;
+  breached_prior: bigint;
 }
 
 export async function GET(request: NextRequest) {
@@ -108,7 +120,12 @@ export async function GET(request: NextRequest) {
   }
 
   const now = new Date();
-  const warningThreshold = new Date(now.getTime() + 10 * 60_000); // 10 min
+  // Near-SLA actionable horizon (30 min) + critical subset (10 min). The
+  // previous threshold was 10 min only, which fired too late to act on —
+  // by the time a task hit "warning" it was effectively already lost.
+  // Store Overview was also recently unified to the same 30/10 pair.
+  const warningThreshold = new Date(now.getTime() + 30 * 60_000); // 30 min
+  const criticalThreshold = new Date(now.getTime() + 10 * 60_000); // 10 min (critical subset)
   const dayOfWeek = getUTCDayOfWeek(now);
 
   // W4 — `range` toggle for the "Done in range" / "Breached in range"
@@ -117,6 +134,15 @@ export async function GET(request: NextRequest) {
   const range: DashboardRange =
     rangeParam === "shift" || rangeParam === "week" ? rangeParam : "today";
   const rangeStart = startOfRangeIST(range);
+
+  // Prior-period anchor — same window length, one window earlier — so the
+  // UI can render a delta ("23 (+4 vs last week)") on the breach & done
+  // tiles. For range="today" this is exactly 7 days ago (Mon vs Mon comp);
+  // for "week" it's the prior week; for "shift" it's the same shift on
+  // the prior day. priorEnd == rangeStart so windows are non-overlapping.
+  const windowLen = now.getTime() - rangeStart.getTime();
+  const priorStart = new Date(rangeStart.getTime() - (range === "today" ? 7 * 24 * 60 * 60 * 1000 : windowLen));
+  const priorEnd = rangeStart;
 
   // Roster exception window stays anchored to today — rosters are a
   // calendar-day concept; broadening to "this week" doesn't make sense.
@@ -164,9 +190,17 @@ export async function GET(request: NextRequest) {
         COUNT(*) FILTER (WHERE status NOT IN ('COMPLETED','CANCELLED','BREACHED')
                           AND "slaDeadline" >  ${now}
                           AND "slaDeadline" <= ${warningThreshold})                                                AS warning,
+        COUNT(*) FILTER (WHERE status NOT IN ('COMPLETED','CANCELLED','BREACHED')
+                          AND "slaDeadline" >  ${now}
+                          AND "slaDeadline" <= ${criticalThreshold})                                               AS warning_critical,
         COUNT(*) FILTER (WHERE status = 'CREATED' AND "assignedToId" IS NULL)                                      AS unassigned,
+        EXTRACT(EPOCH FROM (NOW() - MIN("createdAt") FILTER (WHERE status = 'CREATED' AND "assignedToId" IS NULL))) / 60
+                                                                                                                   AS oldest_unassigned_min,
         COUNT(*) FILTER (WHERE status = 'COMPLETED' AND "completedAt" >= ${rangeStart})                            AS completed_today,
-        COUNT(*) FILTER (WHERE "slaBreachedAt" >= ${rangeStart})                                                   AS breached_today
+        COUNT(*) FILTER (WHERE "slaBreachedAt" >= ${rangeStart})                                                   AS breached_today,
+        -- Prior-period (same window, one window back) for deltas.
+        COUNT(*) FILTER (WHERE status = 'COMPLETED' AND "completedAt" >= ${priorStart} AND "completedAt" < ${priorEnd})  AS completed_prior,
+        COUNT(*) FILTER (WHERE "slaBreachedAt" >= ${priorStart} AND "slaBreachedAt" < ${priorEnd})                       AS breached_prior
       FROM taskos.tasks
       WHERE "isArchived" = false
     `,
@@ -257,15 +291,23 @@ export async function GET(request: NextRequest) {
   // same value at runtime.
   const z = BigInt(0);
   const counts = taskCountsRow[0] ?? {
-    open_tasks: z, breached: z, warning: z,
-    unassigned: z, completed_today: z, breached_today: z,
+    open_tasks: z, breached: z, warning: z, warning_critical: z,
+    unassigned: z, oldest_unassigned_min: null,
+    completed_today: z, breached_today: z,
+    completed_prior: z, breached_prior: z,
   };
   const openTasksCount = Number(counts.open_tasks);
   const breachedCount = Number(counts.breached);
   const warningCount = Number(counts.warning);
+  const warningCriticalCount = Number(counts.warning_critical);
   const unassignedCount = Number(counts.unassigned);
+  const oldestUnassignedMin = counts.oldest_unassigned_min == null
+    ? null
+    : Math.round(Number(counts.oldest_unassigned_min));
   const totalDoneToday = Number(counts.completed_today);
   const totalBreachedToday = Number(counts.breached_today);
+  const completedPrior = Number(counts.completed_prior);
+  const breachedPrior = Number(counts.breached_prior);
 
   const slaHealth =
     openTasksCount > 0
@@ -320,11 +362,15 @@ export async function GET(request: NextRequest) {
       activeOrders,
       openTasks: openTasksCount,
       breachedTasks: breachedCount,
-      warningTasks: warningCount,
+      warningTasks: warningCount,                       // total within 30 min
+      warningCriticalTasks: warningCriticalCount,       // subset within 10 min — surfaced as "X critical" sub-label
       slaHealthPercent: slaHealth,
       unassignedTasks: unassignedCount,
+      oldestUnassignedMin: oldestUnassignedMin,         // age of oldest CREATED + null-assignee task; leading indicator vs snapshot count
       completedToday: totalDoneToday,
+      completedPrior: completedPrior,                   // same window, one window earlier — for delta render
       breachedToday: totalBreachedToday,
+      breachedPrior: breachedPrior,                     // same as above for breach trend
     },
     sourceStats: shapedSourceStats,
     riskItems,

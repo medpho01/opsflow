@@ -40,7 +40,32 @@ const OPEN_STATUSES: TaskStatus[] = [
   TaskStatus.BLOCKED,
 ];
 
-const NEAR_SLA_WINDOW_MIN = 10;
+// Near-SLA early-warning thresholds. The outer 30-min window is the
+// actionable horizon — long enough that an Ops Head can actually
+// reassign/escalate. The inner 10-min subset is shown alongside as a
+// "critical" call-out ("12 (3 critical)") so urgency isn't lost.
+// Previously the only window was 10 min, which fired too late to act on.
+const NEAR_SLA_WINDOW_MIN = 30;
+const NEAR_SLA_CRITICAL_MIN = 10;
+
+/**
+ * Start-of-day in IST as a UTC instant. Used to scope "completed today"
+ * etc. We anchor the operational day to IST (UTC+5:30) because that's the
+ * timezone the team works in; UTC midnight is meaningless to them.
+ */
+function startOfTodayIST(): Date {
+  const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+  const now = new Date();
+  const ist = new Date(now.getTime() + IST_OFFSET_MS);
+  ist.setUTCHours(0, 0, 0, 0);
+  return new Date(ist.getTime() - IST_OFFSET_MS);
+}
+
+function startOfWindow(range: string): Date {
+  const startToday = startOfTodayIST();
+  if (range === "7d") return new Date(startToday.getTime() - 6 * 24 * 60 * 60 * 1000);
+  return startToday;
+}
 
 export async function GET(request: NextRequest) {
   const user = await getSessionFromRequest(request);
@@ -54,6 +79,14 @@ export async function GET(request: NextRequest) {
   if (storeIdParam && (storeId === null || isNaN(storeId))) {
     return NextResponse.json({ error: "Invalid storeId" }, { status: 400 });
   }
+
+  // Range for "completed" — today by default (matches Command Center's
+  // completed_today semantics). Accepts "today" | "7d". Prevents the
+  // previous bug where Completed showed a lifetime cumulative count that
+  // never moved day-to-day.
+  const rangeParam = request.nextUrl.searchParams.get("range") ?? "today";
+  const range = rangeParam === "7d" ? "7d" : "today";
+  const rangeStart = startOfWindow(range);
 
   // Resolve the effective store-id filter respecting role-based scoping.
   // - OPS_HEAD with explicit storeId  → that one store
@@ -104,24 +137,42 @@ export async function GET(request: NextRequest) {
 
   const now = new Date();
   const warningCutoff = new Date(now.getTime() + NEAR_SLA_WINDOW_MIN * 60_000);
+  const criticalCutoff = new Date(now.getTime() + NEAR_SLA_CRITICAL_MIN * 60_000);
 
   const baseWhere = {
     isArchived: false,
     ...storeFilter,
   };
 
-  // Five real SQL counts in parallel. None of these read task rows, so
-  // there's no "first 50 only" cap (the prior client-side warning/
-  // unassigned counts had this bug).
-  const [open, breached, completed, warning, unassigned] = await Promise.all([
+  // Six real SQL counts in parallel. None read task rows, so there's no
+  // "first 50 only" cap. Warning is split into a 30-min total and a
+  // 10-min critical subset so the UI can render "12 (3 critical)" without
+  // hiding either signal.
+  const [open, breached, completed, warning, warningCritical, unassigned] = await Promise.all([
     prisma.task.count({ where: { ...baseWhere, status: { in: OPEN_STATUSES } } }),
     prisma.task.count({ where: { ...baseWhere, status: TaskStatus.BREACHED } }),
-    prisma.task.count({ where: { ...baseWhere, status: TaskStatus.COMPLETED } }),
+    // Completed is time-windowed (default: today IST). Previously this was
+    // a lifetime cumulative — a store's KPI would grow forever and never
+    // tell a Store Manager whether today was a good day.
+    prisma.task.count({
+      where: {
+        ...baseWhere,
+        status: TaskStatus.COMPLETED,
+        completedAt: { gte: rangeStart },
+      },
+    }),
     prisma.task.count({
       where: {
         ...baseWhere,
         status: { in: OPEN_STATUSES },
         slaDeadline: { gt: now, lte: warningCutoff },
+      },
+    }),
+    prisma.task.count({
+      where: {
+        ...baseWhere,
+        status: { in: OPEN_STATUSES },
+        slaDeadline: { gt: now, lte: criticalCutoff },
       },
     }),
     prisma.task.count({
@@ -141,12 +192,14 @@ export async function GET(request: NextRequest) {
       // state for STORE_ADMINs who land here with zero assignments.
       storeIds: scopedStoreIds,
     },
+    range: { window: range, rangeStart: rangeStart.toISOString() },
     counts: {
       open,
       breached,
-      warning,
+      warning,                       // total within NEAR_SLA_WINDOW_MIN (30)
+      warningCritical,               // subset within NEAR_SLA_CRITICAL_MIN (10)
       unassigned,
-      completed,
+      completed,                     // within the range window (today by default)
     },
   });
 }

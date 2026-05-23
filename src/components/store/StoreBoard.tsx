@@ -28,6 +28,10 @@ interface StoreStats {
   open: number;
   breached: number;
   warning: number;
+  // Subset of `warning` that's within the critical 10-min sub-window.
+  // Rendered as "12 (3 critical)" alongside the headline. The previous
+  // 10-min-only window fired too late to act on.
+  warningCritical: number;
   completed: number;
   unassigned: number;
 }
@@ -44,7 +48,8 @@ interface StoreBoardProps {
 
 export default function StoreBoard({ user }: StoreBoardProps) {
   const [tasks, setTasks] = useState<Task[]>([]);
-  const [stats, setStats] = useState<StoreStats>({ open: 0, breached: 0, warning: 0, completed: 0, unassigned: 0 });
+  const ZERO_STATS: StoreStats = { open: 0, breached: 0, warning: 0, warningCritical: 0, completed: 0, unassigned: 0 };
+  const [stats, setStats] = useState<StoreStats>(ZERO_STATS);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState("ALL");
   const [sortBy, setSortBy] = useState<"createdAt" | "appointmentTime" | "slaDeadline" | "status" | "priority">("priority");
@@ -52,7 +57,14 @@ export default function StoreBoard({ user }: StoreBoardProps) {
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [total, setTotal] = useState(0);
-  const [selectedStoreId, setSelectedStoreId] = useState<number | null>(user.storeIds?.[0] ?? null);
+  // Default landing: All Stores when the user has multiple, otherwise the
+  // only store they have. Previously hard-defaulted to the first store —
+  // a multi-store admin would always land on the same one regardless of
+  // where the fire was, and only discover problems at their other stores
+  // by manually flipping the dropdown.
+  const [selectedStoreId, setSelectedStoreId] = useState<number | null>(
+    (user.storeIds?.length ?? 0) === 1 ? user.storeIds![0] : null
+  );
   const [orderIdFilter, setOrderIdFilter] = useState("");
   const [stores, setStores] = useState<Store[]>([]);
   const [storesLoading, setStoresLoading] = useState(true);
@@ -140,7 +152,7 @@ export default function StoreBoard({ user }: StoreBoardProps) {
         // Server-side scoping rejected the request (e.g. STORE_ADMIN
         // asking for a store outside their assignments). Reset rather
         // than show stale numbers.
-        setStats({ open: 0, breached: 0, warning: 0, completed: 0, unassigned: 0 });
+        setStats(ZERO_STATS);
         setSelectedStoreMeta(null);
         return;
       }
@@ -149,12 +161,13 @@ export default function StoreBoard({ user }: StoreBoardProps) {
         open: data.counts?.open ?? 0,
         breached: data.counts?.breached ?? 0,
         warning: data.counts?.warning ?? 0,
+        warningCritical: data.counts?.warningCritical ?? 0,
         unassigned: data.counts?.unassigned ?? 0,
         completed: data.counts?.completed ?? 0,
       });
       setSelectedStoreMeta(data.store ?? null);
     } catch {
-      setStats({ open: 0, breached: 0, warning: 0, completed: 0, unassigned: 0 });
+      setStats(ZERO_STATS);
       setSelectedStoreMeta(null);
     }
   }, [storeId]);
@@ -303,16 +316,28 @@ export default function StoreBoard({ user }: StoreBoardProps) {
 
       {/* Stats */}
       <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
-        {[
-          { label: "Open Tasks", value: stats.open, color: "text-blue-400" },
-          { label: "Breached", value: stats.breached, color: "text-red-400" },
-          { label: "Near SLA", value: stats.warning, color: "text-amber-400" },
-          { label: "Unassigned", value: stats.unassigned, color: "text-yellow-400" },
-          { label: "Completed", value: stats.completed, color: "text-emerald-400" },
-        ].map((s) => (
+        {([
+          { label: "Open Tasks", value: stats.open, sub: null, color: "text-blue-400" },
+          { label: "Breached", value: stats.breached, sub: null, color: "text-red-400" },
+          // Near SLA: total within 30 min + critical (≤10 min) subset.
+          // Surfaces both: the actionable horizon AND the burning-now slice.
+          {
+            label: "Near SLA",
+            value: stats.warning,
+            sub: stats.warningCritical > 0 ? `${stats.warningCritical} critical` : "within 30 min",
+            color: "text-amber-400",
+          },
+          { label: "Unassigned", value: stats.unassigned, sub: null, color: "text-yellow-400" },
+          // Completed is now time-windowed (today by default — backend
+          // respects a ?range=today|7d param). The "Today" suffix makes the
+          // number's meaning obvious; without it a Store Manager could
+          // assume it's lifetime and reason wrongly about productivity.
+          { label: "Completed Today", value: stats.completed, sub: null, color: "text-emerald-400" },
+        ] as const).map((s) => (
           <div key={s.label} className="bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3">
             <div className={`text-2xl font-bold ${s.color}`}>{s.value}</div>
             <div className="text-xs text-zinc-500 mt-0.5">{s.label}</div>
+            {s.sub && <div className="text-[10px] text-zinc-600 mt-0.5">{s.sub}</div>}
           </div>
         ))}
       </div>

@@ -12,7 +12,7 @@ import * as dotenv from "dotenv";
 import path from "path";
 dotenv.config({ path: path.resolve(__dirname, "../.env") });
 
-import { PrismaClient, OrderType, TaskPriority, UserRole } from "@prisma/client";
+import { PrismaClient, TaskPriority, UserRole } from "@prisma/client";
 import { hashPassword } from "../src/lib/auth/password";
 
 const prisma = new PrismaClient();
@@ -37,8 +37,11 @@ async function main() {
     )
   );
 
-  const skillMap = Object.fromEntries(skills.map((s) => [s.name, s.id]));
-  console.log("  ✔  Skill tags:", skills.map((s) => s.name).join(", "));
+  // Re-fetch after upsert to guarantee we have correct ids regardless of
+  // whether the upsert hit the create or update path.
+  const fetchedSkills = await prisma.skillTag.findMany({ select: { id: true, name: true } });
+  const skillMap = Object.fromEntries(fetchedSkills.map((s) => [s.name, s.id]));
+  console.log("  ✔  Skill tags:", fetchedSkills.map((s) => s.name).join(", "));
 
   // ── 2. Task types + checklist templates ──────────────────────────
   const taskTypes = [
@@ -181,7 +184,30 @@ async function main() {
   });
   console.log(`  ✔  Escalation chain id=${chain.id}`);
 
-  // ── 6. Task rules — 8 Home Sample Collection rules ───────────────
+  // ── 6. DataSource for Lab Orders (HOME_SAMPLE) ──────────────────
+  const labOrdersSource = await prisma.dataSource.upsert({
+    where: { sourceId: "orders" },
+    update: {},
+    create: {
+      sourceId: "orders",
+      displayName: "Lab Orders",
+      description: "Home sample collection orders from LabStack",
+      tableReference: 'public."Order"',
+      primaryKeyField: "id",
+      typeFieldName: "orderType",
+      statusFieldName: "orderStatus",
+      queryTemplate: `SELECT o.id, o."orderType", o."orderStatus", o."appointmentTime", o."storeId", o."labId", o."userId", o."createdAt", o."updatedAt", o."statusUpdatedAt", o."internalNotes", o.notes, o."phleboName", o."phleboNumber", u.name AS "patientName", l."labName", s."storeName" FROM public."Order" o JOIN public."User" u ON u.id = o."userId" LEFT JOIN public."Lab" l ON l.id = o."labId" LEFT JOIN public."Store" s ON s.id = o."storeId" WHERE o."updatedAt" > $1 ORDER BY o."updatedAt" ASC`,
+      typeFieldEnumValues: ["HOME_SAMPLE", "CONSULTATION", "INJECTION"],
+      statusFieldEnumValues: ["ORDER_SCHEDULED", "PHLEBO_ASSIGNED", "SAMPLE_COLLECTED", "SAMPLE_DELIVERED", "REPORT_DELIVERED", "CANCELLED"],
+      pollingIntervalMinutes: 5,
+      isActive: true,
+      createdById: admin.id,
+    },
+    select: { id: true },
+  });
+  console.log(`  ✔  DataSource: Lab Orders (id=${labOrdersSource.id})`);
+
+  // ── 7. Task rules — 8 Home Sample Collection rules ───────────────
   /**
    * Rule design rationale:
    * R1. New booking (BOOKED) → confirm with patient within 30 min of creation
@@ -197,7 +223,7 @@ async function main() {
     {
       id: "hsc_r1_confirm_booking",
       name: "HSC: Confirm Booking (new order)",
-      orderType: OrderType.HOME_SAMPLE,
+      orderType: "HOME_SAMPLE",
       taskTypeName: "HSC_CONFIRM_BOOKING",
       titleTemplate: "Confirm booking — {{patientName}} (Order #{{orderId}})",
       slaMinutes: 30,
@@ -211,7 +237,7 @@ async function main() {
     {
       id: "hsc_r2_assign_phlebo",
       name: "HSC: Assign Phlebotomist",
-      orderType: OrderType.HOME_SAMPLE,
+      orderType: "HOME_SAMPLE",
       taskTypeName: "HSC_ASSIGN_PHLEBO",
       titleTemplate: "Assign phlebo — {{patientName}} (Order #{{orderId}})",
       slaMinutes: 30,
@@ -225,7 +251,7 @@ async function main() {
     {
       id: "hsc_r3_phlebo_dispatch",
       name: "HSC: Phlebo Dispatch Check",
-      orderType: OrderType.HOME_SAMPLE,
+      orderType: "HOME_SAMPLE",
       taskTypeName: "HSC_PHLEBO_DISPATCH",
       titleTemplate: "Dispatch check — {{phleboName}} → {{patientName}} (Order #{{orderId}})",
       slaMinutes: 20,
@@ -239,7 +265,7 @@ async function main() {
     {
       id: "hsc_r4_confirm_collected",
       name: "HSC: Confirm Sample Collected (>15 min post-appt)",
-      orderType: OrderType.HOME_SAMPLE,
+      orderType: "HOME_SAMPLE",
       taskTypeName: "HSC_SAMPLE_COLLECTED",
       titleTemplate: "Confirm sample collected — {{patientName}} (Order #{{orderId}})",
       slaMinutes: 20,
@@ -254,7 +280,7 @@ async function main() {
     {
       id: "hsc_r5_sample_handover",
       name: "HSC: Sample Handover to Lab (>30 min after collection)",
-      orderType: OrderType.HOME_SAMPLE,
+      orderType: "HOME_SAMPLE",
       taskTypeName: "HSC_SAMPLE_HANDOVER",
       titleTemplate: "Sample handover — {{patientName}} → {{labName}} (Order #{{orderId}})",
       slaMinutes: 30,
@@ -269,7 +295,7 @@ async function main() {
     {
       id: "hsc_r6_patient_missed",
       name: "HSC: Patient Not Available Follow-up (>45 min post-appt)",
-      orderType: OrderType.HOME_SAMPLE,
+      orderType: "HOME_SAMPLE",
       taskTypeName: "HSC_PATIENT_MISSED",
       titleTemplate: "Patient not available — {{patientName}} (Order #{{orderId}})",
       slaMinutes: 30,
@@ -284,7 +310,7 @@ async function main() {
     {
       id: "hsc_r7_stale_order",
       name: "HSC: Stale Order Follow-up (>120 min same status)",
-      orderType: OrderType.HOME_SAMPLE,
+      orderType: "HOME_SAMPLE",
       taskTypeName: "HSC_STALE_FOLLOWUP",
       titleTemplate: "Stale order alert — {{patientName}} (Order #{{orderId}})",
       slaMinutes: 30,
@@ -299,7 +325,7 @@ async function main() {
     {
       id: "hsc_r8_report_followup",
       name: "HSC: Report Delivery Follow-up (>4h after sample collected)",
-      orderType: OrderType.HOME_SAMPLE,
+      orderType: "HOME_SAMPLE",
       taskTypeName: "HSC_REPORT_FOLLOW",
       titleTemplate: "Report follow-up — {{patientName}} (Order #{{orderId}})",
       slaMinutes: 45,
@@ -328,11 +354,13 @@ async function main() {
         triggerCondition: rule.triggerCondition,
         isActive: true,
         escalationChainId: chain.id,
+        allowedTypes: [rule.orderType],
       },
       create: {
         id: rule.id,
         name: rule.name,
-        orderType: rule.orderType,
+        dataSourceId: labOrdersSource.id,
+        allowedTypes: [rule.orderType],
         taskTypeId: typeId,
         titleTemplate: rule.titleTemplate,
         slaMinutes: rule.slaMinutes,

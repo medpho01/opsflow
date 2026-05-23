@@ -19,13 +19,22 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { formatISTTimestamp } from "@/lib/utils/timezone";
-import OrderQuickView from "@/components/shared/OrderQuickView";
+import TaskDetailPanel from "@/components/agent/TaskDetailPanel";
 
 // ─── Types ─────────────────────────────────────────────────────────────
 interface Agent {
   id: number;
   name: string;
   role: string;
+}
+
+interface ChecklistItem {
+  id: number;
+  stepOrder: number;
+  stepText: string;
+  isRequired: boolean;
+  isDone: boolean;
+  doneAt: string | null;
 }
 
 interface Task {
@@ -38,13 +47,29 @@ interface Task {
   storeId: number | null;
   appointmentTime: string | null;
   slaDeadline: string;
+  slaBreachedAt: string | null;
+  completedAt: string | null;
   createdAt: string;
+  assignedAt: string | null;
+  startedAt: string | null;
+  snoozedUntil: string | null;
+  metadata: Record<string, unknown>;
   assignedTo?: { id: number; name: string } | null;
+  checklistItems: ChecklistItem[];
+  taskType: { name: string; label: string };
   // Computed by API:
   viewBucket: "today" | "tomorrow" | "stuck" | "future" | "done";
   urgencyBucket: number;
   slaStatus: "safe" | "warning" | "critical" | "breached";
   minutesRemaining: number;
+}
+
+// Subset of users a board page passes in — used to gate Lead-only UI
+// (filter bar, reassign popover) and to scope row interactions.
+interface CurrentUser {
+  id: number;
+  name: string;
+  role: "OPS_HEAD" | "OPS_AGENT" | "STORE_ADMIN";
 }
 
 type Tab = "today" | "tomorrow" | "stuck";
@@ -121,13 +146,37 @@ function AssigneeChip({
   task,
   agents,
   onReassign,
+  canReassign = true,
 }: {
   task: Task;
   agents: Agent[];
   onReassign: (taskId: number, agentId: number | null) => void;
+  // Agents can't reassign tasks — the chip becomes a read-only badge.
+  canReassign?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+
+  // Read-only mode for agents: render a static badge with no popover.
+  if (!canReassign) {
+    if (task.assignedTo) {
+      return (
+        <div className="flex items-center gap-1.5 px-1.5 py-0.5 shrink-0" title={task.assignedTo.name}>
+          <span
+            className={`w-5 h-5 rounded-full ${avatarColor(task.assignedTo.name)} flex items-center justify-center text-[9px] font-semibold text-white`}
+          >
+            {initials(task.assignedTo.name)}
+          </span>
+          <span className="text-xs text-zinc-300 max-w-[80px] truncate">{task.assignedTo.name}</span>
+        </div>
+      );
+    }
+    return (
+      <span className="px-2 py-0.5 rounded text-[11px] bg-yellow-900/40 text-yellow-300 border border-yellow-900/40 shrink-0">
+        Unassigned
+      </span>
+    );
+  }
 
   // Close popover on outside click (stops propagation to row's onClick too).
   useEffect(() => {
@@ -212,6 +261,7 @@ function TaskRow({
   agents,
   onClick,
   onReassign,
+  canReassign,
   rightBadge,
 }: {
   task: Task;
@@ -219,6 +269,7 @@ function TaskRow({
   agents: Agent[];
   onClick: () => void;
   onReassign: (taskId: number, agentId: number | null) => void;
+  canReassign: boolean;
   // Optional extra pill rendered next to SLA (used by Stuck view for age).
   rightBadge?: React.ReactNode;
 }) {
@@ -274,7 +325,7 @@ function TaskRow({
         <div className="text-xs text-zinc-500 mt-0.5">#{task.entityId}</div>
       </div>
 
-      <AssigneeChip task={task} agents={agents} onReassign={onReassign} />
+      <AssigneeChip task={task} agents={agents} onReassign={onReassign} canReassign={canReassign} />
 
       {rightBadge}
 
@@ -331,11 +382,12 @@ function SectionCard({
 }
 
 // ─── Today view: NOW / PREP / LATER / DONE ─────────────────────────────
-function TodayView({ tasks, tomorrowTasks, now, agents, onRowClick, onReassign }: {
+function TodayView({ tasks, tomorrowTasks, now, agents, canReassign, onRowClick, onReassign }: {
   tasks: Task[];
   tomorrowTasks: Task[];
   now: Date;
   agents: Agent[];
+  canReassign: boolean;
   onRowClick: (task: Task) => void;
   onReassign: (taskId: number, agentId: number | null) => void;
 }) {
@@ -429,7 +481,7 @@ function TodayView({ tasks, tomorrowTasks, now, agents, onRowClick, onReassign }
             Nothing urgent right now. Enjoy the breather. ☕
           </div>
         ) : (
-          nowTasks.map(t => <TaskRow key={t.id} task={t} now={now} agents={agents} onClick={() => onRowClick(t)} onReassign={onReassign} />)
+          nowTasks.map(t => <TaskRow key={t.id} task={t} now={now} agents={agents} onClick={() => onRowClick(t)} onReassign={onReassign} canReassign={canReassign} />)
         )}
       </SectionCard>
 
@@ -451,7 +503,7 @@ function TodayView({ tasks, tomorrowTasks, now, agents, onRowClick, onReassign }
               </span>
             </summary>
             <div className="border-t border-amber-900/30">
-              {prepTasks.map(t => <TaskRow key={t.id} task={t} now={now} agents={agents} onClick={() => onRowClick(t)} onReassign={onReassign} />)}
+              {prepTasks.map(t => <TaskRow key={t.id} task={t} now={now} agents={agents} onClick={() => onRowClick(t)} onReassign={onReassign} canReassign={canReassign} />)}
             </div>
           </details>
         </div>
@@ -473,7 +525,7 @@ function TodayView({ tasks, tomorrowTasks, now, agents, onRowClick, onReassign }
               <div className="px-5 py-2 bg-zinc-950/40 border-b border-zinc-800 text-[11px] text-zinc-500 uppercase tracking-wider font-semibold">
                 ── {fmtHourHeader(h)} · {laterByHour.get(h)!.length} task{laterByHour.get(h)!.length > 1 ? "s" : ""} ──
               </div>
-              {laterByHour.get(h)!.map(t => <TaskRow key={t.id} task={t} now={now} agents={agents} onClick={() => onRowClick(t)} onReassign={onReassign} />)}
+              {laterByHour.get(h)!.map(t => <TaskRow key={t.id} task={t} now={now} agents={agents} onClick={() => onRowClick(t)} onReassign={onReassign} canReassign={canReassign} />)}
             </div>
           ))
         )}
@@ -496,7 +548,7 @@ function TodayView({ tasks, tomorrowTasks, now, agents, onRowClick, onReassign }
           {doneTasks.length === 0 ? (
             <div className="px-5 py-3 text-center text-xs text-zinc-500">Nothing completed yet today.</div>
           ) : (
-            doneTasks.slice(0, 20).map(t => <TaskRow key={t.id} task={t} now={now} agents={agents} onClick={() => onRowClick(t)} onReassign={onReassign} />)
+            doneTasks.slice(0, 20).map(t => <TaskRow key={t.id} task={t} now={now} agents={agents} onClick={() => onRowClick(t)} onReassign={onReassign} canReassign={canReassign} />)
           )}
         </div>
       </details>
@@ -505,10 +557,11 @@ function TodayView({ tasks, tomorrowTasks, now, agents, onRowClick, onReassign }
 }
 
 // ─── Tomorrow view ─────────────────────────────────────────────────────
-function TomorrowView({ tasks, now, agents, onRowClick, onReassign }: {
+function TomorrowView({ tasks, now, agents, canReassign, onRowClick, onReassign }: {
   tasks: Task[];
   now: Date;
   agents: Agent[];
+  canReassign: boolean;
   onRowClick: (task: Task) => void;
   onReassign: (taskId: number, agentId: number | null) => void;
 }) {
@@ -558,7 +611,7 @@ function TomorrowView({ tasks, now, agents, onRowClick, onReassign }: {
             </span>
           </div>
           <div className="bg-zinc-900 border-t border-amber-900/30">
-            {early.map(t => <TaskRow key={t.id} task={t} now={now} agents={agents} onClick={() => onRowClick(t)} onReassign={onReassign} />)}
+            {early.map(t => <TaskRow key={t.id} task={t} now={now} agents={agents} onClick={() => onRowClick(t)} onReassign={onReassign} canReassign={canReassign} />)}
           </div>
         </div>
       )}
@@ -582,10 +635,11 @@ function TomorrowView({ tasks, now, agents, onRowClick, onReassign }: {
 }
 
 // ─── Stuck view: flat list with age + type filters ─────────────────────
-function StuckView({ tasks, now, agents, onRowClick, onReassign }: {
+function StuckView({ tasks, now, agents, canReassign, onRowClick, onReassign }: {
   tasks: Task[];
   now: Date;
   agents: Agent[];
+  canReassign: boolean;
   onRowClick: (task: Task) => void;
   onReassign: (taskId: number, agentId: number | null) => void;
 }) {
@@ -709,6 +763,7 @@ function StuckView({ tasks, now, agents, onRowClick, onReassign }: {
               agents={agents}
               onClick={() => onRowClick(t)}
               onReassign={onReassign}
+              canReassign={canReassign}
               rightBadge={
                 <span className={`px-2 py-0.5 rounded text-[11px] shrink-0 ${ageStyle(ageOf(t))}`}>
                   {ageLabel(t)}
@@ -723,7 +778,17 @@ function StuckView({ tasks, now, agents, onRowClick, onReassign }: {
 }
 
 // ─── Main board ────────────────────────────────────────────────────────
-export default function MyWorkBoard() {
+//
+// Lead/Head and Agent share this component. The currentUser.role gates
+// Lead-only UI:
+//   - filter bar (only Leads have a workspace big enough to need filters)
+//   - reassign popover on the assignee chip (Leads reassign; agents don't)
+// Everyone gets the same row layout, drawer, and Today/Tomorrow/Stuck
+// buckets. The /api/tasks endpoint already role-scopes results, so agents
+// only see their own tasks even with the same component.
+export default function MyWorkBoard({ currentUser }: { currentUser: CurrentUser }) {
+  const isAgent = currentUser.role === "OPS_AGENT";
+
   const [tab, setTab] = useState<Tab>("today");
   const [tasks, setTasks] = useState<Task[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
@@ -731,7 +796,10 @@ export default function MyWorkBoard() {
   const [error, setError] = useState<string | null>(null);
   const [now, setNow] = useState<Date>(new Date());
   const [lastUpdated, setLastUpdated] = useState<Date>(new Date());
-  const [quickViewOrderId, setQuickViewOrderId] = useState<number | null>(null);
+  // Drawer state — full task object (not just an id), so TaskDetailPanel
+  // can render immediately without a re-fetch. Updated optimistically by
+  // the panel's actions; refetched via onUpdate to pick up server state.
+  const [selectedTask, setSelectedTask] = useState<Task | null>(null);
 
   // ── Filter state (Lead's main tool for slicing the workspace) ───────
   const [filterAssigneeId, setFilterAssigneeId] = useState<"all" | "unassigned" | number>("all");
@@ -742,6 +810,14 @@ export default function MyWorkBoard() {
     const id = setInterval(() => setNow(new Date()), 60_000); // tick every minute
     return () => clearInterval(id);
   }, []);
+
+  // Escape closes the task drawer.
+  useEffect(() => {
+    if (!selectedTask) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setSelectedTask(null); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selectedTask]);
 
   // Load team members once for the assignee dropdown + reassign popovers.
   useEffect(() => {
@@ -889,7 +965,10 @@ export default function MyWorkBoard() {
       </div>
 
       {/* Filter bar — Lead's main tool for slicing the workspace.
-          Sits above tabs so filters persist across Today/Tomorrow/Stuck. */}
+          Sits above tabs so filters persist across Today/Tomorrow/Stuck.
+          Hidden for agents (their queue is small enough that filters add
+          noise rather than value). */}
+      {!isAgent && (
       <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-3 mb-4 flex items-center gap-3 flex-wrap">
         {/* Assignee selector */}
         <div className="flex items-center gap-2">
@@ -960,6 +1039,7 @@ export default function MyWorkBoard() {
           </button>
         )}
       </div>
+      )}
 
       {/* Tab strip */}
       <div className="flex items-center gap-1 border-b border-zinc-800 mb-6">
@@ -1006,7 +1086,8 @@ export default function MyWorkBoard() {
               tomorrowTasks={byBucket.tomorrow}
               now={now}
               agents={agents}
-              onRowClick={(t) => setQuickViewOrderId(t.entityId)}
+              canReassign={!isAgent}
+              onRowClick={(t) => setSelectedTask(t)}
               onReassign={handleReassign}
             />
           )}
@@ -1015,7 +1096,8 @@ export default function MyWorkBoard() {
               tasks={byBucket.tomorrow}
               now={now}
               agents={agents}
-              onRowClick={(t) => setQuickViewOrderId(t.entityId)}
+              canReassign={!isAgent}
+              onRowClick={(t) => setSelectedTask(t)}
               onReassign={handleReassign}
             />
           )}
@@ -1024,19 +1106,46 @@ export default function MyWorkBoard() {
               tasks={byBucket.stuck}
               now={now}
               agents={agents}
-              onRowClick={(t) => setQuickViewOrderId(t.entityId)}
+              canReassign={!isAgent}
+              onRowClick={(t) => setSelectedTask(t)}
               onReassign={handleReassign}
             />
           )}
         </>
       )}
 
-      {/* Quick view drawer (Phase 3 will replace with abstract task drawer) */}
-      {quickViewOrderId !== null && (
-        <OrderQuickView
-          orderId={quickViewOrderId}
-          onClose={() => setQuickViewOrderId(null)}
-        />
+      {/* Task drawer — slide-over on the right with TaskDetailPanel inside.
+          Same drawer for Leads and Agents. The panel handles all task
+          actions (start / complete checklist / snooze / flag for help /
+          mark done). onUpdate refetches the list so the row reflects the
+          new state. Escape and backdrop both close. */}
+      {selectedTask && (
+        <>
+          <div
+            className="fixed inset-0 bg-black/50 z-40"
+            onClick={() => setSelectedTask(null)}
+            aria-hidden
+          />
+          <div className="fixed top-0 right-0 h-screen w-[520px] max-w-[95vw] z-50 bg-zinc-950 border-l border-zinc-800 shadow-2xl flex flex-col">
+            <div className="px-4 py-3 border-b border-zinc-800 flex items-center justify-between shrink-0">
+              <button
+                onClick={() => setSelectedTask(null)}
+                className="text-zinc-400 hover:text-zinc-100 text-sm flex items-center gap-1"
+                aria-label="Close task panel"
+              >
+                ← Back
+              </button>
+              <span className="text-xs text-zinc-500">Order #{selectedTask.entityId}</span>
+            </div>
+            <div className="flex-1 min-h-0">
+              <TaskDetailPanel
+                key={selectedTask.id}
+                task={selectedTask}
+                onUpdate={() => { fetchTasks(); }}
+              />
+            </div>
+          </div>
+        </>
       )}
     </div>
   );

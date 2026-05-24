@@ -20,6 +20,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { formatISTTimestamp } from "@/lib/utils/timezone";
 import TaskDetailPanel from "@/components/agent/TaskDetailPanel";
+import OrderQuickView from "@/components/shared/OrderQuickView";
 
 // ─── Types ─────────────────────────────────────────────────────────────
 interface Agent {
@@ -456,9 +457,11 @@ function TodayView({ tasks, tomorrowTasks, now, agents, canReassign, onRowClick,
     }
 
     const apptMin = istMinutesSinceMidnight(appt);
-    if (apptMin < nowMinIST - 15) {
-      doneTasks.push(t);                           // past appointment, server bucketed as done/stuck
-    } else if (apptMin < windowEndMin) {
+    // Past-appt-but-active tasks have already been routed to byBucket.stuck
+    // at the top-level (see MyWorkBoard.byBucket memo), so they don't
+    // reach this loop with viewBucket=today. Surviving "today" tasks are
+    // future-appt (within today) and split between NOW and LATER.
+    if (apptMin < windowEndMin) {
       nowTasks.push(t);                            // within next 90 min
     } else {
       laterTasks.push(t);                          // later today
@@ -966,13 +969,36 @@ export default function MyWorkBoard({ currentUser }: { currentUser: CurrentUser 
 
   const byBucket = useMemo(() => {
     const t = { today: [] as Task[], tomorrow: [] as Task[], stuck: [] as Task[] };
+    const nowMs = now.getTime();
     for (const x of filteredTasks) {
-      if (x.viewBucket === "today" || x.viewBucket === "done") t.today.push(x);
+      // COMPLETED/CANCELLED/RESOLVED tasks: route to today (they appear
+      // in Today's "Done today" strip).
+      if (x.viewBucket === "done") { t.today.push(x); continue; }
+
+      // Server's "stuck" bucket: past appt + 30min grace OR genuinely
+      // stale — direct to Stuck tab.
+      if (x.viewBucket === "stuck") { t.stuck.push(x); continue; }
+
+      // Client-side override: a task whose appointment is already in
+      // the past but the server still calls "today" (because the 30-min
+      // grace hasn't elapsed) is operationally stuck — the appointment
+      // moment has passed without anyone completing the work. Route to
+      // Stuck so Done stays exclusively for agent-completed tasks and
+      // these missed appts surface where they belong: the recovery
+      // queue. (Server's grace exists to protect post-appt-triggered
+      // rules like R4 from being born-stuck; if those should also
+      // appear in Stuck, the user can confirm and we'll widen the
+      // override.)
+      if (x.viewBucket === "today" && x.appointmentTime) {
+        const apptMs = new Date(x.appointmentTime).getTime();
+        if (apptMs < nowMs) { t.stuck.push(x); continue; }
+      }
+
+      if (x.viewBucket === "today") t.today.push(x);
       else if (x.viewBucket === "tomorrow") t.tomorrow.push(x);
-      else if (x.viewBucket === "stuck") t.stuck.push(x);
     }
     return t;
-  }, [filteredTasks]);
+  }, [filteredTasks, now]);
 
   const counts = {
     today: byBucket.today.length,
@@ -1173,12 +1199,16 @@ export default function MyWorkBoard({ currentUser }: { currentUser: CurrentUser 
         </>
       )}
 
-      {/* Task drawer — slide-over on the right with TaskDetailPanel inside.
-          Same drawer for Leads and Agents. The panel handles all task
-          actions (start / complete checklist / snooze / flag for help /
-          mark done). onUpdate refetches the list so the row reflects the
-          new state. Escape and backdrop both close. */}
-      {selectedTask && (
+      {/* Task drawer — role-aware.
+          - Agents: TaskDetailPanel in a slide-over. Full actions
+            (start / complete checklist / snooze / flag for help / done).
+            This is their daily workflow.
+          - Heads / Admins: OrderQuickView. Read-only context — order
+            details, related OpsFlow tasks, history. Heads oversee; they
+            shouldn't be marking tasks complete from a monitoring view.
+            They have the Reassign popover on the row for the one
+            intervention they actually need from here. */}
+      {selectedTask && isAgent && (
         <>
           <div
             className="fixed inset-0 bg-black/50 z-40"
@@ -1205,6 +1235,12 @@ export default function MyWorkBoard({ currentUser }: { currentUser: CurrentUser 
             </div>
           </div>
         </>
+      )}
+      {selectedTask && !isAgent && (
+        <OrderQuickView
+          orderId={selectedTask.entityId}
+          onClose={() => setSelectedTask(null)}
+        />
       )}
     </div>
   );

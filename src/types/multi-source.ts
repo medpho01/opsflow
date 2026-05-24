@@ -230,6 +230,12 @@ export interface PollingStatus {
     status: string;
     tasksCreated: number;
   }>;
+  // Aggregate counts over the last 24h, surfaced as the "Polls: N total · ✓ · ✗"
+  // widget on the Data Sources page. 24h window keeps the number bounded vs
+  // unbounded lifetime growth.
+  totalPolls: number;
+  successfulPolls: number;
+  failedPolls: number;
 }
 
 // ─────────────────────────────────────────────

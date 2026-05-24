@@ -55,6 +55,21 @@ export async function GET(
       take: 10,
     });
 
+    // Aggregate counts over the last 24h for the "Polls: N total · ✓ · ✗"
+    // widget. Three parallel COUNTs — no row materialisation.
+    const since24h = new Date(Date.now() - 24 * 60 * 60_000);
+    const [totalPolls, successfulPolls, failedPolls] = await Promise.all([
+      prisma.dataSourcePollingLog.count({
+        where: { dataSourceId: id, pollStartedAt: { gte: since24h } },
+      }),
+      prisma.dataSourcePollingLog.count({
+        where: { dataSourceId: id, pollStartedAt: { gte: since24h }, status: "SUCCESS" },
+      }),
+      prisma.dataSourcePollingLog.count({
+        where: { dataSourceId: id, pollStartedAt: { gte: since24h }, status: "ERROR" },
+      }),
+    ]);
+
     // Open SOURCE_HEALTH alerts for this source — used by the UI to render
     // a health badge alongside polling status. We can't query by entityId
     // (Alert.entityId is Int and DataSource.id is a cuid) so we filter in JS
@@ -99,6 +114,9 @@ export async function GET(
         status: poll.status,
         tasksCreated: poll.tasksCreated,
       })),
+      totalPolls,
+      successfulPolls,
+      failedPolls,
       health: {
         isHealthy: healthAlertsForSource.length === 0,
         openAlerts: healthAlertsForSource,

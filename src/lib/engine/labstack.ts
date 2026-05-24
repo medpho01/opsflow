@@ -177,6 +177,55 @@ export async function fetchAllActiveOrders(since?: Date | null): Promise<RawOrde
   `);
 }
 
+/**
+ * Fetch all active orders matching ANY of the given statuses, ignoring
+ * the polling checkpoint. Used by the second-pass full scan in the poller
+ * to re-evaluate TIME-triggered rules against stale orders whose
+ * updatedAt/statusUpdatedAt is older than the checkpoint cursor (the
+ * incremental fetch would miss them entirely).
+ *
+ * Bounded by status filter — typically a few hundred rows at most for
+ * statuses like SAMPLE_COLLECTED. The existing taskCreator dedup prevents
+ * duplicate task creation for orders that already have an open task for
+ * the same rule, so re-evaluation is safe to run every cycle.
+ */
+export async function fetchActiveOrdersByStatus(
+  statuses: string[]
+): Promise<RawOrder[]> {
+  if (statuses.length === 0) return [];
+  return labstackQuery<RawOrder>(
+    `
+    SELECT
+      o.id,
+      o."orderType",
+      o."orderStatus",
+      o."appointmentTime",
+      o."storeId",
+      o."labId",
+      o."userId",
+      o."createdAt",
+      o."updatedAt",
+      o."statusUpdatedAt",
+      COALESCE(o."internalNotes", '') AS "internalNotes",
+      COALESCE(o.notes, '')           AS notes,
+      COALESCE(o."phleboName", '')    AS "phleboName",
+      COALESCE(o."phleboNumber", '')  AS "phleboNumber",
+      u.name                          AS "patientName",
+      l."labName"                     AS "labName",
+      s."storeName"                   AS "storeName",
+      to_jsonb(o.*)                   AS metadata
+    FROM public."Order" o
+    JOIN public."User" u ON u.id = o."userId"
+    LEFT JOIN public."Lab" l ON l.id = o."labId"
+    LEFT JOIN public."Store" s ON s.id = o."storeId"
+    WHERE o."orderStatus" = ANY($1::text[])
+      AND o."orderStatus" NOT IN ('CANCELED', 'REPORT_DELIVERED', 'PATIENT_MISSED')
+    ORDER BY o."statusUpdatedAt" ASC
+    `,
+    [statuses]
+  );
+}
+
 // (Removed) appendOrderNote — used to UPDATE public."Order".internalNotes
 // on task completion. Labstack is now strictly read-only from OpsFlow's
 // side; task completion is logged in taskos.task_history only. If you find

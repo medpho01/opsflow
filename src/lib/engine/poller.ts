@@ -13,7 +13,7 @@
 // node-cron imported dynamically below — webpackIgnore prevents webpack
 // from bundling its ESM files which use node:crypto/path/url.
 import prisma from "@/lib/db/client";
-import { fetchAllActiveOrders } from "./labstack";
+import { fetchAllActiveOrders, fetchActiveOrdersByStatus } from "./labstack";
 import { evaluateAndCreateTasks, loadActiveRules, RuleCycleStats } from "./taskCreator";
 import { runSourceHealthWatcher } from "./sourceHealthWatcher";
 import { runSlaWatcher } from "./slaWatcher";
@@ -167,6 +167,75 @@ export async function runPollCycle(): Promise<void> {
       perRule = result.perRule;
       console.log(`[Poller] Tasks created: ${result.created}, skipped: ${result.skipped}`);
     }
+
+    // 3b. Second-pass full scan for TIME-triggered rules with staleness
+    //     conditions (minutesSinceStatusUpdated / minutesSinceCreated).
+    //
+    // The incremental fetch above only sees orders touched since the
+    // checkpoint. Stale-status rules (e.g. R5: "sample collected ≥45 min
+    // ago") fire on orders that, by definition, haven't been touched —
+    // their statusUpdatedAt is older than the checkpoint cursor and they
+    // never re-enter the incremental window. Without this pass, those
+    // rules only fire the one time an order's status transitions (when
+    // the touch puts it in-window), and never again if that first cycle
+    // missed it for any reason.
+    //
+    // Strategy: collect statuses from rules with staleness conditions,
+    // fetch all active orders in those statuses (no checkpoint), then
+    // re-run evaluateAndCreateTasks. Dedup in taskCreator skips orders
+    // that already have an open task for the rule, so this is cheap on
+    // steady state and only does real work when there's drift.
+    if (rules.length > 0) {
+      const stalenessStatuses = new Set<string>();
+      for (const r of rules) {
+        if (r.triggerType !== "TIME") continue;
+        const c = (r.triggerCondition ?? {}) as Record<string, unknown>;
+        const hasStaleness =
+          typeof c.minutesSinceStatusUpdated === "number" ||
+          typeof c.minutesSinceCreated === "number";
+        if (!hasStaleness) continue;
+        if (Array.isArray(c.statusIn)) {
+          for (const s of c.statusIn) {
+            if (typeof s === "string") stalenessStatuses.add(s);
+          }
+        }
+      }
+
+      if (stalenessStatuses.size > 0) {
+        const statusList = Array.from(stalenessStatuses);
+        const incrementalIds = new Set(orders.map((o) => o.id));
+        const fullScanOrders = await fetchActiveOrdersByStatus(statusList);
+        // Skip orders already processed in the incremental pass — they
+        // went through evaluateAndCreateTasks once already this cycle.
+        const newOrders = fullScanOrders.filter((o) => !incrementalIds.has(o.id));
+        console.log(
+          `[Poller] Second-pass: ${fullScanOrders.length} orders in stale-trigger statuses [${statusList.join(",")}], ` +
+          `${newOrders.length} not seen in incremental pass`
+        );
+
+        if (newOrders.length > 0) {
+          const result2 = await evaluateAndCreateTasks(newOrders, rules);
+          tasksCreated += result2.created;
+          // Merge perRule counters: same rule ids on both runs, so add.
+          const byId = new Map(perRule.map((s) => [s.ruleId, s]));
+          for (const s2 of result2.perRule) {
+            const existing = byId.get(s2.ruleId);
+            if (existing) {
+              existing.fired += s2.fired;
+              existing.skippedDedup += s2.skippedDedup;
+              existing.skippedTrigger += s2.skippedTrigger;
+              existing.skippedTypeFilter += s2.skippedTypeFilter;
+              existing.failedAssignment += s2.failedAssignment;
+            } else {
+              byId.set(s2.ruleId, s2);
+            }
+          }
+          perRule = Array.from(byId.values());
+          console.log(`[Poller] Second-pass tasks created: ${result2.created}, skipped: ${result2.skipped}`);
+        }
+      }
+    }
+
     // W3 — archive duplicate removed. `archiveOldTasks` runs nightly via
     // archiveScheduler.ts; the per-cycle copy was an O(N) duplicate.
 

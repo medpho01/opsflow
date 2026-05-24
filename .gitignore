@@ -2,6 +2,15 @@ node_modules/
 .env
 .env.local
 .env.*.local
+
+# Large/binary inputs we sometimes drop into /mockups for local data
+# exploration. Never commit — GitHub's 100 MB push limit rejects them
+# and they're not source-of-truth.
+mockups/*.xlsx
+mockups/*.xls
+mockups/*.csv
+mockups/*.zip
+
 dist/
 build/
 .next/

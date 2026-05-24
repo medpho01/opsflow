@@ -492,8 +492,17 @@ model PollingLock {
 model EngineCheckpoint {
   id          Int      @id @default(autoincrement())
   sourceKey   String   @unique // e.g. "labstack:orders"
-  lastSeenAt  DateTime
-  updatedAt   DateTime @updatedAt
+  // TIMESTAMPTZ, not the Prisma-default TIMESTAMP. The checkpoint is a
+  // cursor compared against labstack `updatedAt` values; storing it as
+  // naive TIMESTAMP under a session timezone of Asia/Kolkata caused a
+  // 5h30m drift between write and read paths (pg shifted the write
+  // into IST naive, then read returned that naive value as if it were
+  // UTC). With TIMESTAMPTZ the absolute instant is preserved regardless
+  // of session timezone. Verified: prod checkpoint was 5h30 in the
+  // future, causing the poller to fetch 0 rows for ~5.5h until real
+  // wall-clock caught up.
+  lastSeenAt  DateTime @db.Timestamptz(3)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(3)
 
   @@map("engine_checkpoints")
 }

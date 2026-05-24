@@ -13,9 +13,11 @@ import { isAvailableNow, getUTCDayOfWeek } from "@/lib/roster/availability";
 import { renderTitleTemplate } from "@/lib/templating/title";
 import { triggerConditionSchema } from "@/lib/validation/task-rules";
 
-// W5 — IST → UTC conversion is now done at the SQL boundary in
-// labstack.ts via `AT TIME ZONE 'Asia/Kolkata'`. The old in-JS shim
-// (`correctISTTimestamp`, IST_OFFSET_MS) is gone — every RawOrder
+// Labstack stores timestamps as naive UTC (see labstack.ts for the
+// empirical verification). pg reads them back as proper UTC Date
+// objects with no SQL-side cast required. The old in-JS shim
+// (`correctISTTimestamp`, IST_OFFSET_MS) and the earlier
+// `AT TIME ZONE 'Asia/Kolkata'` cast are both gone — every RawOrder
 // timestamp arrives as a proper UTC Date object. Fields that are null
 // in the source remain null; callers handle that explicitly.
 //
@@ -245,9 +247,10 @@ export function evaluateTrigger(order: RawOrder, cond: TriggerCondition, now: Da
 
   const msPerMin = 60_000;
 
-  // Timestamps arrive as proper UTC Dates from labstack.ts (W5 — converted
-  // at SELECT via AT TIME ZONE 'Asia/Kolkata'). Any of these can legitimately
-  // be null (e.g. an order without a scheduled appointmentTime). When a check
+  // Timestamps arrive as proper UTC Dates from labstack.ts (labstack stores
+  // them as naive UTC; pg reads naive timestamps as UTC by default, no SQL
+  // cast needed). Any of these can legitimately be null (e.g. an order
+  // without a scheduled appointmentTime). When a check
   // needs a timestamp the order doesn't carry, fail that specific check
   // rather than evaluating against epoch.
   const createdAt = asValidDate(order.createdAt);

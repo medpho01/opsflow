@@ -1,21 +1,26 @@
 /**
  * Timezone utility functions
  *
- * All timestamps from the source DB (labstack/dhanavantri) are converted to
- * proper UTC at the SQL boundary via `AT TIME ZONE 'Asia/Kolkata'` (see
- * src/lib/engine/labstack.ts). Prisma deserialises them as correct UTC Date
- * objects that the JS Date constructor reads as-is.
+ * Labstack stores timestamps as naive UTC in TIMESTAMP WITHOUT TIME ZONE
+ * columns (see src/lib/engine/labstack.ts for the empirical verification).
+ * pg reads naive timestamps as UTC by default, so plain SELECTs return JS
+ * Date objects pointing at the correct UTC instant — no SQL-side cast
+ * needed.
  *
- * These helpers simply render a UTC ISO string in IST for display using the
- * IANA timezone identifier "Asia/Kolkata" (UTC+5:30). No manual arithmetic
- * is needed — the Intl API handles DST-safety and correct offset application.
+ * These helpers render that UTC Date in IST for display using the IANA
+ * timezone identifier "Asia/Kolkata" (UTC+5:30). No manual offset
+ * arithmetic is needed — the Intl API handles DST-safety and correct
+ * offset application.
  *
- * ⚠️  The old approach subtracted IST_OFFSET_MS from the UTC value before
- * calling toLocaleString. That was a band-aid for an earlier schema where
- * timestamps were stored as naive IST values and read as UTC without
- * correction. The AT TIME ZONE fix in labstack.ts made the SQL do the right
- * thing; subtracting the offset again would show a time 5h30 too early.
- * Do NOT re-add the manual subtraction.
+ * ⚠️  Two historical band-aids that must NOT come back:
+ *   1. Subtracting IST_OFFSET_MS from the UTC value before toLocaleString
+ *      — was a workaround for an earlier (mistaken) assumption that
+ *      labstack stored naive IST.
+ *   2. Wrapping reads with `AT TIME ZONE 'Asia/Kolkata'` — same mistake
+ *      at the SQL layer; double-shifts the timestamp 5h30 backwards and
+ *      every appointment renders 5h30 too early.
+ * If a future labstack table genuinely stores naive IST, cast THAT
+ * column locally — never blanket-cast at the fetcher level.
  */
 
 /**

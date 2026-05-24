@@ -193,6 +193,10 @@ export async function fetchActiveOrdersByStatus(
   statuses: string[]
 ): Promise<RawOrder[]> {
   if (statuses.length === 0) return [];
+  // Build IN ($1, $2, $3, ...) — Prisma's $queryRawUnsafe spreads params
+  // as individual args and can't bind a JS array to a Postgres text[].
+  // We splat statuses into individual placeholders so each is a scalar.
+  const placeholders = statuses.map((_, i) => `$${i + 1}`).join(", ");
   return labstackQuery<RawOrder>(
     `
     SELECT
@@ -218,11 +222,11 @@ export async function fetchActiveOrdersByStatus(
     JOIN public."User" u ON u.id = o."userId"
     LEFT JOIN public."Lab" l ON l.id = o."labId"
     LEFT JOIN public."Store" s ON s.id = o."storeId"
-    WHERE o."orderStatus" = ANY($1::text[])
+    WHERE o."orderStatus"::text IN (${placeholders})
       AND o."orderStatus" NOT IN ('CANCELED', 'REPORT_DELIVERED', 'PATIENT_MISSED')
     ORDER BY o."statusUpdatedAt" ASC
     `,
-    [statuses]
+    statuses
   );
 }
 

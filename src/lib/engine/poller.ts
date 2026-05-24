@@ -217,6 +217,41 @@ export async function runPollCycle(): Promise<void> {
       console.error("[Poller] Failed to write PollingLog:", logErr);
     }
 
+    // Mirror to the per-source DataSourcePollingLog so the Data Sources
+    // UI (which reads this table, not the legacy PollingLog) shows poll
+    // history + "last poll" timestamp.
+    //
+    // The legacy poller is hard-coded to labstack orders, so look up
+    // the DataSource by its sourceId="orders" registration. If the row
+    // doesn't exist (source was never registered), silently skip — the
+    // legacy PollingLog above still captures the cycle for other surfaces.
+    try {
+      const ordersSource = await prisma.dataSource.findUnique({
+        where: { sourceId: "orders" },
+        select: { id: true },
+      });
+      if (ordersSource) {
+        await prisma.dataSourcePollingLog.create({
+          data: {
+            dataSourceId: ordersSource.id,
+            pollStartedAt: startedAt,
+            pollCompletedAt: finishedAt,
+            durationMs,
+            entitiesFound: ordersFound,
+            entitiesProcessed: ordersFound,
+            tasksCreated,
+            tasksFailed: 0,
+            status,
+            errorMessage,
+          },
+        });
+      }
+    } catch (mirrorErr) {
+      // Non-fatal: legacy PollingLog above is the source-of-truth for
+      // engine-side code. The mirror is just for UI consistency.
+      console.error("[Poller] Failed to mirror DataSourcePollingLog:", mirrorErr);
+    }
+
     // Always release lock
     await releasePollingLock();
     console.log(`[Poller] Cycle finished in ${durationMs}ms — status: ${status}`);

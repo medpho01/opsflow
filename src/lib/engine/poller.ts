@@ -18,6 +18,7 @@ import { evaluateAndCreateTasks, loadActiveRules, RuleCycleStats } from "./taskC
 import { runSourceHealthWatcher } from "./sourceHealthWatcher";
 import { runSlaWatcher } from "./slaWatcher";
 import { sendDailySummary } from "./dailySummary";
+import { runTaskRetirer, RetirementStats } from "./taskRetirer";
 
 const POLLING_INTERVAL_MS = parseInt(process.env.POLLING_INTERVAL_MS ?? "300000", 10);
 const CRON_EXPRESSION = intervalToCron(POLLING_INTERVAL_MS);
@@ -139,6 +140,8 @@ export async function runPollCycle(): Promise<void> {
   let ordersFound = 0;
   let tasksCreated = 0;
   let perRule: RuleCycleStats[] = [];
+  let tasksRetired = 0;
+  let retirementPerRule: RetirementStats[] = [];
 
   try {
     console.log(`[Poller] Cycle started at ${startedAt.toISOString()}`);
@@ -239,6 +242,25 @@ export async function runPollCycle(): Promise<void> {
     // W3 — archive duplicate removed. `archiveOldTasks` runs nightly via
     // archiveScheduler.ts; the per-cycle copy was an O(N) duplicate.
 
+    // 3c. Task auto-retirement — close tasks whose source order has
+    // advanced past the rule's statusIn. Without this, Stuck tab fills
+    // with phantom tasks for completed work. Wrapped in try so a failure
+    // here doesn't mark the whole cycle as ERROR (creation already
+    // succeeded; retirement is housekeeping).
+    try {
+      const retire = await runTaskRetirer();
+      tasksRetired = retire.totalRetired;
+      retirementPerRule = retire.perRule;
+      if (tasksRetired > 0) {
+        console.log(
+          `[Poller] Retired ${tasksRetired} stale tasks: ` +
+          retire.perRule.map((r) => `${r.ruleName}=${r.retired}`).join(", ")
+        );
+      }
+    } catch (retireErr) {
+      console.error("[Poller] Task retirer failed (non-fatal):", retireErr);
+    }
+
     // 4. SLA watcher
     await runSlaWatcher();
     console.log("[Poller] SLA watcher completed");
@@ -278,8 +300,13 @@ export async function runPollCycle(): Promise<void> {
           // W4 — per-rule fire breakdown so operators can answer "did rule
           // X fire?" from the dashboard rather than grep. Empty array on
           // ERROR cycles is fine; the row's `status` makes the failure
-          // explicit independently.
-          metadata: perRule.length > 0 ? { perRule } : undefined,
+          // explicit independently. tasksRetired surfaces auto-close
+          // activity from the task retirer (step 3c) — visible on the
+          // dashboard's "last cycle" widget.
+          metadata:
+            perRule.length > 0 || tasksRetired > 0
+              ? { perRule, tasksRetired, retirementPerRule }
+              : undefined,
         },
       });
     } catch (logErr) {

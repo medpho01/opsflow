@@ -459,9 +459,13 @@ export async function GET(request: NextRequest) {
   const orderBy = buildOrderBy(sortBy as SortField, sortOrder);
   const isUrgencySort = sortBy === "urgency";
 
+  // Perf: do NOT include checklistItems in the list payload. Each task can
+  // have many rows of checklist text, and the row UI never renders them —
+  // they're only needed in the detail drawer, which fetches /api/tasks/[id]
+  // separately. Removing this include cut list-response size and time by
+  // roughly half for typical workspaces.
   const include = {
     assignedTo: { select: { id: true, name: true } },
-    checklistItems: { orderBy: { stepOrder: "asc" } },
     taskType: { select: { name: true, label: true } },
     taskRule: {
       select: {
@@ -471,12 +475,96 @@ export async function GET(request: NextRequest) {
     },
   } as const;
 
-  // Fetch-all mode when we need to sort/filter post-compute:
-  //   - urgency sort (computed bucket, can't ORDER BY in SQL)
-  //   - view filter (Today/Tomorrow/Stuck is computed, not a DB column)
-  // For typical workspaces (<500 active tasks) this is fine.
+  // ── Push view filter into SQL ─────────────────────────────────────────
+  // The view bucket (today / tomorrow / stuck / future / done) is a derived
+  // category, but the underlying rules translate cleanly to SQL predicates
+  // on appointmentTime + status. Pushing them into WHERE lets us paginate
+  // in the DB instead of fetch-all + filter-in-JS. This is the single
+  // biggest win on Smart View / Stuck (which previously full-fetched 500+
+  // rows + their includes on every load).
+  //
+  // Mirrors the JS logic in computeViewBucket. IST day boundaries are
+  // computed as UTC instants so SQL stays timezone-agnostic.
   const isViewFilter = !!viewParam;
-  const isFullFetch = isUrgencySort || isViewFilter;
+  if (isViewFilter) {
+    const wanted = new Set(viewParam!.split(",").map((v) => v.trim()));
+    const stuckGraceMs = 30 * 60 * 1000;
+    // IST midnight today, tomorrow, day-after — as UTC instants.
+    const istNowMs = now.getTime() + IST_OFFSET_MS;
+    const istMidnightTodayMs = Math.floor(istNowMs / 86_400_000) * 86_400_000;
+    const todayStart = new Date(istMidnightTodayMs - IST_OFFSET_MS);
+    const tomorrowStart = new Date(todayStart.getTime() + 86_400_000);
+    const dayAfterTomorrowStart = new Date(todayStart.getTime() + 2 * 86_400_000);
+    const stuckCutoff = new Date(now.getTime() - stuckGraceMs);
+    const terminalStatuses: TaskStatus[] = [
+      TaskStatus.COMPLETED, TaskStatus.CANCELLED, TaskStatus.RESOLVED,
+    ];
+
+    const orClauses: Record<string, unknown>[] = [];
+    if (wanted.has("today")) {
+      // appt in [todayStart, tomorrowStart) AND appt+30min not past AND not terminal
+      // OR no appt AND createdAt in [todayStart, tomorrowStart) AND not terminal
+      orClauses.push({
+        status: { notIn: terminalStatuses },
+        OR: [
+          {
+            appointmentTime: { gte: todayStart, lt: tomorrowStart, gt: stuckCutoff },
+          },
+          {
+            appointmentTime: null,
+            createdAt: { gte: todayStart, lt: tomorrowStart },
+          },
+        ],
+      });
+    }
+    if (wanted.has("tomorrow")) {
+      orClauses.push({
+        status: { notIn: terminalStatuses },
+        OR: [
+          { appointmentTime: { gte: tomorrowStart, lt: dayAfterTomorrowStart } },
+          {
+            appointmentTime: null,
+            createdAt: { gte: tomorrowStart, lt: dayAfterTomorrowStart },
+          },
+        ],
+      });
+    }
+    if (wanted.has("stuck")) {
+      orClauses.push({
+        status: { notIn: terminalStatuses },
+        OR: [
+          { appointmentTime: { lt: stuckCutoff } },
+          { appointmentTime: null, createdAt: { lt: todayStart } },
+        ],
+      });
+    }
+    if (wanted.has("future")) {
+      orClauses.push({
+        status: { notIn: terminalStatuses },
+        appointmentTime: { gte: dayAfterTomorrowStart },
+      });
+    }
+    if (wanted.has("done")) {
+      orClauses.push({ status: { in: terminalStatuses } });
+    }
+
+    if (orClauses.length > 0) {
+      // Combine with any existing top-level OR (slaRiskOnly path) via AND.
+      const viewOr = orClauses.length === 1 ? orClauses[0] : { OR: orClauses };
+      if (where.AND) {
+        (where.AND as unknown[]).push(viewOr);
+      } else if (where.OR) {
+        where.AND = [{ OR: where.OR }, viewOr];
+        delete where.OR;
+      } else {
+        Object.assign(where, viewOr);
+      }
+    }
+  }
+
+  // Fetch-all mode only when urgency sort is requested — view filter is now
+  // SQL-side, so it paginates normally.
+  const isFullFetch = isUrgencySort;
 
   const [tasks, total] = await Promise.all([
     isFullFetch
@@ -626,15 +714,9 @@ export async function GET(request: NextRequest) {
 
   let filteredTasks = tasksWithMeta;
 
-  // ── view filter (Today / Tomorrow / Stuck / Future) ───────────────
-  // Computed bucket can't be a SQL WHERE; filter post-meta. Updates `total`
-  // to the filtered count so pagination semantics stay correct.
-  let effectiveTotal = total;
-  if (isViewFilter) {
-    const wantedBuckets = viewParam!.split(",").map(v => v.trim());
-    filteredTasks = filteredTasks.filter(t => wantedBuckets.includes(t.viewBucket));
-    effectiveTotal = filteredTasks.length;
-  }
+  // View filter is now applied in SQL (see WHERE construction above) so the
+  // count from prisma already reflects the filtered universe.
+  const effectiveTotal = total;
 
   // ── urgency sort (in-memory bucket sort + tiebreakers) ────────────
   if (isUrgencySort) {

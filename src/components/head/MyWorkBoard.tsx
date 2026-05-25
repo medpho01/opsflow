@@ -488,6 +488,17 @@ function TodayView({ tasks, tomorrowTasks, now, agents, canReassign, onRowClick,
   laterTasks.sort(byTime);
   doneTasks.sort(byTime);
 
+  // Split Done into human-completed vs engine-auto-retired. The retirer
+  // stamps metadata.autoRetiredByEngine=true when it closes a task because
+  // the source order advanced past the rule's statusIn. Keeping them in
+  // separate strips means the "Completed by team" count stays honest as a
+  // measure of actual ops work, while the engine-retired pile is visible
+  // (and collapsible) for auditability.
+  const isAutoRetired = (t: Task) =>
+    !!(t.metadata && (t.metadata as Record<string, unknown>).autoRetiredByEngine);
+  const doneByTeam = doneTasks.filter((t) => !isAutoRetired(t));
+  const doneByEngine = doneTasks.filter(isAutoRetired);
+
   // Group laterTasks by hour for subdividers
   const laterByHour = new Map<number, Task[]>();
   for (const t of laterTasks) {
@@ -585,22 +596,47 @@ function TodayView({ tasks, tomorrowTasks, now, agents, canReassign, onRowClick,
           <div className="flex items-center gap-3">
             <span className="text-zinc-400">✓</span>
             <div>
-              <div className="text-sm font-medium text-zinc-300">Done today</div>
+              <div className="text-sm font-medium text-zinc-300">Completed by team today</div>
               <div className="text-xs text-zinc-500">resets at midnight IST</div>
             </div>
           </div>
           <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-green-900 text-green-300">
-            {doneTasks.length} completed
+            {doneByTeam.length} completed
           </span>
         </summary>
         <div className="border-t border-zinc-800">
-          {doneTasks.length === 0 ? (
+          {doneByTeam.length === 0 ? (
             <div className="px-5 py-3 text-center text-xs text-zinc-500">Nothing completed yet today.</div>
           ) : (
-            doneTasks.slice(0, 20).map(t => <TaskRow key={t.id} task={t} now={now} agents={agents} onClick={() => onRowClick(t)} onReassign={onReassign} canReassign={canReassign} />)
+            doneByTeam.slice(0, 20).map(t => <TaskRow key={t.id} task={t} now={now} agents={agents} onClick={() => onRowClick(t)} onReassign={onReassign} canReassign={canReassign} />)
           )}
         </div>
       </details>
+
+      {/* Engine auto-retirements — collapsed by default. These are tasks the
+          poller closed because the underlying order moved past the rule's
+          statusIn (e.g. R5 task for an order that's now REPORT_DELIVERED).
+          Surfaced separately so the "Completed by team" count above stays
+          a clean measure of human throughput. */}
+      {doneByEngine.length > 0 && (
+        <details className="rounded-lg border border-zinc-800 bg-zinc-900/30">
+          <summary className="px-5 py-3 flex items-center justify-between cursor-pointer list-none [&::-webkit-details-marker]:hidden">
+            <div className="flex items-center gap-3">
+              <span className="text-zinc-500">⚙</span>
+              <div>
+                <div className="text-sm font-medium text-zinc-400">Auto-closed by engine today</div>
+                <div className="text-xs text-zinc-600">orders advanced past their rule&apos;s statusIn</div>
+              </div>
+            </div>
+            <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-zinc-800 text-zinc-400">
+              {doneByEngine.length} auto
+            </span>
+          </summary>
+          <div className="border-t border-zinc-800">
+            {doneByEngine.slice(0, 20).map(t => <TaskRow key={t.id} task={t} now={now} agents={agents} onClick={() => onRowClick(t)} onReassign={onReassign} canReassign={canReassign} />)}
+          </div>
+        </details>
+      )}
     </div>
   );
 }

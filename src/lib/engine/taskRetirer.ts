@@ -179,6 +179,21 @@ export async function runTaskRetirer(): Promise<RetirementResult> {
         lastStatusUpdate: now,
       },
     });
+    // Stamp metadata.autoRetiredByEngine=true via raw SQL so the UI can
+    // distinguish engine cancellations from human ones (Smart View splits
+    // "Done today" into team-completed vs auto-closed). One statement for
+    // the whole batch; jsonb_set merges into existing metadata, defaulting
+    // to '{}' for tasks that had no metadata.
+    await tx.$executeRawUnsafe(
+      `UPDATE taskos."tasks"
+         SET metadata = jsonb_set(
+           COALESCE(metadata, '{}'::jsonb),
+           '{autoRetiredByEngine}',
+           'true'::jsonb
+         )
+       WHERE id = ANY($1::int[])`,
+      idsToRetire
+    );
     await tx.taskHistory.createMany({
       data: toRetire.map((t) => ({
         taskId: t.id,

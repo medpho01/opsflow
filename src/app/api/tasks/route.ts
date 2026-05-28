@@ -242,6 +242,12 @@ export async function GET(request: NextRequest) {
   const orderId = searchParams.get("orderId");
   const dateFromParam = searchParams.get("dateFrom");
   const dateToParam = searchParams.get("dateTo");
+  // completedAfter filters on Task.completedAt (when the task actually
+  // closed — by user or by engine retirer), distinct from dateFrom which
+  // is createdAt. Smart View's "Done today" strip needs this because the
+  // engine retires tasks whose createdAt is days/weeks old but whose
+  // completedAt is "now"; filtering by createdAt would miss them entirely.
+  const completedAfterParam = searchParams.get("completedAfter");
   const slaRiskOnlyParam = searchParams.get("slaRiskOnly");
   const sourceParam = searchParams.get("source");
   const sourceTypeParam = searchParams.get("sourceType");
@@ -420,6 +426,15 @@ export async function GET(request: NextRequest) {
     where.createdAt = {};
     if (dateFromFilter) (where.createdAt as Record<string, unknown>).gte = dateFromFilter;
     if (dateToFilter) (where.createdAt as Record<string, unknown>).lte = dateToFilter;
+  }
+
+  // completedAfter filter — only includes tasks whose completedAt is at or
+  // after the given timestamp. Used by Smart View's "Done today" strip.
+  if (completedAfterParam) {
+    const parsed = new Date(completedAfterParam);
+    if (!isNaN(parsed.getTime())) {
+      where.completedAt = { gte: parsed };
+    }
   }
 
   // SLA-risk filter pushed into the SQL WHERE (was previously applied AFTER

@@ -967,19 +967,48 @@ export default function MyWorkBoard({ currentUser }: { currentUser: CurrentUser 
     setLoading(true);
     setError(null);
     try {
-      // Fetch a generous slice so client-side bucketing has the full
-      // workspace, not just the first page. The previous limit=50 silently
-      // truncated visible tasks when total > 50 (e.g. a workspace with 133
-      // ORDER_SCHEDULED items showed only 6/7 AM + part of 8 AM, hiding the
-      // rest of Today and all of Stuck behind an invisible page break).
+      // Two parallel fetches so the 500-row cap can't be flooded by today's
+      // engine retirements:
+      //   (a) ACTIVE tasks (non-terminal status) — drives NOW / LATER /
+      //       TOMORROW / STUCK bucket counts and rows. Up to 500.
+      //   (b) DONE-TODAY tasks (terminal status, completedAt today IST) —
+      //       drives the "Completed by team" + "Auto-closed by engine"
+      //       strips below the Today view.
       //
-      // Phase 2 should split this into per-tab fetches keyed by ?view= so we
-      // can paginate each bucket independently. For now, 500 covers realistic
-      // ops workspaces and keeps client render perf comfortable.
-      const res = await fetch("/api/tasks?limit=500&sortBy=appointmentTime&sortOrder=asc");
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      setTasks(data.tasks ?? []);
+      // History: a single combined fetch worked until the auto-retire change
+      // started CANCELLING hundreds of stale tasks per cycle. With sortBy=
+      // appointmentTime asc, those old-appt CANCELLED rows filled the 500
+      // slot first and pushed today's BREACHED / CREATED tasks out of the
+      // response entirely — so the Stuck tab showed ~4 instead of 133+.
+      // Splitting the fetch keeps each pile bounded independently.
+      const activeStatuses = "CREATED,ASSIGNED,IN_PROGRESS,BLOCKED,BREACHED,REASSIGNED";
+      const terminalStatuses = "COMPLETED,CANCELLED";
+      // completedAfter = today IST midnight as UTC ISO. Filters on the
+      // task's completedAt timestamp, so engine-retired tasks (createdAt
+      // weeks old but closed just now) are included.
+      const istOffsetMs = 5.5 * 60 * 60 * 1000;
+      const istNow = Date.now() + istOffsetMs;
+      const istMidnight = Math.floor(istNow / 86_400_000) * 86_400_000 - istOffsetMs;
+      const todayMidnightIso = new Date(istMidnight).toISOString();
+
+      const [activeRes, doneRes] = await Promise.all([
+        fetch(`/api/tasks?limit=500&sortBy=appointmentTime&sortOrder=asc&status=${activeStatuses}`),
+        fetch(`/api/tasks?limit=200&sortBy=createdAt&sortOrder=desc&status=${terminalStatuses}&completedAfter=${encodeURIComponent(todayMidnightIso)}`),
+      ]);
+      if (!activeRes.ok) throw new Error(`HTTP ${activeRes.status} (active)`);
+      if (!doneRes.ok) throw new Error(`HTTP ${doneRes.status} (done)`);
+      const [activeData, doneData] = await Promise.all([activeRes.json(), doneRes.json()]);
+      // De-dup by id (defensive — the two queries' WHERE clauses are
+      // mutually exclusive on status, so overlap shouldn't happen, but a
+      // race during status transitions could cause one).
+      const seen = new Set<number>();
+      const merged: Task[] = [];
+      for (const t of [...(activeData.tasks ?? []), ...(doneData.tasks ?? [])]) {
+        if (seen.has(t.id)) continue;
+        seen.add(t.id);
+        merged.push(t);
+      }
+      setTasks(merged);
       setLastUpdated(new Date());
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load tasks");

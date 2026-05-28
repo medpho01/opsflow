@@ -277,13 +277,29 @@ function TaskRow({
   const appt = task.appointmentTime ? new Date(task.appointmentTime) : null;
   const diffMin = appt ? Math.round((appt.getTime() - now.getTime()) / 60_000) : null;
 
+  // Friendlier delta formatting. Stuck-view tasks routinely show appts from
+  // days/weeks ago; "14640m ago" forced operators to do mental math. Step
+  // up through m → h → d → w / mo so anything older than ~1 hour reads as
+  // a human duration. We keep the minute precision only inside the urgency
+  // window (within 15 / 60 / 90 min) where it actually matters for triage.
+  function formatDelta(minutes: number, future: boolean): string {
+    const abs = Math.abs(minutes);
+    let value: string;
+    if (abs < 60) value = `${abs}m`;
+    else if (abs < 60 * 24) value = `${Math.round(abs / 60)}h`;
+    else if (abs < 60 * 24 * 7) value = `${Math.round(abs / (60 * 24))}d`;
+    else if (abs < 60 * 24 * 30) value = `${Math.round(abs / (60 * 24 * 7))}w`;
+    else value = `${Math.round(abs / (60 * 24 * 30))}mo`;
+    return future ? `in ${value}` : `${value} ago`;
+  }
+
   let timeColor = "text-zinc-300";
   let deltaText = "";
   let deltaColor = "text-zinc-500";
   if (diffMin !== null) {
     if (diffMin < -15) {
       timeColor = "text-zinc-600";
-      deltaText = `${-diffMin}m ago`;
+      deltaText = formatDelta(diffMin, false);
     } else if (diffMin <= 15) {
       timeColor = "text-red-400";
       deltaText = `in ${diffMin}m`;
@@ -296,11 +312,24 @@ function TaskRow({
       timeColor = "text-yellow-400";
       deltaText = `in ${diffMin}m`;
       deltaColor = "text-yellow-500";
+    } else {
+      // > 90 min in the future — still soon enough to want a friendlier
+      // label than "in 14400m" on tomorrow-or-later appts.
+      deltaText = formatDelta(diffMin, true);
     }
   }
 
+  // For appointments that aren't today, surface the date too — bare
+  // "06:00 am" on a row whose appt was 10 days ago is misleading. We
+  // detect "today IST" by IST day-key match (no timezone library needed).
+  function istDayKey(d: Date): string {
+    const ist = new Date(d.getTime() + 5.5 * 60 * 60 * 1000);
+    return `${ist.getUTCFullYear()}-${ist.getUTCMonth()}-${ist.getUTCDate()}`;
+  }
   const apptLabel = appt
-    ? formatISTTimestamp(task.appointmentTime as string, { hour: "2-digit", minute: "2-digit" })
+    ? (istDayKey(appt) === istDayKey(now)
+        ? formatISTTimestamp(task.appointmentTime as string, { hour: "2-digit", minute: "2-digit" })
+        : formatISTTimestamp(task.appointmentTime as string, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }))
     : "—";
 
   return (

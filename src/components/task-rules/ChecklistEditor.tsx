@@ -111,9 +111,9 @@ export default function ChecklistEditor({ taskTypeId }: ChecklistEditorProps) {
 
   if (!taskTypeId) {
     return (
-      <div className="bg-white p-6 rounded-lg border border-gray-200">
-        <h3 className="text-lg font-semibold mb-2">Checklist</h3>
-        <p className="text-sm text-gray-500">
+      <div className="bg-zinc-900 p-4 rounded-lg border border-zinc-800">
+        <h3 className="text-sm font-semibold text-zinc-200 mb-2">Checklist</h3>
+        <p className="text-xs text-zinc-500">
           Pick a task type in Basic Settings first — the checklist belongs to
           the task type, not the rule.
         </p>
@@ -122,31 +122,31 @@ export default function ChecklistEditor({ taskTypeId }: ChecklistEditorProps) {
   }
 
   return (
-    <div className="bg-white p-6 rounded-lg border border-gray-200 space-y-4">
-      <div className="flex items-start justify-between">
+    <div className="bg-zinc-900 p-4 rounded-lg border border-zinc-800 space-y-4">
+      <div className="flex items-start justify-between gap-3">
         <div>
-          <h3 className="text-lg font-semibold">Checklist</h3>
-          <p className="text-xs text-gray-500 mt-0.5">
+          <h3 className="text-sm font-semibold text-zinc-200">Checklist</h3>
+          <p className="text-[11px] text-zinc-500 mt-0.5 leading-relaxed">
             Steps copied to every new task of type{" "}
-            <span className="font-medium text-gray-700">{taskTypeLabel || "—"}</span>.
+            <span className="font-medium text-zinc-300">{taskTypeLabel || "—"}</span>.
             Editing here affects new tasks only — existing open tasks keep their
             current steps.
           </p>
         </div>
         {activeRuleCount > 1 && (
-          <span className="px-2 py-1 text-[11px] rounded bg-amber-50 text-amber-700 border border-amber-200">
+          <span className="px-2 py-1 text-[10px] rounded bg-amber-500/10 text-amber-300 border border-amber-700/30 shrink-0">
             shared by {activeRuleCount} active rules
           </span>
         )}
       </div>
 
       {loading ? (
-        <div className="text-sm text-gray-500">Loading…</div>
+        <div className="text-xs text-zinc-500">Loading…</div>
       ) : (
         <>
           <div className="space-y-2">
             {items.length === 0 && (
-              <div className="text-sm text-gray-500 italic py-3">
+              <div className="text-xs text-zinc-500 italic py-3">
                 No checklist steps yet. Click &quot;Add step&quot; to start.
               </div>
             )}
@@ -157,65 +157,66 @@ export default function ChecklistEditor({ taskTypeId }: ChecklistEditorProps) {
                     type="button"
                     onClick={() => move(idx, -1)}
                     disabled={idx === 0}
-                    className="text-xs text-gray-400 hover:text-gray-700 disabled:opacity-30 leading-none"
+                    className="text-xs text-zinc-500 hover:text-zinc-200 disabled:opacity-30 leading-none"
                     title="Move up"
                   >▲</button>
                   <button
                     type="button"
                     onClick={() => move(idx, 1)}
                     disabled={idx === items.length - 1}
-                    className="text-xs text-gray-400 hover:text-gray-700 disabled:opacity-30 leading-none"
+                    className="text-xs text-zinc-500 hover:text-zinc-200 disabled:opacity-30 leading-none"
                     title="Move down"
                   >▼</button>
                 </div>
-                <span className="text-xs text-gray-400 w-5">{idx + 1}.</span>
+                <span className="text-[10px] text-zinc-600 w-5">{idx + 1}.</span>
                 <input
                   type="text"
                   value={it.stepText}
                   onChange={(e) => updateText(idx, e.target.value)}
                   placeholder="e.g. Call patient to confirm appointment time"
-                  className="flex-1 px-3 py-1.5 border border-gray-300 rounded text-sm"
+                  className="flex-1 px-2 py-1.5 bg-zinc-950 border border-zinc-700 rounded text-xs text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-blue-600"
                 />
-                <label className="flex items-center gap-1 text-xs text-gray-600 shrink-0">
+                <label className="flex items-center gap-1 text-[10px] text-zinc-400 shrink-0">
                   <input
                     type="checkbox"
                     checked={it.isRequired}
                     onChange={() => toggleRequired(idx)}
+                    className="accent-blue-600"
                   />
                   required
                 </label>
                 <button
                   type="button"
                   onClick={() => removeItem(idx)}
-                  className="text-xs text-red-500 hover:text-red-700 shrink-0"
+                  className="text-xs text-red-400 hover:text-red-300 shrink-0"
                   title="Remove"
                 >✕</button>
               </div>
             ))}
           </div>
 
-          <div className="flex items-center justify-between pt-2 border-t border-gray-100">
+          <div className="flex items-center justify-between pt-2 border-t border-zinc-800">
             <button
               type="button"
               onClick={addItem}
-              className="px-3 py-1.5 text-sm bg-gray-100 text-gray-700 rounded hover:bg-gray-200"
+              className="px-3 py-1.5 text-xs bg-zinc-800 text-zinc-300 rounded hover:bg-zinc-700"
             >
               + Add step
             </button>
             <div className="flex items-center gap-3">
               {savedAt && !error && (
-                <span className="text-xs text-green-600">
+                <span className="text-[10px] text-emerald-400">
                   Saved {savedAt.toLocaleTimeString()}
                 </span>
               )}
               {error && (
-                <span className="text-xs text-red-600">{error}</span>
+                <span className="text-[10px] text-red-400">{error}</span>
               )}
               <button
                 type="button"
                 onClick={save}
                 disabled={saving || items.some((it) => !it.stepText.trim())}
-                className="px-4 py-1.5 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-300"
+                className="px-3 py-1.5 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-zinc-700 disabled:text-zinc-500"
               >
                 {saving ? "Saving…" : "Save checklist"}
               </button>

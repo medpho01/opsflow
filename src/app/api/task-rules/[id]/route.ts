@@ -108,7 +108,7 @@ export async function PATCH(
           where: { id },
           data: updates,
           include: {
-            taskType: { select: { name: true, label: true } },
+            taskType: { select: { id: true, name: true, label: true } },
             requiredSkills: { include: { skillTag: { select: { id: true, name: true, label: true } } } },
             escalationChain: { select: { id: true, name: true } },
             dataSource: { select: { id: true, sourceId: true, displayName: true } },
@@ -119,7 +119,7 @@ export async function PATCH(
       return tx.taskRule.findUnique({
         where: { id },
         include: {
-          taskType: { select: { name: true, label: true } },
+          taskType: { select: { id: true, name: true, label: true } },
           requiredSkills: { include: { skillTag: { select: { id: true, name: true, label: true } } } },
           escalationChain: { select: { id: true, name: true } },
           dataSource: { select: { id: true, sourceId: true, displayName: true } },

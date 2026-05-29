@@ -30,7 +30,7 @@ export async function GET(request: NextRequest) {
   const rules = await prisma.taskRule.findMany({
     where: { id: { not: "MANUAL" } },
     include: {
-      taskType: { select: { name: true, label: true } },
+      taskType: { select: { id: true, name: true, label: true } },
       requiredSkills: { include: { skillTag: { select: { id: true, name: true, label: true } } } },
       escalationChain: { select: { id: true, name: true } },
       dataSource: { select: { id: true, sourceId: true, displayName: true, typeFieldEnumValues: true, statusFieldEnumValues: true } },
@@ -149,7 +149,7 @@ export async function POST(request: NextRequest) {
           : undefined,
       },
       include: {
-        taskType: { select: { name: true, label: true } },
+        taskType: { select: { id: true, name: true, label: true } },
         requiredSkills: { include: { skillTag: { select: { id: true, name: true, label: true } } } },
         escalationChain: { select: { id: true, name: true } },
         dataSource: { select: { id: true, sourceId: true, displayName: true } },

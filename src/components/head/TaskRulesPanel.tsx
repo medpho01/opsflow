@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import PriorityBadge from "@/components/shared/PriorityBadge";
+import ChecklistEditor from "@/components/task-rules/ChecklistEditor";
 
 interface MetadataCondition {
   fieldPath: string;
@@ -69,6 +70,10 @@ interface TaskRule {
   totalTasksCreated: number;
   tasksLast24h: number;
   triggerCondition: TriggerCondition;
+  // Optional — present on rules saved after the /api/task-rules selects
+  // started returning the taskType id. Used by the Checklist tab to
+  // address the underlying ChecklistTemplate set.
+  taskType?: { id: number; name: string; label: string } | null;
 }
 
 const PRIORITIES = ["URGENT", "HIGH", "MEDIUM", "LOW"] as const;
@@ -544,7 +549,7 @@ function RuleDrawer({ rule, allTags, chains, metadataFields, orderStatuses, onCl
   const [error, setError] = useState("");
   const [deleting, setDeleting] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const [activeTab, setActiveTab] = useState<"source" | "trigger" | "basics" | "assignment">("source");
+  const [activeTab, setActiveTab] = useState<"source" | "trigger" | "basics" | "assignment" | "checklist">("source");
 
   // Load data sources immediately on mount
   useEffect(() => {
@@ -696,6 +701,7 @@ function RuleDrawer({ rule, allTags, chains, metadataFields, orderStatuses, onCl
     { key: "trigger",     label: "Trigger" },
     { key: "basics",      label: "Basics" },
     { key: "assignment",  label: "Assignment" },
+    { key: "checklist",   label: "Checklist" },
   ] as const;
 
   return (
@@ -961,6 +967,33 @@ function RuleDrawer({ rule, allTags, chains, metadataFields, orderStatuses, onCl
                     <p className="text-[10px] text-zinc-600 mt-1.5">No chains defined. Create them in the Escalations section.</p>
                   )}
                 </div>
+              </div>
+            )}
+
+            {activeTab === "checklist" && (
+              <div className="space-y-3">
+                {isCreate ? (
+                  <div className="px-3 py-3 bg-amber-600/10 border border-amber-700/30 rounded-lg">
+                    <p className="text-[11px] text-amber-300 leading-relaxed">
+                      Save the rule first. Once it has a task type assigned, the
+                      checklist editor will appear here.
+                    </p>
+                  </div>
+                ) : rule?.taskType?.id ? (
+                  /* Reuse the same editor used in /head/rules (page-based
+                     RuleForm). It targets ChecklistTemplate rows keyed by
+                     taskTypeId — multiple rules sharing a type share the
+                     same checklist, which the editor surfaces as a pill. */
+                  <ChecklistEditor taskTypeId={rule.taskType.id} />
+                ) : (
+                  <div className="px-3 py-3 bg-zinc-800/40 border border-zinc-700 rounded-lg">
+                    <p className="text-[11px] text-zinc-400 leading-relaxed">
+                      No task type associated with this rule yet — checklist
+                      editing isn&apos;t available. Save the rule with a task
+                      type to enable this tab.
+                    </p>
+                  </div>
+                )}
               </div>
             )}
 

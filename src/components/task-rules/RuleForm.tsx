@@ -10,6 +10,9 @@ import TriggerConditionBuilder from './TriggerConditionBuilder';
 import SkillSelector from './SkillSelector';
 import EscalationChainSelector from './EscalationChainSelector';
 import RulePreview from './RulePreview';
+import ChecklistEditor from './ChecklistEditor';
+
+type RuleFormTab = 'settings' | 'checklist';
 
 interface RuleFormProps {
   initialRule?: any;
@@ -37,6 +40,7 @@ export default function RuleForm({ initialRule, onSuccess }: RuleFormProps) {
   const [error, setError] = useState<string | null>(null);
   const [validStatuses, setValidStatuses] = useState<any[]>([]);
   const [metadataFields, setMetadataFields] = useState<any[]>([]);
+  const [activeTab, setActiveTab] = useState<RuleFormTab>('settings');
 
   useEffect(() => {
     fetchInitialData();
@@ -102,70 +106,101 @@ export default function RuleForm({ initialRule, onSuccess }: RuleFormProps) {
     }));
   };
 
+  // Tab strip — keeps Settings/Trigger/Assignment together (they're saved
+  // as one rule write) and isolates Checklist which writes to a different
+  // endpoint and a different model (TaskType → ChecklistTemplate).
+  const tabs: { id: RuleFormTab; label: string; description: string }[] = [
+    { id: 'settings', label: 'Rule settings', description: 'Trigger, SLA, assignment' },
+    { id: 'checklist', label: 'Checklist', description: 'Steps for each new task' },
+  ];
+
   return (
-    <form onSubmit={handleSubmit} className="grid grid-cols-3 gap-6">
-      {/* Left side - Form sections */}
-      <div className="col-span-2 space-y-6">
-        {error && (
-          <div className="p-4 bg-red-50 border border-red-200 rounded text-red-700">
-            {error}
-          </div>
-        )}
-
-        <BasicSettingsSection
-          formData={formData}
-          updateField={updateField}
-        />
-
-        <TriggerConditionBuilder
-          triggerCondition={formData.triggerCondition}
-          updateTriggerCondition={updateTriggerCondition}
-          validStatuses={validStatuses}
-          metadataFields={metadataFields}
-        />
-
-        <div className="bg-white p-6 rounded-lg border border-gray-200">
-          <h3 className="text-lg font-semibold mb-4">Assignment Settings</h3>
-
-          <SkillSelector
-            selectedSkills={formData.skillTagIds}
-            onSkillsChange={(skills) => updateField('skillTagIds', skills)}
-          />
-
-          <div className="mt-6">
-            <EscalationChainSelector
-              selectedChainId={formData.escalationChainId}
-              onChainChange={(chainId) => updateField('escalationChainId', chainId)}
-            />
-          </div>
-        </div>
-
-        {/* Form Actions */}
-        <div className="flex gap-3 pt-4">
+    <div>
+      {/* Tab strip */}
+      <div className="flex gap-1 border-b border-gray-200 mb-6">
+        {tabs.map((t) => (
           <button
-            type="submit"
-            disabled={loading}
-            className="px-6 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-400"
-          >
-            {loading ? 'Saving...' : 'Save Rule'}
-          </button>
-          <button
+            key={t.id}
             type="button"
-            onClick={() => window.history.back()}
-            className="px-6 py-2 bg-gray-200 text-gray-800 rounded hover:bg-gray-300"
+            onClick={() => setActiveTab(t.id)}
+            className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
+              activeTab === t.id
+                ? 'border-blue-600 text-blue-700'
+                : 'border-transparent text-gray-500 hover:text-gray-700'
+            }`}
+            title={t.description}
           >
-            Cancel
+            {t.label}
           </button>
-        </div>
+        ))}
       </div>
 
-      {/* Right side - Preview */}
-      <div className="col-span-1">
-        <RulePreview
-          formData={formData}
-          validStatuses={validStatuses}
+      {activeTab === 'settings' && (
+        <form onSubmit={handleSubmit} className="grid grid-cols-3 gap-6">
+          <div className="col-span-2 space-y-6">
+            {error && (
+              <div className="p-4 bg-red-50 border border-red-200 rounded text-red-700">
+                {error}
+              </div>
+            )}
+
+            <BasicSettingsSection
+              formData={formData}
+              updateField={updateField}
+            />
+
+            <TriggerConditionBuilder
+              triggerCondition={formData.triggerCondition}
+              updateTriggerCondition={updateTriggerCondition}
+              validStatuses={validStatuses}
+              metadataFields={metadataFields}
+            />
+
+            <div className="bg-white p-6 rounded-lg border border-gray-200">
+              <h3 className="text-lg font-semibold mb-4">Assignment Settings</h3>
+
+              <SkillSelector
+                selectedSkills={formData.skillTagIds}
+                onSkillsChange={(skills) => updateField('skillTagIds', skills)}
+              />
+
+              <div className="mt-6">
+                <EscalationChainSelector
+                  selectedChainId={formData.escalationChainId}
+                  onChainChange={(chainId) => updateField('escalationChainId', chainId)}
+                />
+              </div>
+            </div>
+
+            <div className="flex gap-3 pt-4">
+              <button
+                type="submit"
+                disabled={loading}
+                className="px-6 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-400"
+              >
+                {loading ? 'Saving...' : 'Save Rule'}
+              </button>
+              <button
+                type="button"
+                onClick={() => window.history.back()}
+                className="px-6 py-2 bg-gray-200 text-gray-800 rounded hover:bg-gray-300"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+
+          <div className="col-span-1">
+            <RulePreview formData={formData} validStatuses={validStatuses} />
+          </div>
+        </form>
+      )}
+
+      {activeTab === 'checklist' && (
+        <ChecklistEditor
+          taskTypeId={formData.taskTypeId ? Number(formData.taskTypeId) : null}
         />
-      </div>
-    </form>
+      )}
+    </div>
   );
 }

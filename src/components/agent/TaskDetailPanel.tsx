@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import SlaCountdown from "@/components/shared/SlaCountdown";
 import SLADisplay from "@/components/shared/SLADisplay";
 import PriorityBadge from "@/components/shared/PriorityBadge";
@@ -133,7 +133,38 @@ export default function TaskDetailPanel({ task, onUpdate }: TaskDetailPanelProps
   const [loading, setLoading] = useState<string | null>(null);
   const [showOrderView, setShowOrderView] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [displayedTask, setDisplayedTask] = useState<Task>(task);
+  // Defensive default — the list payload no longer carries checklistItems
+  // (perf optimisation; see /api/tasks/route.ts). We populate them from
+  // the detail fetch below, but if a stale parent passes a task without
+  // the field, this prevents an immediate "cannot read .map of undefined"
+  // crash.
+  const [displayedTask, setDisplayedTask] = useState<Task>({
+    ...task,
+    checklistItems: task.checklistItems ?? [],
+  });
+
+  // Hydrate full task detail (checklistItems, history, etc.) on mount.
+  // The list payload from /api/tasks is intentionally slim — drawer-only
+  // fields come from this endpoint. Runs once per task.id.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/tasks/${task.id}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (cancelled || !data?.task) return;
+        setDisplayedTask((prev) => ({
+          ...prev,
+          ...data.task,
+          checklistItems: data.task.checklistItems ?? prev.checklistItems ?? [],
+        }));
+      } catch (e) {
+        console.error("[TaskDetailPanel] failed to fetch detail:", e);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [task.id]);
 
   const meta = displayedTask.metadata;
   const actions = NEXT_STATUS[displayedTask.status] ?? [];

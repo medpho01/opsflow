@@ -300,8 +300,14 @@ export default function AgentTaskBoard({ userId, userName }: { userId: number; u
             <div className="divide-y divide-zinc-800/60">
               {sorted.map((task) => {
                 const isSelected = selectedTask?.id === task.id;
-                const doneItems = task.checklistItems.filter((i) => i.isDone).length;
-                const totalItems = task.checklistItems.length;
+                // Defensive — list payload no longer includes checklistItems
+                // (perf optimisation in /api/tasks). Drawer hydrates them from
+                // /api/tasks/[id]; card just shows 0/0 until then, which is
+                // fine because the card collapses the badge when totalItems
+                // is 0 anyway.
+                const checklistItems = task.checklistItems ?? [];
+                const doneItems = checklistItems.filter((i) => i.isDone).length;
+                const totalItems = checklistItems.length;
 
                 // W5 — show a "Snoozed until X" pill on the card so the agent
                 // can spot snoozed tasks in tabs that don't filter them out

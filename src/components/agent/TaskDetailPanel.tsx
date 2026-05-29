@@ -142,29 +142,59 @@ export default function TaskDetailPanel({ task, onUpdate }: TaskDetailPanelProps
     ...task,
     checklistItems: task.checklistItems ?? [],
   });
+  // Order context (notes, status, patient details) is what the OPS_HEAD
+  // sees on their OrderQuickView. Agents need the same — especially the
+  // internalNotes log so they know what's already been tried before they
+  // pick up the phone. Lives separately from displayedTask so it can
+  // arrive a beat later without blocking the task header.
+  const [orderContext, setOrderContext] = useState<{
+    internalNotes: string | null;
+    notes: string | null;
+    orderStatus: string | null;
+    patientName: string | null;
+    phleboName: string | null;
+    phleboNumber: string | null;
+  } | null>(null);
 
-  // Hydrate full task detail (checklistItems, history, etc.) on mount.
-  // The list payload from /api/tasks is intentionally slim — drawer-only
-  // fields come from this endpoint. Runs once per task.id.
+  // Hydrate full task detail (checklistItems, history, etc.) and the
+  // associated order context in parallel. Both endpoints already exist.
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch(`/api/tasks/${task.id}`);
-        if (!res.ok) return;
-        const data = await res.json();
-        if (cancelled || !data?.task) return;
-        setDisplayedTask((prev) => ({
-          ...prev,
-          ...data.task,
-          checklistItems: data.task.checklistItems ?? prev.checklistItems ?? [],
-        }));
+        const [taskRes, orderRes] = await Promise.all([
+          fetch(`/api/tasks/${task.id}`),
+          fetch(`/api/orders/${task.entityId}`),
+        ]);
+        if (!cancelled && taskRes.ok) {
+          const data = await taskRes.json();
+          if (data?.task) {
+            setDisplayedTask((prev) => ({
+              ...prev,
+              ...data.task,
+              checklistItems: data.task.checklistItems ?? prev.checklistItems ?? [],
+            }));
+          }
+        }
+        if (!cancelled && orderRes.ok) {
+          const data = await orderRes.json();
+          if (data?.order) {
+            setOrderContext({
+              internalNotes: data.order.internalNotes ?? null,
+              notes: data.order.notes ?? null,
+              orderStatus: data.order.orderStatus ?? null,
+              patientName: data.order.patientName ?? null,
+              phleboName: data.order.phleboName ?? null,
+              phleboNumber: data.order.phleboNumber ?? null,
+            });
+          }
+        }
       } catch (e) {
-        console.error("[TaskDetailPanel] failed to fetch detail:", e);
+        console.error("[TaskDetailPanel] failed to fetch detail/order:", e);
       }
     })();
     return () => { cancelled = true; };
-  }, [task.id]);
+  }, [task.id, task.entityId]);
 
   const meta = displayedTask.metadata;
   const actions = NEXT_STATUS[displayedTask.status] ?? [];
@@ -450,6 +480,50 @@ export default function TaskDetailPanel({ task, onUpdate }: TaskDetailPanelProps
             ))}
           </div>
         </div>
+
+        {/* Order context from labstack — patient/phlebo + internal notes.
+            Agents need this to know what's already been tried (e.g. "Tried
+            calling patient 3x, voicemail"). Heads see the same on
+            OrderQuickView; this brings parity to the agent surface. */}
+        {orderContext && (orderContext.internalNotes || orderContext.notes || orderContext.phleboName) && (
+          <div className="border border-zinc-800 rounded-lg overflow-hidden">
+            <div className="px-3 py-2 bg-zinc-900/60 border-b border-zinc-800 flex items-center justify-between">
+              <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">
+                Order context
+              </h3>
+              {orderContext.orderStatus && (
+                <span className="text-[10px] text-zinc-500">{orderContext.orderStatus}</span>
+              )}
+            </div>
+            <div className="p-3 space-y-2 text-xs">
+              {orderContext.phleboName && (
+                <div className="flex gap-2">
+                  <span className="text-zinc-500 w-16 shrink-0">Phlebo</span>
+                  <span className="text-zinc-200">
+                    {orderContext.phleboName}
+                    {orderContext.phleboNumber ? ` · ${orderContext.phleboNumber}` : ""}
+                  </span>
+                </div>
+              )}
+              {orderContext.internalNotes && (
+                <div>
+                  <div className="text-zinc-500 mb-1">Internal notes</div>
+                  <pre className="text-zinc-300 bg-zinc-900/50 rounded p-2 whitespace-pre-wrap font-sans text-[11px] leading-relaxed">
+                    {orderContext.internalNotes}
+                  </pre>
+                </div>
+              )}
+              {orderContext.notes && (
+                <div>
+                  <div className="text-zinc-500 mb-1">Order notes</div>
+                  <pre className="text-zinc-300 bg-zinc-900/50 rounded p-2 whitespace-pre-wrap font-sans text-[11px] leading-relaxed">
+                    {orderContext.notes}
+                  </pre>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* W3 — Why this task? */}
         <WhyThisTask metadata={displayedTask.metadata} />

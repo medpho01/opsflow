@@ -5,7 +5,10 @@
  */
 
 import prisma from "@/lib/db/client";
-import labstack from "@/lib/db/labstack";
+// Database source handlers are poller infrastructure → worker pool.
+// Isolates them from the API request pool so a handler hanging on a
+// stuck labstack table can't starve user-facing requests.
+import { labstackWorker as labstack } from "@/lib/db/labstack";
 import {
   ISourceHandler,
   SourceEntity,

@@ -24,7 +24,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSessionFromRequest } from "@/lib/auth/session";
 import prisma from "@/lib/db/client";
-import labstack from "@/lib/db/labstack";
+import labstack, { labstackOr } from "@/lib/db/labstack";
 import { TaskStatus, UserRole } from "@prisma/client";
 
 interface StoreRow {
@@ -123,9 +123,15 @@ export async function GET(request: NextRequest) {
   let store: StoreRow | null = null;
   if (storeId !== null) {
     try {
-      const rows = await labstack.$queryRawUnsafe<StoreRow[]>(
-        `SELECT id, "storeName", city FROM public."Store" WHERE id = $1 LIMIT 1`,
-        storeId
+      // labstackOr swallows timeouts + rejections and trips the breaker
+      // on repeated failure, so subsequent loads skip labstack entirely
+      // while it's stuck. Falls back to empty array → store=null below.
+      const rows = await labstackOr(
+        labstack.$queryRawUnsafe<StoreRow[]>(
+          `SELECT id, "storeName", city FROM public."Store" WHERE id = $1 LIMIT 1`,
+          storeId
+        ),
+        [] as StoreRow[],
       );
       store = rows[0] ?? null;
     } catch {
@@ -261,9 +267,12 @@ export async function GET(request: NextRequest) {
     let nameMap = new Map<number, { storeName: string; city: string | null }>();
     if (ids.length > 0) {
       try {
-        const storeRows = await labstack.$queryRawUnsafe<StoreRow[]>(
-          `SELECT id, "storeName", city FROM public."Store" WHERE id = ANY($1::int[])`,
-          ids
+        const storeRows = await labstackOr(
+          labstack.$queryRawUnsafe<StoreRow[]>(
+            `SELECT id, "storeName", city FROM public."Store" WHERE id = ANY($1::int[])`,
+            ids
+          ),
+          [] as StoreRow[],
         );
         nameMap = new Map(storeRows.map((s) => [s.id, { storeName: s.storeName, city: s.city }]));
       } catch {

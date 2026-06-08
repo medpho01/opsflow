@@ -17,7 +17,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSessionFromRequest } from "@/lib/auth/session";
 import prisma from "@/lib/db/client";
-import labstack from "@/lib/db/labstack";
+import labstack, { labstackOr } from "@/lib/db/labstack";
 import { Prisma, UserRole } from "@prisma/client";
 import { getRangeStart } from "../_helpers";
 
@@ -148,9 +148,15 @@ export async function GET(request: NextRequest) {
     const storeIds = aggRows.map((r) => r.storeId).filter((id): id is number => id !== null);
     const storeNameById = new Map<number, string>();
     if (storeIds.length > 0) {
-      const stores = await labstack.$queryRaw<Array<{ id: number; storeName: string }>>`
-        SELECT id, "storeName" FROM public."Store" WHERE id = ANY(${storeIds}::int[])
-      `;
+      // labstackOr — store-name resolution is a nice-to-have; if labstack
+      // is stuck we skip it and breakdown rows render with storeId
+      // numerics instead of holding the analytics page hostage.
+      const stores = await labstackOr(
+        labstack.$queryRaw<Array<{ id: number; storeName: string }>>`
+          SELECT id, "storeName" FROM public."Store" WHERE id = ANY(${storeIds}::int[])
+        `,
+        [] as Array<{ id: number; storeName: string }>,
+      );
       for (const s of stores) storeNameById.set(s.id, s.storeName);
     }
 

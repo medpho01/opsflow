@@ -16,7 +16,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSessionFromRequest } from "@/lib/auth/session";
 import prisma from "@/lib/db/client";
-import labstack from "@/lib/db/labstack";
+import labstack, { labstackOr } from "@/lib/db/labstack";
 import { UserRole } from "@prisma/client";
 
 interface RawStore {
@@ -47,25 +47,29 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  try {
-    const stores = allowedStoreIds === null
-      ? await labstack.$queryRawUnsafe<RawStore[]>(
+  // labstackOr returns null on timeout / breaker-open / any rejection so
+  // a slow or stuck labstack degrades to 503 instead of holding the
+  // request open until the pool timeout (and dragging other requests
+  // along with it).
+  const stores = await labstackOr(
+    allowedStoreIds === null
+      ? labstack.$queryRawUnsafe<RawStore[]>(
           `SELECT id, "storeName", city FROM public."Store" ORDER BY "storeName" ASC LIMIT 200`
         )
-      : await labstack.$queryRawUnsafe<RawStore[]>(
+      : labstack.$queryRawUnsafe<RawStore[]>(
           // pg expands an int[] param via ANY($1::int[])
           `SELECT id, "storeName", city FROM public."Store"
             WHERE id = ANY($1::int[]) ORDER BY "storeName" ASC LIMIT 200`,
           allowedStoreIds
-        );
-    return NextResponse.json({ stores });
-  } catch (err) {
-    // Surface the failure rather than silently returning "no stores".
-    // The UI can distinguish the two by checking the response status.
-    console.error("[/api/stores] Query failed:", err);
+        ),
+    null,
+  );
+
+  if (stores === null) {
     return NextResponse.json(
-      { error: "Failed to fetch stores", details: err instanceof Error ? err.message : String(err) },
-      { status: 500 }
+      { error: "Labstack temporarily unavailable", code: "LABSTACK_TIMEOUT" },
+      { status: 503 },
     );
   }
+  return NextResponse.json({ stores });
 }

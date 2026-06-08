@@ -154,15 +154,114 @@ export async function labstackWorkerQuery<T>(sql: string, params: unknown[] = []
   return labstackWorker.$queryRawUnsafe<T[]>(sql, ...params);
 }
 
+// ── Circuit breaker ───────────────────────────────────────────────────
+//
+// After N failures (timeout OR rejection) within WINDOW, the breaker
+// trips and every subsequent labstackOr call returns its fallback
+// immediately for OPEN_DURATION — no further labstack traffic.
+//
+// Why: during the June 2026 SLRU storm, every dashboard request
+// continued retrying labstack and piling new doomed queries onto the
+// already-stuck table. A breaker would have noticed after 5 timeouts
+// and stopped contributing load until labstack recovered.
+//
+// Tunables (env-overridable for ops control during incidents):
+//   LABSTACK_BREAKER_FAILURE_THRESHOLD   default 5
+//   LABSTACK_BREAKER_WINDOW_MS           default 30_000
+//   LABSTACK_BREAKER_OPEN_DURATION_MS    default 30_000
+//
+// One breaker per pool name ("api" / "worker") so an API breaker doesn't
+// disable the poller and vice versa.
+const BREAKER_FAILURE_THRESHOLD = parseInt(
+  process.env.LABSTACK_BREAKER_FAILURE_THRESHOLD ?? "5", 10,
+);
+const BREAKER_WINDOW_MS = parseInt(
+  process.env.LABSTACK_BREAKER_WINDOW_MS ?? "30000", 10,
+);
+const BREAKER_OPEN_DURATION_MS = parseInt(
+  process.env.LABSTACK_BREAKER_OPEN_DURATION_MS ?? "30000", 10,
+);
+
+interface BreakerState {
+  failures: number[];      // ms epoch timestamps of recent failures
+  trippedUntil: number;    // ms epoch; 0 = closed
+}
+const breakers = new Map<string, BreakerState>();
+
+function getBreaker(key: string): BreakerState {
+  let s = breakers.get(key);
+  if (!s) {
+    s = { failures: [], trippedUntil: 0 };
+    breakers.set(key, s);
+  }
+  return s;
+}
+
+function isBreakerOpen(key: string): boolean {
+  const s = breakers.get(key);
+  if (!s || s.trippedUntil === 0) return false;
+  if (Date.now() >= s.trippedUntil) {
+    // Half-open: clear trip, allow next call to test recovery. If it
+    // fails the failure counter trips again immediately.
+    s.trippedUntil = 0;
+    s.failures = [];
+    return false;
+  }
+  return true;
+}
+
+function recordFailure(key: string): void {
+  const now = Date.now();
+  const s = getBreaker(key);
+  s.failures = s.failures.filter((t) => now - t < BREAKER_WINDOW_MS);
+  s.failures.push(now);
+  if (s.failures.length >= BREAKER_FAILURE_THRESHOLD && s.trippedUntil === 0) {
+    s.trippedUntil = now + BREAKER_OPEN_DURATION_MS;
+    s.failures = [];
+    console.warn(
+      `[labstack] circuit breaker '${key}' tripped — skipping labstack for ${BREAKER_OPEN_DURATION_MS / 1000}s`,
+    );
+  }
+}
+
+function recordSuccess(key: string): void {
+  const s = breakers.get(key);
+  if (!s) return;
+  // A successful call clears the failure window — recovery is fast
+  // once labstack is healthy.
+  if (s.failures.length > 0) s.failures = [];
+}
+
+/** Expose breaker state for /api/health-style probes. */
+export function getLabstackBreakerState(): Record<string, { open: boolean; reopensInMs: number; recentFailures: number }> {
+  const out: Record<string, { open: boolean; reopensInMs: number; recentFailures: number }> = {};
+  const now = Date.now();
+  for (const [key, s] of breakers) {
+    out[key] = {
+      open: s.trippedUntil > now,
+      reopensInMs: Math.max(0, s.trippedUntil - now),
+      recentFailures: s.failures.filter((t) => now - t < BREAKER_WINDOW_MS).length,
+    };
+  }
+  return out;
+}
+
 /**
- * Race a labstack query against a timeout. Returns the fallback (default
- * `null`) if the query doesn't complete within `ms` (default 5000).
+ * Race a labstack query against a timeout AND a circuit breaker.
+ * Returns the fallback when:
+ *   - the breaker is open for this pool (no actual labstack call made)
+ *   - the query doesn't complete within `ms` (default 5000)
+ *   - the query rejects with any error
  *
- * Use at every labstack call site in API routes — when labstack is slow
- * or stuck (lock contention, network blip, etc.), the request degrades
- * gracefully instead of holding a connection slot and timing out at the
- * pool layer. The original promise keeps running in the background and
- * eventually settles; we just stop waiting for it.
+ * Use at every labstack call site in API routes — when labstack is slow,
+ * stuck, or unreachable, the request degrades gracefully instead of
+ * pinning a connection slot and cascading into pool exhaustion. The
+ * original promise keeps running in the background and eventually
+ * settles; we just stop waiting for it.
+ *
+ * The breaker key defaults to "api". Worker-pool callers should pass
+ * { breakerKey: "worker" } so an API failure storm doesn't disable the
+ * poller (and vice versa).
  *
  * Example:
  *   const order = await labstackOr(
@@ -175,13 +274,37 @@ export async function labstackOr<T>(
   promise: Promise<T>,
   fallback: T,
   ms: number = DEFAULT_QUERY_TIMEOUT_MS,
+  opts: { breakerKey?: string } = {},
 ): Promise<T> {
+  const breakerKey = opts.breakerKey ?? "api";
+
+  if (isBreakerOpen(breakerKey)) {
+    // Don't even start the call. The promise the caller passed has
+    // already been created (we can't stop that), but we drop our wait
+    // immediately and let it settle into the void.
+    promise.catch(() => {}); // suppress unhandled-rejection warnings
+    return fallback;
+  }
+
+  const TIMEOUT = Symbol("labstack-timeout");
   let timer: NodeJS.Timeout | undefined;
-  const timeout = new Promise<T>((resolve) => {
-    timer = setTimeout(() => resolve(fallback), ms);
+  const timeout = new Promise<typeof TIMEOUT>((resolve) => {
+    timer = setTimeout(() => resolve(TIMEOUT), ms);
   });
+
   try {
-    return await Promise.race([promise, timeout]);
+    const result = await Promise.race([promise, timeout]);
+    if (result === TIMEOUT) {
+      recordFailure(breakerKey);
+      // Original promise still running — swallow whatever it eventually does.
+      promise.catch(() => {});
+      return fallback;
+    }
+    recordSuccess(breakerKey);
+    return result as T;
+  } catch {
+    recordFailure(breakerKey);
+    return fallback;
   } finally {
     if (timer) clearTimeout(timer);
   }

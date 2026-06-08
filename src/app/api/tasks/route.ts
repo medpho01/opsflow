@@ -22,7 +22,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSessionFromRequest } from "@/lib/auth/session";
 import prisma from "@/lib/db/client";
-import labstack from "@/lib/db/labstack";
+import labstack, { labstackOr } from "@/lib/db/labstack";
 import { TaskStatus, TaskPriority, UserRole } from "@prisma/client";
 
 // Whitelist of valid sort fields (Phase 1 MVP)
@@ -602,9 +602,15 @@ export async function GET(request: NextRequest) {
   const storeMap = new Map<number, StoreLite>();
   if (storeIdsForLookup.length > 0) {
     try {
-      const rows = await labstack.$queryRawUnsafe<StoreLite[]>(
-        `SELECT id, "storeName", city FROM public."Store" WHERE id = ANY($1::int[])`,
-        storeIdsForLookup
+      // labstackOr — if the store lookup takes >5s (e.g. labstack stuck
+      // on a lock), the join silently degrades and the row renders with
+      // store=null instead of holding the whole task list hostage.
+      const rows = await labstackOr(
+        labstack.$queryRawUnsafe<StoreLite[]>(
+          `SELECT id, "storeName", city FROM public."Store" WHERE id = ANY($1::int[])`,
+          storeIdsForLookup
+        ),
+        [] as StoreLite[],
       );
       rows.forEach((r) => storeMap.set(r.id, r));
     } catch (e) {

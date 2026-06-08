@@ -36,7 +36,9 @@
  * column locally. Do not blanket-cast at the fetcher level.
  * ────────────────────────────────────────────────────────────────────
  */
-import { labstackQuery } from "@/lib/db/labstack";
+// Poller fetchers run on the WORKER pool (separate from API). A worker
+// outage or a slow labstack here will not starve API request slots.
+import { labstackWorkerQuery as labstackQuery } from "@/lib/db/labstack";
 
 export interface RawOrder {
   id: number;

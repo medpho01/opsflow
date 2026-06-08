@@ -4,7 +4,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSessionFromRequest } from "@/lib/auth/session";
 import prisma from "@/lib/db/client";
-import labstack from "@/lib/db/labstack";
+import labstack, { labstackOr } from "@/lib/db/labstack";
 
 interface RawOrderDetail {
   id: number;
@@ -44,7 +44,9 @@ export async function GET(
   // would double-shift by 5h30 and the drawer would show wall-clock times
   // 5h30 earlier than the task row (which goes through the cast-free engine
   // fetcher). Mirrors the engine's labstack.ts query exactly.
-  const rows = await labstack.$queryRawUnsafe<RawOrderDetail[]>(`
+  // labstackOr — drawer fetches degrade to 503 if labstack is stuck,
+  // rather than holding the request open until the user gives up.
+  const rows = await labstackOr(labstack.$queryRawUnsafe<RawOrderDetail[]>(`
     SELECT
       o.id,
       o."orderType",
@@ -69,9 +71,15 @@ export async function GET(
     LEFT JOIN public."Store" s ON s.id = o."storeId"
     WHERE o.id = $1
     LIMIT 1
-  `, orderId);
+  `, orderId), null);
 
-  if (!rows || rows.length === 0) {
+  if (rows === null) {
+    return NextResponse.json(
+      { error: "Labstack temporarily unavailable", code: "LABSTACK_TIMEOUT" },
+      { status: 503 },
+    );
+  }
+  if (rows.length === 0) {
     return NextResponse.json({ error: "Order not found" }, { status: 404 });
   }
 

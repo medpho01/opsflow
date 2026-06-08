@@ -30,7 +30,9 @@
  * operators can see "R5 retired 218" on the dashboard.
  */
 import prisma from "@/lib/db/client";
-import labstack from "@/lib/db/labstack";
+// Retirer is a poller-side housekeeping job → worker pool, isolated
+// from API request slots.
+import { labstackWorker as labstack } from "@/lib/db/labstack";
 import { TaskStatus } from "@prisma/client";
 
 const TERMINAL_TASK_STATUSES: TaskStatus[] = [

@@ -164,14 +164,30 @@ export async function GET(request: NextRequest) {
     lastPoll,
     sourceStats,
   ] = await Promise.all([
-    // 1. Labstack active-order count via a real COUNT(*). One index scan
-    //    over the status filter — no multi-join, no row materialisation.
-    //    Wrapped so a labstack outage doesn't take down the whole dashboard.
-    labstack.$queryRaw<Array<{ count: bigint }>>`
-      SELECT COUNT(*)::bigint AS count
-      FROM public."Order"
-      WHERE "orderStatus" NOT IN ('CANCELED', 'REPORT_DELIVERED', 'PATIENT_MISSED')
-    `.catch((err: unknown) => {
+    // 1. Labstack active-order count via an approximate (instant) read
+    //    from pg_class.reltuples instead of a real COUNT(*). The exact
+    //    COUNT was found to hang for 70+ hours during a MultiXact SLRU
+    //    storm on the labstack DB (every dashboard load piled a new
+    //    doomed query onto the lock, taking OpsFlow down with it).
+    //    reltuples is updated by ANALYZE and is accurate to within a
+    //    percent or two for a dashboard tile — good enough.
+    //
+    //    Additional 5-second timeout race wraps the call so even an
+    //    approximate fetch can't take the whole endpoint down if labstack
+    //    is fully unreachable.
+    Promise.race([
+      labstack.$queryRaw<Array<{ count: bigint }>>`
+        SELECT reltuples::bigint AS count
+        FROM pg_class
+        WHERE relname = 'Order'
+      `,
+      new Promise<null>((resolve) =>
+        setTimeout(() => {
+          labstackError = "labstack timed out after 5s — returning null for active-order count";
+          resolve(null);
+        }, 5000),
+      ),
+    ]).catch((err: unknown) => {
       labstackError = err instanceof Error ? err.message : String(err);
       return null;
     }),

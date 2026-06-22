@@ -56,6 +56,8 @@ import prisma from "@/lib/db/client";
 import { UserRole } from "@prisma/client";
 import { evaluateTrigger, type TriggerCheck } from "@/lib/engine/taskCreator";
 import { fetchAllActiveOrders } from "@/lib/engine/labstack";
+import { labstackOr } from "@/lib/db/labstack";
+import type { RawOrder } from "@/lib/engine/labstack";
 import { renderTitleTemplate } from "@/lib/templating/title";
 import { triggerConditionSchema, zodErrorToResponse } from "@/lib/validation/task-rules";
 import { newRequestId, logAndBuildErrorBody } from "@/lib/observability/request-id";
@@ -141,10 +143,36 @@ export async function POST(request: NextRequest) {
     }
 
     // ─── Fetch sample orders ──────────────────────────────────────────────
-    // Today the simulator runs against fetchAllActiveOrders (Order table)
-    // — that's where every active rule's data source ultimately points
-    // until the multi-source poller comes online.
-    const allOrders = await fetchAllActiveOrders();
+    // Simulate dry-runs against recent labstack orders. Two perf protections:
+    //
+    // 1. since cursor: fetch only orders touched in the last 7 days. The
+    //    unbounded fetchAllActiveOrders() scans the full Order table —
+    //    cheap on a healthy labstack, devastating when labstack is stuck
+    //    on a lock. Simulate is a UI dry-run; a 7-day sample is plenty
+    //    representative and avoids hitting the entire history.
+    //
+    // 2. labstackOr ceiling (10s, worker pool): if the bounded query
+    //    still hangs (labstack outage / network), return a clean JSON 503
+    //    instead of letting nginx 504 with an HTML body the client can't
+    //    parse. The simulator dialog now shows "try again in a moment"
+    //    instead of a parse-error stack.
+    const since = new Date(Date.now() - 7 * 24 * 60 * 60_000);
+    const allOrders = await labstackOr<RawOrder[] | null>(
+      fetchAllActiveOrders(since),
+      null,
+      10_000,
+      { breakerKey: "worker" },
+    );
+    if (allOrders === null) {
+      return NextResponse.json(
+        {
+          error: "Source database temporarily unavailable — try simulate again in a moment",
+          code: "LABSTACK_TIMEOUT",
+          requestId,
+        },
+        { status: 503 },
+      );
+    }
     const sample = allOrders.slice(0, parsed.limit);
 
     // ─── Active dedup keys ────────────────────────────────────────────────

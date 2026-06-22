@@ -1838,8 +1838,24 @@ function SimulatorModal({
       body: JSON.stringify(request),
     })
       .then(async (r) => {
-        const body = await r.json();
-        if (!r.ok) throw new Error(body?.details?.reason || body?.error || `HTTP ${r.status}`);
+        // Safe-parse — when the server times out or 502s, the response
+        // is an HTML error page and r.json() throws "Unexpected token <"
+        // which leaks into the dialog as a useless error. Try JSON; fall
+        // back to a status-based message so the user sees something
+        // actionable like "503 — Labstack temporarily unavailable".
+        const text = await r.text();
+        let body: { error?: string; details?: { reason?: string }; [k: string]: unknown } | null = null;
+        try { body = text ? JSON.parse(text) : null; } catch { /* HTML or empty */ }
+        if (!r.ok) {
+          const msg =
+            body?.details?.reason ||
+            body?.error ||
+            (r.status === 503
+              ? "Source database is temporarily unavailable — try again in a moment"
+              : `Server error (${r.status})`);
+          throw new Error(msg);
+        }
+        if (!body) throw new Error("Simulator returned a non-JSON response");
         return body;
       })
       .then((d) => { if (!cancelled) setData(d); })

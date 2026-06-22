@@ -135,18 +135,23 @@ function computeViewBucket(
 ): ViewBucket {
   if (TERMINAL_STATUSES_FOR_BUCKET.has(status)) return "done";
 
-  const stuckGraceMs = 30 * 60 * 1000;
   const nowDay = istDayKey(now);
   const tomorrowDay = istDayKey(new Date(now.getTime() + 24 * 60 * 60 * 1000));
 
   if (appt && !isNaN(appt.getTime())) {
     const apptDay = istDayKey(appt);
-    const pastGrace = now.getTime() - appt.getTime() > stuckGraceMs;
-
-    if (pastGrace) return "stuck"; // missed appt, lifecycle didn't advance
+    // Day-based bucketing: the appointment's IST calendar day decides the
+    // bucket, NOT whether the wall clock has already passed it. A 9 AM
+    // appointment viewed at 2 PM is still "today" (overdue) — operators
+    // need today's full workload in Today, not watching it drain into Stuck
+    // as the day progresses. Stuck is reserved for PRIOR-day appointments
+    // that never resolved (the StuckView's own today/yesterday/older age
+    // chips then sub-group those). Same-day overdue surfaces in TodayView's
+    // NOW section.
     if (apptDay === nowDay) return "today";
     if (apptDay === tomorrowDay) return "tomorrow";
-    return "future";
+    // Different day: prior-day-and-past → stuck; future day → future.
+    return appt.getTime() < now.getTime() ? "stuck" : "future";
   }
 
   // No appointment → fall back to createdAt for day bucketing
@@ -503,28 +508,26 @@ export async function GET(request: NextRequest) {
   const isViewFilter = !!viewParam;
   if (isViewFilter) {
     const wanted = new Set(viewParam!.split(",").map((v) => v.trim()));
-    const stuckGraceMs = 30 * 60 * 1000;
     // IST midnight today, tomorrow, day-after — as UTC instants.
     const istNowMs = now.getTime() + IST_OFFSET_MS;
     const istMidnightTodayMs = Math.floor(istNowMs / 86_400_000) * 86_400_000;
     const todayStart = new Date(istMidnightTodayMs - IST_OFFSET_MS);
     const tomorrowStart = new Date(todayStart.getTime() + 86_400_000);
     const dayAfterTomorrowStart = new Date(todayStart.getTime() + 2 * 86_400_000);
-    const stuckCutoff = new Date(now.getTime() - stuckGraceMs);
     const terminalStatuses: TaskStatus[] = [
       TaskStatus.COMPLETED, TaskStatus.CANCELLED, TaskStatus.RESOLVED,
     ];
 
+    // Day-based — mirrors computeViewBucket. An appointment's IST calendar
+    // day decides the bucket, not whether the clock has passed it.
     const orClauses: Record<string, unknown>[] = [];
     if (wanted.has("today")) {
-      // appt in [todayStart, tomorrowStart) AND appt+30min not past AND not terminal
-      // OR no appt AND createdAt in [todayStart, tomorrowStart) AND not terminal
+      // appt anywhere in today's IST window (overdue or upcoming), not terminal
+      // OR no appt AND createdAt today.
       orClauses.push({
         status: { notIn: terminalStatuses },
         OR: [
-          {
-            appointmentTime: { gte: todayStart, lt: tomorrowStart, gt: stuckCutoff },
-          },
+          { appointmentTime: { gte: todayStart, lt: tomorrowStart } },
           {
             appointmentTime: null,
             createdAt: { gte: todayStart, lt: tomorrowStart },
@@ -545,10 +548,12 @@ export async function GET(request: NextRequest) {
       });
     }
     if (wanted.has("stuck")) {
+      // Prior-day appointments still open (before today's IST midnight),
+      // or no-appt tasks created before today.
       orClauses.push({
         status: { notIn: terminalStatuses },
         OR: [
-          { appointmentTime: { lt: stuckCutoff } },
+          { appointmentTime: { lt: todayStart } },
           { appointmentTime: null, createdAt: { lt: todayStart } },
         ],
       });

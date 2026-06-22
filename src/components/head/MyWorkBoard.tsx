@@ -1063,31 +1063,23 @@ export default function MyWorkBoard({ currentUser }: { currentUser: CurrentUser 
 
   const byBucket = useMemo(() => {
     const t = { today: [] as Task[], tomorrow: [] as Task[], stuck: [] as Task[] };
-    const nowMs = now.getTime();
     for (const x of filteredTasks) {
       // COMPLETED/CANCELLED/RESOLVED tasks: route to today (they appear
       // in Today's "Done today" strip).
       if (x.viewBucket === "done") { t.today.push(x); continue; }
 
-      // Server's "stuck" bucket: past appt + 30min grace OR genuinely
-      // stale — direct to Stuck tab.
+      // Server's "stuck" bucket: prior-day appointment still open (or a
+      // no-appt task created before today) — direct to Stuck tab.
       if (x.viewBucket === "stuck") { t.stuck.push(x); continue; }
 
-      // Client-side override: a task whose appointment is already in
-      // the past but the server still calls "today" (because the 30-min
-      // grace hasn't elapsed) is operationally stuck — the appointment
-      // moment has passed without anyone completing the work. Route to
-      // Stuck so Done stays exclusively for agent-completed tasks and
-      // these missed appts surface where they belong: the recovery
-      // queue. (Server's grace exists to protect post-appt-triggered
-      // rules like R4 from being born-stuck; if those should also
-      // appear in Stuck, the user can confirm and we'll widen the
-      // override.)
-      if (x.viewBucket === "today" && x.appointmentTime) {
-        const apptMs = new Date(x.appointmentTime).getTime();
-        if (apptMs < nowMs) { t.stuck.push(x); continue; }
-      }
-
+      // Day-based bucketing: bucketing is decided by the appointment's IST
+      // calendar day server-side (computeViewBucket), NOT by whether the
+      // clock has passed it. A same-day appointment that's already overdue
+      // stays in Today (it surfaces in TodayView's NOW/overdue section) so
+      // the team sees today's full workload all day instead of watching it
+      // drain into Stuck. The old clock-based override that pushed
+      // past-appointment-today tasks to Stuck has been removed — it emptied
+      // Today as the day progressed.
       if (x.viewBucket === "today") t.today.push(x);
       else if (x.viewBucket === "tomorrow") t.tomorrow.push(x);
     }

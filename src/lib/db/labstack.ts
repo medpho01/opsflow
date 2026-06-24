@@ -48,6 +48,14 @@ const API_POOL_LIMIT = parseInt(process.env.LABSTACK_API_POOL ?? "10", 10);
 const WORKER_POOL_LIMIT = parseInt(process.env.LABSTACK_WORKER_POOL ?? "5", 10);
 const DEFAULT_POOL_TIMEOUT_S = parseInt(process.env.LABSTACK_POOL_TIMEOUT_S ?? "20", 10);
 const DEFAULT_QUERY_TIMEOUT_MS = parseInt(process.env.LABSTACK_QUERY_TIMEOUT_MS ?? "5000", 10);
+// Server-side statement_timeout (ms) applied to every labstack connection.
+// This is the backstop that turns a wedged query into a self-cancelling
+// one: without it, a query that hangs on a labstack lock storm runs as a
+// server-side zombie indefinitely (the June 2026 incident accumulated 30
+// such zombies over 5 days). With it, Postgres aborts the statement after
+// the timeout and frees the backend. 15s is generous — a healthy labstack
+// answers the poller's bounded queries in well under a second.
+const STATEMENT_TIMEOUT_MS = parseInt(process.env.LABSTACK_STATEMENT_TIMEOUT_MS ?? "15000", 10);
 
 function resolveLabstackBaseUrl(): string {
   const explicit = process.env.SOURCE_DATABASE_URL;
@@ -79,11 +87,17 @@ function urlWithPool(baseUrl: string, connLimit: number): string {
     if (!u.searchParams.has("pool_timeout")) {
       u.searchParams.set("pool_timeout", String(DEFAULT_POOL_TIMEOUT_S));
     }
+    // Server-side statement_timeout via libpq `options`. Postgres aborts any
+    // statement exceeding this, so a wedged query can't become a zombie.
+    // Only set if the URL doesn't already carry an `options` value.
+    if (!u.searchParams.has("options")) {
+      u.searchParams.set("options", `-c statement_timeout=${STATEMENT_TIMEOUT_MS}`);
+    }
     return u.toString();
   } catch {
     // URL parsing failed (e.g. malformed env). Best-effort append.
     const sep = baseUrl.includes("?") ? "&" : "?";
-    return `${baseUrl}${sep}connection_limit=${connLimit}&pool_timeout=${DEFAULT_POOL_TIMEOUT_S}`;
+    return `${baseUrl}${sep}connection_limit=${connLimit}&pool_timeout=${DEFAULT_POOL_TIMEOUT_S}&options=-c%20statement_timeout%3D${STATEMENT_TIMEOUT_MS}`;
   }
 }
 

@@ -40,6 +40,28 @@
 // outage or a slow labstack here will not starve API request slots.
 import { labstackWorkerQuery as labstackQuery } from "@/lib/db/labstack";
 
+// ── Appointment-time window ───────────────────────────────────────────
+// CRITICAL (June 2026 incident): full-table scans of public."Order" wedge
+// indefinitely when the labstack replica is in a MultiXact SLRU lock storm
+// — each scan touches multi-locked rows (xmax set) whose visibility check
+// needs a MultiXact SLRU lookup that's blocked behind WAL replay. Verified
+// empirically: an unbounded scan hung for days, but a narrow query bounded
+// on the indexed appointmentTime column returned instantly.
+//
+// So every poller fetch is bounded to a recent appointmentTime window. The
+// taskCreator already ignores orders >10 days past / >3 days future, so a
+// tight window loses no operationally-relevant work — it just keeps the
+// query on the indexed fast path and off the locked rows. Tunable via env.
+const FETCH_LOOKBACK_DAYS = parseInt(process.env.LABSTACK_FETCH_LOOKBACK_DAYS ?? "3", 10);
+const FETCH_LOOKAHEAD_DAYS = parseInt(process.env.LABSTACK_FETCH_LOOKAHEAD_DAYS ?? "10", 10);
+
+// SQL fragment bounding o."appointmentTime" to the window. Day counts come
+// from env/constants (parsed as ints) — never user input — so inlining
+// them into the INTERVAL literal is injection-safe.
+const APPT_WINDOW_SQL =
+  `o."appointmentTime" >= NOW() - INTERVAL '${FETCH_LOOKBACK_DAYS} days' ` +
+  `AND o."appointmentTime" < NOW() + INTERVAL '${FETCH_LOOKAHEAD_DAYS} days'`;
+
 export interface RawOrder {
   id: number;
   orderType: string;
@@ -140,6 +162,7 @@ export async function fetchAllActiveOrders(since?: Date | null): Promise<RawOrde
     LEFT JOIN public."Lab" l ON l.id = o."labId"
     LEFT JOIN public."Store" s ON s.id = o."storeId"
     WHERE o."orderStatus" NOT IN ('CANCELED', 'REPORT_DELIVERED', 'PATIENT_MISSED')
+      AND ${APPT_WINDOW_SQL}
       AND (
         o."updatedAt"       >= $1
         OR o."statusUpdatedAt" >= $1
@@ -175,6 +198,7 @@ export async function fetchAllActiveOrders(since?: Date | null): Promise<RawOrde
     LEFT JOIN public."Lab" l ON l.id = o."labId"
     LEFT JOIN public."Store" s ON s.id = o."storeId"
     WHERE o."orderStatus" NOT IN ('CANCELED', 'REPORT_DELIVERED', 'PATIENT_MISSED')
+      AND ${APPT_WINDOW_SQL}
     ORDER BY o."appointmentTime" ASC
   `);
 }
@@ -226,6 +250,7 @@ export async function fetchActiveOrdersByStatus(
     LEFT JOIN public."Store" s ON s.id = o."storeId"
     WHERE o."orderStatus"::text IN (${placeholders})
       AND o."orderStatus" NOT IN ('CANCELED', 'REPORT_DELIVERED', 'PATIENT_MISSED')
+      AND ${APPT_WINDOW_SQL}
     ORDER BY o."statusUpdatedAt" ASC
     `,
     statuses

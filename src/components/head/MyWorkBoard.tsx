@@ -759,6 +759,9 @@ function StuckView({ tasks, now, agents, canReassign, onRowClick, onReassign }: 
 }) {
   const [ageFilter, setAgeFilter] = useState<"all" | "today" | "yesterday" | "older">("all");
   const [typeFilter, setTypeFilter] = useState<string>("all");
+  // Appointment-date sort direction. "oldest" (default) surfaces the
+  // longest-overdue first (most urgent to recover); "newest" flips it.
+  const [sortDir, setSortDir] = useState<"oldest" | "newest">("oldest");
 
   // Derive age bucket per task (today / yesterday / older) using IST day keys
   const nowDay = istDayKey(now);
@@ -784,15 +787,14 @@ function StuckView({ tasks, now, agents, canReassign, onRowClick, onReassign }: 
     return true;
   });
 
-  // Sort by oldest first (most urgent to resolve)
-  const ageOrder: Record<string, number> = { older: 0, yesterday: 1, today: 2 };
-  filtered.sort((a, b) => {
-    const da = ageOrder[ageOf(a)] - ageOrder[ageOf(b)];
-    if (da !== 0) return da;
-    const at = a.appointmentTime ? new Date(a.appointmentTime).getTime() : new Date(a.createdAt).getTime();
-    const bt = b.appointmentTime ? new Date(b.appointmentTime).getTime() : new Date(b.createdAt).getTime();
-    return at - bt;
-  });
+  // Sort purely by appointment date (falling back to createdAt when an
+  // appointment is missing), in the operator-chosen direction. Default
+  // "oldest" puts the longest-overdue first — the recovery priority.
+  const anchorMs = (t: Task) =>
+    t.appointmentTime ? new Date(t.appointmentTime).getTime() : new Date(t.createdAt).getTime();
+  filtered.sort((a, b) =>
+    sortDir === "oldest" ? anchorMs(a) - anchorMs(b) : anchorMs(b) - anchorMs(a)
+  );
 
   function ageStyle(age: string) {
     return {
@@ -851,6 +853,25 @@ function StuckView({ tasks, now, agents, canReassign, onRowClick, onReassign }: 
               }`}
             >
               {typeLabel(t)}
+            </button>
+          ))}
+        </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-xs text-zinc-500 uppercase tracking-wider mr-2">Sort</span>
+          {([
+            ["oldest", "Appointment: oldest first"],
+            ["newest", "Appointment: newest first"],
+          ] as const).map(([dir, label]) => (
+            <button
+              key={dir}
+              onClick={() => setSortDir(dir)}
+              className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${
+                sortDir === dir
+                  ? "bg-blue-600 border-blue-600 text-white"
+                  : "bg-zinc-900 border-zinc-700 text-zinc-400 hover:text-zinc-200"
+              }`}
+            >
+              {label}
             </button>
           ))}
         </div>
@@ -996,43 +1017,55 @@ export default function MyWorkBoard({ currentUser }: { currentUser: CurrentUser 
     setLoading(true);
     setError(null);
     try {
-      // Two parallel fetches so the 500-row cap can't be flooded by today's
-      // engine retirements:
-      //   (a) ACTIVE tasks (non-terminal status) — drives NOW / LATER /
-      //       TOMORROW / STUCK bucket counts and rows. Up to 500.
-      //   (b) DONE-TODAY tasks (terminal status, completedAt today IST) —
-      //       drives the "Completed by team" + "Auto-closed by engine"
-      //       strips below the Today view.
+      // Per-view fetches — one bounded query per bucket so no bucket can
+      // starve another at the row cap.
       //
-      // History: a single combined fetch worked until the auto-retire change
-      // started CANCELLING hundreds of stale tasks per cycle. With sortBy=
-      // appointmentTime asc, those old-appt CANCELLED rows filled the 500
-      // slot first and pushed today's BREACHED / CREATED tasks out of the
-      // response entirely — so the Stuck tab showed ~4 instead of 133+.
-      // Splitting the fetch keeps each pile bounded independently.
-      const activeStatuses = "CREATED,ASSIGNED,IN_PROGRESS,BLOCKED,BREACHED,REASSIGNED";
+      // History of this bug: a single `status=<active>&limit=500&sortBy=
+      // appointmentTime asc` fetch fed every bucket. Sorted by appointment
+      // ascending, the hundreds of STUCK tasks (earliest appointments)
+      // consumed the entire 500 cap before the query ever reached today's
+      // or tomorrow's later-dated appointments — so Tomorrow silently
+      // showed 0 even though the tasks existed. Splitting active-vs-done
+      // earlier only half-fixed it (stuck still starved today/tomorrow
+      // inside the active fetch).
+      //
+      // The real fix: use the server's `?view=` SQL filter (day-based,
+      // mirrors computeViewBucket) to fetch today / tomorrow / stuck
+      // independently. The view filter already excludes terminal statuses,
+      // so no status= param is needed for those three. Done-today is a
+      // separate terminal+completedAfter fetch for the strips below Today.
       const terminalStatuses = "COMPLETED,CANCELLED";
-      // completedAfter = today IST midnight as UTC ISO. Filters on the
-      // task's completedAt timestamp, so engine-retired tasks (createdAt
-      // weeks old but closed just now) are included.
+      // completedAfter = today IST midnight as UTC ISO. Filters on
+      // completedAt so engine-retired tasks (createdAt weeks old, closed
+      // just now) are included in the done strips.
       const istOffsetMs = 5.5 * 60 * 60 * 1000;
       const istNow = Date.now() + istOffsetMs;
       const istMidnight = Math.floor(istNow / 86_400_000) * 86_400_000 - istOffsetMs;
       const todayMidnightIso = new Date(istMidnight).toISOString();
 
-      const [activeRes, doneRes] = await Promise.all([
-        fetch(`/api/tasks?limit=500&sortBy=appointmentTime&sortOrder=asc&status=${activeStatuses}`),
-        fetch(`/api/tasks?limit=200&sortBy=createdAt&sortOrder=desc&status=${terminalStatuses}&completedAfter=${encodeURIComponent(todayMidnightIso)}`),
+      const [todayRes, tomorrowRes, stuckRes, doneRes] = await Promise.all([
+        fetch(`/api/tasks?view=today&limit=500&sortBy=appointmentTime&sortOrder=asc`),
+        fetch(`/api/tasks?view=tomorrow&limit=300&sortBy=appointmentTime&sortOrder=asc`),
+        fetch(`/api/tasks?view=stuck&limit=500&sortBy=appointmentTime&sortOrder=asc`),
+        fetch(`/api/tasks?view=done&limit=300&sortBy=createdAt&sortOrder=desc&status=${terminalStatuses}&completedAfter=${encodeURIComponent(todayMidnightIso)}`),
       ]);
-      if (!activeRes.ok) throw new Error(`HTTP ${activeRes.status} (active)`);
-      if (!doneRes.ok) throw new Error(`HTTP ${doneRes.status} (done)`);
-      const [activeData, doneData] = await Promise.all([activeRes.json(), doneRes.json()]);
-      // De-dup by id (defensive — the two queries' WHERE clauses are
-      // mutually exclusive on status, so overlap shouldn't happen, but a
-      // race during status transitions could cause one).
+      for (const [r, label] of [[todayRes, "today"], [tomorrowRes, "tomorrow"], [stuckRes, "stuck"], [doneRes, "done"]] as const) {
+        if (!r.ok) throw new Error(`HTTP ${r.status} (${label})`);
+      }
+      const [todayData, tomorrowData, stuckData, doneData] = await Promise.all([
+        todayRes.json(), tomorrowRes.json(), stuckRes.json(), doneRes.json(),
+      ]);
+      // Merge + de-dup by id. The view buckets are mutually exclusive, but
+      // a status transition between the parallel fetches could theoretically
+      // surface a task in two — dedup guards that.
       const seen = new Set<number>();
       const merged: Task[] = [];
-      for (const t of [...(activeData.tasks ?? []), ...(doneData.tasks ?? [])]) {
+      for (const t of [
+        ...(todayData.tasks ?? []),
+        ...(tomorrowData.tasks ?? []),
+        ...(stuckData.tasks ?? []),
+        ...(doneData.tasks ?? []),
+      ]) {
         if (seen.has(t.id)) continue;
         seen.add(t.id);
         merged.push(t);

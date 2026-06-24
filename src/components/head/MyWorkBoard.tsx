@@ -77,6 +77,9 @@ type Tab = "today" | "tomorrow" | "stuck";
 
 // ─── Constants ─────────────────────────────────────────────────────────
 const NOW_WINDOW_MIN = 90;
+// Appointments up to this many minutes in the past still count as "NOW"
+// (just slipped past, operator is likely on it). Anything older is OVERDUE.
+const NOW_PAST_GRACE_MIN = 15;
 const PREP_VISIBILITY_HOUR_IST = 16; // 4 PM IST — when tonight's prep becomes addressable
 const EARLY_MORNING_CUTOFF_HOUR_IST = 10; // appts before 10 AM count as "early"
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
@@ -465,33 +468,42 @@ function TodayView({ tasks, tomorrowTasks, now, agents, canReassign, onRowClick,
   // an engine bug that left appointmentTime null on every task, that meant
   // ALL tasks showed in NOW. Fixed defensively here so a missing field never
   // produces "everything is urgent" again.
+  const overdueTasks: Task[] = [];
   const nowTasks: Task[] = [];
   const laterTasks: Task[] = [];
   const doneTasks: Task[] = [];
+
+  // With day-based bucketing, Today holds the whole day — including
+  // appointments that already passed. Split three ways so NOW means what
+  // it says ("due in the next 90 min"):
+  //   OVERDUE  appt earlier today, already past (beyond a 15-min grace)
+  //   NOW      appt within [now − 15 min, now + 90 min]
+  //   LATER    appt later today (> now + 90 min)
+  const nowStartMin = nowMinIST - NOW_PAST_GRACE_MIN;
 
   for (const t of tasks) {
     if (t.viewBucket === "done") { doneTasks.push(t); continue; }
     const appt = t.appointmentTime ? new Date(t.appointmentTime) : null;
 
     if (!appt) {
-      // No appointment time → bucket by SLA urgency
+      // No appointment time → bucket by SLA urgency.
       const sla = new Date(t.slaDeadline);
       const slaMinFromNow = (sla.getTime() - now.getTime()) / 60_000;
-      if (slaMinFromNow <= NOW_WINDOW_MIN) {
-        nowTasks.push(t);                          // SLA is imminent or breached
+      if (slaMinFromNow < -NOW_PAST_GRACE_MIN) {
+        overdueTasks.push(t);                      // SLA already blown past grace
+      } else if (slaMinFromNow <= NOW_WINDOW_MIN) {
+        nowTasks.push(t);                          // SLA imminent
       } else {
-        laterTasks.push(t);                        // No appt + comfortable SLA → not urgent
+        laterTasks.push(t);                        // comfortable SLA → not urgent
       }
       continue;
     }
 
     const apptMin = istMinutesSinceMidnight(appt);
-    // Past-appt-but-active tasks have already been routed to byBucket.stuck
-    // at the top-level (see MyWorkBoard.byBucket memo), so they don't
-    // reach this loop with viewBucket=today. Surviving "today" tasks are
-    // future-appt (within today) and split between NOW and LATER.
-    if (apptMin < windowEndMin) {
-      nowTasks.push(t);                            // within next 90 min
+    if (apptMin < nowStartMin) {
+      overdueTasks.push(t);                        // appointment already passed today
+    } else if (apptMin <= windowEndMin) {
+      nowTasks.push(t);                            // within next 90 min (+15 min grace)
     } else {
       laterTasks.push(t);                          // later today
     }
@@ -513,6 +525,7 @@ function TodayView({ tasks, tomorrowTasks, now, agents, canReassign, onRowClick,
   const sortAnchor = (t: Task) =>
     t.appointmentTime ? new Date(t.appointmentTime).getTime() : new Date(t.slaDeadline).getTime();
   const byTime = (a: Task, b: Task) => sortAnchor(a) - sortAnchor(b);
+  overdueTasks.sort(byTime);
   nowTasks.sort(byTime);
   laterTasks.sort(byTime);
   doneTasks.sort(byTime);
@@ -539,6 +552,21 @@ function TodayView({ tasks, tomorrowTasks, now, agents, canReassign, onRowClick,
 
   return (
     <div className="space-y-4">
+
+      {/* OVERDUE — today's appointments whose time has already passed and
+          the work isn't done. Shown above NOW because they're the most
+          urgent. Only rendered when non-empty so a clean day stays calm. */}
+      {overdueTasks.length > 0 && (
+        <SectionCard
+          icon="⏰"
+          title="OVERDUE"
+          subtitle="appointment passed — needs action today"
+          count={overdueTasks.length}
+          countClass="bg-red-900 text-red-300"
+        >
+          {overdueTasks.map(t => <TaskRow key={t.id} task={t} now={now} agents={agents} onClick={() => onRowClick(t)} onReassign={onReassign} canReassign={canReassign} />)}
+        </SectionCard>
+      )}
 
       <SectionCard
         icon="⚡"

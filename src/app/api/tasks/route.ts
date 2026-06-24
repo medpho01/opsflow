@@ -514,8 +514,12 @@ export async function GET(request: NextRequest) {
     const todayStart = new Date(istMidnightTodayMs - IST_OFFSET_MS);
     const tomorrowStart = new Date(todayStart.getTime() + 86_400_000);
     const dayAfterTomorrowStart = new Date(todayStart.getTime() + 2 * 86_400_000);
+    // NB: the TaskStatus enum has no RESOLVED member — referencing it
+    // yields `undefined`, which makes Prisma throw on the notIn/in arrays
+    // (a 500 that only surfaced once ?view= started being called). Terminal
+    // = COMPLETED + CANCELLED only.
     const terminalStatuses: TaskStatus[] = [
-      TaskStatus.COMPLETED, TaskStatus.CANCELLED, TaskStatus.RESOLVED,
+      TaskStatus.COMPLETED, TaskStatus.CANCELLED,
     ];
 
     // Day-based — mirrors computeViewBucket. An appointment's IST calendar

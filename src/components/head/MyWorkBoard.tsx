@@ -560,9 +560,16 @@ function TodayView({ tasks, tomorrowTasks, now, agents, canReassign, onRowClick,
         <SectionCard
           icon="⏰"
           title="OVERDUE"
-          subtitle="appointment passed — needs action today"
+          subtitle="appointment passed — needs recovery today (click to expand)"
           count={overdueTasks.length}
           countClass="bg-red-900 text-red-300"
+          // Collapsed by default. On a busy day OVERDUE can hold hundreds of
+          // breached morning items; rendering them expanded above NOW buries
+          // the actual focus list and forces the operator to scroll past all
+          // of them. Keep it as a compact red banner at the top (the "these
+          // are on fire" signal stays visible) while NOW — the next-90-min
+          // work to keep ops under control — sits immediately below, open.
+          defaultOpen={false}
         >
           {overdueTasks.map(t => <TaskRow key={t.id} task={t} now={now} agents={agents} onClick={() => onRowClick(t)} onReassign={onReassign} canReassign={canReassign} />)}
         </SectionCard>

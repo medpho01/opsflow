@@ -13,6 +13,7 @@
 // node-cron imported dynamically below — webpackIgnore prevents webpack
 // from bundling its ESM files which use node:crypto/path/url.
 import prisma from "@/lib/db/client";
+import { probeLabstackHealthy } from "@/lib/db/labstack";
 import { fetchAllActiveOrders, fetchActiveOrdersByStatus } from "./labstack";
 import { evaluateAndCreateTasks, loadActiveRules, RuleCycleStats } from "./taskCreator";
 import { runSourceHealthWatcher } from "./sourceHealthWatcher";
@@ -142,9 +143,33 @@ export async function runPollCycle(): Promise<void> {
   let perRule: RuleCycleStats[] = [];
   let tasksRetired = 0;
   let retirementPerRule: RetirementStats[] = [];
+  let skippedPreflight = false;
 
   try {
     console.log(`[Poller] Cycle started at ${startedAt.toISOString()}`);
+
+    // 0. Pre-flight replica-health probe (Track B guard for the MultiXact
+    //    SLRU incident). A contended replica answers point lookups but hangs
+    //    FOREVER on the bulk Order scans below — and the hang is an
+    //    uninterruptible LWLock wait, so statement_timeout / pg_cancel can't
+    //    rescue it. Once issued, such a scan becomes a zombie that holds this
+    //    cycle's lock until the replica is restarted. So we probe with a tiny
+    //    bounded read first and SKIP the entire cycle (no incremental fetch,
+    //    no second-pass, no retirer, no SLA/health watchers — all of which
+    //    touch labstack) if the replica looks sick. The probe feeds the
+    //    circuit breaker, so repeated skips short-circuit cheaply.
+    const replicaHealthy = await probeLabstackHealthy();
+    if (!replicaHealthy) {
+      skippedPreflight = true;
+      status = "ERROR";
+      errorMessage =
+        "Skipped: labstack pre-flight probe failed — replica contended or unreachable. " +
+        "Not issuing bulk scans (they would wedge on an uninterruptible LWLock).";
+      console.warn(`[Poller] ${errorMessage}`);
+      // finally{} writes the PollingLog (with skippedPreflight) and releases
+      // the lock. Returning here guarantees zero bulk labstack traffic.
+      return;
+    }
 
     // 1. Fetch orders from labstack — with a checkpoint cursor (W2.2).
     // We grab the last successful cycle's seen-time and ask only for orders
@@ -304,8 +329,8 @@ export async function runPollCycle(): Promise<void> {
           // activity from the task retirer (step 3c) — visible on the
           // dashboard's "last cycle" widget.
           metadata:
-            perRule.length > 0 || tasksRetired > 0
-              ? { perRule, tasksRetired, retirementPerRule }
+            perRule.length > 0 || tasksRetired > 0 || skippedPreflight
+              ? { perRule, tasksRetired, retirementPerRule, skippedPreflight }
               : undefined,
         },
       });

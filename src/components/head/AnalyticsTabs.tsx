@@ -29,11 +29,13 @@ import DailySummaryPanel from "./DailySummaryPanel";
 import BreakdownPanel from "./BreakdownPanel";
 import TrendsPanel from "./TrendsPanel";
 import CohortsPanel from "./CohortsPanel";
+import OrderLoadPanel from "./OrderLoadPanel";
 
-type Tab = "agents" | "sources" | "rules" | "stores" | "task-types" | "trends" | "cohorts" | "daily";
+type Tab = "agents" | "sources" | "rules" | "stores" | "task-types" | "trends" | "cohorts" | "daily" | "order-load";
 
 const TABS: Array<{ key: Tab; label: string }> = [
   { key: "agents",     label: "Agents" },
+  { key: "order-load", label: "Order Load" },
   { key: "sources",    label: "Sources" },
   { key: "rules",      label: "Rules" },
   { key: "stores",     label: "Stores" },
@@ -165,6 +167,10 @@ export default function AnalyticsTabs() {
 
       <div>
         {tab === "agents"     && <AgentPerformancePanel dataSourceId={dataSourceId} />}
+        {/* Order Load measures labstack order volume directly — appointments
+            only exist on the orders source, so the source slicer doesn't
+            apply; the panel slices by orderType instead. */}
+        {tab === "order-load" && <OrderLoadPanel />}
         {tab === "sources"    && <BreakdownPanel dimension="source" dataSourceId={null} />}
         {tab === "rules"      && <BreakdownPanel dimension="rule" dataSourceId={dataSourceId} />}
         {tab === "stores"     && <BreakdownPanel dimension="store" dataSourceId={dataSourceId} />}

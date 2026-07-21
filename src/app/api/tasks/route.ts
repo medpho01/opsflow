@@ -489,6 +489,10 @@ export async function GET(request: NextRequest) {
     taskType: { select: { name: true, label: true } },
     taskRule: {
       select: {
+        // name powers the Smart View "Rule" filter chips — the client
+        // groups tasks by taskRuleId and needs a human-readable label
+        // without a second fetch.
+        name: true,
         dataSourceId: true,
         dataSource: { select: { id: true, sourceId: true, displayName: true } },
       },

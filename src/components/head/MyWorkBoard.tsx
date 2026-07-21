@@ -58,6 +58,10 @@ interface Task {
   assignedTo?: { id: number; name: string } | null;
   checklistItems: ChecklistItem[];
   taskType: { name: string; label: string };
+  // Rule provenance — powers the workspace "Rule" filter. MANUAL tasks
+  // carry the sentinel taskRuleId "MANUAL" (see /api/tasks POST).
+  taskRuleId: string;
+  taskRule?: { name?: string } | null;
   // Computed by API:
   viewBucket: "today" | "tomorrow" | "stuck" | "future" | "done";
   urgencyBucket: number;
@@ -987,6 +991,10 @@ export default function MyWorkBoard({ currentUser }: { currentUser: CurrentUser 
   // ── Filter state (Lead's main tool for slicing the workspace) ───────
   const [filterAssigneeId, setFilterAssigneeId] = useState<"all" | "unassigned" | number>("all");
   const [filterTypes, setFilterTypes] = useState<Set<string>>(new Set()); // empty = all
+  // Rule filter — slice the workspace by originating task rule (keyed on
+  // taskRuleId). Lets the lead answer "which rule is generating the pile"
+  // (e.g. select Sample Handover → Stuck tab = where handovers are stuck).
+  const [filterRules, setFilterRules] = useState<Set<string>>(new Set()); // empty = all
 
   // Keep "now" fresh so the sliding NOW window slides on its own.
   useEffect(() => {
@@ -1125,9 +1133,11 @@ export default function MyWorkBoard({ currentUser }: { currentUser: CurrentUser 
       if (typeof filterAssigneeId === "number" && t.assignedTo?.id !== filterAssigneeId) return false;
       // Order-type filter (empty set = all)
       if (filterTypes.size > 0 && !filterTypes.has(t.orderType)) return false;
+      // Rule filter (empty set = all)
+      if (filterRules.size > 0 && !filterRules.has(t.taskRuleId)) return false;
       return true;
     });
-  }, [tasks, filterAssigneeId, filterTypes]);
+  }, [tasks, filterAssigneeId, filterTypes, filterRules]);
 
   const byBucket = useMemo(() => {
     const t = { today: [] as Task[], tomorrow: [] as Task[], stuck: [] as Task[] };
@@ -1166,6 +1176,25 @@ export default function MyWorkBoard({ currentUser }: { currentUser: CurrentUser 
     const s = new Set<string>();
     for (const t of tasks) s.add(t.orderType);
     return Array.from(s).sort();
+  }, [tasks]);
+
+  // Rules present in the unfiltered workspace, with a compact chip label
+  // and per-rule task count (count reflects the unfiltered workspace so the
+  // lead sees the true per-rule volume — "where is the pile" at a glance).
+  // Long rule names like "HSC: Sample Handover to Lab (>30 min after
+  // collection)" compress to "Sample Handover to Lab".
+  const availableRules = useMemo(() => {
+    const byId = new Map<string, { id: string; label: string; count: number }>();
+    for (const t of tasks) {
+      const id = t.taskRuleId;
+      if (!id) continue;
+      const existing = byId.get(id);
+      if (existing) { existing.count++; continue; }
+      const raw = t.taskRule?.name ?? (id === "MANUAL" ? "Manual tasks" : id);
+      const label = raw.replace(/^[^:]*:\s*/, "").replace(/\s*\(.*$/, "").trim() || raw;
+      byId.set(id, { id, label, count: 1 });
+    }
+    return Array.from(byId.values()).sort((a, b) => b.count - a.count);
   }, [tasks]);
 
   // Unassigned count for the chip badge (always reflects the unfiltered
@@ -1268,10 +1297,49 @@ export default function MyWorkBoard({ currentUser }: { currentUser: CurrentUser 
           </div>
         )}
 
+        {/* Rule chips — which rule produced the task. Sorted by volume so
+            the biggest pile is the first chip; counts are workspace-wide. */}
+        {availableRules.length > 1 && (
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-[10px] text-zinc-500 uppercase tracking-wider mr-1">Rule</span>
+            <button
+              onClick={() => setFilterRules(new Set())}
+              className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
+                filterRules.size === 0
+                  ? "bg-blue-600 border-blue-600 text-white"
+                  : "bg-zinc-900 border-zinc-700 text-zinc-400 hover:text-zinc-200"
+              }`}
+            >
+              All
+            </button>
+            {availableRules.map((r) => {
+              const active = filterRules.has(r.id);
+              return (
+                <button
+                  key={r.id}
+                  onClick={() => {
+                    const next = new Set(filterRules);
+                    if (active) next.delete(r.id); else next.add(r.id);
+                    setFilterRules(next);
+                  }}
+                  title={r.id}
+                  className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
+                    active
+                      ? "bg-blue-600 border-blue-600 text-white"
+                      : "bg-zinc-900 border-zinc-700 text-zinc-400 hover:text-zinc-200"
+                  }`}
+                >
+                  {r.label} <span className={active ? "text-blue-200" : "text-zinc-500"}>{r.count}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+
         {/* Reset (only shows when something is filtered) */}
-        {(filterAssigneeId !== "all" || filterTypes.size > 0) && (
+        {(filterAssigneeId !== "all" || filterTypes.size > 0 || filterRules.size > 0) && (
           <button
-            onClick={() => { setFilterAssigneeId("all"); setFilterTypes(new Set()); }}
+            onClick={() => { setFilterAssigneeId("all"); setFilterTypes(new Set()); setFilterRules(new Set()); }}
             className="text-xs text-zinc-500 hover:text-zinc-200 ml-auto"
           >
             Clear filters

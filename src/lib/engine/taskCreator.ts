@@ -874,9 +874,27 @@ export async function evaluateAndCreateTasks(
         taskRuleId: { in: ruleIds },
         isArchived: false,
       },
-      select: { taskRuleId: true, entityType: true, entityId: true },
+      select: {
+        taskRuleId: true, entityType: true, entityId: true,
+        status: true, metadata: true,
+      },
     });
     for (const t of existingActive) {
+      // Engine-retired tasks do NOT occupy the dedup slot. When an order
+      // regresses out of a rule's statusIn (e.g. SAMPLE_DELIVERED back to
+      // SAMPLE_COLLECTED on a re-collection), the retirer cancels the task;
+      // if the order later re-enters the rule's statusIn, the rule must be
+      // able to fire again. Before this fix the cancelled row blocked
+      // re-creation until the nightly archive swept it — orders like #65167
+      // (July 2026) sat days without any open task or follow-up.
+      //
+      // Deliberately narrow: ONLY autoRetiredByEngine cancels are excluded.
+      // Human-cancelled tasks still dedupe — an operator's "don't chase
+      // this" decision must not be overridden by the next poll cycle.
+      const isEngineRetired =
+        t.status === TaskStatus.CANCELLED &&
+        !!(t.metadata as Record<string, unknown> | null)?.autoRetiredByEngine;
+      if (isEngineRetired) continue;
       activeTaskKeys.add(`${t.entityType}|${t.taskRuleId}|${t.entityId}`);
     }
   }

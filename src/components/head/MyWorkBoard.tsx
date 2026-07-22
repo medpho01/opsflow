@@ -1665,6 +1665,13 @@ export default function MyWorkBoard({ currentUser }: { currentUser: CurrentUser 
         </button>
       </div>
 
+      {/* Sticky control deck — filter bar + tab strip pin to the top of
+          the scroll container so slicing/switching never requires
+          scrolling back up through a long task list. The title row above
+          scrolls away (it holds no controls the deck needs). Semi-opaque
+          bg + blur masks rows passing underneath. */}
+      <div className="sticky top-0 z-30 -mx-8 px-8 pt-2 bg-zinc-950/95 backdrop-blur-sm">
+
       {/* Filter bar — Lead's main tool for slicing the workspace.
           Sits above tabs so filters persist across Today/Tomorrow/Stuck.
           Hidden for agents (their queue is small enough that filters add
@@ -1875,6 +1882,9 @@ export default function MyWorkBoard({ currentUser }: { currentUser: CurrentUser 
             </button>
           );
         })}
+      </div>
+
+      {/* end sticky control deck */}
       </div>
 
       {/* Error */}

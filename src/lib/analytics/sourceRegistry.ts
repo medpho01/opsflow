@@ -97,13 +97,17 @@ export const SOURCE_ANALYTICS: Record<string, SourceAnalyticsContract> = {
     eventTimeLabel: "order date",
     lookaheadDays: 7,
     statusField: "orderStatus",
-    // Best-effort mapping pending the real vocabulary (run the status
-    // GROUP BY once and tighten). Unmatched values count as open and
-    // show up verbatim in the T1 status-mix card.
+    // Vocabulary calibrated 22 Jul against the live table (60d GROUP BY):
+    // FULL_DELIVERED / CANCELLED / PLACED. PARTIAL_DELIVERED kept
+    // speculatively (harmless if absent); PLACED and anything new count
+    // as open and surface in the T1 status-mix card.
     statusMap: {
-      fulfilled: ["DELIVERED", "COMPLETED", "FULFILLED", "ORDER_DELIVERED"],
-      failed: ["CANCELLED", "CANCELED", "REJECTED", "RETURNED", "REFUNDED"],
+      fulfilled: ["FULL_DELIVERED", "PARTIAL_DELIVERED"],
+      failed: ["CANCELLED", "CANCELED", "REJECTED", "RETURNED"],
     },
+    // Single value today (HOME_DELIVERY) — the panel auto-hides type
+    // chips when there's only one, so this costs nothing until a second
+    // type appears.
     dimensions: [{ key: "type", label: "Type", column: "orderType" }],
   },
   appointments: {

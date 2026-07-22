@@ -172,15 +172,19 @@ export async function GET(request: NextRequest) {
   let fulfillment: Record<string, number> | null = null;
   let aging: Record<string, number> | null = null;
   if (statusCol && contract.statusMap) {
-    const f = contract.statusMap.fulfilled;
-    const x = contract.statusMap.failed;
+    // Case-insensitive matching: labstack vocabularies mix conventions
+    // ("Ordered" on Request vs "FULL_DELIVERED" on PharmaOrder). A casing
+    // mismatch in a contract must not silently misclassify — uppercase
+    // both sides.
+    const f = contract.statusMap.fulfilled.map((s) => s.toUpperCase());
+    const x = contract.statusMap.failed.map((s) => s.toUpperCase());
     const fPh = f.map((_, i) => `$${i + 1}`).join(", ");
     const xPh = x.map((_, i) => `$${f.length + i + 1}`).join(", ");
     const grouped = await labstackOr<GroupRow[] | null>(
       labstackQuery<GroupRow>(
         `SELECT CASE
-                  WHEN ${q(statusCol)}::text IN (${fPh}) THEN 'fulfilled'
-                  WHEN ${q(statusCol)}::text IN (${xPh}) THEN 'failed'
+                  WHEN UPPER(${q(statusCol)}::text) IN (${fPh}) THEN 'fulfilled'
+                  WHEN UPPER(${q(statusCol)}::text) IN (${xPh}) THEN 'failed'
                   ELSE 'open'
                 END AS grp,
                 count(*)::int AS cnt
@@ -200,7 +204,7 @@ export async function GET(request: NextRequest) {
 
     // Aging looks beyond the display window (open debt older than the
     // window matters most) but stays bounded at 60d for index safety.
-    const terminal = [...f, ...x];
+    const terminal = [...f, ...x]; // already uppercased above
     const tPh = terminal.map((_, i) => `$${i + 1}`).join(", ");
     const agingRows = await labstackOr<AgingRow[] | null>(
       labstackQuery<AgingRow>(
@@ -213,7 +217,7 @@ export async function GET(request: NextRequest) {
                 count(*)::int AS cnt
          FROM ${T}
          WHERE ${C} >= NOW() - INTERVAL '60 days'
-           AND ${q(statusCol)}::text NOT IN (${tPh})
+           AND UPPER(${q(statusCol)}::text) NOT IN (${tPh})
          GROUP BY 1`,
         terminal
       ),

@@ -76,12 +76,14 @@ export const SOURCE_ANALYTICS: Record<string, SourceAnalyticsContract> = {
     eventTimeLabel: "creation time",
     lookaheadDays: 0,
     statusField: "status",
-    // Best-effort mapping — labstack's Request status vocabulary hasn't
-    // been confirmed yet. Unmatched values fall into "open" and the raw
-    // T1 distribution shows the real vocabulary; tighten this list once
-    // it's visible in the panel.
+    // Calibrated 22 Jul with ops (Abhishek): "Ordered" is the TERMINAL
+    // POSITIVE state for a request — the request was converted into an
+    // order, i.e. fulfilled/closed. Before this mapping the panel counted
+    // every completed request as open (0% fulfilled, a fake 5.8K "rotting
+    // backlog"). Earlier guesses kept as harmless aliases; matching is
+    // case-insensitive in the engine.
     statusMap: {
-      fulfilled: ["RESOLVED", "CLOSED", "COMPLETED", "FULFILLED", "DONE"],
+      fulfilled: ["Ordered", "RESOLVED", "CLOSED", "COMPLETED", "FULFILLED", "DONE"],
       failed: ["REJECTED", "CANCELLED", "CANCELED", "EXPIRED"],
     },
     dimensions: [{ key: "type", label: "Type", column: "requestType" }],

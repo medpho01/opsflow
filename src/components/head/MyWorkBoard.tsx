@@ -122,14 +122,23 @@ function istMinutesSinceMidnight(d: Date): number {
   const ist = new Date(d.getTime() + IST_OFFSET_MS);
   return ist.getUTCHours() * 60 + ist.getUTCMinutes();
 }
-function istDayKey(d: Date): string {
-  const ist = new Date(d.getTime() + IST_OFFSET_MS);
-  return `${ist.getUTCFullYear()}-${ist.getUTCMonth()}-${ist.getUTCDate()}`;
-}
 function fmtHourHeader(hour24: number): string {
   const period = hour24 >= 12 ? "PM" : "AM";
   const h = ((hour24 + 11) % 12) + 1;
   return `${h} ${period}`;
+}
+
+// ─── Metadata accessors ───────────────────────────────────────────────
+// Task.metadata carries an order snapshot written at creation time
+// (storeName, phleboName, labName, patientName — see taskCreator). These
+// power the store filter and the Stuck concentration callout without any
+// extra fetch. Defensive: metadata can be null/partial on MANUAL tasks.
+function metaStr(t: Task, key: string): string {
+  const v = (t.metadata as Record<string, unknown> | null)?.[key];
+  return typeof v === "string" ? v : "";
+}
+function storeNameOf(t: Task): string {
+  return metaStr(t, "storeName") || (t.storeId != null ? `Store #${t.storeId}` : "");
 }
 
 // ─── Assignee chip ────────────────────────────────────────────────────
@@ -271,6 +280,7 @@ function TaskRow({
   onReassign,
   canReassign,
   rightBadge,
+  onComplete,
 }: {
   task: Task;
   now: Date;
@@ -280,6 +290,9 @@ function TaskRow({
   canReassign: boolean;
   // Optional extra pill rendered next to SLA (used by Stuck view for age).
   rightBadge?: React.ReactNode;
+  // Optional inline ✓ Done — passed by the Focus/Recover/Stuck zones where
+  // the row is a checklist item to burn down, omitted where it's a preview.
+  onComplete?: (taskId: number) => void;
 }) {
   const appt = task.appointmentTime ? new Date(task.appointmentTime) : null;
   const diffMin = appt ? Math.round((appt.getTime() - now.getTime()) / 60_000) : null;
@@ -362,6 +375,16 @@ function TaskRow({
         <div className="text-xs text-zinc-500 mt-0.5">#{task.entityId}</div>
       </div>
 
+      {onComplete && task.status !== "COMPLETED" && task.status !== "CANCELLED" && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onComplete(task.id); }}
+          className="px-2 py-1 rounded text-[11px] font-medium border border-green-900 text-green-300 hover:bg-green-900/30 transition-colors shrink-0"
+          title="Mark completed"
+        >
+          ✓ Done
+        </button>
+      )}
+
       <AssigneeChip task={task} agents={agents} onReassign={onReassign} canReassign={canReassign} />
 
       {rightBadge}
@@ -407,47 +430,109 @@ function TaskRow({
   );
 }
 
-// ─── Section card wrapper ──────────────────────────────────────────────
-function SectionCard({
-  icon,
-  title,
-  subtitle,
-  count,
-  countClass,
-  defaultOpen = true,
-  children,
-}: {
-  icon: string;
+// (SectionCard removed — superseded by Zone, the Focus View chrome.)
+
+// ─── Zone chrome ───────────────────────────────────────────────────────
+// The Focus View demarcation system: four fixed zone colors, rendered as a
+// 4px left rail. The rails are the only place these semantic colors appear
+// at container level, so the zones do the wayfinding (design rev 2-4).
+//   focus   blue   — act now (completable this moment)
+//   risk    amber  — aging / at risk
+//   recover red    — overdue debt
+//   deep    darker red — escalation-old (Stuck's "older" band)
+//   later   grey   — scheduled / waiting
+//   cleared green  — done strips
+const ZONE_RAIL: Record<string, string> = {
+  focus: "border-l-blue-600 ring-1 ring-blue-900/40",
+  risk: "border-l-amber-600",
+  recover: "border-l-red-600",
+  deep: "border-l-red-900",
+  later: "border-l-zinc-600",
+  cleared: "border-l-green-800",
+};
+const ZONE_TITLE: Record<string, string> = {
+  focus: "text-blue-300", risk: "text-amber-300", recover: "text-red-300",
+  deep: "text-red-400", later: "text-zinc-400", cleared: "text-green-300",
+};
+
+function Zone({ kind, title, subtitle, count, countClass, headerRight, children }: {
+  kind: keyof typeof ZONE_RAIL;
   title: string;
   subtitle?: string;
-  count?: number;
+  count?: React.ReactNode;
   countClass?: string;
-  defaultOpen?: boolean;
-  children: React.ReactNode;
+  headerRight?: React.ReactNode;
+  children?: React.ReactNode;
 }) {
   return (
-    <details open={defaultOpen} className="bg-zinc-900 border border-zinc-800 rounded-lg">
-      <summary className="px-5 py-4 flex items-center justify-between cursor-pointer list-none [&::-webkit-details-marker]:hidden rounded-t-lg">
-        <div className="flex items-center gap-3">
-          <span className="text-lg">{icon}</span>
-          <div>
-            <div className="font-semibold text-zinc-100">{title}</div>
-            {subtitle && <div className="text-xs text-zinc-500 mt-0.5">{subtitle}</div>}
-          </div>
+    <div className={`bg-zinc-900 border border-zinc-800 border-l-4 rounded-lg overflow-hidden ${ZONE_RAIL[kind]}`}>
+      <div className={`px-5 py-3 flex items-center gap-3 ${children ? "border-b border-zinc-800" : ""}`}>
+        <div className="min-w-0">
+          <div className={`text-xs font-extrabold tracking-widest ${ZONE_TITLE[kind]}`}>{title}</div>
+          {subtitle && <div className="text-[11px] text-zinc-500 mt-0.5">{subtitle}</div>}
         </div>
+        <div className="flex-1" />
+        {headerRight}
         {count !== undefined && (
           <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${countClass ?? "bg-zinc-800 text-zinc-300"}`}>
             {count}
           </span>
         )}
-      </summary>
-      <div className="border-t border-zinc-800">{children}</div>
-    </details>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+// "Assign all…" — one popover assigning every task in a pile/zone to the
+// chosen agent via the bulk endpoint.
+function BulkAssignButton({ taskIds, agents, onBulkReassign, label }: {
+  taskIds: number[];
+  agents: Agent[];
+  onBulkReassign: (taskIds: number[], agentId: number) => void;
+  label?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (!open) return;
+    const close = () => setOpen(false);
+    const t = setTimeout(() => window.addEventListener("click", close), 0);
+    return () => { clearTimeout(t); window.removeEventListener("click", close); };
+  }, [open]);
+  if (taskIds.length === 0) return null;
+  return (
+    <div className="relative shrink-0" onClick={(e) => e.stopPropagation()}>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="px-2 py-1 rounded text-[11px] border border-zinc-700 text-zinc-300 hover:bg-zinc-800 transition-colors"
+      >
+        {label ?? `Assign all ${taskIds.length}…`}
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full mt-1 z-20 w-56 bg-zinc-900 border border-zinc-700 rounded-lg shadow-xl py-1 max-h-72 overflow-y-auto">
+          <div className="px-3 py-1.5 text-[10px] uppercase tracking-wider text-zinc-500 border-b border-zinc-800">
+            Assign {taskIds.length} task{taskIds.length !== 1 ? "s" : ""} to
+          </div>
+          {agents.map((a) => (
+            <button
+              key={a.id}
+              onClick={() => { onBulkReassign(taskIds, a.id); setOpen(false); }}
+              className="w-full text-left px-3 py-2 flex items-center gap-2 text-sm text-zinc-200 hover:bg-zinc-800"
+            >
+              <span className={`w-5 h-5 rounded-full ${avatarColor(a.name)} flex items-center justify-center text-[9px] font-semibold text-white`}>
+                {initials(a.name)}
+              </span>
+              <span className="flex-1 truncate">{a.name}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
 // ─── Today view: NOW / PREP / LATER / DONE ─────────────────────────────
-function TodayView({ tasks, tomorrowTasks, now, agents, canReassign, onRowClick, onReassign }: {
+function TodayView({ tasks, tomorrowTasks, now, agents, canReassign, onRowClick, onReassign, onComplete, onBulkReassign }: {
   tasks: Task[];
   tomorrowTasks: Task[];
   now: Date;
@@ -455,6 +540,8 @@ function TodayView({ tasks, tomorrowTasks, now, agents, canReassign, onRowClick,
   canReassign: boolean;
   onRowClick: (task: Task) => void;
   onReassign: (taskId: number, agentId: number | null) => void;
+  onComplete: (taskId: number) => void;
+  onBulkReassign: (taskIds: number[], agentId: number) => void;
 }) {
   const nowMinIST = istMinutesSinceMidnight(now);
   const windowEndMin = nowMinIST + NOW_WINDOW_MIN;
@@ -545,6 +632,63 @@ function TodayView({ tasks, tomorrowTasks, now, agents, canReassign, onRowClick,
   const doneByTeam = doneTasks.filter((t) => !isAutoRetired(t));
   const doneByEngine = doneTasks.filter(isAutoRetired);
 
+  // ── FOCUS — NEXT 5 (design rev 2) ──────────────────────────────────
+  // The focus zone is NEVER empty while open work exists: scheduled
+  // next-90-min items rank first, then it tops up with the oldest
+  // recoveries. Completing one pulls the next in (the lists recompute
+  // from task state). Each entry carries a "why" label so the ranking
+  // is legible, not mysterious.
+  const FOCUS_CAP = 5;
+  const focusEntries: Array<{ task: Task; why: "scheduled now" | "oldest recovery" }> = [
+    ...nowTasks.slice(0, FOCUS_CAP).map((t) => ({ task: t, why: "scheduled now" as const })),
+  ];
+  for (const t of overdueTasks) {
+    if (focusEntries.length >= FOCUS_CAP) break;
+    focusEntries.push({ task: t, why: "oldest recovery" });
+  }
+  const focusIds = new Set(focusEntries.map((e) => e.task.id));
+
+  // ── RECOVER — overdue grouped by rule, sorted by pile size ─────────
+  // Items already promoted into Focus are excluded so a task never
+  // renders twice. Each group carries oldest-age + store concentration
+  // ("Thyrocare ×28" reads as one lab problem, not 28 task problems).
+  const recoverTasks = overdueTasks.filter((t) => !focusIds.has(t.id));
+  const recoverGroups = (() => {
+    const byRule = new Map<string, { ruleId: string; label: string; items: Task[] }>();
+    for (const t of recoverTasks) {
+      const id = t.taskRuleId ?? "unknown";
+      if (!byRule.has(id)) {
+        const raw = t.taskRule?.name ?? (id === "MANUAL" ? "Manual tasks" : id);
+        const label = raw.replace(/^[^:]*:\s*/, "").replace(/\s*\(.*$/, "").trim() || raw;
+        byRule.set(id, { ruleId: id, label, items: [] });
+      }
+      byRule.get(id)!.items.push(t);
+    }
+    return Array.from(byRule.values())
+      .map((g) => {
+        const oldest = g.items[0]; // items inherit overdueTasks' time sort (oldest first)
+        const oldestMin = oldest?.appointmentTime
+          ? Math.max(0, Math.round((now.getTime() - new Date(oldest.appointmentTime).getTime()) / 60_000))
+          : null;
+        const storeCounts = new Map<string, number>();
+        for (const t of g.items) {
+          const s = storeNameOf(t);
+          if (s) storeCounts.set(s, (storeCounts.get(s) ?? 0) + 1);
+        }
+        const topStore = Array.from(storeCounts.entries()).sort((a, b) => b[1] - a[1])[0];
+        return { ...g, oldestMin, topStore };
+      })
+      .sort((a, b) => b.items.length - a.items.length);
+  })();
+  const fmtAge = (min: number | null) => {
+    if (min == null) return "—";
+    if (min < 60) return `${min}m`;
+    if (min < 60 * 24) return `${Math.floor(min / 60)}h ${min % 60}m`;
+    return `${Math.floor(min / (60 * 24))}d ${Math.floor((min % (60 * 24)) / 60)}h`;
+  };
+  const openCount = overdueTasks.length + nowTasks.length + laterTasks.length;
+  const totalToday = openCount + doneTasks.length;
+
   // Group laterTasks by hour for subdividers
   const laterByHour = new Map<number, Task[]>();
   for (const t of laterTasks) {
@@ -557,43 +701,116 @@ function TodayView({ tasks, tomorrowTasks, now, agents, canReassign, onRowClick,
   return (
     <div className="space-y-4">
 
-      {/* OVERDUE — today's appointments whose time has already passed and
-          the work isn't done. Shown above NOW because they're the most
-          urgent. Only rendered when non-empty so a clean day stays calm. */}
-      {overdueTasks.length > 0 && (
-        <SectionCard
-          icon="⏰"
-          title="OVERDUE"
-          subtitle="appointment passed — needs recovery today (click to expand)"
-          count={overdueTasks.length}
-          countClass="bg-red-900 text-red-300"
-          // Collapsed by default. On a busy day OVERDUE can hold hundreds of
-          // breached morning items; rendering them expanded above NOW buries
-          // the actual focus list and forces the operator to scroll past all
-          // of them. Keep it as a compact red banner at the top (the "these
-          // are on fire" signal stays visible) while NOW — the next-90-min
-          // work to keep ops under control — sits immediately below, open.
-          defaultOpen={false}
-        >
-          {overdueTasks.map(t => <TaskRow key={t.id} task={t} now={now} agents={agents} onClick={() => onRowClick(t)} onReassign={onReassign} canReassign={canReassign} />)}
-        </SectionCard>
-      )}
+      {/* Day progress line — replaces the misleading total badge. Open work
+          vs team completions vs engine auto-closes at a glance; fills as
+          the team completes. Auto-closes never masquerade as throughput. */}
+      <div>
+        <div className="h-1.5 rounded bg-zinc-800 overflow-hidden flex">
+          <div
+            className="bg-green-600 h-full"
+            style={{ width: totalToday > 0 ? `${(doneByTeam.length / totalToday) * 100}%` : "0%" }}
+          />
+          <div
+            className="bg-zinc-600 h-full"
+            style={{ width: totalToday > 0 ? `${(doneByEngine.length / totalToday) * 100}%` : "0%" }}
+          />
+        </div>
+        <div className="flex justify-between mt-1.5 text-[11px] text-zinc-500 tabular-nums">
+          <span>
+            <span className={openCount > 0 ? "text-red-300 font-medium" : "text-green-300 font-medium"}>
+              {openCount} open
+            </span>
+            {" — "}{doneByTeam.length} done by team · {doneByEngine.length} auto-closed
+          </span>
+          <span>{totalToday} total today</span>
+        </div>
+      </div>
 
-      <SectionCard
-        icon="⚡"
-        title="NOW"
-        subtitle={`next 90 minutes`}
-        count={nowTasks.length}
-        countClass={nowTasks.length > 0 ? "bg-red-900 text-red-300" : "bg-zinc-800 text-zinc-500"}
+      {/* ◉ FOCUS — the "what matters this moment" zone. Never empty while
+          open work exists: next-90-min items first, topped up with the
+          oldest recoveries. Completing one pulls the next in. */}
+      <Zone
+        kind="focus"
+        title={`◉ FOCUS — NEXT ${Math.min(FOCUS_CAP, Math.max(focusEntries.length, 1))}`}
+        subtitle={
+          focusEntries.length === 0
+            ? undefined
+            : `${nowTasks.length} scheduled in the next 90 min · topped up with the ${Math.max(0, focusEntries.length - Math.min(nowTasks.length, FOCUS_CAP))} oldest recoveries`
+        }
+        count={focusEntries.length}
+        countClass="bg-blue-900/60 text-blue-300"
       >
-        {nowTasks.length === 0 ? (
+        {focusEntries.length === 0 ? (
           <div className="px-5 py-8 text-center text-sm text-zinc-500">
-            Nothing urgent right now. Enjoy the breather. ☕
+            All of today&apos;s work is complete. Genuinely nothing to do. 🎉
           </div>
         ) : (
-          nowTasks.map(t => <TaskRow key={t.id} task={t} now={now} agents={agents} onClick={() => onRowClick(t)} onReassign={onReassign} canReassign={canReassign} />)
+          focusEntries.map(({ task: t, why }) => (
+            <TaskRow
+              key={t.id}
+              task={t}
+              now={now}
+              agents={agents}
+              onClick={() => onRowClick(t)}
+              onReassign={onReassign}
+              canReassign={canReassign}
+              onComplete={onComplete}
+              rightBadge={
+                <span className={`px-2 py-0.5 rounded text-[10px] shrink-0 ${
+                  why === "scheduled now" ? "bg-blue-900/50 text-blue-300" : "bg-red-900/40 text-red-300"
+                }`}>
+                  {why}
+                </span>
+              }
+            />
+          ))
         )}
-      </SectionCard>
+        {recoverTasks.length > 0 && focusEntries.length > 0 && (
+          <div className="px-5 py-2.5 text-[11px] text-zinc-500 border-t border-zinc-800">
+            completing one pulls the next oldest in automatically
+          </div>
+        )}
+      </Zone>
+
+      {/* ⏰ RECOVER TODAY — remaining overdue, grouped by rule so 100+
+          tasks read as a handful of piles. Expand only the pile being
+          worked; "Assign all…" batches a pile to one agent. */}
+      {recoverTasks.length > 0 && (
+        <Zone
+          kind="recover"
+          title="⏰ RECOVER TODAY"
+          subtitle="appointment passed, still open — burn down by pile"
+          count={`${recoverTasks.length} remaining`}
+          countClass="bg-red-900 text-red-300"
+        >
+          {recoverGroups.map((g, gi) => (
+            <details key={g.ruleId} open={gi === 0} className="border-b border-zinc-800 last:border-b-0">
+              <summary className="px-5 py-3 flex items-center gap-3 cursor-pointer list-none [&::-webkit-details-marker]:hidden hover:bg-zinc-800/30">
+                <span className="text-zinc-500 text-[10px]">▸</span>
+                <span className="text-sm font-semibold text-zinc-200">{g.label}</span>
+                <span className="px-2 py-0.5 rounded-full text-[11px] font-medium bg-red-900/60 text-red-300 tabular-nums">{g.items.length}</span>
+                <span className="text-[11px] text-zinc-500">
+                  oldest {fmtAge(g.oldestMin)}
+                  {g.topStore && g.topStore[1] > 1 ? ` · ${g.topStore[0]} ×${g.topStore[1]}` : ""}
+                </span>
+                <span className="flex-1" />
+                {canReassign && (
+                  <BulkAssignButton
+                    taskIds={g.items.map((t) => t.id)}
+                    agents={agents}
+                    onBulkReassign={onBulkReassign}
+                  />
+                )}
+              </summary>
+              <div className="border-t border-zinc-800/60">
+                {g.items.map((t) => (
+                  <TaskRow key={t.id} task={t} now={now} agents={agents} onClick={() => onRowClick(t)} onReassign={onReassign} canReassign={canReassign} onComplete={onComplete} />
+                ))}
+              </div>
+            </details>
+          ))}
+        </Zone>
+      )}
 
       {prepTasks.length > 0 ? (
         <div className="rounded-lg border border-amber-900/40 ring-1 ring-amber-900/30">
@@ -637,32 +854,32 @@ function TodayView({ tasks, tomorrowTasks, now, agents, canReassign, onRowClick,
         </div>
       ) : null}
 
-      <SectionCard
-        icon="📋"
-        title="LATER TODAY"
-        subtitle={laterTasks.length > 0 ? `${laterTasks.length} more until midnight` : undefined}
-        count={laterTasks.length}
-      >
-        {laterTasks.length === 0 ? (
-          <div className="px-5 py-6 text-center text-sm text-zinc-500">
-            Nothing else scheduled today.
-          </div>
-        ) : (
-          laterHours.map(h => (
+      {/* ◷ LATER TODAY — a single quiet line when empty (empty space must
+          not pretend to be calm); hour-grouped rows when there's work. */}
+      {laterTasks.length === 0 ? (
+        <Zone kind="later" title="◷ LATER TODAY" subtitle="nothing else scheduled today" count={0} />
+      ) : (
+        <Zone
+          kind="later"
+          title="◷ LATER TODAY"
+          subtitle={`${laterTasks.length} more until midnight`}
+          count={laterTasks.length}
+        >
+          {laterHours.map(h => (
             <div key={h}>
               <div className="px-5 py-2 bg-zinc-950/40 border-b border-zinc-800 text-[11px] text-zinc-500 uppercase tracking-wider font-semibold">
                 ── {fmtHourHeader(h)} · {laterByHour.get(h)!.length} task{laterByHour.get(h)!.length > 1 ? "s" : ""} ──
               </div>
               {laterByHour.get(h)!.map(t => <TaskRow key={t.id} task={t} now={now} agents={agents} onClick={() => onRowClick(t)} onReassign={onReassign} canReassign={canReassign} />)}
             </div>
-          ))
-        )}
-      </SectionCard>
+          ))}
+        </Zone>
+      )}
 
-      <details className="rounded-lg border border-zinc-800 bg-zinc-900/50">
+      <details className="rounded-lg border border-zinc-800 border-l-4 border-l-green-800 bg-zinc-900/50">
         <summary className="px-5 py-3 flex items-center justify-between cursor-pointer list-none [&::-webkit-details-marker]:hidden">
           <div className="flex items-center gap-3">
-            <span className="text-zinc-400">✓</span>
+            <span className="text-green-400">✓</span>
             <div>
               <div className="text-sm font-medium text-zinc-300">Completed by team today</div>
               <div className="text-xs text-zinc-500">resets at midnight IST</div>
@@ -687,7 +904,7 @@ function TodayView({ tasks, tomorrowTasks, now, agents, canReassign, onRowClick,
           Surfaced separately so the "Completed by team" count above stays
           a clean measure of human throughput. */}
       {doneByEngine.length > 0 && (
-        <details className="rounded-lg border border-zinc-800 bg-zinc-900/30">
+        <details className="rounded-lg border border-zinc-800 border-l-4 border-l-green-900/60 bg-zinc-900/30">
           <summary className="px-5 py-3 flex items-center justify-between cursor-pointer list-none [&::-webkit-details-marker]:hidden">
             <div className="flex items-center gap-3">
               <span className="text-zinc-500">⚙</span>
@@ -718,248 +935,285 @@ function TomorrowView({ tasks, now, agents, canReassign, onRowClick, onReassign 
   onRowClick: (task: Task) => void;
   onReassign: (taskId: number, agentId: number | null) => void;
 }) {
-  const early: Task[] = [];
-  const morning: Task[] = [];
-  const afternoon: Task[] = [];
+  // Simple chronological schedule (design rev 4): one plain summary line,
+  // hour-divided read-only rows, busy hours collapsed to a count line.
+  // Prep/risk WORK lives on Today (Tonight's Prep) — Tomorrow is only for
+  // reading the shape of the day.
+  const byHour = new Map<number, Task[]>();
+  const noTime: Task[] = [];
   for (const t of tasks) {
-    if (!t.appointmentTime) continue;
-    const apptHour = istHourOfDay(new Date(t.appointmentTime));
-    if (apptHour < EARLY_MORNING_CUTOFF_HOUR_IST) early.push(t);
-    else if (apptHour < 12) morning.push(t);
-    else afternoon.push(t);
+    if (!t.appointmentTime) { noTime.push(t); continue; }
+    const h = istHourOfDay(new Date(t.appointmentTime));
+    if (!byHour.has(h)) byHour.set(h, []);
+    byHour.get(h)!.push(t);
   }
   const byTime = (a: Task, b: Task) =>
     new Date(a.appointmentTime!).getTime() - new Date(b.appointmentTime!).getTime();
-  early.sort(byTime); morning.sort(byTime); afternoon.sort(byTime);
+  const hours = Array.from(byHour.keys()).sort((a, b) => a - b);
+  hours.forEach((h) => byHour.get(h)!.sort(byTime));
+
+  const beforeEight = tasks.filter(
+    (t) => t.appointmentTime && istHourOfDay(new Date(t.appointmentTime)) < 8
+  ).length;
+  const noPhlebo = tasks.filter(
+    (t) => t.appointmentTime && !metaStr(t, "phleboName")
+  ).length;
 
   const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
   const tomorrowLabel = tomorrow.toLocaleDateString("en-IN", {
     weekday: "long", day: "numeric", month: "long", timeZone: "Asia/Kolkata",
   });
 
+  // Hours with more rows than this start collapsed — the divider line with
+  // its count is the information; the rows are detail on demand.
+  const COLLAPSE_THRESHOLD = 10;
+
   return (
     <div className="space-y-4">
-      <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-5">
-        <div className="text-sm text-zinc-400 mb-1">Looking ahead</div>
-        <div className="flex items-baseline gap-3">
-          <h2 className="text-xl font-bold text-zinc-100">{tomorrowLabel}</h2>
-          <span className="text-sm text-zinc-500">· {tasks.length} actions</span>
+      <div className="bg-zinc-900 border border-zinc-800 rounded-lg px-5 py-4">
+        <div className="flex items-baseline gap-3 flex-wrap">
+          <h2 className="text-lg font-bold text-zinc-100">{tomorrowLabel}</h2>
+          <span className="text-sm text-zinc-400 tabular-nums">
+            {tasks.length} appointments
+            {beforeEight > 0 && <> · <b className="text-amber-300">{beforeEight} before 8 AM</b></>}
+            {noPhlebo > 0 && <> · {noPhlebo} without a phlebo yet</>}
+          </span>
+        </div>
+        <div className="text-xs text-zinc-500 mt-1">
+          Read-only schedule — tonight&apos;s prep work is on <b>Today → Tonight&apos;s Prep</b>.
         </div>
       </div>
 
-      {early.length > 0 && (
-        <div className="rounded-lg border border-amber-900/40 ring-1 ring-amber-900/30">
-          <div className="px-5 py-4 bg-amber-950/20 flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <span className="text-lg">⚠️</span>
+      <div className="bg-zinc-900 border border-zinc-800 border-l-4 border-l-zinc-600 rounded-lg overflow-hidden">
+        {hours.length === 0 && noTime.length === 0 ? (
+          <div className="px-5 py-8 text-center text-sm text-zinc-500">Nothing scheduled for tomorrow yet.</div>
+        ) : (
+          <>
+            {hours.map((h) => {
+              const items = byHour.get(h)!;
+              return (
+                <details key={h} open={items.length <= COLLAPSE_THRESHOLD} className="border-b border-zinc-800 last:border-b-0">
+                  <summary className="px-5 py-2.5 bg-zinc-950/40 flex items-center gap-3 cursor-pointer list-none [&::-webkit-details-marker]:hidden hover:bg-zinc-800/30">
+                    <span className="text-[11px] text-zinc-400 uppercase tracking-wider font-semibold tabular-nums">{fmtHourHeader(h)}</span>
+                    <span className="text-[11px] text-zinc-600 tabular-nums">{items.length} appointment{items.length !== 1 ? "s" : ""}</span>
+                    {items.length > COLLAPSE_THRESHOLD && <span className="text-[10px] text-zinc-600">(click to expand)</span>}
+                  </summary>
+                  {items.map((t) => (
+                    <TaskRow
+                      key={t.id}
+                      task={t}
+                      now={now}
+                      agents={agents}
+                      onClick={() => onRowClick(t)}
+                      onReassign={onReassign}
+                      canReassign={canReassign}
+                      rightBadge={
+                        !metaStr(t, "phleboName")
+                          ? <span className="px-2 py-0.5 rounded text-[10px] shrink-0 bg-amber-900/30 text-amber-300/80">no phlebo yet</span>
+                          : undefined
+                      }
+                    />
+                  ))}
+                </details>
+              );
+            })}
+            {noTime.length > 0 && (
               <div>
-                <div className="font-semibold text-amber-200">Early-morning appointments</div>
-                <div className="text-xs text-amber-400/70 mt-0.5">
-                  Before 10 AM tomorrow — need confirmation calls tonight after 6 PM
+                <div className="px-5 py-2.5 bg-zinc-950/40 text-[11px] text-zinc-500 uppercase tracking-wider font-semibold">
+                  No appointment time · {noTime.length}
                 </div>
+                {noTime.map((t) => (
+                  <TaskRow key={t.id} task={t} now={now} agents={agents} onClick={() => onRowClick(t)} onReassign={onReassign} canReassign={canReassign} />
+                ))}
               </div>
-            </div>
-            <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-amber-700 text-amber-100">
-              {early.length} patient{early.length !== 1 ? "s" : ""}
-            </span>
-          </div>
-          <div className="bg-zinc-900 border-t border-amber-900/30">
-            {early.map(t => <TaskRow key={t.id} task={t} now={now} agents={agents} onClick={() => onRowClick(t)} onReassign={onReassign} canReassign={canReassign} />)}
-          </div>
-        </div>
-      )}
-
-      <div className="grid grid-cols-2 gap-4">
-        <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-5">
-          <div className="text-2xl mb-2">🌅</div>
-          <div className="text-2xl font-bold text-zinc-100">{morning.length}</div>
-          <div className="text-sm text-zinc-400">Morning tasks</div>
-          <div className="text-xs text-zinc-500 mt-2">10 AM – 12 PM tomorrow</div>
-        </div>
-        <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-5">
-          <div className="text-2xl mb-2">☀️</div>
-          <div className="text-2xl font-bold text-zinc-100">{afternoon.length}</div>
-          <div className="text-sm text-zinc-400">Afternoon / evening</div>
-          <div className="text-xs text-zinc-500 mt-2">12 PM onwards tomorrow</div>
-        </div>
+            )}
+          </>
+        )}
       </div>
     </div>
   );
 }
 
-// ─── Stuck view: flat list with age + type filters ─────────────────────
-function StuckView({ tasks, now, agents, canReassign, onRowClick, onReassign }: {
+// ─── Stuck view: age-zoned debt ledger (design rev 3) ──────────────────
+// Age is Stuck's natural demarcation because age dictates the action:
+//   Yesterday (amber)  → recover like Today's pile: ✓ Done / Assign
+//   2–3 days  (red)    → chase hard, every item has slipped once already
+//   Older     (dark)   → chasing failed; the honest options are a formal
+//                        escalation or a recorded decision to stop. Rows
+//                        show Escalate / Close-with-reason, not ✓.
+// The old Age filter pills and sort toggle are gone — the zones ARE the
+// age filter, fixed oldest-first. (Type/rule/store slicing lives in the
+// workspace filter bar above the tabs.)
+function StuckView({ tasks, now, agents, canReassign, onRowClick, onReassign, onComplete, onBulkReassign, onCloseWithReason }: {
   tasks: Task[];
   now: Date;
   agents: Agent[];
   canReassign: boolean;
   onRowClick: (task: Task) => void;
   onReassign: (taskId: number, agentId: number | null) => void;
+  onComplete: (taskId: number) => void;
+  onBulkReassign: (taskIds: number[], agentId: number) => void;
+  onCloseWithReason: (taskId: number, reason: string) => void;
 }) {
-  const [ageFilter, setAgeFilter] = useState<"all" | "today" | "yesterday" | "older">("all");
-  const [typeFilter, setTypeFilter] = useState<string>("all");
-  // Appointment-date sort direction. "oldest" (default) surfaces the
-  // longest-overdue first (most urgent to recover); "newest" flips it.
-  const [sortDir, setSortDir] = useState<"oldest" | "newest">("oldest");
-
-  // Derive age bucket per task (today / yesterday / older) using IST day keys
-  const nowDay = istDayKey(now);
-  const yesterdayDay = istDayKey(new Date(now.getTime() - 24 * 60 * 60 * 1000));
-
-  function ageOf(t: Task): "today" | "yesterday" | "older" {
+  // Whole IST days between the task's anchor (appointment, else creation)
+  // and now. Stuck holds prior-day work, so diff ≥ 1 in the normal case;
+  // clamp to ≥1 so a boundary artefact can't fall out of every band.
+  const istMidnightMs = (d: Date) => {
+    const ist = new Date(d.getTime() + IST_OFFSET_MS);
+    return Date.UTC(ist.getUTCFullYear(), ist.getUTCMonth(), ist.getUTCDate());
+  };
+  const dayAge = (t: Task) => {
     const anchor = t.appointmentTime ? new Date(t.appointmentTime) : new Date(t.createdAt);
-    const k = istDayKey(anchor);
-    if (k === nowDay) return "today";
-    if (k === yesterdayDay) return "yesterday";
-    return "older";
-  }
+    return Math.max(1, Math.round((istMidnightMs(now) - istMidnightMs(anchor)) / 86_400_000));
+  };
 
-  const types = useMemo(() => {
-    const s = new Set<string>();
-    tasks.forEach(t => s.add(t.orderType));
-    return Array.from(s).sort();
-  }, [tasks]);
-
-  const filtered = tasks.filter(t => {
-    if (ageFilter !== "all" && ageOf(t) !== ageFilter) return false;
-    if (typeFilter !== "all" && t.orderType !== typeFilter) return false;
-    return true;
-  });
-
-  // Sort purely by appointment date (falling back to createdAt when an
-  // appointment is missing), in the operator-chosen direction. Default
-  // "oldest" puts the longest-overdue first — the recovery priority.
   const anchorMs = (t: Task) =>
     t.appointmentTime ? new Date(t.appointmentTime).getTime() : new Date(t.createdAt).getTime();
-  filtered.sort((a, b) =>
-    sortDir === "oldest" ? anchorMs(a) - anchorMs(b) : anchorMs(b) - anchorMs(a)
-  );
+  const sorted = [...tasks].sort((a, b) => anchorMs(a) - anchorMs(b)); // oldest first
 
-  function ageStyle(age: string) {
-    return {
-      today: "bg-yellow-900/40 text-yellow-300",
-      yesterday: "bg-orange-900/40 text-orange-300",
-      older: "bg-red-900/40 text-red-300",
-    }[age] ?? "bg-zinc-800 text-zinc-400";
-  }
-  function ageLabel(t: Task) {
-    const a = ageOf(t);
-    if (a === "today") return "stuck today";
-    if (a === "yesterday") return "stuck yesterday";
-    return "older";
-  }
+  const bandYesterday = sorted.filter((t) => dayAge(t) === 1);
+  const bandMid = sorted.filter((t) => { const d = dayAge(t); return d >= 2 && d <= 3; });
+  const bandOld = sorted.filter((t) => dayAge(t) > 3);
+  const total = tasks.length;
+
+  const fmtDayAge = (t: Task) => {
+    const d = dayAge(t);
+    return d === 1 ? "1d" : `${d}d`;
+  };
+
+  // Systemic-pattern detection: one store owning ≥25% of the stuck pile
+  // (min 3) is usually one upstream problem, not N task problems.
+  const concentration = useMemo(() => {
+    const byStore = new Map<string, number>();
+    for (const t of tasks) {
+      const s = storeNameOf(t);
+      if (s) byStore.set(s, (byStore.get(s) ?? 0) + 1);
+    }
+    const top = Array.from(byStore.entries()).sort((a, b) => b[1] - a[1])[0];
+    if (top && top[1] >= Math.max(3, Math.ceil(tasks.length * 0.25))) return top;
+    return null;
+  }, [tasks]);
 
   return (
     <div className="space-y-4">
-      <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-4 space-y-3">
-        <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-xs text-zinc-500 uppercase tracking-wider mr-2">Age</span>
-          {(["all", "today", "yesterday", "older"] as const).map(a => (
-            <button
-              key={a}
-              onClick={() => setAgeFilter(a)}
-              className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${
-                ageFilter === a
-                  ? "bg-blue-600 border-blue-600 text-white"
-                  : "bg-zinc-900 border-zinc-700 text-zinc-400 hover:text-zinc-200"
-              }`}
-            >
-              {a === "all" ? "All" : a.charAt(0).toUpperCase() + a.slice(1)}
-              {a === "older" && <span className="text-red-300 ml-1">⚠</span>}
-            </button>
-          ))}
-        </div>
-        <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-xs text-zinc-500 uppercase tracking-wider mr-2">Type</span>
-          <button
-            onClick={() => setTypeFilter("all")}
-            className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${
-              typeFilter === "all"
-                ? "bg-blue-600 border-blue-600 text-white"
-                : "bg-zinc-900 border-zinc-700 text-zinc-400 hover:text-zinc-200"
-            }`}
-          >
-            All types
-          </button>
-          {types.map(t => (
-            <button
-              key={t}
-              onClick={() => setTypeFilter(t)}
-              className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${
-                typeFilter === t
-                  ? "bg-blue-600 border-blue-600 text-white"
-                  : "bg-zinc-900 border-zinc-700 text-zinc-400 hover:text-zinc-200"
-              }`}
-            >
-              {typeLabel(t)}
-            </button>
-          ))}
-        </div>
-        <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-xs text-zinc-500 uppercase tracking-wider mr-2">Sort</span>
-          {([
-            ["oldest", "Appointment: oldest first"],
-            ["newest", "Appointment: newest first"],
-          ] as const).map(([dir, label]) => (
-            <button
-              key={dir}
-              onClick={() => setSortDir(dir)}
-              className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${
-                sortDir === dir
-                  ? "bg-blue-600 border-blue-600 text-white"
-                  : "bg-zinc-900 border-zinc-700 text-zinc-400 hover:text-zinc-200"
-              }`}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Banner — alarm tone when something is actually stuck, neutral
-          tone when the filter slice happens to be empty. Previously this
-          rendered a red "0 orders not progressing" panic box on any
-          zero-result filter, training users to distrust the colour. */}
-      {filtered.length > 0 ? (
-        <div className="bg-red-950/30 border border-red-900/50 rounded-lg p-4">
-          <div className="text-sm font-medium text-red-300">{filtered.length} orders not progressing</div>
-          <div className="text-xs text-red-400/80 mt-1">
-            Past their service window without lifecycle advancement. Sorted oldest first.
+      {/* Age composition bar — Stuck's scoreboard. A healthy operation's
+          bar shrinks from the right; a growing dark tail is the warning. */}
+      {total > 0 ? (
+        <div>
+          <div className="h-2 rounded bg-zinc-800 overflow-hidden flex">
+            <div className="bg-amber-600 h-full" style={{ width: `${(bandYesterday.length / total) * 100}%` }} />
+            <div className="bg-red-600 h-full" style={{ width: `${(bandMid.length / total) * 100}%` }} />
+            <div className="bg-red-900 h-full" style={{ width: `${(bandOld.length / total) * 100}%` }} />
+          </div>
+          <div className="flex gap-5 mt-1.5 text-[11px] text-zinc-500 tabular-nums flex-wrap">
+            <span><span className="inline-block w-2 h-2 rounded-sm bg-amber-600 mr-1.5" /><b className="text-zinc-300">{bandYesterday.length}</b> yesterday</span>
+            <span><span className="inline-block w-2 h-2 rounded-sm bg-red-600 mr-1.5" /><b className="text-zinc-300">{bandMid.length}</b> 2–3 days</span>
+            <span><span className="inline-block w-2 h-2 rounded-sm bg-red-900 mr-1.5" /><b className="text-zinc-300">{bandOld.length}</b> older — needs a decision</span>
+            <span className="ml-auto">goal: this bar shrinks left-to-right</span>
           </div>
         </div>
       ) : (
         <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-4">
-          <div className="text-sm font-medium text-zinc-300">No stuck tasks match your filters</div>
-          <div className="text-xs text-zinc-500 mt-1">
-            Try widening Age or Type. Default view is "All / All" — start there if you suspect something is hiding.
-          </div>
+          <div className="text-sm font-medium text-green-300">✓ Nothing stuck</div>
+          <div className="text-xs text-zinc-500 mt-1">No prior-day work is waiting. (Workspace filters apply here too.)</div>
         </div>
       )}
 
-      <div className="bg-zinc-900 border border-zinc-800 rounded-lg">
-        {filtered.length === 0 ? (
-          <div className="px-5 py-8 text-center text-sm text-zinc-500">
-            ✓ Nothing stuck matching these filters.
-          </div>
-        ) : (
-          filtered.map(t => (
-            <TaskRow
-              key={t.id}
-              task={t}
-              now={now}
-              agents={agents}
-              onClick={() => onRowClick(t)}
-              onReassign={onReassign}
-              canReassign={canReassign}
-              rightBadge={
-                <span className={`px-2 py-0.5 rounded text-[11px] shrink-0 ${ageStyle(ageOf(t))}`}>
-                  {ageLabel(t)}
-                </span>
-              }
+      {/* Systemic-pattern callout — one store owning ≥25% of the pile is
+          one upstream problem, not N task problems. */}
+      {concentration && (
+        <div className="flex items-center gap-3 bg-amber-950/20 border border-amber-900/40 rounded-lg px-4 py-2.5 text-sm text-amber-300 flex-wrap">
+          <span>⚠ Pattern: <b className="tabular-nums">{concentration[1]} of {total}</b> stuck tasks are {concentration[0]}.</span>
+          <span className="text-amber-400/60 text-xs">Likely one upstream problem — worth a root-cause look before chasing individually.</span>
+        </div>
+      )}
+
+      {/* ◔ YESTERDAY — fresh debt, recover exactly like Today's pile */}
+      {bandYesterday.length > 0 && (
+        <Zone
+          kind="risk"
+          title="◔ YESTERDAY"
+          subtitle="fresh debt — recover exactly like Today's pile"
+          count={bandYesterday.length}
+          countClass="bg-amber-900/60 text-amber-300"
+          headerRight={canReassign ? (
+            <BulkAssignButton taskIds={bandYesterday.map((t) => t.id)} agents={agents} onBulkReassign={onBulkReassign} />
+          ) : undefined}
+        >
+          {bandYesterday.map((t) => (
+            <TaskRow key={t.id} task={t} now={now} agents={agents} onClick={() => onRowClick(t)} onReassign={onReassign} canReassign={canReassign} onComplete={onComplete}
+              rightBadge={<span className="px-2 py-0.5 rounded text-[11px] shrink-0 bg-amber-900/40 text-amber-300 tabular-nums">{fmtDayAge(t)}</span>}
             />
-          ))
-        )}
-      </div>
+          ))}
+        </Zone>
+      )}
+
+      {/* ⏰ 2–3 DAYS — chase hard; every item here has slipped once already */}
+      {bandMid.length > 0 && (
+        <Zone
+          kind="recover"
+          title="⏰ 2–3 DAYS"
+          subtitle="chase hard — every item here has slipped once already"
+          count={bandMid.length}
+          countClass="bg-red-900 text-red-300"
+          headerRight={canReassign ? (
+            <BulkAssignButton taskIds={bandMid.map((t) => t.id)} agents={agents} onBulkReassign={onBulkReassign} />
+          ) : undefined}
+        >
+          {bandMid.map((t) => (
+            <TaskRow key={t.id} task={t} now={now} agents={agents} onClick={() => onRowClick(t)} onReassign={onReassign} canReassign={canReassign} onComplete={onComplete}
+              rightBadge={<span className="px-2 py-0.5 rounded text-[11px] shrink-0 bg-red-900/40 text-red-300 tabular-nums">{fmtDayAge(t)}</span>}
+            />
+          ))}
+        </Zone>
+      )}
+
+      {/* ⛔ OLDER THAN 3 DAYS — chasing failed; rows show a decision, not ✓.
+          Escalate opens the order context (drawer) so the head can raise it
+          with full history; Close-with-reason records why we stopped. */}
+      {bandOld.length > 0 && (
+        <Zone
+          kind="deep"
+          title="⛔ OLDER THAN 3 DAYS"
+          subtitle="chasing has failed — decide: escalate, or close with a reason"
+          count={bandOld.length}
+          countClass="bg-red-950 text-red-400"
+        >
+          {bandOld.map((t) => (
+            <div key={t.id} className="flex items-center gap-3 px-5 py-3 border-b border-zinc-800 last:border-b-0 hover:bg-zinc-800/40 transition-colors">
+              <div className="text-center w-16 shrink-0">
+                <div className="text-base font-bold text-red-400 tabular-nums">{fmtDayAge(t)}</div>
+                <div className="text-[10px] text-zinc-600 uppercase tracking-wider">stuck</div>
+              </div>
+              <div className="flex-1 min-w-0 cursor-pointer" onClick={() => onRowClick(t)} role="button" tabIndex={0}>
+                <div className="font-medium text-sm text-zinc-100 truncate">{t.title}</div>
+                <div className="text-xs text-zinc-500 mt-0.5">
+                  #{t.entityId}{storeNameOf(t) ? ` · ${storeNameOf(t)}` : ""}
+                </div>
+              </div>
+              <AssigneeChip task={t} agents={agents} onReassign={onReassign} canReassign={canReassign} />
+              <button
+                onClick={() => onRowClick(t)}
+                className="px-2 py-1 rounded text-[11px] font-medium border border-red-900 text-red-300 hover:bg-red-900/30 transition-colors shrink-0"
+                title="Open order context to raise an escalation"
+              >
+                Escalate ↗
+              </button>
+              <button
+                onClick={() => {
+                  const reason = window.prompt(
+                    `Close "${t.title}"?\n\nRecord the reason (required) — this is a decision to stop chasing, kept in the task history:`
+                  );
+                  if (reason && reason.trim()) onCloseWithReason(t.id, reason.trim());
+                }}
+                className="px-2 py-1 rounded text-[11px] border border-zinc-700 text-zinc-400 hover:bg-zinc-800 transition-colors shrink-0"
+              >
+                Close w/ reason
+              </button>
+            </div>
+          ))}
+        </Zone>
+      )}
     </div>
   );
 }
@@ -995,6 +1249,12 @@ export default function MyWorkBoard({ currentUser }: { currentUser: CurrentUser 
   // taskRuleId). Lets the lead answer "which rule is generating the pile"
   // (e.g. select Sample Handover → Stuck tab = where handovers are stuck).
   const [filterRules, setFilterRules] = useState<Set<string>>(new Set()); // empty = all
+  // Store / priority / SLA filters — combined with the above so any
+  // permutation of (assignee × type × rule × store × priority × SLA) can
+  // be sliced. All client-side over the already-fetched workspace.
+  const [filterStore, setFilterStore] = useState<string>("all");
+  const [filterPriorities, setFilterPriorities] = useState<Set<string>>(new Set()); // empty = all
+  const [filterSla, setFilterSla] = useState<Set<string>>(new Set()); // empty = all
 
   // Keep "now" fresh so the sliding NOW window slides on its own.
   useEffect(() => {
@@ -1053,6 +1313,93 @@ export default function MyWorkBoard({ currentUser }: { currentUser: CurrentUser 
       console.error("[MyWork] reassign failed:", e);
       setTasks(prev); // revert optimistic update
       setError(`Reassign failed: ${e instanceof Error ? e.message : "unknown error"}`);
+    }
+  }, [tasks, agents]);
+
+  // ✓ Done from a row (Focus / Recover / Stuck zones). Optimistic: flip the
+  // task to COMPLETED + viewBucket "done" locally so it moves to Cleared and
+  // the Focus zone pulls the next item in immediately; revert on failure.
+  const handleComplete = useCallback(async (taskId: number) => {
+    const prev = tasks;
+    const nowIso = new Date().toISOString();
+    setTasks((ts) =>
+      ts.map((t) =>
+        t.id === taskId
+          ? { ...t, status: "COMPLETED", completedAt: nowIso, viewBucket: "done" as const }
+          : t
+      )
+    );
+    try {
+      const res = await fetch(`/api/tasks/${taskId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "COMPLETED", note: "Completed from Smart View" }),
+      });
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({}));
+        throw new Error(errBody.error ?? `HTTP ${res.status}`);
+      }
+    } catch (e) {
+      console.error("[MyWork] complete failed:", e);
+      setTasks(prev);
+      setError(`Complete failed: ${e instanceof Error ? e.message : "unknown error"}`);
+    }
+  }, [tasks]);
+
+  // Close-with-reason (Stuck → "Older" zone). CANCELLED + the operator's
+  // reason in history — a recorded decision to stop chasing, distinct from
+  // completion and from engine auto-retirement.
+  const handleCloseWithReason = useCallback(async (taskId: number, reason: string) => {
+    const prev = tasks;
+    const nowIso = new Date().toISOString();
+    setTasks((ts) =>
+      ts.map((t) =>
+        t.id === taskId
+          ? { ...t, status: "CANCELLED", completedAt: nowIso, viewBucket: "done" as const }
+          : t
+      )
+    );
+    try {
+      const res = await fetch(`/api/tasks/${taskId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "CANCELLED", note: `Closed from Smart View — ${reason}` }),
+      });
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({}));
+        throw new Error(errBody.error ?? `HTTP ${res.status}`);
+      }
+    } catch (e) {
+      console.error("[MyWork] close failed:", e);
+      setTasks(prev);
+      setError(`Close failed: ${e instanceof Error ? e.message : "unknown error"}`);
+    }
+  }, [tasks]);
+
+  // Bulk assign — one call for a whole pile/zone (reuses /api/tasks/bulk).
+  const handleBulkReassign = useCallback(async (taskIds: number[], agentId: number) => {
+    if (taskIds.length === 0) return;
+    const agent = agents.find((a) => a.id === agentId);
+    if (!agent) return;
+    const prev = tasks;
+    const idSet = new Set(taskIds);
+    setTasks((ts) =>
+      ts.map((t) => (idSet.has(t.id) ? { ...t, assignedTo: { id: agent.id, name: agent.name } } : t))
+    );
+    try {
+      const res = await fetch("/api/tasks/bulk", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: taskIds, action: "reassign", assignedToId: agentId }),
+      });
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({}));
+        throw new Error(errBody.error ?? `HTTP ${res.status}`);
+      }
+    } catch (e) {
+      console.error("[MyWork] bulk reassign failed:", e);
+      setTasks(prev);
+      setError(`Bulk assign failed: ${e instanceof Error ? e.message : "unknown error"}`);
     }
   }, [tasks, agents]);
 
@@ -1135,9 +1482,15 @@ export default function MyWorkBoard({ currentUser }: { currentUser: CurrentUser 
       if (filterTypes.size > 0 && !filterTypes.has(t.orderType)) return false;
       // Rule filter (empty set = all)
       if (filterRules.size > 0 && !filterRules.has(t.taskRuleId)) return false;
+      // Store filter ("all" = off; matches metadata.storeName)
+      if (filterStore !== "all" && storeNameOf(t) !== filterStore) return false;
+      // Priority filter (empty set = all)
+      if (filterPriorities.size > 0 && !filterPriorities.has(t.priority)) return false;
+      // SLA filter (empty set = all)
+      if (filterSla.size > 0 && !filterSla.has(t.slaStatus)) return false;
       return true;
     });
-  }, [tasks, filterAssigneeId, filterTypes, filterRules]);
+  }, [tasks, filterAssigneeId, filterTypes, filterRules, filterStore, filterPriorities, filterSla]);
 
   const byBucket = useMemo(() => {
     const t = { today: [] as Task[], tomorrow: [] as Task[], stuck: [] as Task[] };
@@ -1196,6 +1549,43 @@ export default function MyWorkBoard({ currentUser }: { currentUser: CurrentUser 
     }
     return Array.from(byId.values()).sort((a, b) => b.count - a.count);
   }, [tasks]);
+
+  // Stores present in the workspace, by volume — powers the Store select.
+  const availableStores = useMemo(() => {
+    const byName = new Map<string, number>();
+    for (const t of tasks) {
+      const s = storeNameOf(t);
+      if (!s) continue;
+      byName.set(s, (byName.get(s) ?? 0) + 1);
+    }
+    return Array.from(byName.entries())
+      .sort((a, b) => b[1] - a[1])
+      .map(([name, count]) => ({ name, count }));
+  }, [tasks]);
+
+  const availablePriorities = useMemo(() => {
+    const s = new Set<string>();
+    for (const t of tasks) if (t.priority) s.add(t.priority);
+    // Stable severity order regardless of insertion.
+    const ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW"];
+    return Array.from(s).sort((a, b) => ORDER.indexOf(a) - ORDER.indexOf(b));
+  }, [tasks]);
+
+  const SLA_OPTIONS: Array<{ key: string; label: string }> = [
+    { key: "breached", label: "Breached" },
+    { key: "critical", label: "Critical" },
+    { key: "warning", label: "Warning" },
+    { key: "safe", label: "In SLA" },
+  ];
+
+  const anyFilterActive =
+    filterAssigneeId !== "all" || filterTypes.size > 0 || filterRules.size > 0 ||
+    filterStore !== "all" || filterPriorities.size > 0 || filterSla.size > 0;
+
+  const clearAllFilters = () => {
+    setFilterAssigneeId("all"); setFilterTypes(new Set()); setFilterRules(new Set());
+    setFilterStore("all"); setFilterPriorities(new Set()); setFilterSla(new Set());
+  };
 
   // Unassigned count for the chip badge (always reflects the unfiltered
   // workspace so the user sees the real "you have N unassigned" pulse).
@@ -1336,10 +1726,79 @@ export default function MyWorkBoard({ currentUser }: { currentUser: CurrentUser 
           </div>
         )}
 
+        {/* Store selector — dropdown (store lists run long); sorted by volume */}
+        {availableStores.length > 1 && (
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] text-zinc-500 uppercase tracking-wider">Store</span>
+            <select
+              value={filterStore}
+              onChange={(e) => setFilterStore(e.target.value)}
+              className="bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-sm text-zinc-100 max-w-[220px] focus:outline-none focus:ring-1 focus:ring-blue-500"
+            >
+              <option value="all">All stores</option>
+              {availableStores.map((s) => (
+                <option key={s.name} value={s.name}>{s.name} ({s.count})</option>
+              ))}
+            </select>
+          </div>
+        )}
+
+        {/* Priority chips */}
+        {availablePriorities.length > 1 && (
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-[10px] text-zinc-500 uppercase tracking-wider mr-1">Priority</span>
+            {availablePriorities.map((p) => {
+              const active = filterPriorities.has(p);
+              return (
+                <button
+                  key={p}
+                  onClick={() => {
+                    const next = new Set(filterPriorities);
+                    if (active) next.delete(p); else next.add(p);
+                    setFilterPriorities(next);
+                  }}
+                  className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
+                    active
+                      ? "bg-blue-600 border-blue-600 text-white"
+                      : "bg-zinc-900 border-zinc-700 text-zinc-400 hover:text-zinc-200"
+                  }`}
+                >
+                  {p.charAt(0) + p.slice(1).toLowerCase()}
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        {/* SLA-state chips */}
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <span className="text-[10px] text-zinc-500 uppercase tracking-wider mr-1">SLA</span>
+          {SLA_OPTIONS.map(({ key, label }) => {
+            const active = filterSla.has(key);
+            return (
+              <button
+                key={key}
+                onClick={() => {
+                  const next = new Set(filterSla);
+                  if (active) next.delete(key); else next.add(key);
+                  setFilterSla(next);
+                }}
+                className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
+                  active
+                    ? "bg-blue-600 border-blue-600 text-white"
+                    : "bg-zinc-900 border-zinc-700 text-zinc-400 hover:text-zinc-200"
+                }`}
+              >
+                {label}
+              </button>
+            );
+          })}
+        </div>
+
         {/* Reset (only shows when something is filtered) */}
-        {(filterAssigneeId !== "all" || filterTypes.size > 0 || filterRules.size > 0) && (
+        {anyFilterActive && (
           <button
-            onClick={() => { setFilterAssigneeId("all"); setFilterTypes(new Set()); setFilterRules(new Set()); }}
+            onClick={clearAllFilters}
             className="text-xs text-zinc-500 hover:text-zinc-200 ml-auto"
           >
             Clear filters
@@ -1396,6 +1855,8 @@ export default function MyWorkBoard({ currentUser }: { currentUser: CurrentUser 
               canReassign={!isAgent}
               onRowClick={(t) => setSelectedTask(t)}
               onReassign={handleReassign}
+              onComplete={handleComplete}
+              onBulkReassign={handleBulkReassign}
             />
           )}
           {tab === "tomorrow" && (
@@ -1416,6 +1877,9 @@ export default function MyWorkBoard({ currentUser }: { currentUser: CurrentUser 
               canReassign={!isAgent}
               onRowClick={(t) => setSelectedTask(t)}
               onReassign={handleReassign}
+              onComplete={handleComplete}
+              onBulkReassign={handleBulkReassign}
+              onCloseWithReason={handleCloseWithReason}
             />
           )}
         </>

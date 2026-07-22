@@ -131,6 +131,27 @@ export default function SourceLoadPanel() {
     () => Array.from(dayTotals.entries()).sort((a, b) => b[1] - a[1]).slice(0, 5),
     [dayTotals]
   );
+
+  // Full chronological per-day series over the window (zero-filled so
+  // quiet days are visible as gaps, not silently absent) + the headline
+  // capacity number: average per day.
+  const { perDay, avgPerDay, maxPerDay } = useMemo(() => {
+    const today = data?.todayIST ?? new Date().toISOString().slice(0, 10);
+    const windowDays = data?.days ?? 14;
+    const series: Array<{ date: string; count: number }> = [];
+    const anchor = new Date(`${today}T12:00:00Z`);
+    for (let i = windowDays; i >= 1; i--) {
+      const d = new Date(anchor.getTime() - i * 86_400_000);
+      const key = d.toISOString().slice(0, 10);
+      series.push({ date: key, count: dayTotals.get(key) ?? 0 });
+    }
+    const total = series.reduce((s, r) => s + r.count, 0);
+    return {
+      perDay: series,
+      avgPerDay: windowDays > 0 ? total / windowDays : 0,
+      maxPerDay: Math.max(1, ...series.map((r) => r.count)),
+    };
+  }, [dayTotals, data]);
   const upcomingDays = useMemo(
     () => Array.from(upcoming.entries()).sort((a, b) => (a[0] < b[0] ? -1 : 1)),
     [upcoming]
@@ -245,6 +266,34 @@ export default function SourceLoadPanel() {
             <span key={a} className="w-4 h-3 rounded-sm inline-block" style={{ backgroundColor: `rgba(59,130,246,${a})` }} />
           ))}
           <span>high · hours are IST · staffing follows the dark bands</span>
+        </div>
+      </div>
+
+      {/* T0 — volume per day: the headline capacity number + the daily
+          series (zero-filled, chronological) so variance is visible, not
+          just the mean. */}
+      <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-5">
+        <div className="flex items-baseline justify-between flex-wrap gap-2">
+          <div className="font-semibold text-zinc-100">Volume per day</div>
+          <div className="text-sm text-zinc-300 tabular-nums">
+            avg <b className="text-blue-300">{avgPerDay.toFixed(1)}</b> {data.source.label.toLowerCase()}/day
+            <span className="text-zinc-500"> · last {data.days} days · by {data.source.eventTimeLabel}</span>
+          </div>
+        </div>
+        <div className="flex items-end gap-[3px] h-24 mt-4">
+          {perDay.map((r) => (
+            <div
+              key={r.date}
+              className="flex-1 rounded-t-sm bg-blue-600/70 hover:bg-blue-500 transition-colors min-w-[4px]"
+              style={{ height: `${Math.max(2, (r.count / maxPerDay) * 100)}%` }}
+              title={`${fmtDay(r.date)} — ${r.count}`}
+            />
+          ))}
+        </div>
+        <div className="flex justify-between mt-1.5 text-[10px] text-zinc-600">
+          <span>{perDay[0] ? fmtDay(perDay[0].date) : ""}</span>
+          <span>peak {maxPerDay}</span>
+          <span>{perDay[perDay.length - 1] ? fmtDay(perDay[perDay.length - 1].date) : ""}</span>
         </div>
       </div>
 

@@ -89,7 +89,7 @@ export async function GET(request: NextRequest) {
     return null;
   };
 
-  const eventCol = requireCol(contract.eventTimeField, "eventTime");
+  let eventCol = requireCol(contract.eventTimeField, "eventTime");
   const createdCol = requireCol(contract.createdField, "created");
   const statusCol = requireCol(contract.statusField, "status");
   const dims = (contract.dimensions ?? []).filter((d) => {
@@ -97,9 +97,27 @@ export async function GET(request: NextRequest) {
     warnings.push(`dimension "${d.column}" not found on ${contract.table} — dropped`);
     return false;
   });
+  // Fallback, not failure: when the declared eventTime column doesn't
+  // exist, chart on creation time instead (arrival is always a valid
+  // capacity axis). Only give up when the table has neither — and even
+  // then say exactly what to fix. A mis-guessed contract must shrink the
+  // panel, never brick it (the Appointment incident, 22 Jul).
+  let eventTimeLabel = contract.eventTimeLabel;
+  let lookahead = contract.lookaheadDays;
+  if (!eventCol && createdCol) {
+    eventCol = createdCol;
+    eventTimeLabel = "creation time (fallback — declared event column missing)";
+    lookahead = 0; // creation time has no booked-ahead future
+    warnings.push(
+      `charting on "${createdCol}" instead — fix eventTimeField in the analytics registry to restore ${contract.eventTimeLabel}`
+    );
+  }
   if (!eventCol) {
     return NextResponse.json(
-      { error: `eventTime column "${contract.eventTimeField}" missing on ${contract.table} — nothing to chart`, warnings },
+      {
+        error: `Neither eventTime ("${contract.eventTimeField}") nor created ("${contract.createdField}") columns exist on ${contract.table} — update this source's analytics contract`,
+        warnings,
+      },
       { status: 422 }
     );
   }
@@ -108,7 +126,6 @@ export async function GET(request: NextRequest) {
   const E = q(eventCol);
   const C = q(createdCol ?? eventCol);
   const dimExpr = dims.length > 0 ? `${q(dims[0].column)}::text` : `NULL`;
-  const lookahead = contract.lookaheadDays;
 
   // ── T0 — heatmap cells (IST date × hour × first dimension) ───────────
   const cells = await labstackOr<CellRow[] | null>(
@@ -216,7 +233,7 @@ export async function GET(request: NextRequest) {
     source: {
       key: contract.key,
       label: contract.label,
-      eventTimeLabel: contract.eventTimeLabel,
+      eventTimeLabel,
       lookaheadDays: lookahead,
       hasStatus: !!statusCol,
       hasFulfillment: !!(statusCol && contract.statusMap),

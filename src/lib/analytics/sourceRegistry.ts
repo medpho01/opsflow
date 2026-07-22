@@ -86,6 +86,26 @@ export const SOURCE_ANALYTICS: Record<string, SourceAnalyticsContract> = {
     },
     dimensions: [{ key: "type", label: "Type", column: "requestType" }],
   },
+  pharma: {
+    key: "pharma",
+    label: "Pharma Orders",
+    table: "PharmaOrder",
+    // Schema verified 22 Jul (replica information_schema): orderDate,
+    // createdAt, orderStatus (enum), orderType (enum) all exist.
+    createdField: "createdAt",
+    eventTimeField: "orderDate",
+    eventTimeLabel: "order date",
+    lookaheadDays: 7,
+    statusField: "orderStatus",
+    // Best-effort mapping pending the real vocabulary (run the status
+    // GROUP BY once and tighten). Unmatched values count as open and
+    // show up verbatim in the T1 status-mix card.
+    statusMap: {
+      fulfilled: ["DELIVERED", "COMPLETED", "FULFILLED", "ORDER_DELIVERED"],
+      failed: ["CANCELLED", "CANCELED", "REJECTED", "RETURNED", "REFUNDED"],
+    },
+    dimensions: [{ key: "type", label: "Type", column: "orderType" }],
+  },
   appointments: {
     key: "appointments",
     label: "Appointments",

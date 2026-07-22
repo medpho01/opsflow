@@ -659,7 +659,13 @@ async function pickAssignee(
 
 // ── Core creator ──────────────────────────────────────────────────────────────
 
-async function createTask(payload: CreateTaskPayload): Promise<PickAssigneeOutcome> {
+// Returns the assignment outcome plus what actually happened to the row:
+// "created" (new task), "reopened" (engine-retired task resurrected in
+// place — see the unique-constraint note in the body), or "skipped" (the
+// (rule, entity) slot is held by a live/human-decided/archived task).
+async function createTask(
+  payload: CreateTaskPayload
+): Promise<{ outcome: PickAssigneeOutcome; creation: "created" | "reopened" | "skipped" }> {
   const {
     taskRuleId, taskTypeId, title, entityType, entityId,
     storeId, orderType, dataSourceId, priority, slaDeadline, metadata, checklistSteps,
@@ -705,34 +711,118 @@ async function createTask(payload: CreateTaskPayload): Promise<PickAssigneeOutco
   // failed (e.g. taskHistory.create after task.create), the resulting state
   // was a task with no history and an inconsistent status, with no signal.
   // The transaction rolls back the whole thing on any sub-failure.
-  const task = await prisma.$transaction(async (tx) => {
+  // ── Reopen-or-create-or-skip (July 2026 incident) ────────────────────
+  // The DB enforces @@unique([taskRuleId, entityId]) — one task per
+  // (rule, order) FOREVER, and the archiver only flags rows (isArchived),
+  // it never deletes them. So when the dedup layer allows a re-fire
+  // (engine-retired CANCELLED task, order re-entered the rule's statusIn),
+  // a plain create() hits P2002 — and before this fix, that single
+  // violation aborted the ENTIRE poll cycle, taking the retirer and SLA
+  // watcher down with it. The correct move under this constraint is to
+  // REOPEN the existing engine-retired row in place: no constraint fight,
+  // and the task keeps its full history across the retire/reopen bounce.
+  // Any other occupant of the slot (open task, human cancel, completed,
+  // archived history) → skip quietly; it's a dedup race, not an error.
+  const sharedData = {
+    taskTypeId,
+    title,
+    storeId,
+    orderType,
+    priority,
+    slaDeadline,
+    appointmentTime,
+    // Stash the assignment outcome on the task's metadata so the operator
+    // can see WHY a task is unassigned without grepping logs.
+    metadata: {
+      ...(metadata as Record<string, unknown>),
+      ...(outcome.ok ? {} : { assignmentFailure: { reason: outcome.reason, detail: outcome.detail } }),
+    } as Parameters<typeof prisma.task.create>[0]["data"]["metadata"],
+    // If assigned, the task lands directly as ASSIGNED — saves one
+    // round-trip vs the previous create-then-update pattern.
+    status: assigneeId ? TaskStatus.ASSIGNED : TaskStatus.CREATED,
+    assignedToId: assigneeId,
+    teamMemberId: assigneeTeamMemberId,
+    assignedAt: assigneeId ? now : null,
+    lastStatusUpdate: now,
+    assignmentMethod,
+    assignmentRuleId: taskRuleId,
+  };
+  const historyCreate = assigneeId
+    ? [
+        {
+          status: TaskStatus.CREATED,
+          note: "Task auto-created by OpsFlow polling engine",
+        },
+        {
+          status: TaskStatus.ASSIGNED,
+          changedById: assigneeId,
+          note: "Auto-assigned by OpsFlow engine",
+        },
+      ]
+    : [
+        {
+          status: TaskStatus.CREATED,
+          note: outcome.ok
+            ? "Task auto-created by OpsFlow polling engine"
+            : `Task auto-created (UNASSIGNED — ${outcome.reason}: ${outcome.detail ?? "no detail"})`,
+        },
+      ];
+
+  const txResult = await prisma.$transaction(async (tx) => {
+    const existing = await tx.task.findUnique({
+      where: { taskRuleId_entityId: { taskRuleId, entityId } },
+      select: { id: true, status: true, metadata: true },
+    });
+
+    if (existing) {
+      const isEngineRetired =
+        existing.status === TaskStatus.CANCELLED &&
+        !!(existing.metadata as Record<string, unknown> | null)?.autoRetiredByEngine;
+      if (!isEngineRetired) {
+        // Slot held by a live task or a human decision — dedup race or
+        // archived history. Not an error; just don't touch it.
+        return { task: null, creation: "skipped" as const };
+      }
+      // Reopen: fresh fields + checklist, un-archive, clear terminal state.
+      await tx.taskChecklistItem.deleteMany({ where: { taskId: existing.id } });
+      const reopened = await tx.task.update({
+        where: { id: existing.id },
+        data: {
+          ...sharedData,
+          isArchived: false,
+          completedAt: null,
+          slaBreachedAt: null,
+          snoozedUntil: null,
+          checklistItems: {
+            create: checklistSteps.map((s) => ({
+              stepOrder: s.stepOrder,
+              stepText: s.stepText,
+              isRequired: s.isRequired,
+              isDone: false,
+            })),
+          },
+          history: {
+            create: [
+              {
+                status: sharedData.status,
+                note: "Reopened by engine — order re-entered the rule's statusIn after an auto-retirement",
+              },
+              ...(assigneeId
+                ? [{ status: TaskStatus.ASSIGNED, changedById: assigneeId, note: "Auto-assigned by OpsFlow engine" }]
+                : []),
+            ],
+          },
+        },
+      });
+      return { task: reopened, creation: "reopened" as const };
+    }
+
     const created = await tx.task.create({
       data: {
+        ...sharedData,
         taskRuleId,
-        taskTypeId,
-        title,
         entityType,
         entityId,
-        storeId,
-        orderType,
-        priority,
-        slaDeadline,
-        appointmentTime,
-        // Stash the assignment outcome on the task's metadata so the operator
-        // can see WHY a task is unassigned without grepping logs.
-        metadata: {
-          ...(metadata as Record<string, unknown>),
-          ...(outcome.ok ? {} : { assignmentFailure: { reason: outcome.reason, detail: outcome.detail } }),
-        } as Parameters<typeof tx.task.create>[0]["data"]["metadata"],
-        // If assigned, the task lands directly as ASSIGNED — saves one
-        // round-trip vs the previous create-then-update pattern.
-        status: assigneeId ? TaskStatus.ASSIGNED : TaskStatus.CREATED,
-        assignedToId: assigneeId,
-        teamMemberId: assigneeTeamMemberId,
-        assignedAt: assigneeId ? now : null,
-        lastStatusUpdate: now,
-        assignmentMethod,
-        assignmentRuleId: taskRuleId,
         checklistItems: {
           create: checklistSteps.map((s) => ({
             stepOrder: s.stepOrder,
@@ -741,30 +831,15 @@ async function createTask(payload: CreateTaskPayload): Promise<PickAssigneeOutco
             isDone: false,
           })),
         },
-        history: {
-          create: assigneeId
-            ? [
-                {
-                  status: TaskStatus.CREATED,
-                  note: "Task auto-created by OpsFlow polling engine",
-                },
-                {
-                  status: TaskStatus.ASSIGNED,
-                  changedById: assigneeId,
-                  note: "Auto-assigned by OpsFlow engine",
-                },
-              ]
-            : {
-                status: TaskStatus.CREATED,
-                note: outcome.ok
-                  ? "Task auto-created by OpsFlow polling engine"
-                  : `Task auto-created (UNASSIGNED — ${outcome.reason}: ${outcome.detail ?? "no detail"})`,
-              },
-        },
+        history: { create: historyCreate },
       },
     });
-    return created;
+    return { task: created, creation: "created" as const };
   });
+  const task = txResult.task;
+  if (!task) {
+    return { outcome, creation: "skipped" as const };
+  }
 
   // W1.3 — surface engine errors via the alert feed. "no candidates" /
   // "no roster" are normal off-hours cases; "error" is a bug worth waking
@@ -806,8 +881,7 @@ async function createTask(payload: CreateTaskPayload): Promise<PickAssigneeOutco
 
   // (W2.3 — assignment history + status are now created inside the
   // transaction above, so there's no follow-up block here.)
-  void task;
-  return outcome;
+  return { outcome, creation: txResult.creation };
 }
 
 // ── Public entry point ────────────────────────────────────────────────────────
@@ -824,6 +898,7 @@ export interface RuleCycleStats {
   skippedTrigger: number;    // status / timing / metadata didn't pass
   skippedTypeFilter: number; // allowedTypes filtered the order out
   failedAssignment: number;  // task created but pickAssignee couldn't pick anyone
+  failedCreate: number;      // insert/reopen threw (e.g. constraint race) — cycle continued
 }
 
 export async function evaluateAndCreateTasks(
@@ -841,7 +916,7 @@ export async function evaluateAndCreateTasks(
     perRule.set(r.id, {
       ruleId: r.id, ruleName: r.name,
       fired: 0, skippedDedup: 0, skippedTrigger: 0,
-      skippedTypeFilter: 0, failedAssignment: 0,
+      skippedTypeFilter: 0, failedAssignment: 0, failedCreate: 0,
     });
   }
   const bumpRule = (ruleId: string, key: keyof Omit<RuleCycleStats, "ruleId" | "ruleName">) => {
@@ -1099,12 +1174,30 @@ export async function evaluateAndCreateTasks(
         })),
       };
 
-      const outcome = await createTask(payload);
-      bumpRule(rule.id, "fired");
-      if (!outcome.ok) {
-        bumpRule(rule.id, "failedAssignment");
+      // Per-task error isolation (July 2026 incident): a single failed
+      // insert used to throw out of this loop and abort the ENTIRE poll
+      // cycle — killing task creation for every other order AND the
+      // retirer/SLA watcher downstream (which is how 176 stale
+      // confirm-booking tasks accumulated while cycles logged ERROR).
+      // One bad task is one bad task; the cycle must survive it.
+      try {
+        const { outcome, creation } = await createTask(payload);
+        if (creation === "skipped") {
+          bumpRule(rule.id, "skippedDedup");
+          continue;
+        }
+        bumpRule(rule.id, "fired");
+        if (!outcome.ok) {
+          bumpRule(rule.id, "failedAssignment");
+        }
+        created++;
+      } catch (err) {
+        bumpRule(rule.id, "failedCreate");
+        console.error(
+          `[taskCreator] create failed for rule=${rule.id} entity=${order.id} — continuing cycle (non-fatal):`,
+          err instanceof Error ? err.message : err
+        );
       }
-      created++;
     }
   }
 

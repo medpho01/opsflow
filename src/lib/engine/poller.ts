@@ -254,6 +254,7 @@ export async function runPollCycle(): Promise<void> {
               existing.skippedTrigger += s2.skippedTrigger;
               existing.skippedTypeFilter += s2.skippedTypeFilter;
               existing.failedAssignment += s2.failedAssignment;
+              existing.failedCreate += s2.failedCreate;
             } else {
               byId.set(s2.ruleId, s2);
             }

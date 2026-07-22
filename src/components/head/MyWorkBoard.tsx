@@ -17,7 +17,7 @@
  * task drawer that renders all order types from a single template.
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { formatISTTimestamp } from "@/lib/utils/timezone";
 import TaskDetailPanel from "@/components/agent/TaskDetailPanel";
 import OrderQuickView from "@/components/shared/OrderQuickView";
@@ -1403,8 +1403,17 @@ export default function MyWorkBoard({ currentUser }: { currentUser: CurrentUser 
     }
   }, [tasks, agents]);
 
-  const fetchTasks = useCallback(async () => {
-    setLoading(true);
+  // Guards against overlapping fetches — the live-refresh interval, focus
+  // refetch, manual Refresh, and post-action onUpdate can all fire close
+  // together; only one request set should be in flight at a time.
+  const fetchInFlight = useRef(false);
+
+  const fetchTasks = useCallback(async (background = false) => {
+    if (fetchInFlight.current) return;
+    fetchInFlight.current = true;
+    // Background refreshes swap data in place — no spinner, no flicker.
+    // The full-page loading state is reserved for the first paint.
+    if (!background) setLoading(true);
     setError(null);
     try {
       // Per-view fetches — one bounded query per bucket so no bucket can
@@ -1466,10 +1475,38 @@ export default function MyWorkBoard({ currentUser }: { currentUser: CurrentUser 
       setError(e instanceof Error ? e.message : "Failed to load tasks");
     } finally {
       setLoading(false);
+      fetchInFlight.current = false;
     }
   }, []);
 
   useEffect(() => { fetchTasks(); }, [fetchTasks]);
+
+  // ── Live refresh ─────────────────────────────────────────────────────
+  // The workspace re-syncs itself: a silent background refetch every 30s
+  // (only while the tab is visible — a hidden dashboard shouldn't poll),
+  // plus an immediate refetch the moment the tab regains focus. Combined
+  // with the optimistic updates on Done/Assign, every view tracks the
+  // engine within one interval of real time, with zero loading flicker
+  // (background fetches swap data in place; the spinner is first-paint
+  // only). Push (SSE/WS) was considered and rejected: the source data
+  // only changes on poll-cycle writes and operator actions, so a socket
+  // would add infrastructure without adding freshness.
+  const LIVE_REFRESH_MS = 30_000;
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (document.visibilityState === "visible") fetchTasks(true);
+    }, LIVE_REFRESH_MS);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") fetchTasks(true);
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onVisible);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onVisible);
+    };
+  }, [fetchTasks]);
 
   // Apply filters first, then bucket. Filters narrow the entire workspace
   // (today/tomorrow/stuck counts all update together).
@@ -1610,11 +1647,17 @@ export default function MyWorkBoard({ currentUser }: { currentUser: CurrentUser 
           <div className="text-sm text-zinc-500 mt-1">
             {now.toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "long", timeZone: "Asia/Kolkata" })}
             <span className="mx-2">·</span>
-            <span className="text-zinc-400">Last updated {lastUpdatedRel}</span>
+            <span className="inline-flex items-center gap-1.5 text-zinc-400">
+              <span className="relative flex h-2 w-2" aria-hidden>
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-500 opacity-60 motion-reduce:hidden" />
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500" />
+              </span>
+              Live · updated {lastUpdatedRel}
+            </span>
           </div>
         </div>
         <button
-          onClick={fetchTasks}
+          onClick={() => fetchTasks()}
           disabled={loading}
           className="px-3 py-1.5 text-sm bg-zinc-800 border border-zinc-700 rounded text-zinc-200 hover:bg-zinc-700 disabled:opacity-50"
         >

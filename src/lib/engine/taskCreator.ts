@@ -679,7 +679,7 @@ async function createTask(
   // log rather than persist a row that can't be sorted on slaDeadline.
   if (!(slaDeadline instanceof Date) || isNaN(slaDeadline.getTime())) {
     console.error(`[createTask] aborting — invalid slaDeadline for rule=${taskRuleId} entity=${entityId}`);
-    return { ok: false, reason: "error", detail: "invalid slaDeadline" };
+    return { outcome: { ok: false, reason: "error", detail: "invalid slaDeadline" }, creation: "skipped" };
   }
 
   // Fetch required skills for this rule

@@ -1,35 +1,56 @@
 /**
- * GET /api/analytics/source-load?source=orders|requests|appointments&days=7|14|30
+ * GET /api/analytics/source-load?source=<sourceId>&days=7|14|30
  *
- * Generic source-entity analytics driven by the analytics contract in
- * lib/analytics/sourceRegistry. Replaces the orders-only /order-load
- * endpoint: same Tier-0 heatmap payload, plus status distribution (T1),
- * fulfillment split (T2), and open-backlog aging (T2) for any source
- * whose contract declares the fields.
+ * Generic source-entity analytics driven by the SINGLE source definition
+ * in taskos.data_sources — the same rows that drive polling. Registering a
+ * source in the Data Sources UI therefore makes it appear in analytics
+ * with no code change (the unification of 23 Jul; previously the contract
+ * lived in a separate code registry, so UI-registered sources never
+ * showed up here).
  *
- * Degradation over failure: every configured column is validated against
- * information_schema first; missing columns drop their tier and add a
- * warning to the response instead of erroring. A wrong contract guess
- * renders a smaller panel, never a 500.
+ * The contract is assembled from the source row:
+ *   table       ← tableReference   (bare name parsed out)
+ *   statusField ← statusFieldName
+ *   dimension   ← typeFieldName
+ *   eventTime / created / lookahead / statusMap ← analyticsConfig JSON,
+ *     all optional (a source with no analyticsConfig still gets the Tier-0
+ *     heatmap on createdAt + Tier-1 status distribution).
  *
- * Replica discipline (June/July 2026 incidents): every query is bounded
- * by a time window on the source table, wrapped in labstackOr with an
- * 8s ceiling on the API breaker — a sick replica yields a clean 503.
- * Identifier safety: table/column names come exclusively from the code
- * registry (validated against information_schema besides), never from
- * request input; the only request-controlled values are whitelist-
- * validated enums (source key, days).
+ * Tiers: T0 heatmap, T1 status distribution, T2 fulfillment + aging,
+ * T3 type dimension.
  *
- * Auth: OPS_HEAD only (matches /api/analytics/* convention).
+ * Degradation over failure: every column is validated against
+ * information_schema; missing columns drop their tier and add a warning
+ * instead of erroring. Replica discipline (June/July incidents): every
+ * query window-bounded + labstackOr-wrapped (503 on sick replica).
+ * Identifier safety: table/column names come only from the source row
+ * (and are validated), never from request input; request params are
+ * enum/existence-checked.
+ *
+ * Auth: OPS_HEAD only.
  */
 import { NextRequest, NextResponse } from "next/server";
 import { getSessionFromRequest } from "@/lib/auth/session";
+import prisma from "@/lib/db/client";
 import { labstackQuery, labstackOr } from "@/lib/db/labstack";
 import { UserRole } from "@prisma/client";
-import { SOURCE_ANALYTICS, listSources } from "@/lib/analytics/sourceRegistry";
 
 const VALID_DAYS = new Set([7, 14, 30]);
 const q = (ident: string) => `"${ident.replace(/"/g, "")}"`;
+
+// Parse the bare table name out of a tableReference like `public."Order"`.
+function bareTable(ref: string): string {
+  return ref.replace(/^.*\./, "").replace(/"/g, "").trim();
+}
+
+interface AnalyticsConfig {
+  eventTimeField?: string;
+  createdField?: string;
+  eventTimeLabel?: string;
+  lookaheadDays?: number;
+  statusFulfilled?: string[];
+  statusFailed?: string[];
+}
 
 interface CellRow { ist_date: string; ist_hour: number; dim: string | null; cnt: number }
 interface StatusRow { status: string; cnt: number }
@@ -44,18 +65,52 @@ export async function GET(request: NextRequest) {
   }
 
   const { searchParams } = new URL(request.url);
-  const sourceKey = searchParams.get("source") ?? "orders";
-  const contract = SOURCE_ANALYTICS[sourceKey];
-  if (!contract) {
-    return NextResponse.json(
-      { error: `Unknown source; must be one of ${Object.keys(SOURCE_ANALYTICS).join(", ")}` },
-      { status: 400 }
-    );
-  }
   const days = parseInt(searchParams.get("days") ?? "14", 10);
   if (!VALID_DAYS.has(days)) {
     return NextResponse.json({ error: "Invalid days; must be 7, 14 or 30" }, { status: 400 });
   }
+
+  // ── Resolve the source from the registry table ───────────────────────
+  // Analytics is decoupled from polling state: show every registered
+  // source (active or not) — deactivating stops task creation, not the
+  // existence of the underlying data.
+  const allSources = await prisma.dataSource.findMany({
+    orderBy: { displayName: "asc" },
+    select: {
+      sourceId: true, displayName: true, tableReference: true,
+      statusFieldName: true, typeFieldName: true, analyticsConfig: true,
+    },
+  });
+  const availableSources = allSources.map((s) => ({ key: s.sourceId, label: s.displayName }));
+
+  const sourceKey = searchParams.get("source") ?? allSources[0]?.sourceId;
+  const row = allSources.find((s) => s.sourceId === sourceKey);
+  if (!row) {
+    return NextResponse.json(
+      { error: `Unknown source "${sourceKey}"`, availableSources },
+      { status: 400 }
+    );
+  }
+
+  // Build the contract: derive table/status/dimension from the source row,
+  // pull the analytics-only bits from analyticsConfig (all defaulted).
+  const cfg = (row.analyticsConfig as AnalyticsConfig | null) ?? {};
+  const contract = {
+    label: row.displayName,
+    table: bareTable(row.tableReference),
+    statusField: row.statusFieldName || undefined,
+    createdField: cfg.createdField ?? "createdAt",
+    eventTimeField: cfg.eventTimeField ?? cfg.createdField ?? "createdAt",
+    eventTimeLabel: cfg.eventTimeLabel ?? "creation time",
+    lookaheadDays: cfg.lookaheadDays ?? 0,
+    statusMap:
+      (cfg.statusFulfilled?.length || cfg.statusFailed?.length)
+        ? { fulfilled: cfg.statusFulfilled ?? [], failed: cfg.statusFailed ?? [] }
+        : undefined,
+    dimensions: row.typeFieldName
+      ? [{ key: "type", label: "Type", column: row.typeFieldName }]
+      : [],
+  };
 
   // ── Validate the contract against the live schema ────────────────────
   const columns = await labstackOr<Array<{ column_name: string }> | null>(
@@ -235,7 +290,7 @@ export async function GET(request: NextRequest) {
 
   return NextResponse.json({
     source: {
-      key: contract.key,
+      key: row.sourceId,
       label: contract.label,
       eventTimeLabel,
       lookaheadDays: lookahead,
@@ -243,7 +298,7 @@ export async function GET(request: NextRequest) {
       hasFulfillment: !!(statusCol && contract.statusMap),
       dimension: dims[0] ? { key: dims[0].key, label: dims[0].label } : null,
     },
-    availableSources: listSources(),
+    availableSources,
     days,
     todayIST,
     warnings,

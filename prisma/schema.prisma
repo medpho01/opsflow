@@ -676,6 +676,17 @@ model DataSource {
   typeFieldEnumValues Json?
   statusFieldEnumValues Json?
 
+  // Analytics contract (Source Load panel). Unifies analytics config into
+  // the single source definition so registering a source here makes it
+  // available in analytics with no code change. Shape:
+  //   { eventTimeField?, createdField?, eventTimeLabel?, lookaheadDays?,
+  //     statusFulfilled?: string[], statusFailed?: string[] }
+  // All optional — a source with no analyticsConfig still gets the Tier-0
+  // heatmap (on createdField) and Tier-1 status distribution by default.
+  // table / statusField / dimension are DERIVED from the columns above
+  // (tableReference / statusFieldName / typeFieldName), not duplicated.
+  analyticsConfig    Json?
+
   // Polling configuration
   pollingType        DataSourceType @default(DATABASE)
   pollingIntervalMinutes Int @default(5)

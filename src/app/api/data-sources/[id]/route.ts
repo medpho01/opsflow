@@ -155,6 +155,9 @@ export async function PUT(
         statusFieldName:        body.statusFieldName        ?? existingSource.statusFieldName,
         primaryKeyField:        body.primaryKeyField        ?? existingSource.primaryKeyField,
         queryTemplate:          body.queryTemplate          ?? existingSource.queryTemplate,
+        // Analytics contract (Source Load). Undefined leaves it untouched;
+        // an explicit object (incl. cleared arrays) replaces it.
+        analyticsConfig:        body.analyticsConfig        ?? existingSource.analyticsConfig,
         updatedAt: new Date(),
       },
     });

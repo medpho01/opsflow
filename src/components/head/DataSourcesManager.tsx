@@ -20,6 +20,19 @@ interface DataSource {
   pollingType: string;
   syncStrategy: string;
   createdAt: string;
+  analyticsConfig?: AnalyticsConfig | null;
+}
+
+// Analytics contract stored on the source (Source Load panel). All
+// optional — a source with none still gets the default heatmap + status
+// distribution.
+interface AnalyticsConfig {
+  eventTimeField?: string;
+  createdField?: string;
+  eventTimeLabel?: string;
+  lookaheadDays?: number;
+  statusFulfilled?: string[];
+  statusFailed?: string[];
 }
 
 interface PollingStatus {
@@ -519,6 +532,14 @@ function SourceForm({
   const [statusFieldName, setStatusFieldName] = useState(existing?.statusFieldName ?? "");
   const [primaryKeyField, setPrimaryKeyField] = useState(existing?.primaryKeyField ?? "id");
 
+  // ── Analytics contract (Source Load) ──────────────────────────────────
+  const existingCfg = (existing?.analyticsConfig ?? {}) as AnalyticsConfig;
+  const [eventTimeField, setEventTimeField] = useState(existingCfg.eventTimeField ?? "");
+  const [lookaheadDays, setLookaheadDays] = useState<number>(existingCfg.lookaheadDays ?? 0);
+  const [statusFulfilled, setStatusFulfilled] = useState((existingCfg.statusFulfilled ?? []).join(", "));
+  const [statusFailed, setStatusFailed] = useState((existingCfg.statusFailed ?? []).join(", "));
+  const parseList = (s: string) => s.split(",").map((x) => x.trim()).filter(Boolean);
+
   // Add-only fields
   const [sourceId, setSourceId] = useState("");
   const [selectedTable, setSelectedTable] = useState(""); // bare table name (add mode)
@@ -578,8 +599,18 @@ function SourceForm({
     setLoading(true);
     setError("");
     try {
+      // Preserve fields we don't surface in the form (createdField,
+      // eventTimeLabel) so editing analytics doesn't blank them.
+      const analyticsConfig = {
+        ...existingCfg,
+        eventTimeField: eventTimeField || undefined,
+        lookaheadDays: Number(lookaheadDays) || 0,
+        statusFulfilled: parseList(statusFulfilled),
+        statusFailed: parseList(statusFailed),
+      };
+
       const payload = isEdit
-        ? { displayName, pollingIntervalMinutes, typeFieldName, statusFieldName, primaryKeyField }
+        ? { displayName, pollingIntervalMinutes, typeFieldName, statusFieldName, primaryKeyField, analyticsConfig }
         : {
             sourceId,
             displayName,
@@ -589,6 +620,7 @@ function SourceForm({
             statusFieldName,
             queryTemplate: queryPreview,
             pollingIntervalMinutes,
+            analyticsConfig,
           };
 
       const res = await fetch(
@@ -759,6 +791,74 @@ function SourceForm({
           className={inputCls}
         />
       </div>
+
+      {/* ── Analytics contract (Source Load panel) ── */}
+      <details className="rounded-lg border border-zinc-700 bg-zinc-800/30">
+        <summary className="px-3 py-2.5 cursor-pointer list-none [&::-webkit-details-marker]:hidden flex items-center justify-between">
+          <span className="text-sm font-medium text-zinc-200">Analytics (Source Load)</span>
+          <span className="text-[10px] text-zinc-500">optional · heatmap works without it</span>
+        </summary>
+        <div className="px-3 pb-3 pt-1 space-y-3 border-t border-zinc-700/60">
+          <p className="text-[11px] text-zinc-500 leading-relaxed">
+            Controls the Analytics → Source Load panel for this source. With nothing set,
+            it charts volume on <code className="text-zinc-400">createdAt</code> and shows the raw
+            status mix. Set the fulfilled/failed statuses to unlock the fulfillment rate.
+          </p>
+
+          <div>
+            <label className={labelCls}>Event-time column <span className="text-zinc-600">(heatmap axis)</span></label>
+            <select
+              value={eventTimeField}
+              onChange={(e) => setEventTimeField(e.target.value)}
+              className={inputCls}
+            >
+              <option value="">createdAt (default — when the record was created)</option>
+              {columns
+                .filter((c) => /time|date|timestamp/i.test(c.type) || /At$|Date$|Time$/.test(c.name))
+                .map((c) => <option key={c.name} value={c.name}>{c.label} ({c.type})</option>)}
+            </select>
+            <p className="text-[10px] text-zinc-600 mt-1">
+              Use the appointment/scheduled column for demand-by-slot; leave default for arrival-time load.
+            </p>
+          </div>
+
+          <div>
+            <label className={labelCls}>Look-ahead days <span className="text-zinc-600">(booked-ahead load)</span></label>
+            <input
+              type="number" min="0" max="30"
+              value={lookaheadDays}
+              onChange={(e) => setLookaheadDays(parseInt(e.target.value) || 0)}
+              className={inputCls}
+            />
+            <p className="text-[10px] text-zinc-600 mt-1">
+              0 for creation-time sources; 7 for appointment sources to show upcoming booked load.
+            </p>
+          </div>
+
+          <div>
+            <label className={labelCls}>Fulfilled statuses <span className="text-zinc-600">(comma-separated, terminal-positive)</span></label>
+            <input
+              value={statusFulfilled}
+              onChange={(e) => setStatusFulfilled(e.target.value)}
+              placeholder="e.g. FULL_DELIVERED, Ordered"
+              className={inputCls}
+            />
+          </div>
+
+          <div>
+            <label className={labelCls}>Failed / cancelled statuses <span className="text-zinc-600">(comma-separated)</span></label>
+            <input
+              value={statusFailed}
+              onChange={(e) => setStatusFailed(e.target.value)}
+              placeholder="e.g. CANCELLED, REJECTED"
+              className={inputCls}
+            />
+            <p className="text-[10px] text-zinc-600 mt-1">
+              Matched case-insensitively. Anything not listed counts as &ldquo;open&rdquo; and shows in the status-mix card.
+            </p>
+          </div>
+        </div>
+      </details>
 
       {error && (
         <div className="bg-red-950 border border-red-800 rounded-lg px-3 py-2">

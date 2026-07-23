@@ -200,6 +200,19 @@ export function DataSourcesManager() {
     if (res.ok) setDataSources((p) => p.map((s) => s.id === source.id ? { ...s, isActive: false } : s));
   }
 
+  // Re-enable a deactivated source. Deactivate soft-deletes (isActive=false)
+  // but the UI previously offered no way back — a disabled source was stuck
+  // disabled until someone PATCHed the API by hand. PATCH already supports
+  // isActive; this is just the missing button.
+  async function handleActivate(source: DataSource) {
+    const res = await fetch(`/api/data-sources/${source.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ isActive: true }),
+    });
+    if (res.ok) setDataSources((p) => p.map((s) => s.id === source.id ? { ...s, isActive: true } : s));
+  }
+
   function openAdd() { setDrawerSource(null); setDrawerOpen(true); }
   function openEdit(source: DataSource) { setDrawerSource(source); setDrawerOpen(true); }
   function closeDrawer() { setDrawerOpen(false); setDrawerSource(null); }
@@ -249,6 +262,7 @@ export function DataSourcesManager() {
               onPreview={() => setPreviewSource(source)}
               onManualPoll={() => handleManualPoll(source)}
               onDeactivate={() => handleDeactivate(source)}
+              onActivate={() => handleActivate(source)}
             />
           ))}
         </div>
@@ -296,7 +310,7 @@ export function DataSourcesManager() {
 // ── Source Card ───────────────────────────────────────────────────────────────
 function SourceCard({
   source, status, testResult, isTesting, isPolling,
-  onEdit, onTest, onPreview, onManualPoll, onDeactivate,
+  onEdit, onTest, onPreview, onManualPoll, onDeactivate, onActivate,
 }: {
   source: DataSource;
   status?: PollingStatus;
@@ -308,6 +322,7 @@ function SourceCard({
   onPreview: () => void;
   onManualPoll: () => void;
   onDeactivate: () => void;
+  onActivate: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const lastPoll = status?.lastPoll;
@@ -406,13 +421,21 @@ function SourceCard({
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
             </svg>
           </button>
-          {source.isActive && (
+          {source.isActive ? (
             <button
               onClick={onDeactivate}
               className="p-1.5 rounded text-red-500 hover:text-red-400 hover:bg-zinc-700 transition-colors"
               title="Deactivate"
             >
               <IconTrash />
+            </button>
+          ) : (
+            <button
+              onClick={onActivate}
+              className="px-2 py-1 rounded text-xs font-medium text-emerald-400 border border-emerald-900 hover:bg-emerald-950/40 transition-colors"
+              title="Re-enable this source"
+            >
+              Enable
             </button>
           )}
         </div>

@@ -1,0 +1,549 @@
+<title>OpsFlow · WhatsApp Control Tower (mockup)</title>
+<style>
+  :root{
+    --ink:#111a21; --ink-2:#33454f; --muted:#5c6b76; --line:#e4e9ec;
+    --bg:#eef1f3; --surface:#ffffff; --surface-2:#f7f9fa; --raise:0 1px 2px rgba(16,26,33,.06),0 8px 24px rgba(16,26,33,.05);
+    --accent:#0e7c86; --accent-ink:#0a5c63; --accent-soft:#dbeef0;
+    --good:#12805c; --good-soft:#dcf3ea; --warn:#9a6100; --warn-soft:#f6ecd3;
+    --crit:#c0392b; --crit-soft:#f7e0dc; --info:#2563eb; --info-soft:#e3e9fd;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    --sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{
+      --ink:#e8eef2; --ink-2:#b6c3cd; --muted:#7d8f9b; --line:#1e2a31;
+      --bg:#0a1014; --surface:#0f1a20; --surface-2:#13222a; --raise:0 1px 2px rgba(0,0,0,.4),0 8px 28px rgba(0,0,0,.35);
+      --accent:#2bb3bd; --accent-ink:#84dae0; --accent-soft:#0e2f33;
+      --good:#3ecf99; --good-soft:#0e2a22; --warn:#e0a54a; --warn-soft:#2b2413;
+      --crit:#e8695c; --crit-soft:#2c1714; --info:#6aa0ff; --info-soft:#141f38;
+    }
+  }
+  :root[data-theme="light"]{
+    --ink:#111a21; --ink-2:#33454f; --muted:#5c6b76; --line:#e4e9ec;
+    --bg:#eef1f3; --surface:#ffffff; --surface-2:#f7f9fa;
+    --accent:#0e7c86; --accent-ink:#0a5c63; --accent-soft:#dbeef0;
+    --good:#12805c; --good-soft:#dcf3ea; --warn:#9a6100; --warn-soft:#f6ecd3;
+    --crit:#c0392b; --crit-soft:#f7e0dc; --info:#2563eb; --info-soft:#e3e9fd;
+  }
+  :root[data-theme="dark"]{
+    --ink:#e8eef2; --ink-2:#b6c3cd; --muted:#7d8f9b; --line:#1e2a31;
+    --bg:#0a1014; --surface:#0f1a20; --surface-2:#13222a;
+    --accent:#2bb3bd; --accent-ink:#84dae0; --accent-soft:#0e2f33;
+    --good:#3ecf99; --good-soft:#0e2a22; --warn:#e0a54a; --warn-soft:#2b2413;
+    --crit:#e8695c; --crit-soft:#2c1714; --info:#6aa0ff; --info-soft:#141f38;
+  }
+  *{box-sizing:border-box}
+  [hidden]{display:none!important}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);
+    font-size:14px;line-height:1.45;-webkit-font-smoothing:antialiased}
+  .num{font-variant-numeric:tabular-nums}
+  .mono{font-family:var(--mono)}
+  button{font-family:inherit;cursor:pointer;color:inherit}
+  :focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
+
+  /* shell */
+  .app{max-width:1320px;margin:0 auto;padding:14px;display:flex;flex-direction:column;gap:12px;min-height:100vh}
+  .topbar{display:flex;align-items:center;gap:14px;background:var(--surface);border:1px solid var(--line);
+    border-radius:12px;padding:10px 14px;box-shadow:var(--raise)}
+  .brand{display:flex;align-items:center;gap:9px;font-weight:700;letter-spacing:-.01em}
+  .logo{width:26px;height:26px;border-radius:7px;background:linear-gradient(150deg,var(--accent),var(--accent-ink));
+    display:grid;place-items:center;color:#fff;font-size:14px}
+  .brand small{color:var(--muted);font-weight:600}
+  .seg{margin-left:auto;display:flex;gap:6px;flex-wrap:wrap}
+  .gw{display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--ink-2);background:var(--surface-2);
+    border:1px solid var(--line);padding:5px 10px;border-radius:999px}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--good);box-shadow:0 0 0 3px var(--good-soft)}
+  .iconbtn{background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:6px 10px;font-size:12.5px;font-weight:600;color:var(--ink-2)}
+  .iconbtn:hover{border-color:var(--accent);color:var(--accent-ink)}
+
+  .grid{display:grid;grid-template-columns:300px 1fr 320px;gap:12px;align-items:start}
+  .panel{background:var(--surface);border:1px solid var(--line);border-radius:12px;box-shadow:var(--raise);overflow:hidden}
+  .phead{padding:11px 14px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:8px}
+  .phead h2{margin:0;font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:700}
+  .phead .count{margin-left:auto;font-size:12px;color:var(--muted);font-weight:600}
+
+  /* buckets */
+  .buckets{display:flex;flex-direction:column;padding:8px;gap:2px;border-bottom:1px solid var(--line)}
+  .bucket{display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:8px;border:none;background:none;width:100%;text-align:left;font-size:13px;color:var(--ink-2);font-weight:600}
+  .bucket:hover{background:var(--surface-2)}
+  .bucket[aria-current="true"]{background:var(--accent-soft);color:var(--accent-ink)}
+  .bucket .b{margin-left:auto;font-size:12px;background:var(--surface-2);border:1px solid var(--line);border-radius:999px;padding:1px 8px}
+  .bucket[aria-current="true"] .b{background:var(--surface);border-color:transparent}
+  .bdot{width:7px;height:7px;border-radius:50%}
+
+  /* ticket list */
+  .list{max-height:560px;overflow-y:auto}
+  .tk{display:grid;grid-template-columns:4px 1fr auto;gap:10px;padding:11px 12px 11px 10px;border-bottom:1px solid var(--line);
+    width:100%;background:none;border-left:none;border-right:none;border-top:none;text-align:left;align-items:start;position:relative}
+  .tk:hover{background:var(--surface-2)}
+  .tk[aria-current="true"]{background:var(--accent-soft)}
+  .tk .stripe{position:absolute;left:0;top:0;bottom:0;width:3px;border-radius:0 3px 3px 0}
+  .tk .who{display:flex;flex-direction:column;gap:3px;min-width:0}
+  .tk .grp{font-weight:700;font-size:13px;letter-spacing:-.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .tk .msg{color:var(--muted);font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:190px}
+  .tk .meta{display:flex;align-items:center;gap:6px;margin-top:1px}
+  .tk .right{display:flex;flex-direction:column;align-items:flex-end;gap:5px}
+  .tk .age{font-size:12px;color:var(--muted)}
+  .chip{font-size:10.5px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;padding:2px 7px;border-radius:6px;white-space:nowrap}
+  .chip.status{background:var(--info-soft);color:var(--info)}
+  .chip.resched{background:var(--warn-soft);color:var(--warn)}
+  .chip.noid{background:var(--crit-soft);color:var(--crit)}
+  .chip.tiny{font-size:10px;padding:1px 6px}
+  .flag{font-size:11px;color:var(--warn);font-weight:700;display:flex;align-items:center;gap:4px}
+
+  /* conversation */
+  .conv{display:flex;flex-direction:column;min-height:560px}
+  .convhead{padding:12px 16px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .convhead .g{font-weight:700;letter-spacing:-.01em}
+  .convhead .store{font-size:12px;color:var(--muted)}
+  .thread{flex:1;padding:16px;display:flex;flex-direction:column;gap:10px;overflow-y:auto;max-height:360px;background:
+    linear-gradient(0deg,var(--surface),var(--surface))}
+  .bub{max-width:78%;padding:8px 12px;border-radius:12px;font-size:13.5px;position:relative;box-shadow:var(--raise)}
+  .bub .nm{font-size:11px;font-weight:700;color:var(--accent-ink);margin-bottom:2px;letter-spacing:.01em}
+  .bub .tm{font-size:10.5px;color:var(--muted);margin-top:3px;text-align:right}
+  .in{align-self:flex-start;background:var(--surface-2);border:1px solid var(--line);border-top-left-radius:4px}
+  .out{align-self:flex-end;background:var(--accent-soft);border:1px solid transparent;border-top-right-radius:4px}
+  .in.trigger{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-soft)}
+  .in.trigger::after{content:"query";position:absolute;top:-9px;left:10px;font-size:9px;font-weight:800;letter-spacing:.1em;
+    text-transform:uppercase;color:#fff;background:var(--accent);padding:1px 6px;border-radius:5px}
+
+  /* composer */
+  .composer{border-top:1px solid var(--line);padding:12px 14px;display:flex;flex-direction:column;gap:9px;background:var(--surface-2)}
+  .sendto{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+  .sendto .lbl{font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);font-weight:700;margin-right:2px}
+  .pill{border:1px solid var(--line);background:var(--surface);border-radius:999px;padding:4px 11px;font-size:12.5px;font-weight:600;color:var(--ink-2)}
+  .pill[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:#fff}
+  .quick{display:flex;gap:6px;flex-wrap:wrap}
+  .qchip{border:1px dashed var(--line);background:var(--surface);border-radius:8px;padding:4px 9px;font-size:12px;color:var(--ink-2)}
+  .qchip:hover{border-color:var(--accent);border-style:solid;color:var(--accent-ink)}
+  .inputrow{display:flex;gap:8px;align-items:flex-end}
+  textarea{flex:1;resize:none;min-height:44px;max-height:120px;border:1px solid var(--line);border-radius:10px;background:var(--surface);
+    color:var(--ink);padding:9px 11px;font-family:inherit;font-size:13.5px;line-height:1.4}
+  textarea:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+  .send{background:var(--accent);color:#fff;border:none;border-radius:10px;padding:10px 16px;font-weight:700;font-size:13.5px;white-space:nowrap}
+  .send:hover{background:var(--accent-ink)}
+
+  /* context */
+  .ctx{display:flex;flex-direction:column}
+  .ctxsec{padding:13px 15px;border-bottom:1px solid var(--line);display:flex;flex-direction:column;gap:9px}
+  .kv{display:flex;justify-content:space-between;gap:10px;font-size:13px}
+  .kv .k{color:var(--muted)}
+  .kv .v{font-weight:600;text-align:right}
+  .idtag{font-family:var(--mono);font-size:13px;font-weight:700;background:var(--surface-2);border:1px solid var(--line);border-radius:7px;padding:2px 8px}
+  .statuspill{display:inline-flex;align-items:center;gap:6px;font-weight:700;font-size:12.5px;padding:3px 10px;border-radius:999px;background:var(--info-soft);color:var(--info)}
+  .seclabel{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:700}
+  .action{display:flex;align-items:center;gap:10px;width:100%;text-align:left;background:var(--surface);border:1px solid var(--line);
+    border-radius:10px;padding:10px 12px;font-size:13px;font-weight:600;color:var(--ink)}
+  .action:hover{border-color:var(--accent);background:var(--accent-soft);color:var(--accent-ink)}
+  .action .ico{width:26px;height:26px;border-radius:7px;display:grid;place-items:center;font-size:13px;flex:none}
+  .action small{display:block;font-weight:500;color:var(--muted);font-size:11.5px}
+  .action:hover small{color:var(--accent-ink)}
+  .statusrow{display:flex;gap:6px;flex-wrap:wrap}
+  .sbtn{flex:1;min-width:84px;border:1px solid var(--line);background:var(--surface);border-radius:8px;padding:7px;font-size:12px;font-weight:700;color:var(--ink-2)}
+  .sbtn.good:hover{background:var(--good-soft);color:var(--good);border-color:var(--good)}
+  .sbtn.warn:hover{background:var(--warn-soft);color:var(--warn);border-color:var(--warn)}
+  .sbtn.mut:hover{background:var(--surface-2)}
+
+  .foot{color:var(--muted);font-size:12px;text-align:center;padding:2px 0 6px}
+  .toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%) translateY(20px);opacity:0;pointer-events:none;
+    background:var(--ink);color:var(--surface);padding:10px 18px;border-radius:10px;font-weight:600;font-size:13px;
+    transition:.28s;box-shadow:var(--raise);z-index:9}
+  .toast.on{opacity:1;transform:translateX(-50%) translateY(0)}
+  /* nav */
+  .nav{display:flex;gap:4px;background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:3px}
+  .navbtn{border:none;background:none;border-radius:7px;padding:6px 14px;font-weight:700;font-size:13px;color:var(--muted)}
+  .navbtn[aria-current="true"]{background:var(--surface);color:var(--accent-ink);box-shadow:var(--raise)}
+  .admintag{font-size:9px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:var(--warn);
+    background:var(--warn-soft);padding:1px 5px;border-radius:5px;vertical-align:middle}
+
+  /* settings chrome (WhatsApp config lives under Settings) */
+  .settingsbar{display:flex;align-items:center;gap:12px;margin-bottom:2px}
+  .back{background:none;border:1px solid var(--line);border-radius:8px;padding:6px 11px;font-weight:700;font-size:12.5px;color:var(--ink-2)}
+  .back:hover{border-color:var(--accent);color:var(--accent-ink)}
+  .crumb{font-size:13px;color:var(--muted);font-weight:600}
+  .crumb i{color:var(--line);font-style:normal;margin:0 4px}
+  .crumb b{color:var(--ink)}
+  .settingsshell{display:grid;grid-template-columns:210px 1fr;gap:14px;align-items:start}
+  .sidenav{background:var(--surface);border:1px solid var(--line);border-radius:12px;box-shadow:var(--raise);padding:8px;display:flex;flex-direction:column;gap:1px}
+  .sgroup{font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:700;padding:10px 10px 4px}
+  .snav{display:block;padding:8px 10px;border-radius:8px;font-size:13px;font-weight:600;color:var(--ink-2);text-decoration:none;cursor:pointer}
+  .snav:hover{background:var(--surface-2)}
+  .snav.active{background:var(--accent-soft);color:var(--accent-ink)}
+  .settingsmain{display:flex;flex-direction:column;gap:4px;min-width:0}
+  .settingsh1{margin:2px 0 0;font-size:20px;letter-spacing:-.02em;text-wrap:balance}
+  .settingssub{margin:0 0 10px;color:var(--muted);font-size:13px;max-width:64ch}
+
+  /* setup */
+  .setupgrid{display:grid;grid-template-columns:360px 1fr;gap:12px;align-items:start}
+  .conncard{padding:15px;display:flex;flex-direction:column;gap:14px;border-bottom:1px solid var(--line)}
+  .connstate{display:flex;gap:11px;align-items:center}
+  .statedot{width:11px;height:11px;border-radius:50%;flex:none}
+  .statedot.ok{background:var(--good);box-shadow:0 0 0 4px var(--good-soft)}
+  .stateline{font-size:14px}
+  .statesub{font-size:12px;color:var(--muted);margin-top:2px}
+  .connbtns{display:flex;gap:8px}
+  .btn{border:1px solid var(--line);background:var(--surface);border-radius:9px;padding:8px 13px;font-weight:700;font-size:12.5px;color:var(--ink-2)}
+  .btn:hover{border-color:var(--accent);color:var(--accent-ink)}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  .btn.primary:hover{background:var(--accent-ink)}
+  .btn.danger:hover{border-color:var(--crit);color:var(--crit)}
+  .btn.ghost{background:var(--surface-2)}
+  .qrbox{display:flex;gap:14px;align-items:center;padding:14px;background:var(--surface-2);border:1px dashed var(--line);border-radius:12px}
+  .qrimg{width:120px;height:120px;background:#fff;border-radius:10px;padding:8px;flex:none;box-shadow:var(--raise)}
+  .qrgrid{width:100%;height:100%;background:
+    repeating-conic-gradient(#0b1216 0% 25%, #fff 0% 50%) 0 0/16px 16px,
+    linear-gradient(#0b1216,#0b1216) center/60px 60px no-repeat;border-radius:4px;
+    -webkit-mask:radial-gradient(circle at 14px 14px,#000 9px,transparent 10px),radial-gradient(circle at calc(100% - 14px) 14px,#000 9px,transparent 10px),radial-gradient(circle at 14px calc(100% - 14px),#000 9px,transparent 10px),linear-gradient(#000,#000);
+    -webkit-mask-composite:destination-out}
+  .qrhelp b{font-size:13px}
+  .qrhelp p{margin:5px 0;font-size:12px;color:var(--ink-2);max-width:34ch}
+  .qrhelp .muted{color:var(--muted)}
+  .tgl{display:flex;align-items:center;gap:9px;font-size:13px;font-weight:600;cursor:pointer}
+  .tgl small{color:var(--muted);font-weight:500}
+  .tgl input{width:16px;height:16px;accent-color:var(--accent)}
+
+  .tablewrap{overflow-x:auto}
+  .gtable{width:100%;border-collapse:collapse;font-size:13px}
+  .gtable th{text-align:left;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);
+    font-weight:700;padding:10px 12px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--surface)}
+  .gtable th.c,.gtable td.c{text-align:center}
+  .gtable td{padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:middle}
+  .gtable tr:hover td{background:var(--surface-2)}
+  .gname{font-weight:600;letter-spacing:-.01em}
+  .rolesel{border:1px solid var(--line);background:var(--surface);border-radius:7px;padding:5px 8px;font-weight:700;font-size:12px;color:var(--ink);font-family:inherit}
+  .rolesel[data-role="SUPPORT"]{color:var(--info);border-color:var(--info)}
+  .rolesel[data-role="PROVIDER"]{color:var(--warn);border-color:var(--warn)}
+  .rolesel[data-role="IGNORE"]{color:var(--muted)}
+  .mapsel{border:1px solid var(--line);background:var(--surface);border-radius:7px;padding:5px 8px;font-size:12px;color:var(--ink-2);font-family:inherit;max-width:160px}
+  .sw{position:relative;width:34px;height:19px;display:inline-block}
+  .sw input{opacity:0;width:0;height:0}
+  .sw span{position:absolute;inset:0;background:var(--line);border-radius:999px;transition:.2s;cursor:pointer}
+  .sw span::before{content:"";position:absolute;width:14px;height:14px;left:3px;top:2.5px;background:#fff;border-radius:50%;transition:.2s}
+  .sw input:checked+span{background:var(--accent)}
+  .sw input:checked+span::before{transform:translateX(15px)}
+  .savebar{display:flex;align-items:center;justify-content:space-between;padding:12px 15px;border-top:1px solid var(--line);gap:12px}
+  .muted{color:var(--muted);font-size:12.5px}
+
+  @media (max-width:940px){ .grid{grid-template-columns:1fr} .list{max-height:300px} .app{padding:10px}
+    .setupgrid{grid-template-columns:1fr} .settingsshell{grid-template-columns:1fr} }
+  @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+
+<div class="app">
+  <div class="topbar">
+    <div class="brand"><span class="logo">◑</span>OpsFlow&nbsp;<small>· WhatsApp Control Tower</small></div>
+    <div class="seg">
+      <span class="gw"><span class="dot"></span>Gateway connected · last msg <span class="num">9s</span> ago</span>
+      <span class="gw"><span class="num">49</span>&nbsp;groups listening</span>
+      <button class="iconbtn" id="gotoSettings">⚙ Settings</button>
+      <button class="iconbtn" id="theme">◐ Theme</button>
+    </div>
+  </div>
+
+  <div class="grid" id="view-inbox">
+    <!-- QUEUE -->
+    <div class="panel">
+      <div class="buckets">
+        <button class="bucket" aria-current="true"><span class="bdot" style="background:var(--crit)"></span>Needs response<span class="b num">12</span></button>
+        <button class="bucket"><span class="bdot" style="background:var(--warn)"></span>Waiting on lab<span class="b num">5</span></button>
+        <button class="bucket"><span class="bdot" style="background:var(--info)"></span>Waiting on info<span class="b num">3</span></button>
+        <button class="bucket"><span class="bdot" style="background:var(--good)"></span>Resolved today<span class="b num">37</span></button>
+      </div>
+      <div class="phead"><h2>Needs response</h2><span class="count">sorted by SLA</span></div>
+      <div class="list" id="list"></div>
+    </div>
+
+    <!-- CONVERSATION -->
+    <div class="panel conv">
+      <div class="convhead">
+        <span class="g" id="cGroup">Labstack &lt;&gt; Plum Ops</span>
+        <span class="store" id="cStore">Store: Plum · partner-ops</span>
+        <span class="chip status" id="cIntent" style="margin-left:auto">STATUS CHECK</span>
+      </div>
+      <div class="thread" id="thread"></div>
+      <div class="composer">
+        <div class="sendto">
+          <span class="lbl">Send to</span>
+          <button class="pill" data-to="store" aria-pressed="true">Store group · Plum</button>
+          <button class="pill" data-to="lab">Lab group · Apollo</button>
+          <button class="pill" data-to="other">Other number…</button>
+        </div>
+        <div class="quick" id="quick"></div>
+        <div class="inputrow">
+          <textarea id="ta" placeholder="Write a reply, or pick a suggested action on the right…"></textarea>
+          <button class="send" id="sendBtn">Send ▸</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- CONTEXT & ACTIONS -->
+    <div class="panel ctx">
+      <div class="ctxsec">
+        <div class="kv"><span class="k">Order</span><span class="v"><span class="idtag" id="xId">#58651</span></span></div>
+        <div class="kv"><span class="k">Store (group)</span><span class="v" id="xStore">Plum</span></div>
+        <div class="kv"><span class="k">Intent</span><span class="v" id="xIntent">STATUS_CHECK</span></div>
+      </div>
+      <div class="ctxsec">
+        <span class="seclabel">Order context · live from LabStack</span>
+        <div class="kv"><span class="k">Status</span><span class="v"><span class="statuspill" id="xStatus">● SAMPLE_COLLECTED</span></span></div>
+        <div class="kv"><span class="k">Appointment</span><span class="v num" id="xAppt">09 Jun · 06:20</span></div>
+        <div class="kv"><span class="k">Phlebo</span><span class="v" id="xPhlebo">Ramesh · 98••••11</span></div>
+        <div class="kv"><span class="k">Lab</span><span class="v" id="xLab">Apollo Seshadripuram</span></div>
+        <div class="kv"><span class="k">Report</span><span class="v" id="xReport">not ready</span></div>
+      </div>
+      <div class="ctxsec">
+        <span class="seclabel">Suggested actions</span>
+        <button class="action" id="aStatus"><span class="ico" style="background:var(--good-soft);color:var(--good)">↩</span>
+          <span>Reply with status<small id="aStatusSub">to Plum group</small></span></button>
+        <button class="action" id="aLab"><span class="ico" style="background:var(--warn-soft);color:var(--warn)">→</span>
+          <span>Ask the lab<small>message Apollo provider group</small></span></button>
+        <button class="action" id="aFree"><span class="ico" style="background:var(--accent-soft);color:var(--accent-ink)">✎</span>
+          <span>Free text<small>store · lab · any number</small></span></button>
+      </div>
+      <div class="ctxsec">
+        <span class="seclabel">Resolve</span>
+        <div class="statusrow">
+          <button class="sbtn good" onclick="toast('Ticket resolved')">Resolve</button>
+          <button class="sbtn warn" onclick="toast('Moved to Waiting on lab')">Wait · lab</button>
+          <button class="sbtn mut" onclick="toast('Snoozed 15 min')">Snooze</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <!-- ============ SETTINGS › INTEGRATIONS › WHATSAPP ============ -->
+  <section id="view-setup" hidden>
+    <div class="settingsbar">
+      <button class="back" id="backInbox">‹ Back to inbox</button>
+      <span class="crumb">Settings <i>/</i> Integrations <i>/</i> <b>WhatsApp</b></span>
+    </div>
+    <div class="settingsshell">
+      <aside class="sidenav">
+        <div class="sgroup">Workspace</div>
+        <a class="snav">General</a>
+        <a class="snav">Team &amp; roster</a>
+        <a class="snav">Data sources</a>
+        <div class="sgroup">Integrations</div>
+        <a class="snav active">WhatsApp</a>
+        <a class="snav">Escalation &amp; SLA</a>
+        <a class="snav">Alerts</a>
+      </aside>
+      <div class="settingsmain">
+        <h1 class="settingsh1">WhatsApp integration</h1>
+        <p class="settingssub">Link the ops WhatsApp account and classify each group. This powers the WhatsApp Control Tower inbox — admins only.</p>
+        <div class="setupgrid">
+      <!-- Connection -->
+      <div class="panel">
+        <div class="phead"><h2>WhatsApp connection</h2><span class="count">admin only</span></div>
+        <div class="conncard">
+          <div class="connstate">
+            <span class="statedot ok"></span>
+            <div>
+              <div class="stateline">Connected as <b class="mono">+91 95225 84955</b></div>
+              <div class="statesub">Linked device · last seen <span class="num">9s</span> ago · reading 49 groups</div>
+            </div>
+          </div>
+          <div class="connbtns">
+            <button class="btn ghost" id="relink">Re-link (show QR)</button>
+            <button class="btn danger" onclick="toast('Would unlink the device')">Unlink</button>
+          </div>
+          <div class="qrbox" id="qrbox" hidden>
+            <div class="qrimg" aria-hidden="true">
+              <div class="qrgrid"></div>
+            </div>
+            <div class="qrhelp">
+              <b>Scan to link</b>
+              <p>On the ops phone: <b>WhatsApp → Settings → Linked Devices → Link a Device</b>, then scan this code.</p>
+              <p class="muted">Code refreshes every ~20s. This panel updates live until the device connects.</p>
+              <button class="btn ghost" id="hideqr">Cancel</button>
+            </div>
+          </div>
+        </div>
+        <div class="ctxsec">
+          <span class="seclabel">Sending</span>
+          <label class="tgl"><input type="checkbox" checked> Sending enabled globally <small>rate-limited, human-paced</small></label>
+          <label class="tgl"><input type="checkbox" checked> Auto-ask for order/booking ID when a query has none</label>
+        </div>
+      </div>
+
+      <!-- Group classification -->
+      <div class="panel">
+        <div class="phead"><h2>Group classification</h2><span class="count" id="gcount">49 groups</span></div>
+        <div class="tablewrap">
+          <table class="gtable">
+            <thead><tr>
+              <th>Group</th><th>Role</th><th>Mapped to</th>
+              <th class="c">Active</th><th class="c">Send</th><th class="c">Ask&nbsp;ID</th>
+            </tr></thead>
+            <tbody id="gbody"></tbody>
+          </table>
+        </div>
+        <div class="savebar">
+          <span class="muted" id="savehint">3 groups need a role assigned</span>
+          <button class="btn primary" onclick="toast('Group configuration saved')">Save configuration</button>
+        </div>
+      </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="foot">Mockup · realistic data from the 12,427-message scrape. Sends are simulated — no message leaves this page.</div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+const TICKETS = [
+  { id:"t1", group:"Labstack <> Plum Ops", store:"Plum · partner-ops", intent:"STATUS_CHECK", intentLabel:"STATUS CHECK", chip:"status",
+    order:"#58651", age:"4m", sla:"crit", flag:"member escalating",
+    ctx:{status:"● SAMPLE_COLLECTED",statusTone:"info",appt:"09 Jun · 06:20",phlebo:"Ramesh · 98••••11",lab:"Apollo Seshadripuram",report:"not ready"},
+    labName:"Apollo", storeName:"Plum",
+    thread:[
+      {s:"in",nm:"Plum ops",t:"08:41",x:"58651 any update? member is waiting"},
+      {s:"in",nm:"Plum ops",t:"08:44",x:"58651 member escalating, pls check",trig:true},
+    ],
+    quick:["#58651 — sample collected, processing at lab","this is done","checking, will update in 5 min"],
+    statusReply:"#58651 — sample collected & on the way to the lab (Apollo Seshadripuram). Report expected later today. Phlebo: Ramesh."
+  },
+  { id:"t2", group:"Labstack <> Orange Ops", store:"Orange · partner-ops", intent:"STATUS_CHECK", intentLabel:"NO ID", chip:"noid",
+    order:"— none —", age:"2m", sla:"warn", flag:"auto-asked for id",
+    ctx:{status:"— no id in message —",statusTone:"muted",appt:"—",phlebo:"—",lab:"—",report:"—"},
+    labName:"—", storeName:"Orange",
+    thread:[
+      {s:"in",nm:"Orange ops",t:"09:02",x:"pls check this booking, customer not reachable",trig:true},
+      {s:"out",nm:"you (auto-reply)",t:"09:02",x:"Please share the order/booking ID and your query so we can act on it 🙏"},
+    ],
+    quick:["Please share the order/booking ID and your query","Could you confirm the patient name + number?"],
+    statusReply:"Please share the order/booking ID so we can pull the status."
+  },
+  { id:"t3", group:"Labstack <> Sugarfit Ops", store:"Sugarfit · partner-ops", intent:"RESCHEDULE", intentLabel:"RESCHEDULE", chip:"resched",
+    order:"#59012", age:"11m", sla:"warn", flag:"",
+    ctx:{status:"● ORDER_SCHEDULED",statusTone:"info",appt:"12 Aug · 08:00",phlebo:"unassigned",lab:"Thyrocare BLR",report:"—"},
+    labName:"Thyrocare", storeName:"Sugarfit",
+    thread:[
+      {s:"in",nm:"Sugarfit ops",t:"08:33",x:"59012 pls reschedule for tomorrow 8am"},
+      {s:"in",nm:"Sugarfit ops",t:"08:34",x:"customer requested morning slot",trig:true},
+    ],
+    quick:["#59012 — rescheduled to 13 Aug 08:00 ✅","checking slot availability","booking created"],
+    statusReply:"#59012 — noted, rescheduling to 13 Aug 08:00. Will confirm the slot with the lab."
+  },
+];
+
+const $ = s => document.querySelector(s);
+let active = "t1", sendTo = "store";
+
+function toneVar(t){return t==="info"?"var(--info)":t==="good"?"var(--good)":t==="warn"?"var(--warn)":"var(--muted)";}
+function toneBg(t){return t==="info"?"var(--info-soft)":t==="good"?"var(--good-soft)":t==="warn"?"var(--warn-soft)":"var(--surface-2)";}
+
+function renderList(){
+  $("#list").innerHTML = TICKETS.map(t=>{
+    const stripe = t.sla==="crit"?"var(--crit)":t.sla==="warn"?"var(--warn)":"var(--good)";
+    return `<button class="tk" data-id="${t.id}" aria-current="${t.id===active}">
+      <span class="stripe" style="background:${stripe}"></span><span></span>
+      <span class="who">
+        <span class="grp">${t.group.replace('Labstack <> ','')}</span>
+        <span class="msg">${t.thread[t.thread.length-1].x}</span>
+        <span class="meta"><span class="chip ${t.chip} tiny">${t.intentLabel}</span>
+          <span class="mono" style="font-size:11px;color:var(--muted)">${t.order}</span></span>
+        ${t.flag?`<span class="flag">▲ ${t.flag}</span>`:""}
+      </span>
+      <span class="right"><span class="age num">${t.age}</span>
+        ${t.sla==="crit"?'<span class="chip noid tiny">SLA</span>':''}</span>
+    </button>`;
+  }).join("");
+  document.querySelectorAll(".tk").forEach(b=>b.onclick=()=>{active=b.dataset.id;renderAll();});
+}
+function renderConv(){
+  const t = TICKETS.find(x=>x.id===active);
+  $("#cGroup").textContent = t.group;
+  $("#cStore").textContent = "Store: "+t.store;
+  $("#cIntent").textContent = t.intentLabel; $("#cIntent").className = "chip "+t.chip;
+  $("#thread").innerHTML = t.thread.map(m=>`<div class="bub ${m.s} ${m.trig?'trigger':''}">
+      <div class="nm">${m.nm}</div>${m.x}<div class="tm">${m.t}</div></div>`).join("");
+  // send-to pills
+  document.querySelectorAll(".pill").forEach(p=>{
+    if(p.dataset.to==="store") p.textContent="Store group · "+t.storeName;
+    if(p.dataset.to==="lab") p.textContent="Lab group · "+t.labName;
+  });
+  // quick chips
+  $("#quick").innerHTML = t.quick.map(q=>`<button class="qchip">${q}</button>`).join("");
+  document.querySelectorAll(".qchip").forEach(c=>c.onclick=()=>{$("#ta").value=c.textContent;});
+  // context
+  $("#xId").textContent=t.order; $("#xStore").textContent=t.storeName; $("#xIntent").textContent=t.intent;
+  const c=t.ctx; const sp=$("#xStatus"); sp.textContent=c.status;
+  sp.style.background=toneBg(c.statusTone); sp.style.color=toneVar(c.statusTone);
+  $("#xAppt").textContent=c.appt; $("#xPhlebo").textContent=c.phlebo; $("#xLab").textContent=c.lab; $("#xReport").textContent=c.report;
+  $("#aStatusSub").textContent="to "+t.storeName+" group";
+}
+function renderAll(){renderList();renderConv();}
+document.querySelectorAll(".pill").forEach(p=>p.onclick=()=>{
+  document.querySelectorAll(".pill").forEach(x=>x.setAttribute("aria-pressed","false"));
+  p.setAttribute("aria-pressed","true"); sendTo=p.dataset.to;
+});
+$("#aStatus").onclick=()=>{const t=TICKETS.find(x=>x.id===active);$("#ta").value=t.statusReply;setTo("store");};
+$("#aLab").onclick=()=>{const t=TICKETS.find(x=>x.id===active);$("#ta").value="Team, need help on "+t.order+" — please confirm slot/serviceability.";setTo("lab");};
+$("#aFree").onclick=()=>{$("#ta").focus();setTo("other");};
+function setTo(to){sendTo=to;document.querySelectorAll(".pill").forEach(x=>x.setAttribute("aria-pressed", x.dataset.to===to));}
+$("#sendBtn").onclick=()=>{ if(!$("#ta").value.trim())return toast("Write a message first");
+  const dest = sendTo==="store"?"Store group":sendTo==="lab"?"Lab group":"the number";
+  toast("Queued → "+dest+" (dry-run)"); $("#ta").value=""; };
+let tmo; function toast(m){const el=$("#toast");el.textContent=m;el.classList.add("on");clearTimeout(tmo);tmo=setTimeout(()=>el.classList.remove("on"),1900);}
+window.toast=toast;
+$("#theme").onclick=()=>{const r=document.documentElement;
+  const cur=r.getAttribute("data-theme")|| (matchMedia("(prefers-color-scheme:dark)").matches?"dark":"light");
+  r.setAttribute("data-theme", cur==="dark"?"light":"dark");};
+
+/* view switch — Settings lives outside the control tower */
+function showView(v){ $("#view-inbox").hidden = v!=="inbox"; $("#view-setup").hidden = v!=="setup"; window.scrollTo(0,0); }
+$("#gotoSettings").onclick=()=>showView("setup");
+$("#backInbox").onclick=()=>showView("inbox");
+$("#relink").onclick=()=>{$("#qrbox").hidden=false;};
+$("#hideqr").onclick=()=>{$("#qrbox").hidden=true;};
+
+/* group classification table — real group names from the scrape */
+const GROUPS = [
+  ["Labstack <> Plum Ops","SUPPORT","Plum"],
+  ["Labstack<> Sugarfit Ops","SUPPORT","Sugarfit"],
+  ["Labstack <> Orange Ops","SUPPORT","Orange"],
+  ["Labstack <> Pharmeasy - Home administrations","SUPPORT","Pharmeasy"],
+  ["QUA x Labstack Operations Group","SUPPORT","QUA"],
+  ["Labstack<>Good Health","SUPPORT","Good Health"],
+  ["Alyvehealth <> Labstack","SUPPORT","Alyve"],
+  ["Metropolis<> Labstack Gurgaon samples pickups","PROVIDER","Metropolis"],
+  ["Labstack <> Thyrocare Ops","PROVIDER","Thyrocare"],
+  ["Pathkind lab Haryana <> Labstack","PROVIDER","Pathkind"],
+  ["LABSTACK <> AARTHI SCANS","PROVIDER","Aarthi Scans"],
+  ["Labstack Sample pick up","PROVIDER","—"],
+  ["LabStack Accounting","INTERNAL","—"],
+  ["Internal <> ops","INTERNAL","—"],
+  ["Labstack <> Network expanssion group","IGNORE","—"],
+];
+const STORES=["Plum","Sugarfit","Orange","Pharmeasy","QUA","Good Health","Alyve"];
+const LABS=["Metropolis","Thyrocare","Pathkind","Aarthi Scans","Apollo","Vijaya"];
+function mapOptions(role,cur){
+  if(role==="SUPPORT") return `<select class="mapsel">${STORES.map(s=>`<option ${s===cur?"selected":""}>${s}</option>`).join("")}<option>+ add store</option></select>`;
+  if(role==="PROVIDER") return `<select class="mapsel">${LABS.map(s=>`<option ${s===cur?"selected":""}>${s}</option>`).join("")}<option>+ add lab</option></select>`;
+  return `<span class="muted">—</span>`;
+}
+function renderGroups(){
+  $("#gbody").innerHTML = GROUPS.map((g,i)=>{
+    const [name,role,map]=g;
+    const roles=["SUPPORT","PROVIDER","INTERNAL","IGNORE"];
+    const labels={SUPPORT:"Customer",PROVIDER:"Provider",INTERNAL:"Internal",IGNORE:"Ignore"};
+    return `<tr data-i="${i}">
+      <td><span class="gname">${name.replace('Labstack','LS').replace('LABSTACK','LS')}</span></td>
+      <td><select class="rolesel" data-role="${role}">${roles.map(r=>`<option value="${r}" ${r===role?"selected":""}>${labels[r]}</option>`).join("")}</select></td>
+      <td class="mapcell">${mapOptions(role,map)}</td>
+      <td class="c"><label class="sw"><input type="checkbox" ${role!=="IGNORE"?"checked":""}><span></span></label></td>
+      <td class="c"><label class="sw"><input type="checkbox" ${role==="PROVIDER"?"checked":""}><span></span></label></td>
+      <td class="c"><label class="sw"><input type="checkbox" ${role==="SUPPORT"?"checked":""}><span></span></label></td>
+    </tr>`;
+  }).join("");
+  document.querySelectorAll(".rolesel").forEach(sel=>sel.onchange=()=>{
+    sel.dataset.role=sel.value;
+    const tr=sel.closest("tr"); tr.querySelector(".mapcell").innerHTML=mapOptions(sel.value,"");
+  });
+  $("#gcount").textContent = GROUPS.length+" groups · showing sample";
+}
+renderGroups();
+renderAll();
+</script>

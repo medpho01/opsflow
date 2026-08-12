@@ -43,8 +43,8 @@ enum TaskPriority {
 }
 
 enum TaskRuleTriggerType {
-  STATUS      // Create task when order reaches a specific status
-  TIME        // Create task only when time conditions are met
+  STATUS // Create task when order reaches a specific status
+  TIME // Create task only when time conditions are met
 }
 
 enum AssignmentMode {
@@ -104,16 +104,16 @@ model User {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  teamMember             TeamMember?
-  sessions               Session[]
-  assignedTasks          Task[]              @relation("AssignedTo")
-  taskHistory            TaskHistory[]
-  notifyLevels           EscalationLevel[]
-  savedFilters           UserSavedFilter[]
-  ruleAudits             TaskRuleAudit[]     // P4: who changed rules
-  dataSourcesCreated     DataSource[]        @relation("DataSourceCreatedBy")
+  teamMember              TeamMember?
+  sessions                Session[]
+  assignedTasks           Task[]                @relation("AssignedTo")
+  taskHistory             TaskHistory[]
+  notifyLevels            EscalationLevel[]
+  savedFilters            UserSavedFilter[]
+  ruleAudits              TaskRuleAudit[] // P4: who changed rules
+  dataSourcesCreated      DataSource[]          @relation("DataSourceCreatedBy")
   ruleSourceScopesCreated TaskRuleSourceScope[] @relation("RuleSourceScopeCreatedBy")
-  alerts                 Alert[]
+  alerts                  Alert[]
 
   @@map("users")
 }
@@ -162,14 +162,14 @@ model TeamMember {
   createdAt          DateTime       @default(now())
   updatedAt          DateTime       @updatedAt
 
-  user               User                        @relation(fields: [userId], references: [id], onDelete: Cascade)
-  skills             TeamMemberSkill[]
-  storeAssignments   StoreAssignment[]
-  dailyRosters       DailyRoster[]
-  assignedTasks      Task[]
-  capabilities       TeamMemberCapability[]
-  weeklySchedules    WeeklySchedule[]
-  rosterExceptions   RosterException[]
+  user             User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  skills           TeamMemberSkill[]
+  storeAssignments StoreAssignment[]
+  dailyRosters     DailyRoster[]
+  assignedTasks    Task[]
+  capabilities     TeamMemberCapability[]
+  weeklySchedules  WeeklySchedule[]
+  rosterExceptions RosterException[]
 
   @@map("team_members")
 }
@@ -236,8 +236,8 @@ model TeamMemberCapability {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  teamMember   TeamMember @relation(fields: [teamMemberId], references: [id], onDelete: Cascade)
-  dataSource   DataSource @relation(fields: [dataSourceId], references: [id], onDelete: Cascade)
+  teamMember TeamMember @relation(fields: [teamMemberId], references: [id], onDelete: Cascade)
+  dataSource DataSource @relation(fields: [dataSourceId], references: [id], onDelete: Cascade)
 
   @@unique([teamMemberId, dataSourceId])
   @@index([teamMemberId])
@@ -250,11 +250,11 @@ model TeamMemberCapability {
 // ─────────────────────────────────────────────
 
 model RoundRobinState {
-  id                    String   @id @default(cuid())
-  dataSourceId          String
-  lastAssignedMemberId  Int?
-  lastUpdatedAt         DateTime @updatedAt
-  createdAt             DateTime @default(now())
+  id                   String   @id @default(cuid())
+  dataSourceId         String
+  lastAssignedMemberId Int?
+  lastUpdatedAt        DateTime @updatedAt
+  createdAt            DateTime @default(now())
 
   @@unique([dataSourceId])
   @@index([dataSourceId])
@@ -268,12 +268,12 @@ model RoundRobinState {
 model WeeklySchedule {
   id           Int      @id @default(autoincrement())
   teamMemberId Int
-  dayOfWeek    Int      // 0=Sunday, 1=Monday, ..., 6=Saturday
+  dayOfWeek    Int // 0=Sunday, 1=Monday, ..., 6=Saturday
   isWorking    Boolean  @default(true)
-  startTime    String?  @db.VarChar(5)  // HH:MM format
-  endTime      String?  @db.VarChar(5)  // HH:MM format
-  breakStart   String?  @db.VarChar(5)  // HH:MM format (optional)
-  breakEnd     String?  @db.VarChar(5)  // HH:MM format (optional)
+  startTime    String?  @db.VarChar(5) // HH:MM format
+  endTime      String?  @db.VarChar(5) // HH:MM format
+  breakStart   String?  @db.VarChar(5) // HH:MM format (optional)
+  breakEnd     String?  @db.VarChar(5) // HH:MM format (optional)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
@@ -309,15 +309,15 @@ model RosterException {
 // ─────────────────────────────────────────────
 
 model TaskType {
-  id                       Int      @id @default(autoincrement())
-  name                     String   @unique
-  label                    String
-  description              String?
-  normalAgingMinutes       Int      @default(30)
-  warningAgingMinutes      Int      @default(45)
-  criticalAgingMinutes     Int      @default(60)
-  createdAt                DateTime @default(now())
-  updatedAt                DateTime @updatedAt
+  id                   Int      @id @default(autoincrement())
+  name                 String   @unique
+  label                String
+  description          String?
+  normalAgingMinutes   Int      @default(30)
+  warningAgingMinutes  Int      @default(45)
+  criticalAgingMinutes Int      @default(60)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
 
   checklistItems ChecklistTemplate[]
   rules          TaskRule[]
@@ -367,9 +367,9 @@ model TaskRule {
   createdAt              DateTime            @default(now())
   updatedAt              DateTime            @updatedAt
 
-  dataSource      DataSource       @relation(fields: [dataSourceId], references: [id])
-  taskType        TaskType         @relation(fields: [taskTypeId], references: [id])
-  escalationChain EscalationChain? @relation(fields: [escalationChainId], references: [id])
+  dataSource      DataSource            @relation(fields: [dataSourceId], references: [id])
+  taskType        TaskType              @relation(fields: [taskTypeId], references: [id])
+  escalationChain EscalationChain?      @relation(fields: [escalationChainId], references: [id])
   requiredSkills  TaskRuleSkill[]
   tasks           Task[]
   sourceScopes    TaskRuleSourceScope[]
@@ -390,15 +390,15 @@ model TaskRuleSkill {
 
 // ── Task Rule Audit Trail (Phase 4) ────────────────────────
 model TaskRuleAudit {
-  id               Int      @id @default(autoincrement())
-  ruleId           String
-  changedById      Int?
-  action           String   // "CREATE", "UPDATE", "DELETE", "ACTIVATE", "DEACTIVATE"
-  changesSummary   Json?    // What changed (before/after values)
-  metadata         Json?    // Additional info (ruleName, orderType, priority, etc)
-  createdAt        DateTime @default(now())
+  id             Int      @id @default(autoincrement())
+  ruleId         String
+  changedById    Int?
+  action         String // "CREATE", "UPDATE", "DELETE", "ACTIVATE", "DEACTIVATE"
+  changesSummary Json? // What changed (before/after values)
+  metadata       Json? // Additional info (ruleName, orderType, priority, etc)
+  createdAt      DateTime @default(now())
 
-  changedBy        User?    @relation(fields: [changedById], references: [id], onDelete: SetNull)
+  changedBy User? @relation(fields: [changedById], references: [id], onDelete: SetNull)
 
   @@index([ruleId])
   @@index([createdAt])
@@ -411,49 +411,49 @@ model TaskRuleAudit {
 // ─────────────────────────────────────────────
 
 model Task {
-  id              Int          @id @default(autoincrement())
-  taskRuleId      String
-  taskTypeId      Int?
-  title           String
-  entityType      String       // "ORDER"
-  entityId        Int
-  storeId         Int?
-  orderType       String
-  priority        TaskPriority
-  status          TaskStatus   @default(CREATED)
-  assignedToId    Int?
-  teamMemberId    Int?
-  assignedAt      DateTime?
-  startedAt       DateTime?
-  completedAt     DateTime?
-  lastStatusUpdate DateTime?    // Phase 2: Track when status last changed (for task aging)
-  appointmentTime DateTime?     // Appointment/visit time for task (for sorting purposes)
-  slaDeadline     DateTime
-  slaBreachedAt   DateTime?
-  metadata        Json?
-  createdAt       DateTime     @default(now())
-  updatedAt       DateTime     @updatedAt
+  id               Int          @id @default(autoincrement())
+  taskRuleId       String
+  taskTypeId       Int?
+  title            String
+  entityType       String // "ORDER"
+  entityId         Int
+  storeId          Int?
+  orderType        String
+  priority         TaskPriority
+  status           TaskStatus   @default(CREATED)
+  assignedToId     Int?
+  teamMemberId     Int?
+  assignedAt       DateTime?
+  startedAt        DateTime?
+  completedAt      DateTime?
+  lastStatusUpdate DateTime? // Phase 2: Track when status last changed (for task aging)
+  appointmentTime  DateTime? // Appointment/visit time for task (for sorting purposes)
+  slaDeadline      DateTime
+  slaBreachedAt    DateTime?
+  metadata         Json?
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
 
-  isArchived        Boolean          @default(false)
+  isArchived        Boolean @default(false)
   escalationChainId Int?
 
   // W5 — Snooze. Agent presses "Ping me in 15m"; the task drops out of
   // their Active list until this timestamp passes. Null when not snoozed.
   // Filter at query time — no scheduler, no auto-clear; the task simply
   // re-appears once `snoozedUntil < now`.
-  snoozedUntil      DateTime?        @db.Timestamptz(3)
+  snoozedUntil DateTime? @db.Timestamptz(3)
 
   // C1.1: Assignment tracking fields for Foundation feature
-  assignmentMethod String?     // "auto" | "manual" | null
-  assignmentRuleId String?     // Which rule auto-assigned (if method=auto)
+  assignmentMethod String? // "auto" | "manual" | null
+  assignmentRuleId String? // Which rule auto-assigned (if method=auto)
 
   // Multi-source fields (Phase 1)
-  source              String?           @default("orders")  // "orders", "appointments", "camps"
-  sourceType          String?           // "BLOOD_TEST", "CONSULTATION", etc.
-  sourceStatus        String?           // Current status in source system
-  sourceEntityId      BigInt?           // ID in source system (for cross-referencing)
-  sourceLastSyncedAt  DateTime?         // When we last synced status back to source
-  sourceHandlerContext Json?            // Source-specific context for sync logic
+  source               String?   @default("orders") // "orders", "appointments", "camps"
+  sourceType           String? // "BLOOD_TEST", "CONSULTATION", etc.
+  sourceStatus         String? // Current status in source system
+  sourceEntityId       BigInt? // ID in source system (for cross-referencing)
+  sourceLastSyncedAt   DateTime? // When we last synced status back to source
+  sourceHandlerContext Json? // Source-specific context for sync logic
 
   taskRule        TaskRule            @relation(fields: [taskRuleId], references: [id])
   taskType        TaskType?           @relation(fields: [taskTypeId], references: [id])
@@ -466,8 +466,8 @@ model Task {
 
   @@unique([taskRuleId, entityId]) // C1.1: Prevent duplicate active tasks
   @@index([entityType, entityId])
-  @@index([source])                     // Multi-source index
-  @@index([source, sourceEntityId])     // Multi-source cross-reference
+  @@index([source]) // Multi-source index
+  @@index([source, sourceEntityId]) // Multi-source cross-reference
   @@index([status])
   @@index([assignedToId])
   @@index([slaDeadline])
@@ -480,18 +480,18 @@ model Task {
 
 // C1.2: Database polling lock (prevent concurrent polling)
 model PollingLock {
-  id           Int       @id @default(autoincrement())
-  lockKey      Int       @unique // Fixed value = 1000
-  lockedAt     DateTime  @default(now())
-  lockedUntil  DateTime
-  lockedBy     String    @default("")
+  id          Int      @id @default(autoincrement())
+  lockKey     Int      @unique // Fixed value = 1000
+  lockedAt    DateTime @default(now())
+  lockedUntil DateTime
+  lockedBy    String   @default("")
 
   @@map("polling_locks")
 }
 
 model EngineCheckpoint {
-  id          Int      @id @default(autoincrement())
-  sourceKey   String   @unique // e.g. "labstack:orders"
+  id         Int      @id @default(autoincrement())
+  sourceKey  String   @unique // e.g. "labstack:orders"
   // TIMESTAMPTZ, not the Prisma-default TIMESTAMP. The checkpoint is a
   // cursor compared against labstack `updatedAt` values; storing it as
   // naive TIMESTAMP under a session timezone of Asia/Kolkata caused a
@@ -501,8 +501,8 @@ model EngineCheckpoint {
   // of session timezone. Verified: prod checkpoint was 5h30 in the
   // future, causing the poller to fetch 0 rows for ~5.5h until real
   // wall-clock caught up.
-  lastSeenAt  DateTime @db.Timestamptz(3)
-  updatedAt   DateTime @updatedAt @db.Timestamptz(3)
+  lastSeenAt DateTime @db.Timestamptz(3)
+  updatedAt  DateTime @updatedAt @db.Timestamptz(3)
 
   @@map("engine_checkpoints")
 }
@@ -573,20 +573,20 @@ model EscalationLevel {
 // ─────────────────────────────────────────────
 
 model Alert {
-  id            Int          @id @default(autoincrement())
-  alertType     AlertType
-  severity      TaskPriority
-  entityType    String?
-  entityId      Int?
-  taskId        Int?
-  userId        Int?
-  message       String
-  metadata      Json?
-  channel       AlertChannel @default(IN_APP)
-  status        AlertStatus  @default(PENDING)
+  id             Int          @id @default(autoincrement())
+  alertType      AlertType
+  severity       TaskPriority
+  entityType     String?
+  entityId       Int?
+  taskId         Int?
+  userId         Int?
+  message        String
+  metadata       Json?
+  channel        AlertChannel @default(IN_APP)
+  status         AlertStatus  @default(PENDING)
   acknowledgedAt DateTime?
-  sentAt        DateTime?
-  createdAt     DateTime     @default(now())
+  sentAt         DateTime?
+  createdAt      DateTime     @default(now())
 
   task Task? @relation(fields: [taskId], references: [id], onDelete: SetNull)
   user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
@@ -642,38 +642,38 @@ model SlaBreachLog {
 // ─────────────────────────────────────────────
 
 enum DataSourceType {
-  DATABASE   // Direct database connection
-  API        // External API
-  WEBHOOK    // Webhook-based events
+  DATABASE // Direct database connection
+  API // External API
+  WEBHOOK // Webhook-based events
 }
 
 enum SourceSyncStrategy {
-  NONE       // No sync-back to source
-  API        // Call source API on task status change
-  DATABASE   // Update source database directly
-  WEBHOOK    // Send webhook to source system
+  NONE // No sync-back to source
+  API // Call source API on task status change
+  DATABASE // Update source database directly
+  WEBHOOK // Send webhook to source system
 }
 
 model DataSource {
-  id                 String              @id @default(cuid())
-  sourceId           String              @unique  // "orders", "appointments", "camps"
-  displayName        String              // "Lab Orders", "Patient Appointments"
-  description        String?
+  id          String  @id @default(cuid())
+  sourceId    String  @unique // "orders", "appointments", "camps"
+  displayName String // "Lab Orders", "Patient Appointments"
+  description String?
 
   // Schema configuration
-  tableReference     String              // "public.orders" or API endpoint
-  primaryKeyField    String  @default("id")
-  typeFieldName      String              // "orderType", "appointmentType"
-  statusFieldName    String              // "orderStatus", "appointmentStatus"
+  tableReference  String // "public.orders" or API endpoint
+  primaryKeyField String @default("id")
+  typeFieldName   String // "orderType", "appointmentType"
+  statusFieldName String // "orderStatus", "appointmentStatus"
 
   // Query configuration
-  queryTemplate      String              // SQL with $since placeholder
+  queryTemplate String // SQL with $since placeholder
 
   // Metadata mapping: {patientName: "patient_name", ...}
   metadataFieldMapping Json?
 
   // Enum values for USER-DEFINED fields: ["CONSULTATION", "HOME_SAMPLE", "INJECTION"]
-  typeFieldEnumValues Json?
+  typeFieldEnumValues   Json?
   statusFieldEnumValues Json?
 
   // Analytics contract (Source Load panel). Unifies analytics config into
@@ -685,35 +685,35 @@ model DataSource {
   // heatmap (on createdField) and Tier-1 status distribution by default.
   // table / statusField / dimension are DERIVED from the columns above
   // (tableReference / statusFieldName / typeFieldName), not duplicated.
-  analyticsConfig    Json?
+  analyticsConfig Json?
 
   // Polling configuration
-  pollingType        DataSourceType @default(DATABASE)
-  pollingIntervalMinutes Int @default(5)
-  isActive           Boolean @default(true)
+  pollingType            DataSourceType @default(DATABASE)
+  pollingIntervalMinutes Int            @default(5)
+  isActive               Boolean        @default(true)
 
   // Sync-back configuration
-  syncStrategy       SourceSyncStrategy @default(NONE)
-  syncEndpoint       String?             // API endpoint or webhook URL
-  syncCredentials    Json?               // Encrypted credentials for sync
+  syncStrategy    SourceSyncStrategy @default(NONE)
+  syncEndpoint    String? // API endpoint or webhook URL
+  syncCredentials Json? // Encrypted credentials for sync
 
   // Backfill configuration
-  backfillEnabled    Boolean @default(false)
-  backfillDays       Int @default(7)
-  backfillCompleted  Boolean @default(false)
+  backfillEnabled     Boolean   @default(false)
+  backfillDays        Int       @default(7)
+  backfillCompleted   Boolean   @default(false)
   backfillCompletedAt DateTime?
 
   // Auditing
-  createdAt          DateTime @default(now())
-  updatedAt          DateTime @updatedAt
-  createdById        Int
-  createdBy          User     @relation("DataSourceCreatedBy", fields: [createdById], references: [id])
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  createdById Int
+  createdBy   User     @relation("DataSourceCreatedBy", fields: [createdById], references: [id])
 
   // Relations
-  pollingLogs        DataSourcePollingLog[]
-  ruleScopes         TaskRuleSourceScope[]
-  capabilities       TeamMemberCapability[]
-  taskRules          TaskRule[]
+  pollingLogs  DataSourcePollingLog[]
+  ruleScopes   TaskRuleSourceScope[]
+  capabilities TeamMemberCapability[]
+  taskRules    TaskRule[]
 
   @@index([sourceId])
   @@index([isActive])
@@ -721,30 +721,30 @@ model DataSource {
 }
 
 model DataSourcePollingLog {
-  id                 String    @id @default(cuid())
+  id String @id @default(cuid())
 
-  dataSourceId       String
-  dataSource         DataSource @relation(fields: [dataSourceId], references: [id])
+  dataSourceId String
+  dataSource   DataSource @relation(fields: [dataSourceId], references: [id])
 
   // Timing
-  pollStartedAt      DateTime
-  pollCompletedAt    DateTime?
-  durationMs         Int?
+  pollStartedAt   DateTime
+  pollCompletedAt DateTime?
+  durationMs      Int?
 
   // Results
-  entitiesFound      Int @default(0)
-  entitiesProcessed  Int @default(0)
-  tasksCreated       Int @default(0)
-  tasksFailed        Int @default(0)
+  entitiesFound     Int @default(0)
+  entitiesProcessed Int @default(0)
+  tasksCreated      Int @default(0)
+  tasksFailed       Int @default(0)
 
   // Status
-  status             String   // "PENDING", "IN_PROGRESS", "SUCCESS", "ERROR", "PARTIAL"
-  errorMessage       String?
+  status       String // "PENDING", "IN_PROGRESS", "SUCCESS", "ERROR", "PARTIAL"
+  errorMessage String?
 
   // Details JSON: {entitiesByType: {...}, failedEntities: [...], ...}
-  details            Json?
+  details Json?
 
-  createdAt          DateTime @default(now())
+  createdAt DateTime @default(now())
 
   @@index([dataSourceId])
   @@index([status])
@@ -753,33 +753,33 @@ model DataSourcePollingLog {
 }
 
 model TaskRuleSourceScope {
-  id                 String   @id @default(cuid())
+  id String @id @default(cuid())
 
-  taskRuleId         String
-  taskRule           TaskRule @relation(fields: [taskRuleId], references: [id], onDelete: Cascade)
+  taskRuleId String
+  taskRule   TaskRule @relation(fields: [taskRuleId], references: [id], onDelete: Cascade)
 
-  dataSourceId       String
-  dataSource         DataSource @relation(fields: [dataSourceId], references: [id], onDelete: Cascade)
+  dataSourceId String
+  dataSource   DataSource @relation(fields: [dataSourceId], references: [id], onDelete: Cascade)
 
   // Scope definition
-  allowedTypes       Json     // ["BLOOD_TEST", "CONSULTATION"] - JSON array of strings
-  allowedStatuses    Json     // ["CREATED", "PENDING"] - JSON array of strings
+  allowedTypes    Json // ["BLOOD_TEST", "CONSULTATION"] - JSON array of strings
+  allowedStatuses Json // ["CREATED", "PENDING"] - JSON array of strings
 
   // Assignment strategy
-  assignmentStrategy String @default("default")  // "route_by_store", "round_robin", etc.
+  assignmentStrategy       String @default("default") // "route_by_store", "round_robin", etc.
   assignmentStrategyConfig Json?
 
   // SLA override (for this source)
   slaMinutesOverride Int?
 
   // Status
-  isActive           Boolean @default(true)
+  isActive Boolean @default(true)
 
   // Auditing
-  createdAt          DateTime @default(now())
-  updatedAt          DateTime @updatedAt
-  createdById        Int
-  createdBy          User     @relation("RuleSourceScopeCreatedBy", fields: [createdById], references: [id])
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  createdById Int
+  createdBy   User     @relation("RuleSourceScopeCreatedBy", fields: [createdById], references: [id])
 
   @@unique([taskRuleId, dataSourceId])
   @@index([dataSourceId])
@@ -802,3 +802,164 @@ model TaskRuleSourceScope {
 // Also add indexes:
 // @@index([source])
 // @@index([source, sourceEntityId])
+
+// ─────────────────────────────────────────────
+// WHATSAPP CONTROL TOWER (Phase 1)
+// The 49 partner/provider WhatsApp groups become a single console inbox.
+// The Baileys gateway writes inbound messages here and drains the outbound
+// queue; OpsFlow renders tickets and enqueues replies. Postgres is the bus.
+// ─────────────────────────────────────────────
+
+enum WaGroupRole {
+  SUPPORT // partner group where queries arrive (we listen + answer)
+  PROVIDER // lab/provider coordination group (we send here)
+  INTERNAL // internal ops group
+  IGNORE // do not surface in the console
+}
+
+enum WaTicketStatus {
+  NEW
+  OPEN
+  WAITING_INFO // asked the partner for an id / details
+  WAITING_LAB // pinged the provider/lab group
+  ANSWERED
+  RESOLVED
+}
+
+enum WaMsgDirection {
+  IN
+  OUT
+}
+
+enum WaOutboundStatus {
+  QUEUED
+  SENDING
+  SENT
+  FAILED
+}
+
+model WaGroup {
+  id                 String      @id @default(cuid())
+  jid                String      @unique // WhatsApp group jid (…@g.us)
+  subject            String // group name
+  role               WaGroupRole @default(SUPPORT)
+  storeId            Int? // SUPPORT → partner/store (no FK, mirrors Task.storeId)
+  labId              Int? // PROVIDER → lab
+  autoAskIdOnMissing Boolean     @default(true) // auto-reply asking for an id when none given
+  sendEnabled        Boolean     @default(false) // per-group send guard
+  active             Boolean     @default(true) // listening on/off
+  createdAt          DateTime    @default(now())
+  updatedAt          DateTime    @updatedAt
+
+  messages WaMessage[]
+  tickets  WaTicket[]
+  outbound WaOutbound[]
+
+  @@index([role])
+  @@index([active])
+  @@map("wa_groups")
+}
+
+model WaMessage {
+  id          String         @id @default(cuid())
+  waMsgId     String         @unique // WhatsApp message id → idempotent ingest
+  groupId     String
+  ticketId    String?
+  direction   WaMsgDirection @default(IN)
+  fromMe      Boolean        @default(false)
+  sender      String // pushName or participant jid
+  text        String
+  mediaType   String? // image / document / etc.
+  ts          DateTime // message timestamp
+  replyToWaId String? // quoted message id (WhatsApp reply)
+  intent      String? // classifier output
+  orderIds    Int[]          @default([])
+  requestIds  Int[]          @default([])
+  raw         Json?
+  createdAt   DateTime       @default(now())
+
+  group  WaGroup   @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  ticket WaTicket? @relation(fields: [ticketId], references: [id])
+
+  @@index([groupId, ts])
+  @@index([ticketId])
+  @@index([ts])
+  @@map("wa_messages")
+}
+
+model WaTicket {
+  id              String         @id @default(cuid())
+  groupId         String
+  storeId         Int?
+  status          WaTicketStatus @default(NEW)
+  orderId         Int?
+  requestId       Int?
+  intent          String?
+  contextSnapshot Json? // order/request context captured from the replica
+  assignedToId    Int? // User.id (no FK, mirrors Task assignment pattern)
+  slaDueAt        DateTime?
+  firstMessageId  String?
+  lastActivityAt  DateTime       @default(now())
+  resolvedAt      DateTime?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  group    WaGroup      @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  messages WaMessage[]
+  outbound WaOutbound[]
+
+  @@index([status])
+  @@index([groupId])
+  @@index([orderId])
+  @@index([assignedToId])
+  @@index([lastActivityAt])
+  @@map("wa_tickets")
+}
+
+model WaOutbound {
+  id          String           @id @default(cuid())
+  targetJid   String // group jid or <number>@s.whatsapp.net
+  text        String
+  status      WaOutboundStatus @default(QUEUED)
+  ticketId    String?
+  groupId     String?
+  createdById Int? // User.id who composed it (no FK)
+  attempts    Int              @default(0)
+  error       String?
+  sentWaMsgId String?
+  quotedWaId  String? // reply-to a specific inbound message
+  createdAt   DateTime         @default(now())
+  sentAt      DateTime?
+
+  ticket WaTicket? @relation(fields: [ticketId], references: [id])
+  group  WaGroup?  @relation(fields: [groupId], references: [id])
+
+  @@index([status])
+  @@index([ticketId])
+  @@map("wa_outbound")
+}
+
+enum WaGatewayStatus {
+  CONNECTING
+  QR // waiting for an admin to scan
+  CONNECTED
+  LOGGED_OUT // needs a re-scan
+}
+
+// Singleton (id="default") — the bridge between the Baileys gateway and the
+// admin Setup screen. The gateway writes status/qr/connectedNumber/lastSeenAt;
+// the console reads them to render the connection card + live QR, and writes
+// `command` (RELINK / LOGOUT) which the gateway consumes.
+model WaGateway {
+  id                 String          @id @default("default")
+  status             WaGatewayStatus @default(CONNECTING)
+  qr                 String? // current raw QR payload (present when status = QR)
+  qrUpdatedAt        DateTime?
+  connectedNumber    String? // e.g. 919522584955
+  lastSeenAt         DateTime?
+  command            String? // "RELINK" | "LOGOUT" — set by admin, cleared by gateway
+  commandRequestedAt DateTime?
+  updatedAt          DateTime        @updatedAt
+
+  @@map("wa_gateway")
+}

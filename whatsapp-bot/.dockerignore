@@ -1,0 +1,14 @@
+# Never bake secrets, sessions, or PII data into the image.
+node_modules
+auth
+.env
+.env.*
+out
+*.jsonl
+*.log
+*.log.jsonl
+all-groups.txt
+last-qr.txt
+qr.png
+*.out
+docs

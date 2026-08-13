@@ -1,0 +1,26 @@
+# WhatsApp gateway overlay. Adds the Baileys bridge as a managed service.
+# Usage:  docker compose -f docker-compose.yml -f docker-compose.wa.yml up -d
+#
+# It reuses the same env as `app`: TASKOS_DATABASE_URL points at the taskos
+# schema, SOURCE_DATABASE_URL at the read-only LabStack replica. Sending stays
+# OFF (DRY_RUN=true) until you set WA_DRY_RUN=false in .env AND enable send
+# per-group in the console. The linked-device session persists in the wa_auth
+# volume; the QR is scanned from the console (Settings → WhatsApp).
+services:
+  wa-gateway:
+    build: ./whatsapp-bot
+    restart: unless-stopped
+    depends_on:
+      - db
+    environment:
+      TASKOS_DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-opsflow}:${POSTGRES_PASSWORD:-opsflow_dev_password}@db:5432/${POSTGRES_DB:-opsflow}?schema=taskos}
+      SOURCE_DATABASE_URL: ${SOURCE_DATABASE_URL:-}
+      DRY_RUN: ${WA_DRY_RUN:-true}
+      GROUP_FILTER: ${WA_GROUP_FILTER:-labstack}
+    volumes:
+      - wa_auth:/app/auth
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  wa_auth:

@@ -29,6 +29,24 @@ export async function refreshGroups() {
 export const getGroup = (jid) => groupCache.get(jid);
 export const knownGroupCount = () => groupCache.size;
 
+// Auto-register groups the gateway discovers on connect. Inserts new jids
+// (default role SUPPORT for an admin to classify) and refreshes the subject on
+// existing ones — never overwrites an admin's role/mapping. Makes server
+// deploys turnkey: no manual seed step. `pairs` = iterable of [jid, subject].
+export async function syncGroups(pairs) {
+  for (const [jid, subject] of pairs) {
+    try {
+      await taskosQuery(
+        `INSERT INTO wa_groups (id, jid, subject, role, active, "updatedAt")
+           VALUES (gen_random_uuid()::text, $1, $2, 'SUPPORT', true, now())
+         ON CONFLICT (jid) DO UPDATE SET subject = EXCLUDED.subject, "updatedAt" = now()`,
+        [jid, subject]
+      );
+    } catch (e) { console.error("syncGroups:", e.message); }
+  }
+  return refreshGroups();
+}
+
 // ── gateway status / QR ────────────────────────────────────────────────────
 export async function gatewayUpsert(fields) {
   const keys = Object.keys(fields);

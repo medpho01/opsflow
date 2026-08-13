@@ -165,6 +165,9 @@ async function start() {
         banner(`In ${groupSubjects.size} groups · observing ${scoped.length} in scope (filter=/${GROUP_FILTER}/i):`);
         for (const [jid, subject] of scoped) console.log(`  ${jid}   ${subject}`);
         console.log("");
+        // Turnkey seeding: register discovered groups in the console for the
+        // admin to classify (idempotent — never overwrites their choices).
+        if (CT_ENABLED) await CT.syncGroups(scoped);
       } catch (e) { console.warn("Could not fetch groups:", e.message); }
     }
     if (connection === "close") {

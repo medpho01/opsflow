@@ -259,7 +259,7 @@ async function handle(m) {
     const tsSec = Number(m.messageTimestamp?.low ?? m.messageTimestamp ?? 0) || Math.floor(Date.now() / 1000);
     try {
       await CT.ingestMessage({
-        jid, waMsgId: m.key.id, fromMe, sender, text,
+        jid, waMsgId: m.key.id, fromMe, sender, senderJid: m.key.participant || null, text,
         ts: new Date(tsSec * 1000), replyToWaId: rc?.replyToId || null,
       });
     } catch (e) { console.error("CT ingest:", e.message); }

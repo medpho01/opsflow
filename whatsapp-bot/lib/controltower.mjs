@@ -126,7 +126,7 @@ const lastAskAt = new Map(); // jid → ts (debounce auto-ask)
  * missing-id nudge is due.
  */
 export async function ingestMessage(m) {
-  const { jid, waMsgId, fromMe, sender, text, ts, replyToWaId } = m;
+  const { jid, waMsgId, fromMe, sender, senderJid, text, ts, replyToWaId } = m;
   const group = getGroup(jid);
   if (!group || !group.active) return { stored: false }; // not an admin-configured active group
 
@@ -153,10 +153,10 @@ export async function ingestMessage(m) {
   }
 
   const stored = await taskosQuery(
-    `INSERT INTO wa_messages (id, "waMsgId", "groupId", "ticketId", direction, "fromMe", sender, text, ts, "replyToWaId", intent, "orderIds", "requestIds", "createdAt")
-     VALUES (gen_random_uuid()::text, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, now())
+    `INSERT INTO wa_messages (id, "waMsgId", "groupId", "ticketId", direction, "fromMe", sender, "senderJid", text, ts, "replyToWaId", intent, "orderIds", "requestIds", "createdAt")
+     VALUES (gen_random_uuid()::text, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, now())
      ON CONFLICT ("waMsgId") DO NOTHING RETURNING id`,
-    [waMsgId, group.id, ticketId, fromMe ? "OUT" : "IN", fromMe, sender, text, ts, replyToWaId,
+    [waMsgId, group.id, ticketId, fromMe ? "OUT" : "IN", fromMe, sender, senderJid || null, text, ts, replyToWaId,
      intent, ids.map(Number).filter(Boolean), requestIds.map(Number).filter(Boolean)]
   );
 

@@ -4,6 +4,7 @@ import labstack, { labstackOr } from "@/lib/db/labstack";
 import { getSessionFromRequest } from "@/lib/auth/session";
 import { UserRole, WaTicketStatus, Prisma } from "@prisma/client";
 import { patientNameFor } from "@/lib/wa/patientNames";
+import { loadTeam, makeTeamMatcher } from "@/lib/wa/team";
 
 // GET /api/whatsapp/tickets/:id — ticket + full thread + live order context
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -36,6 +37,15 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   }
   const groupMessages = msgs;
   const patient = await patientNameFor(ticket.orderId, ticket.requestId);
+
+  // Identify OUR team (roster) so team replies are distinct from customer msgs.
+  const matchTeam = makeTeamMatcher(await loadTeam());
+  const taggedMsgs = groupMessages.map((m) => {
+    const tc = m.fromMe ? null : matchTeam(m.sender, m.senderJid);
+    return { ...m, isTeam: m.fromMe || !!tc, teamName: m.fromMe ? "You" : tc?.name || null };
+  });
+  const handledMsg = [...taggedMsgs].reverse().find((m) => m.isTeam);
+  const lastHandledBy = handledMsg ? { name: handledMsg.teamName || "Team", ts: handledMsg.ts } : null;
 
   // Cross-group activity for THIS order: a Store case surfaces the Provider's
   // status; a Provider case surfaces the Store's question. Maps status ↔ query.
@@ -86,7 +96,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     ticket: {
       id: ticket.id, status: ticket.status, intent: ticket.intent,
       orderId: ticket.orderId, requestId: ticket.requestId,
-      contextSnapshot: ticket.contextSnapshot, liveContext: live, patient,
+      contextSnapshot: ticket.contextSnapshot, liveContext: live, patient, lastHandledBy,
       assignedToId: ticket.assignedToId, slaDueAt: ticket.slaDueAt,
       lastActivityAt: ticket.lastActivityAt, createdAt: ticket.createdAt,
     },
@@ -95,10 +105,10 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       : null,
     labGroup,
     related,
-    messages: groupMessages.map((m) => ({
+    messages: taggedMsgs.map((m) => ({
       id: m.id, direction: m.direction, fromMe: m.fromMe, sender: m.sender,
       text: m.text, ts: m.ts, intent: m.intent, waMsgId: m.waMsgId,
-      ticketId: m.ticketId, // === this ticket → highlight it as the case's own message
+      ticketId: m.ticketId, isTeam: m.isTeam, teamName: m.teamName,
     })),
   });
 }

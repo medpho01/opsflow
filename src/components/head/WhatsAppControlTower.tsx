@@ -14,11 +14,11 @@ type Case = {
   lastActivityAt: string; snippet: string | null;
 };
 type Detail = {
-  ticket: { id: string; status: string; intent: string | null; orderId: number | null; requestId: number | null; patient: string | null; liveContext: Record<string, unknown> | null; contextSnapshot: Record<string, unknown> | null };
+  ticket: { id: string; status: string; intent: string | null; orderId: number | null; requestId: number | null; patient: string | null; lastHandledBy: { name: string; ts: string } | null; liveContext: Record<string, unknown> | null; contextSnapshot: Record<string, unknown> | null };
   group: { id: string; jid: string; subject: string; role: string; labId: number | null; sendEnabled: boolean } | null;
   labGroup: { subject: string } | null;
   related: { groupId: string; groupSubject: string; groupRole: string; sender: string; text: string; ts: string }[];
-  messages: { id: string; direction: string; fromMe: boolean; sender: string; text: string; ts: string; intent: string | null; ticketId: string | null }[];
+  messages: { id: string; direction: string; fromMe: boolean; sender: string; text: string; ts: string; intent: string | null; ticketId: string | null; isTeam: boolean; teamName: string | null }[];
 };
 
 const STATUS_PHRASE: Record<string, string> = {
@@ -309,13 +309,17 @@ export function WhatsAppControlTower() {
                   const lastCaseId = caseIds[caseIds.length - 1];
                   return detail.messages.map((m) => {
                     const isCase = m.ticketId === detail.ticket.id;
-                    const mine = m.fromMe || m.direction === "OUT";
+                    // Team replies (our roster / linked number) align right & blue;
+                    // customer/partner messages align left & grey.
+                    const team = m.isTeam;
                     return (
                       <div key={m.id} ref={m.id === lastCaseId ? caseAnchor : undefined}
-                        className={`max-w-[80%] px-3 py-2 rounded-xl text-sm ${mine ? "self-end bg-blue-500/15 border border-blue-500/25 rounded-tr-sm" : "self-start bg-zinc-800/70 border border-zinc-700/50 rounded-tl-sm"} ${isCase && !mine ? "ring-2 ring-amber-500/70 border-amber-500/40" : ""}`}>
+                        className={`max-w-[80%] px-3 py-2 rounded-xl text-sm ${team ? "self-end bg-blue-500/15 border border-blue-500/25 rounded-tr-sm" : "self-start bg-zinc-800/70 border border-zinc-700/50 rounded-tl-sm"} ${isCase && !team ? "ring-2 ring-amber-500/70 border-amber-500/40" : ""}`}>
                         <div className="flex items-center gap-2 mb-0.5">
-                          <span className="text-[11px] font-semibold text-zinc-400">{m.fromMe ? "Team" : m.sender}</span>
-                          {isCase && !mine && <span className="text-[9px] font-bold uppercase tracking-wide text-amber-400 bg-amber-500/15 px-1.5 rounded">◆ this case</span>}
+                          {team
+                            ? <span className="text-[11px] font-semibold text-blue-300">{m.teamName || "Team"} <span className="text-zinc-500 font-normal">· LS team</span></span>
+                            : <span className="text-[11px] font-semibold text-zinc-400">{m.sender}</span>}
+                          {isCase && !team && <span className="text-[9px] font-bold uppercase tracking-wide text-amber-400 bg-amber-500/15 px-1.5 rounded">◆ this case</span>}
                         </div>
                         <div className="text-zinc-100 whitespace-pre-wrap">{m.text}</div>
                         <div className="text-[10px] text-zinc-500 mt-1 text-right tabular-nums">{fmtTime(m.ts)}</div>
@@ -355,6 +359,7 @@ export function WhatsAppControlTower() {
                 <Row k="Order" v={detail.ticket.orderId ? `#${detail.ticket.orderId}` : detail.ticket.requestId ? `Req #${detail.ticket.requestId}` : "— none —"} mono />
                 <Row k="Store" v={short(detail.group?.subject || "—")} />
                 <Row k="Intent" v={detail.ticket.intent || "—"} />
+                {detail.ticket.lastHandledBy && <Row k="Last handled" v={`${detail.ticket.lastHandledBy.name} · ${clock(detail.ticket.lastHandledBy.ts)}`} />}
               </div>
               <div className="p-4 border-b border-zinc-800 flex flex-col gap-2">
                 <div className="text-[11px] uppercase tracking-wide text-zinc-500 font-semibold">Order context · live</div>

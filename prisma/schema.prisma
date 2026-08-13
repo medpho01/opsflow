@@ -868,7 +868,8 @@ model WaMessage {
   ticketId    String?
   direction   WaMsgDirection @default(IN)
   fromMe      Boolean        @default(false)
-  sender      String // pushName or participant jid
+  sender      String // pushName
+  senderJid   String? // participant jid/lid — used to match the LS team roster
   text        String
   mediaType   String? // image / document / etc.
   ts          DateTime // message timestamp
@@ -963,4 +964,22 @@ model WaGateway {
   updatedAt          DateTime        @updatedAt
 
   @@map("wa_gateway")
+}
+
+// LS internal team roster (uploaded by admins). Used to identify which
+// messages are OUR team's replies vs incoming customer/partner messages, and
+// to attribute who is handling what. Match by phone (from the sender jid) or
+// by name/alias (pushName).
+model WaContact {
+  id        String   @id @default(cuid())
+  name      String
+  phone     String? // normalized digits
+  aliases   String[] @default([]) // pushName variants seen in groups
+  team      String? // e.g. "Store ops", "Lab desk"
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([phone])
+  @@map("wa_contacts")
 }

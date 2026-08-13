@@ -18,6 +18,8 @@ export function WhatsAppSettings() {
   const [toast, setToast] = useState<string | null>(null);
   const [q, setQ] = useState("");
   const [roleFilter, setRoleFilter] = useState("ALL");
+  const [contacts, setContacts] = useState<{ id: string; name: string; phone: string | null; team: string | null }[]>([]);
+  const [contactText, setContactText] = useState("");
   const flash = (m: string) => { setToast(m); setTimeout(() => setToast(null), 2200); };
 
   const shownGroups = groups.filter(
@@ -30,8 +32,22 @@ export function WhatsAppSettings() {
   const loadGroups = useCallback(async () => {
     const r = await fetch("/api/whatsapp/groups"); if (r.ok) setGroups((await r.json()).groups);
   }, []);
+  const loadContacts = useCallback(async () => {
+    const r = await fetch("/api/whatsapp/contacts"); if (r.ok) setContacts((await r.json()).contacts);
+  }, []);
 
-  useEffect(() => { loadGw(); loadGroups(); }, [loadGw, loadGroups]);
+  async function saveContacts() {
+    if (!contactText.trim()) return flash("Paste Name, Phone lines first");
+    const r = await fetch("/api/whatsapp/contacts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: contactText }) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) return flash(d.error || "Save failed");
+    flash(`Saved ${d.total} team members`); setContactText(""); loadContacts();
+  }
+  async function deleteContact(id: string) {
+    await fetch(`/api/whatsapp/contacts/${id}`, { method: "DELETE" }); loadContacts();
+  }
+
+  useEffect(() => { loadGw(); loadGroups(); loadContacts(); }, [loadGw, loadGroups, loadContacts]);
   useEffect(() => { const t = setInterval(loadGw, 3000); return () => clearInterval(t); }, [loadGw]); // live QR/status
 
   async function command(command: string) {
@@ -132,6 +148,34 @@ export function WhatsAppSettings() {
               ))}
             </tbody>
           </table>
+        </div>
+      </div>
+
+      {/* LS team roster */}
+      <div className="rounded-xl border border-zinc-800 overflow-hidden mt-6">
+        <div className="px-4 py-3 border-b border-zinc-800 flex items-center">
+          <div className="text-[11px] uppercase tracking-wide text-zinc-500 font-semibold">LS team contacts</div>
+          <span className="ml-auto text-xs text-zinc-500">{contacts.length} members</span>
+        </div>
+        <div className="p-4 grid grid-cols-[1fr_1fr] gap-4 max-md:grid-cols-1">
+          <div>
+            <p className="text-xs text-zinc-400 mb-2">Paste one per line: <span className="font-mono text-zinc-300">Name, Phone[, Team]</span>. This is how the console tells your team&apos;s replies apart from incoming customer messages.</p>
+            <textarea value={contactText} onChange={(e) => setContactText(e.target.value)} rows={6}
+              placeholder={"Sushma, 919876543210, Store ops\nVijay Kansal, 919812345678, Lab desk"}
+              className="w-full bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-100 focus:border-blue-500 outline-none font-mono" />
+            <button onClick={saveContacts} className="mt-2 text-xs font-semibold bg-blue-600 hover:bg-blue-500 text-white rounded-lg px-3 py-2">Save team members</button>
+          </div>
+          <div className="max-h-64 overflow-y-auto">
+            {contacts.length === 0 && <div className="text-sm text-zinc-500">No team members yet.</div>}
+            {contacts.map((c) => (
+              <div key={c.id} className="flex items-center gap-2 py-1.5 border-b border-zinc-800/60 text-sm">
+                <span className="text-zinc-200 font-medium">{c.name}</span>
+                {c.phone && <span className="text-xs font-mono text-zinc-500">{c.phone}</span>}
+                {c.team && <span className="text-[10px] text-zinc-400 bg-zinc-800 px-1.5 rounded">{c.team}</span>}
+                <button onClick={() => deleteContact(c.id)} className="ml-auto text-xs text-zinc-500 hover:text-rose-400">remove</button>
+              </div>
+            ))}
+          </div>
         </div>
       </div>
 

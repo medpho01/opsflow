@@ -1,13 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 type LastMsg = { text: string; sender: string; ts: string; direction: string };
 type Ticket = {
   id: string; status: string; intent: string | null;
   orderId: number | null; requestId: number | null;
   group: string | null; groupRole: string | null;
-  lastActivityAt: string; slaDueAt: string | null; lastMessage: LastMsg | null;
+  lastActivityAt: string; lastMessage: LastMsg | null;
+  zone: string; priority: number; escalating: boolean; waiting: boolean;
 };
 type Detail = {
   ticket: { id: string; status: string; intent: string | null; orderId: number | null; requestId: number | null; liveContext: Record<string, unknown> | null; contextSnapshot: Record<string, unknown> | null };
@@ -16,15 +17,26 @@ type Detail = {
   messages: { id: string; direction: string; fromMe: boolean; sender: string; text: string; ts: string; intent: string | null }[];
 };
 
-const BUCKETS = [
-  { key: "needs_response", label: "Needs response", dot: "bg-rose-500" },
-  { key: "waiting_lab", label: "Waiting on lab", dot: "bg-amber-500" },
-  { key: "waiting_info", label: "Waiting on info", dot: "bg-blue-500" },
-  { key: "resolved", label: "Resolved", dot: "bg-emerald-500" },
+const ZONES = [
+  { key: "ACT_NOW", label: "Act now", dot: "bg-rose-500", hint: "escalations & outages" },
+  { key: "QUICK_ANSWER", label: "Quick answers", dot: "bg-emerald-500", hint: "status ready to send" },
+  { key: "NEEDS_CALL", label: "Needs your call", dot: "bg-blue-500", hint: "reschedule · cancel · booking" },
+  { key: "ASK_LAB", label: "Ask the lab", dot: "bg-amber-500", hint: "serviceability · slot · price" },
+  { key: "MUTED", label: "Review · low signal", dot: "bg-zinc-500", hint: "" },
 ];
 
+// Order status → the phrasing the bot drafts (mirrors the gateway playbook).
+const STATUS_PHRASE: Record<string, string> = {
+  CREATED: "order created, being scheduled", PENDING: "pending scheduling",
+  ORDER_SCHEDULED: "scheduled, awaiting phlebo", PHLEBO_ASSIGNED: "phlebo assigned, out for collection",
+  SAMPLE_COLLECTED: "sample collected, processing at lab", SAMPLE_PROCESSED: "sample processed, report being generated",
+  SAMPLE_DELIVERED: "sample delivered to lab", KIT_DISPATCHED: "kit dispatched",
+  REPORT_DELIVERED: "report delivered ✅", RESCHEDULED: "rescheduled",
+  PATIENT_MISSED: "patient missed / not available", CANCELED: "cancelled", CANCELLED: "cancelled",
+};
+
 const fmtTime = (s: string) => new Date(s).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
-const ago = (s: string | null) => { if (!s) return ""; const m = Math.floor((Date.now() - new Date(s).getTime()) / 60000); return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h`; };
+const ago = (s: string | null) => { if (!s) return ""; const m = Math.floor((Date.now() - new Date(s).getTime()) / 60000); return m < 1 ? "now" : m < 60 ? `${m}m` : `${Math.floor(m / 60)}h`; };
 
 function intentChip(intent: string | null) {
   const map: Record<string, string> = {
@@ -39,10 +51,22 @@ function intentChip(intent: string | null) {
   return map[intent || ""] || "bg-zinc-700/40 text-zinc-400 border-zinc-600/40";
 }
 
+function draftFor(d: Detail | null): string {
+  if (!d) return "";
+  const ctx = (d.ticket.liveContext || d.ticket.contextSnapshot || {}) as Record<string, unknown>;
+  const st = String((ctx.orderStatus || ctx.status) || "").toUpperCase();
+  if (!st || !d.ticket.orderId) return "";
+  const appt = ctx.appointmentTime ? ` · appt ${fmtTime(String(ctx.appointmentTime))}` : "";
+  return `#${d.ticket.orderId} — ${STATUS_PHRASE[st] || st}${appt}`;
+}
+const isAnswerable = (intent: string | null, orderId: number | null, requestId: number | null) =>
+  !!(orderId || requestId) && ["STATUS_CHECK", "REPORT_REQUEST", "CANCEL_REASON"].includes(intent || "");
+
 export function WhatsAppControlTower() {
-  const [bucket, setBucket] = useState("needs_response");
+  const [view, setView] = useState<"active" | "resolved">("active");
   const [tickets, setTickets] = useState<Ticket[]>([]);
-  const [counts, setCounts] = useState<Record<string, number>>({});
+  const [zoneCounts, setZoneCounts] = useState<Record<string, number>>({});
+  const [partner, setPartner] = useState<string>("ALL");
   const [activeId, setActiveId] = useState<string | null>(null);
   const [detail, setDetail] = useState<Detail | null>(null);
   const [target, setTarget] = useState<"store" | "lab" | "other">("store");
@@ -51,23 +75,23 @@ export function WhatsAppControlTower() {
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [gwOnline, setGwOnline] = useState(true);
+  const prefilledId = useRef<string | null>(null);
 
   const loadList = useCallback(async () => {
-    const res = await fetch(`/api/whatsapp/tickets?bucket=${bucket}`);
+    const res = await fetch(`/api/whatsapp/tickets?view=${view}`);
     if (!res.ok) return;
     const data = await res.json();
-    setTickets(data.tickets); setCounts(data.bucketCounts);
+    setTickets(data.tickets); setZoneCounts(data.zoneCounts);
     if (!activeId && data.tickets[0]) setActiveId(data.tickets[0].id);
-  }, [bucket, activeId]);
+  }, [view, activeId]);
 
   const loadDetail = useCallback(async (id: string) => {
     const res = await fetch(`/api/whatsapp/tickets/${id}`);
     if (res.ok) setDetail(await res.json());
   }, []);
 
-  useEffect(() => { loadList(); }, [bucket]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { loadList(); }, [view]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (activeId) loadDetail(activeId); }, [activeId, loadDetail]);
-  // Live refresh: new tickets appear, and the open conversation updates, on their own.
   useEffect(() => {
     const t = setInterval(() => {
       loadList();
@@ -77,7 +101,21 @@ export function WhatsAppControlTower() {
     return () => clearInterval(t);
   }, [loadList, loadDetail, activeId]);
 
+  // Pre-draft the status reply once per ticket open (never clobbers typing / poll refreshes).
+  useEffect(() => {
+    if (!detail) return;
+    if (prefilledId.current === detail.ticket.id) return;
+    prefilledId.current = detail.ticket.id;
+    if (isAnswerable(detail.ticket.intent, detail.ticket.orderId, detail.ticket.requestId)) {
+      const d = draftFor(detail);
+      if (d) { setReply(d); setTarget("store"); return; }
+    }
+    setReply("");
+  }, [detail]);
+
   const flash = (m: string) => { setToast(m); setTimeout(() => setToast(null), 2200); };
+  const shown = partner === "ALL" ? tickets : tickets.filter((t) => t.group === partner);
+  const partners = Array.from(new Set(tickets.map((t) => t.group).filter(Boolean))) as string[];
 
   async function sendReply() {
     if (!activeId || !reply.trim()) return flash("Write a message first");
@@ -102,6 +140,7 @@ export function WhatsAppControlTower() {
 
   const ctx = (detail?.ticket.liveContext || detail?.ticket.contextSnapshot || {}) as Record<string, unknown>;
   const orderStatus = (ctx.orderStatus || ctx.status) as string | undefined;
+  const answerable = detail && isAnswerable(detail.ticket.intent, detail.ticket.orderId, detail.ticket.requestId);
 
   return (
     <div className="flex flex-col h-full">
@@ -115,34 +154,53 @@ export function WhatsAppControlTower() {
         <a href="/head/settings/whatsapp" className="ml-auto text-xs text-zinc-400 hover:text-zinc-200 border border-zinc-800 rounded-lg px-3 py-1.5">⚙ Settings</a>
       </div>
 
-      <div className="grid grid-cols-[300px_1fr_320px] flex-1 min-h-0">
-        {/* QUEUE */}
+      <div className="grid grid-cols-[320px_1fr_320px] flex-1 min-h-0">
+        {/* QUEUE — focus zones */}
         <div className="border-r border-zinc-800 flex flex-col min-h-0">
-          <div className="p-2 border-b border-zinc-800 flex flex-col gap-0.5">
-            {BUCKETS.map((b) => (
-              <button key={b.key} onClick={() => { setBucket(b.key); setActiveId(null); }}
-                className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium text-left ${bucket === b.key ? "bg-blue-500/15 text-blue-300" : "text-zinc-400 hover:bg-zinc-800/50"}`}>
-                <span className={`w-1.5 h-1.5 rounded-full ${b.dot}`} />{b.label}
-                <span className="ml-auto text-xs text-zinc-500 tabular-nums">{counts[b.key] ?? 0}</span>
-              </button>
-            ))}
+          <div className="p-2 border-b border-zinc-800 flex items-center gap-2">
+            <select value={partner} onChange={(e) => setPartner(e.target.value)}
+              className="flex-1 bg-zinc-900 border border-zinc-700 rounded-md px-2 py-1.5 text-xs text-zinc-300 focus:border-blue-500 outline-none">
+              <option value="ALL">All partners</option>
+              {partners.map((p) => <option key={p} value={p}>{p.replace("Labstack", "LS")}</option>)}
+            </select>
+            <button onClick={() => { setView(view === "active" ? "resolved" : "active"); setActiveId(null); }}
+              className={`text-xs font-medium px-2.5 py-1.5 rounded-md border ${view === "resolved" ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/30" : "border-zinc-700 text-zinc-400 hover:border-zinc-500"}`}>
+              {view === "resolved" ? "Resolved" : "Active"}
+            </button>
           </div>
           <div className="overflow-y-auto flex-1">
-            {tickets.length === 0 && <div className="p-6 text-sm text-zinc-500 text-center">Nothing here.</div>}
-            {tickets.map((t) => (
-              <button key={t.id} onClick={() => setActiveId(t.id)}
-                className={`w-full text-left px-3 py-3 border-b border-zinc-800/70 ${activeId === t.id ? "bg-zinc-800/60" : "hover:bg-zinc-900"}`}>
-                <div className="flex items-center gap-2">
-                  <span className="font-semibold text-sm text-zinc-100 truncate">{(t.group || "").replace("Labstack", "LS")}</span>
-                  <span className="ml-auto text-xs text-zinc-500 tabular-nums">{ago(t.lastActivityAt)}</span>
+            {shown.length === 0 && <div className="p-6 text-sm text-zinc-500 text-center">Nothing here.</div>}
+            {ZONES.map((z) => {
+              const items = shown.filter((t) => t.zone === z.key);
+              if (!items.length) return null;
+              return (
+                <div key={z.key}>
+                  <div className="flex items-center gap-2 px-3 py-1.5 bg-zinc-900/60 border-y border-zinc-800/70 sticky top-0 z-10">
+                    <span className={`w-1.5 h-1.5 rounded-full ${z.dot}`} />
+                    <span className="text-[11px] font-semibold uppercase tracking-wide text-zinc-300">{z.label}</span>
+                    {z.hint && <span className="text-[10px] text-zinc-600 hidden xl:inline">{z.hint}</span>}
+                    <span className="ml-auto text-[11px] text-zinc-500 tabular-nums">{items.length}</span>
+                  </div>
+                  {items.map((t) => (
+                    <button key={t.id} onClick={() => setActiveId(t.id)}
+                      className={`w-full text-left px-3 py-2.5 border-b border-zinc-800/60 ${activeId === t.id ? "bg-zinc-800/60" : "hover:bg-zinc-900"}`}>
+                      <div className="flex items-center gap-2">
+                        <span className="font-semibold text-sm text-zinc-100 truncate">{(t.group || "").replace("Labstack", "LS")}</span>
+                        <span className="ml-auto text-[11px] text-zinc-500 tabular-nums">{ago(t.lastActivityAt)}</span>
+                      </div>
+                      <div className="text-xs text-zinc-400 truncate mt-0.5">{t.lastMessage?.text}</div>
+                      <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
+                        <span className={`text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded border ${intentChip(t.intent)}`}>{(t.intent || "other").replace("_", " ")}</span>
+                        {(t.orderId || t.requestId) && <span className="text-[11px] font-mono text-zinc-500">#{t.orderId || t.requestId}</span>}
+                        {t.zone === "QUICK_ANSWER" && <span className="text-[10px] font-semibold text-emerald-400">● answer ready</span>}
+                        {t.escalating && <span className="text-[10px] font-semibold text-rose-400">▲ escalating</span>}
+                        {t.waiting && <span className="text-[10px] text-amber-400/80">waiting</span>}
+                      </div>
+                    </button>
+                  ))}
                 </div>
-                <div className="text-xs text-zinc-400 truncate mt-0.5">{t.lastMessage?.text}</div>
-                <div className="flex items-center gap-2 mt-1.5">
-                  <span className={`text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded border ${intentChip(t.intent)}`}>{(t.intent || "other").replace("_", " ")}</span>
-                  {(t.orderId || t.requestId) && <span className="text-[11px] font-mono text-zinc-500">#{t.orderId || t.requestId}</span>}
-                </div>
-              </button>
-            ))}
+              );
+            })}
           </div>
         </div>
 
@@ -175,6 +233,7 @@ export function WhatsAppControlTower() {
                       {tg === "store" ? "Store group" : tg === "lab" ? `Lab${detail.labGroup ? " · " + detail.labGroup.subject.slice(0, 14) : ""}` : "Other number"}
                     </button>
                   ))}
+                  {answerable && <span className="ml-auto text-[11px] text-emerald-400">draft ready — review &amp; send</span>}
                 </div>
                 {target === "other" && (
                   <input value={toNumber} onChange={(e) => setToNumber(e.target.value)} placeholder="Number with country code, e.g. 9198…"
@@ -218,8 +277,8 @@ export function WhatsAppControlTower() {
               <div className="p-4 border-b border-zinc-800 flex flex-col gap-2">
                 <div className="text-[11px] uppercase tracking-wide text-zinc-500 font-semibold">Suggested actions</div>
                 {orderStatus && (
-                  <button onClick={() => { setTarget("store"); setReply(`#${detail.ticket.orderId} — ${orderStatus}${ctx.appointmentTime ? " · appt " + fmtTime(String(ctx.appointmentTime)) : ""}`); }}
-                    className="text-left text-sm border border-zinc-700 hover:border-blue-500 rounded-lg px-3 py-2 text-zinc-200">↩ Reply with status <span className="block text-xs text-zinc-500">to the store group</span></button>
+                  <button onClick={() => { setTarget("store"); setReply(draftFor(detail)); }}
+                    className="text-left text-sm border border-zinc-700 hover:border-emerald-500 rounded-lg px-3 py-2 text-zinc-200">↩ Reply with status <span className="block text-xs text-zinc-500">to the store group</span></button>
                 )}
                 <button onClick={() => { setTarget("lab"); setReply(`Team, need help on #${detail.ticket.orderId || detail.ticket.requestId} — please confirm.`); }}
                   className="text-left text-sm border border-zinc-700 hover:border-blue-500 rounded-lg px-3 py-2 text-zinc-200">→ Ask the lab <span className="block text-xs text-zinc-500">{detail.labGroup ? detail.labGroup.subject : "no lab group linked"}</span></button>

@@ -19,6 +19,7 @@ type Detail = {
   labGroup: { subject: string } | null;
   related: { groupId: string; groupSubject: string; groupRole: string; sender: string; text: string; ts: string }[];
   messages: { id: string; direction: string; fromMe: boolean; sender: string; text: string; ts: string; intent: string | null; ticketId: string | null; isTeam: boolean; teamName: string | null }[];
+  timeline?: { id: string; groupId: string; groupSubject: string; groupRole: string; sender: string; text: string; intent: string | null; ts: string; isTeam: boolean; teamName: string | null; isCurrentGroup: boolean }[];
   mentions?: Record<string, string>;
   suggestResolve?: { reason: string } | null;
 };
@@ -384,6 +385,35 @@ export function WhatsAppControlTower() {
                   </>
                 ) : <div className="text-sm text-zinc-500">No id on this message — ask the partner for the order/booking id.</div>}
               </div>
+              {detail.timeline && detail.timeline.length > 1 && (() => {
+                const tl = detail.timeline;
+                const groupCount = new Set(tl.map((t) => t.groupId)).size;
+                return (
+                  <div className="p-4 border-b border-zinc-800 flex flex-col gap-2">
+                    <div className="text-[11px] uppercase tracking-wide text-zinc-500 font-semibold flex items-center gap-2">
+                      Order journey
+                      <span className="normal-case font-normal text-zinc-600">{tl.length} messages · {groupCount} group{groupCount > 1 ? "s" : ""}</span>
+                    </div>
+                    <div className="relative pl-4 flex flex-col gap-3 max-h-[340px] overflow-y-auto pr-1">
+                      <div className="absolute left-[3px] top-1.5 bottom-1.5 w-px bg-zinc-700/60" />
+                      {tl.map((t) => (
+                        <div key={t.id} className="relative">
+                          <span className={`absolute -left-[13px] top-1.5 w-2 h-2 rounded-full ring-2 ring-zinc-900 ${t.isTeam ? "bg-blue-400" : t.groupRole === "PROVIDER" ? "bg-amber-400" : "bg-zinc-400"}`} />
+                          <div className="flex items-center gap-1.5 text-[10px] flex-wrap">
+                            <span className={`px-1 rounded font-semibold ${t.groupRole === "PROVIDER" ? "bg-amber-500/15 text-amber-400" : "bg-blue-500/15 text-blue-300"}`}>{t.groupRole === "PROVIDER" ? "LAB" : "STORE"}</span>
+                            <span className={`font-medium ${t.isCurrentGroup ? "text-zinc-200" : "text-zinc-500"}`}>{short(t.groupSubject)}</span>
+                            {t.isTeam
+                              ? <span className="text-blue-300">· {t.teamName || "LS team"}</span>
+                              : <span className="text-zinc-500">· {t.sender}</span>}
+                            <span className="text-zinc-600 ml-auto tabular-nums">{fmtTime(t.ts)}</span>
+                          </div>
+                          <div className="text-xs text-zinc-300 mt-0.5 whitespace-pre-wrap line-clamp-3">{withMentions(t.text, detail.mentions)}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
               {(providerUpdates.length > 0 || storeQuery.length > 0) && (
                 <div className="p-4 border-b border-zinc-800 flex flex-col gap-2">
                   <div className="text-[11px] uppercase tracking-wide font-semibold flex items-center gap-2">

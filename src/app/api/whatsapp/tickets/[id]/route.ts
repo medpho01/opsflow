@@ -111,6 +111,34 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         }
       : null;
 
+  // Full cross-group journey for THIS order: every message that referenced it,
+  // in ANY group, in time order. An agent juggling many orders across groups
+  // can miss that the lab already answered in another thread — this stitches
+  // the whole story into one timeline so the current state is obvious.
+  let timeline: Array<{
+    id: string; groupId: string; groupSubject: string; groupRole: string;
+    sender: string; text: string; intent: string | null; ts: Date;
+    isTeam: boolean; teamName: string | null; isCurrentGroup: boolean;
+  }> = [];
+  if (ticket.orderId || ticket.requestId) {
+    const tlWhere: Prisma.WaMessageWhereInput = ticket.orderId
+      ? { orderIds: { has: ticket.orderId } }
+      : { requestIds: { has: ticket.requestId! } };
+    const rows = await prisma.waMessage.findMany({
+      where: tlWhere, orderBy: { ts: "asc" }, take: 100,
+      include: { group: { select: { id: true, subject: true, role: true } } },
+    });
+    timeline = rows.map((m) => {
+      const tc = m.fromMe ? null : matchTeam(m.sender, m.senderJid);
+      return {
+        id: m.id, groupId: m.group.id, groupSubject: m.group.subject, groupRole: m.group.role,
+        sender: m.sender, text: m.text, intent: m.intent, ts: m.ts,
+        isTeam: m.fromMe || !!tc, teamName: m.fromMe ? "You" : tc?.name || null,
+        isCurrentGroup: m.group.id === ticket.groupId,
+      };
+    });
+  }
+
   // Best-effort live context from the LabStack replica (falls back to snapshot).
   let live: unknown = null;
   if (ticket.orderId) {
@@ -154,6 +182,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       : null,
     labGroup,
     related,
+    timeline,
     mentions: mentionMap,
     suggestResolve,
     messages: taggedMsgs.map((m) => ({

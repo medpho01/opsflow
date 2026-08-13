@@ -145,6 +145,16 @@ const navItems: NavItem[] = [
       </svg>
     ),
   },
+  {
+    label: "WhatsApp",
+    href: "/head/whatsapp",
+    roles: ["OPS_HEAD"],
+    icon: (
+      <svg className="w-4.5 h-4.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.75}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M20 12a8 8 0 01-11.6 7.1L4 20l.9-4.3A8 8 0 1120 12z" />
+      </svg>
+    ),
+  },
 ];
 
 export default function Sidebar({ user }: SidebarProps) {

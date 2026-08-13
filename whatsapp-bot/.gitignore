@@ -1,5 +1,12 @@
 node_modules/
 auth/
 .env
+# runtime data / logs — may contain patient PII or personal group names. Never commit.
+out/
+*.jsonl
 *.log.jsonl
 *.log
+all-groups.txt
+last-qr.txt
+qr.png
+*.out

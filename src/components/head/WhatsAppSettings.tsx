@@ -1,0 +1,136 @@
+"use client";
+
+import { useCallback, useEffect, useState } from "react";
+
+type Gateway = { status: string; online: boolean; connectedNumber: string | null; qrDataUrl: string | null; lastSeenAt: string | null };
+type Group = { id: string; jid: string; subject: string; role: string; storeId: number | null; labId: number | null; active: boolean; sendEnabled: boolean; autoAskIdOnMissing: boolean };
+
+const ROLES = [
+  { v: "SUPPORT", label: "Customer" },
+  { v: "PROVIDER", label: "Provider" },
+  { v: "INTERNAL", label: "Internal" },
+  { v: "IGNORE", label: "Ignore" },
+];
+
+export function WhatsAppSettings() {
+  const [gw, setGw] = useState<Gateway | null>(null);
+  const [groups, setGroups] = useState<Group[]>([]);
+  const [toast, setToast] = useState<string | null>(null);
+  const flash = (m: string) => { setToast(m); setTimeout(() => setToast(null), 2200); };
+
+  const loadGw = useCallback(async () => {
+    const r = await fetch("/api/whatsapp/gateway"); if (r.ok) setGw(await r.json());
+  }, []);
+  const loadGroups = useCallback(async () => {
+    const r = await fetch("/api/whatsapp/groups"); if (r.ok) setGroups((await r.json()).groups);
+  }, []);
+
+  useEffect(() => { loadGw(); loadGroups(); }, [loadGw, loadGroups]);
+  useEffect(() => { const t = setInterval(loadGw, 3000); return () => clearInterval(t); }, [loadGw]); // live QR/status
+
+  async function command(command: string) {
+    await fetch("/api/whatsapp/gateway", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ command }) });
+    flash(command === "LOGOUT" ? "Unlinking…" : "Re-linking — scan the new QR");
+    loadGw();
+  }
+
+  async function patchGroup(id: string, patch: Partial<Group>) {
+    setGroups((gs) => gs.map((g) => (g.id === id ? { ...g, ...patch } : g)));
+    const r = await fetch(`/api/whatsapp/groups/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) });
+    if (!r.ok) { flash("Save failed"); loadGroups(); }
+  }
+
+  const connected = gw?.status === "CONNECTED";
+  const needsScan = gw?.status === "QR" || gw?.status === "LOGGED_OUT";
+
+  return (
+    <div className="max-w-5xl">
+      <div className="mb-1 text-xs text-zinc-500"><a href="/head/whatsapp" className="hover:text-zinc-300">‹ Back to inbox</a> &nbsp;·&nbsp; Settings / Integrations / <span className="text-zinc-300 font-medium">WhatsApp</span></div>
+      <h1 className="text-2xl font-semibold text-zinc-100 tracking-tight">WhatsApp integration</h1>
+      <p className="text-sm text-zinc-400 mt-1 mb-5">Link the ops WhatsApp account and classify each group. Powers the WhatsApp Control Tower inbox — admins only.</p>
+
+      {/* Connection */}
+      <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-5 mb-6">
+        <div className="text-[11px] uppercase tracking-wide text-zinc-500 font-semibold mb-3">WhatsApp connection</div>
+        <div className="flex items-center gap-3">
+          <span className={`w-2.5 h-2.5 rounded-full ${connected ? "bg-emerald-500" : needsScan ? "bg-amber-500" : "bg-zinc-500"}`} />
+          <div>
+            <div className="text-sm text-zinc-100">
+              {connected ? <>Connected as <span className="font-mono font-semibold">+{gw?.connectedNumber}</span></> : needsScan ? "Waiting for scan" : "Connecting…"}
+            </div>
+            <div className="text-xs text-zinc-500">{gw?.online ? "Linked device · online" : "Gateway offline"}{gw?.lastSeenAt ? ` · last seen ${new Date(gw.lastSeenAt).toLocaleTimeString()}` : ""}</div>
+          </div>
+          <div className="ml-auto flex gap-2">
+            <button onClick={() => command("RELINK")} className="text-xs font-semibold border border-zinc-700 hover:border-blue-500 rounded-lg px-3 py-2 text-zinc-300">Re-link (show QR)</button>
+            <button onClick={() => command("LOGOUT")} className="text-xs font-semibold border border-zinc-700 hover:border-rose-500 hover:text-rose-400 rounded-lg px-3 py-2 text-zinc-300">Unlink</button>
+          </div>
+        </div>
+        {needsScan && (
+          <div className="mt-4 flex gap-5 items-center rounded-lg border border-dashed border-zinc-700 p-4 bg-zinc-900/60">
+            {gw?.qrDataUrl ? <img src={gw.qrDataUrl} alt="WhatsApp QR" width={180} height={180} className="rounded bg-white p-2" /> : <div className="w-[180px] h-[180px] grid place-items-center text-zinc-600 text-xs">Generating QR…</div>}
+            <div className="text-sm text-zinc-300">
+              <div className="font-semibold text-zinc-100 mb-1">Scan to link</div>
+              <p className="text-zinc-400 max-w-xs">On the ops phone: <b>WhatsApp → Settings → Linked Devices → Link a Device</b>, then scan this code.</p>
+              <p className="text-xs text-zinc-500 mt-2">Refreshes automatically until the device connects.</p>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Group classification */}
+      <div className="rounded-xl border border-zinc-800 overflow-hidden">
+        <div className="px-4 py-3 border-b border-zinc-800 flex items-center">
+          <div className="text-[11px] uppercase tracking-wide text-zinc-500 font-semibold">Group classification</div>
+          <span className="ml-auto text-xs text-zinc-500">{groups.length} groups</span>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-[11px] uppercase tracking-wide text-zinc-500 border-b border-zinc-800">
+                <th className="px-4 py-2.5 font-semibold">Group</th>
+                <th className="px-3 py-2.5 font-semibold">Role</th>
+                <th className="px-3 py-2.5 font-semibold">Map (store/lab id)</th>
+                <th className="px-3 py-2.5 font-semibold text-center">Active</th>
+                <th className="px-3 py-2.5 font-semibold text-center">Send</th>
+                <th className="px-3 py-2.5 font-semibold text-center">Ask ID</th>
+              </tr>
+            </thead>
+            <tbody>
+              {groups.map((g) => (
+                <tr key={g.id} className="border-b border-zinc-800/60 hover:bg-zinc-900/40">
+                  <td className="px-4 py-2.5 text-zinc-200 font-medium">{g.subject.replace("Labstack", "LS").replace("LABSTACK", "LS")}</td>
+                  <td className="px-3 py-2.5">
+                    <select value={g.role} onChange={(e) => patchGroup(g.id, { role: e.target.value })}
+                      className="bg-zinc-900 border border-zinc-700 rounded-md px-2 py-1 text-xs text-zinc-200 focus:border-blue-500 outline-none">
+                      {ROLES.map((r) => <option key={r.v} value={r.v}>{r.label}</option>)}
+                    </select>
+                  </td>
+                  <td className="px-3 py-2.5">
+                    {g.role === "SUPPORT" || g.role === "PROVIDER" ? (
+                      <input type="number" defaultValue={(g.role === "SUPPORT" ? g.storeId : g.labId) ?? ""} placeholder={g.role === "SUPPORT" ? "store id" : "lab id"}
+                        onBlur={(e) => patchGroup(g.id, g.role === "SUPPORT" ? { storeId: e.target.value ? Number(e.target.value) : null } : { labId: e.target.value ? Number(e.target.value) : null })}
+                        className="w-24 bg-zinc-900 border border-zinc-700 rounded-md px-2 py-1 text-xs text-zinc-200 focus:border-blue-500 outline-none" />
+                    ) : <span className="text-zinc-600 text-xs">—</span>}
+                  </td>
+                  <td className="px-3 py-2.5 text-center"><Toggle on={g.active} onChange={(v) => patchGroup(g.id, { active: v })} /></td>
+                  <td className="px-3 py-2.5 text-center"><Toggle on={g.sendEnabled} onChange={(v) => patchGroup(g.id, { sendEnabled: v })} /></td>
+                  <td className="px-3 py-2.5 text-center"><Toggle on={g.autoAskIdOnMissing} onChange={(v) => patchGroup(g.id, { autoAskIdOnMissing: v })} /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {toast && <div className="fixed left-1/2 bottom-6 -translate-x-1/2 bg-zinc-100 text-zinc-900 px-4 py-2 rounded-lg font-medium text-sm shadow-lg z-10">{toast}</div>}
+    </div>
+  );
+}
+
+function Toggle({ on, onChange }: { on: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <button onClick={() => onChange(!on)} className={`relative w-9 h-5 rounded-full transition-colors ${on ? "bg-blue-600" : "bg-zinc-700"}`}>
+      <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${on ? "translate-x-4" : "translate-x-0.5"}`} />
+    </button>
+  );
+}

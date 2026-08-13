@@ -13,12 +13,18 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   const { id } = await params;
   const ticket = await prisma.waTicket.findUnique({
     where: { id },
-    include: {
-      group: true,
-      messages: { orderBy: { ts: "asc" }, take: 200 },
-    },
+    include: { group: true },
   });
   if (!ticket) return NextResponse.json({ error: "not found" }, { status: 404 });
+
+  // Show the recent conversation of the whole GROUP (not just this ticket's
+  // linked messages) so the agent sees context. Last 120 by time, ascending.
+  const recent = await prisma.waMessage.findMany({
+    where: { groupId: ticket.groupId },
+    orderBy: { ts: "desc" },
+    take: 120,
+  });
+  const groupMessages = recent.reverse();
 
   // Best-effort live context from the LabStack replica (falls back to snapshot).
   let live: unknown = null;
@@ -62,7 +68,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       ? { id: ticket.group.id, jid: ticket.group.jid, subject: ticket.group.subject, role: ticket.group.role, storeId: ticket.group.storeId, labId: ticket.group.labId, sendEnabled: ticket.group.sendEnabled }
       : null,
     labGroup,
-    messages: ticket.messages.map((m) => ({
+    messages: groupMessages.map((m) => ({
       id: m.id, direction: m.direction, fromMe: m.fromMe, sender: m.sender,
       text: m.text, ts: m.ts, intent: m.intent, waMsgId: m.waMsgId,
     })),

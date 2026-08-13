@@ -67,13 +67,15 @@ export function WhatsAppControlTower() {
 
   useEffect(() => { loadList(); }, [bucket]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (activeId) loadDetail(activeId); }, [activeId, loadDetail]);
+  // Live refresh: new tickets appear, and the open conversation updates, on their own.
   useEffect(() => {
     const t = setInterval(() => {
       loadList();
+      if (activeId) loadDetail(activeId);
       fetch("/api/whatsapp/gateway").then((r) => r.json()).then((g) => setGwOnline(!!g.online)).catch(() => {});
-    }, 10000);
+    }, 5000);
     return () => clearInterval(t);
-  }, [loadList]);
+  }, [loadList, loadDetail, activeId]);
 
   const flash = (m: string) => { setToast(m); setTimeout(() => setToast(null), 2200); };
 

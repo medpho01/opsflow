@@ -16,7 +16,13 @@ export function WhatsAppSettings() {
   const [gw, setGw] = useState<Gateway | null>(null);
   const [groups, setGroups] = useState<Group[]>([]);
   const [toast, setToast] = useState<string | null>(null);
+  const [q, setQ] = useState("");
+  const [roleFilter, setRoleFilter] = useState("ALL");
   const flash = (m: string) => { setToast(m); setTimeout(() => setToast(null), 2200); };
+
+  const shownGroups = groups.filter(
+    (g) => (roleFilter === "ALL" || g.role === roleFilter) && g.subject.toLowerCase().includes(q.toLowerCase())
+  );
 
   const loadGw = useCallback(async () => {
     const r = await fetch("/api/whatsapp/gateway"); if (r.ok) setGw(await r.json());
@@ -79,13 +85,20 @@ export function WhatsAppSettings() {
 
       {/* Group classification */}
       <div className="rounded-xl border border-zinc-800 overflow-hidden">
-        <div className="px-4 py-3 border-b border-zinc-800 flex items-center">
+        <div className="px-4 py-3 border-b border-zinc-800 flex items-center gap-3 flex-wrap">
           <div className="text-[11px] uppercase tracking-wide text-zinc-500 font-semibold">Group classification</div>
-          <span className="ml-auto text-xs text-zinc-500">{groups.length} groups</span>
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search groups…"
+            className="ml-auto w-56 bg-zinc-900 border border-zinc-700 rounded-md px-3 py-1.5 text-xs text-zinc-200 focus:border-blue-500 outline-none" />
+          <select value={roleFilter} onChange={(e) => setRoleFilter(e.target.value)}
+            className="bg-zinc-900 border border-zinc-700 rounded-md px-2 py-1.5 text-xs text-zinc-300 focus:border-blue-500 outline-none">
+            <option value="ALL">All roles</option>
+            {ROLES.map((r) => <option key={r.v} value={r.v}>{r.label}</option>)}
+          </select>
+          <span className="text-xs text-zinc-500">{shownGroups.length}/{groups.length}</span>
         </div>
-        <div className="overflow-x-auto">
+        <div className="overflow-x-auto max-h-[70vh] overflow-y-auto">
           <table className="w-full text-sm">
-            <thead>
+            <thead className="sticky top-0 bg-zinc-950/95 backdrop-blur">
               <tr className="text-left text-[11px] uppercase tracking-wide text-zinc-500 border-b border-zinc-800">
                 <th className="px-4 py-2.5 font-semibold">Group</th>
                 <th className="px-3 py-2.5 font-semibold">Role</th>
@@ -96,7 +109,7 @@ export function WhatsAppSettings() {
               </tr>
             </thead>
             <tbody>
-              {groups.map((g) => (
+              {shownGroups.map((g) => (
                 <tr key={g.id} className="border-b border-zinc-800/60 hover:bg-zinc-900/40">
                   <td className="px-4 py-2.5 text-zinc-200 font-medium">{g.subject.replace("Labstack", "LS").replace("LABSTACK", "LS")}</td>
                   <td className="px-3 py-2.5">

@@ -26,16 +26,24 @@ opentix AS (
 toptix AS (
   SELECT DISTINCT ON ("groupId") "groupId", id AS ticket_id, intent, "orderId", "requestId", status
   FROM wa_tickets ORDER BY "groupId", (status <> 'RESOLVED') DESC, "lastActivityAt" DESC
+),
+brk AS (
+  SELECT "groupId", jsonb_object_agg(intent, n) obj FROM (
+    SELECT "groupId", COALESCE(intent, 'OTHER') intent, count(*)::int n
+    FROM wa_tickets WHERE status <> 'RESOLVED' GROUP BY "groupId", COALESCE(intent, 'OTHER')
+  ) s GROUP BY "groupId"
 )
 SELECT g.id, g.subject, g.role,
        l.text AS last_text, l.sender AS last_sender, l.ts AS last_ts, l.direction AS last_dir, l."fromMe" AS last_fromme,
        COALESCE(u.n, 0) AS unread, COALESCE(o.n, 0) AS open_tickets,
-       t.ticket_id, t.intent AS top_intent, t."orderId" AS top_order, t."requestId" AS top_request, t.status AS top_status
+       t.ticket_id, t.intent AS top_intent, t."orderId" AS top_order, t."requestId" AS top_request, t.status AS top_status,
+       b.obj AS breakdown
 FROM wa_groups g
 JOIN latest l ON l."groupId" = g.id
 LEFT JOIN unread u ON u."groupId" = g.id
 LEFT JOIN opentix o ON o."groupId" = g.id
 LEFT JOIN toptix t ON t."groupId" = g.id
+LEFT JOIN brk b ON b."groupId" = g.id
 WHERE g.active AND g.role <> 'IGNORE'
 ORDER BY l.ts DESC
 LIMIT 250`;
@@ -60,6 +68,7 @@ export async function GET(request: NextRequest) {
       lastFromMe: r.last_fromme, lastDir: r.last_dir,
       unread, openTickets: Number(r.open_tickets) || 0,
       topIntent: intent, topOrderId: r.top_order || r.top_request || null,
+      breakdown: (r.breakdown as Record<string, number>) || {},
       answerReady: hasId && ANSWERABLE.has(intent || "") && (r.top_status as string) !== "RESOLVED",
       escalating: ESC_RE.test((r.last_text as string) || ""),
     };

@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/db/client";
 import labstack, { labstackOr } from "@/lib/db/labstack";
 import { getSessionFromRequest } from "@/lib/auth/session";
-import { UserRole, WaTicketStatus } from "@prisma/client";
+import { UserRole, WaTicketStatus, Prisma } from "@prisma/client";
+import { patientNameFor } from "@/lib/wa/patientNames";
 
 // GET /api/whatsapp/tickets/:id — ticket + full thread + live order context
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -20,14 +21,21 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   // Opening a conversation marks the group read (clears its unread count).
   prisma.waGroup.update({ where: { id: ticket.groupId }, data: { lastReadAt: new Date() } }).catch(() => {});
 
-  // Show the recent conversation of the whole GROUP (not just this ticket's
-  // linked messages) so the agent sees context. Last 120 by time, ascending.
-  const recent = await prisma.waMessage.findMany({
-    where: { groupId: ticket.groupId },
-    orderBy: { ts: "desc" },
-    take: 120,
-  });
-  const groupMessages = recent.reverse();
+  // Thread the conversation to THIS order/request (the case) when we have an id,
+  // so the agent works one order in isolation. Fall back to the group thread.
+  let msgs: Prisma.WaMessageGetPayload<object>[] = [];
+  if (ticket.orderId || ticket.requestId) {
+    const where: Prisma.WaMessageWhereInput = ticket.orderId
+      ? { groupId: ticket.groupId, orderIds: { has: ticket.orderId } }
+      : { groupId: ticket.groupId, requestIds: { has: ticket.requestId! } };
+    msgs = await prisma.waMessage.findMany({ where, orderBy: { ts: "asc" }, take: 120 });
+  }
+  if (msgs.length < 2) {
+    const recent = await prisma.waMessage.findMany({ where: { groupId: ticket.groupId }, orderBy: { ts: "desc" }, take: 120 });
+    msgs = recent.reverse();
+  }
+  const groupMessages = msgs;
+  const patient = await patientNameFor(ticket.orderId, ticket.requestId);
 
   // Best-effort live context from the LabStack replica (falls back to snapshot).
   let live: unknown = null;
@@ -63,7 +71,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     ticket: {
       id: ticket.id, status: ticket.status, intent: ticket.intent,
       orderId: ticket.orderId, requestId: ticket.requestId,
-      contextSnapshot: ticket.contextSnapshot, liveContext: live,
+      contextSnapshot: ticket.contextSnapshot, liveContext: live, patient,
       assignedToId: ticket.assignedToId, slaDueAt: ticket.slaDueAt,
       lastActivityAt: ticket.lastActivityAt, createdAt: ticket.createdAt,
     },

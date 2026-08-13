@@ -82,6 +82,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     messages: groupMessages.map((m) => ({
       id: m.id, direction: m.direction, fromMe: m.fromMe, sender: m.sender,
       text: m.text, ts: m.ts, intent: m.intent, waMsgId: m.waMsgId,
+      ticketId: m.ticketId, // === this ticket → highlight it as the case's own message
     })),
   });
 }

@@ -17,7 +17,7 @@ type Detail = {
   ticket: { id: string; status: string; intent: string | null; orderId: number | null; requestId: number | null; patient: string | null; liveContext: Record<string, unknown> | null; contextSnapshot: Record<string, unknown> | null };
   group: { id: string; jid: string; subject: string; labId: number | null; sendEnabled: boolean } | null;
   labGroup: { subject: string } | null;
-  messages: { id: string; direction: string; fromMe: boolean; sender: string; text: string; ts: string; intent: string | null }[];
+  messages: { id: string; direction: string; fromMe: boolean; sender: string; text: string; ts: string; intent: string | null; ticketId: string | null }[];
 };
 
 const STATUS_PHRASE: Record<string, string> = {
@@ -94,6 +94,7 @@ export function WhatsAppControlTower() {
   const [gwOnline, setGwOnline] = useState(true);
   const [livewire, setLivewire] = useState(false);
   const prefilledId = useRef<string | null>(null);
+  const caseAnchor = useRef<HTMLDivElement | null>(null);
   const activeRef = useRef<string | null>(null); activeRef.current = activeId;
   const groupRef = useRef<string | null>(null); groupRef.current = openGroup?.id || null;
 
@@ -147,6 +148,12 @@ export function WhatsAppControlTower() {
     }
     setReply("");
   }, [detail]);
+
+  // Scroll the case's own message into view when a case opens.
+  useEffect(() => {
+    const t = setTimeout(() => caseAnchor.current?.scrollIntoView({ block: "center", behavior: "smooth" }), 60);
+    return () => clearTimeout(t);
+  }, [detail?.ticket.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const flash = (m: string) => { setToast(m); setTimeout(() => setToast(null), 2200); };
 
@@ -285,13 +292,25 @@ export function WhatsAppControlTower() {
                 <span className={`ml-auto text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded border ${intentChip(detail.ticket.intent)}`}>{(detail.ticket.intent || "other").replace("_", " ")}</span>
               </div>
               <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-2">
-                {detail.messages.map((m) => (
-                  <div key={m.id} className={`max-w-[80%] px-3 py-2 rounded-xl text-sm ${m.fromMe || m.direction === "OUT" ? "self-end bg-blue-500/15 border border-blue-500/25 rounded-tr-sm" : "self-start bg-zinc-800/70 border border-zinc-700/50 rounded-tl-sm"}`}>
-                    <div className="text-[11px] font-semibold text-zinc-400 mb-0.5">{m.fromMe ? "Team" : m.sender}</div>
-                    <div className="text-zinc-100 whitespace-pre-wrap">{m.text}</div>
-                    <div className="text-[10px] text-zinc-500 mt-1 text-right tabular-nums">{fmtTime(m.ts)}</div>
-                  </div>
-                ))}
+                {(() => {
+                  const caseIds = detail.messages.filter((m) => m.ticketId === detail.ticket.id).map((m) => m.id);
+                  const lastCaseId = caseIds[caseIds.length - 1];
+                  return detail.messages.map((m) => {
+                    const isCase = m.ticketId === detail.ticket.id;
+                    const mine = m.fromMe || m.direction === "OUT";
+                    return (
+                      <div key={m.id} ref={m.id === lastCaseId ? caseAnchor : undefined}
+                        className={`max-w-[80%] px-3 py-2 rounded-xl text-sm ${mine ? "self-end bg-blue-500/15 border border-blue-500/25 rounded-tr-sm" : "self-start bg-zinc-800/70 border border-zinc-700/50 rounded-tl-sm"} ${isCase && !mine ? "ring-2 ring-amber-500/70 border-amber-500/40" : ""}`}>
+                        <div className="flex items-center gap-2 mb-0.5">
+                          <span className="text-[11px] font-semibold text-zinc-400">{m.fromMe ? "Team" : m.sender}</span>
+                          {isCase && !mine && <span className="text-[9px] font-bold uppercase tracking-wide text-amber-400 bg-amber-500/15 px-1.5 rounded">◆ this case</span>}
+                        </div>
+                        <div className="text-zinc-100 whitespace-pre-wrap">{m.text}</div>
+                        <div className="text-[10px] text-zinc-500 mt-1 text-right tabular-nums">{fmtTime(m.ts)}</div>
+                      </div>
+                    );
+                  });
+                })()}
               </div>
               <div className="border-t border-zinc-800 p-3 flex flex-col gap-2 bg-zinc-900/40">
                 <div className="flex items-center gap-2 text-xs">

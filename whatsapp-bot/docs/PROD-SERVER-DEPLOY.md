@@ -61,20 +61,24 @@ WA_GROUP_FILTER=labstack
 
 ---
 
-## 4. Apply the database migration (additive, idempotent)
+## 4. Database schema — applied automatically on startup
 
-```bash
-# bring up just the DB first (if using the bundled one)
-docker compose up -d db
+**Do NOT run a separate migrate command on this image.** The `app` container's
+entrypoint runs `prisma db push` on every boot, which creates/updates the
+`wa_*` tables for you (you'll see `Applying schema (prisma db push)…` in the
+logs). So the schema is applied the moment `app` starts in step 5 — skip ahead.
 
-# apply the WhatsApp tables (safe to re-run)
-docker compose run --rm app node node_modules/prisma/build/index.js migrate deploy
-#   — OR, if you manage migrations out-of-band, apply the SQL directly:
-#   psql "$DATABASE_URL" -f prisma/migrations/20260812_whatsapp_control_tower/migration.sql
-
-# verify
-psql "$DATABASE_URL" -c "\dt wa_*"   # wa_groups, wa_messages, wa_tickets, wa_outbound, wa_gateway
-```
+Two exceptions:
+- If you run with **`SKIP_PRISMA_PUSH=true`** (some prod setups do), apply the
+  SQL yourself once against the taskos DB:
+  ```bash
+  psql "$DATABASE_URL" -f prisma/migrations/20260812_whatsapp_control_tower/migration.sql
+  ```
+- To verify afterwards:
+  ```bash
+  docker compose exec db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+    -c '\dt taskos.wa_*'   # wa_groups, wa_messages, wa_tickets, wa_outbound, wa_gateway
+  ```
 
 ---
 

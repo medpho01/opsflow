@@ -127,6 +127,24 @@ function startLoops() {
 
   setInterval(() => CT.heartbeat().catch(() => {}), 20000);
   setInterval(() => CT.refreshGroups().catch(() => {}), 30000);
+
+  // Groups can be empty right after a FRESH link (the phone hasn't pushed group
+  // metadata to the new device yet), so the one-shot discovery on "open" may
+  // register nothing. Re-discover shortly after connect and then periodically,
+  // so the console fills in on its own — no manual restart needed.
+  const discoverAndSync = async () => {
+    if (!currentSock || !CT_ENABLED) return;
+    try {
+      const groups = await currentSock.groupFetchAllParticipating();
+      for (const g of Object.values(groups)) groupSubjects.set(g.id, g.subject);
+      const pairs = Object.values(groups)
+        .map((g) => [g.id, g.subject])
+        .filter(([jid, subject]) => GROUP_ALLOW.has(jid) || (GROUP_RE ? GROUP_RE.test(subject || "") : true));
+      if (pairs.length) { await CT.syncGroups(pairs); console.log(`registered ${pairs.length} groups in the console`); }
+    } catch (e) { console.error("group discovery:", e.message); }
+  };
+  setTimeout(discoverAndSync, 15000);    // catch the fresh-link case quickly
+  setInterval(discoverAndSync, 120000);  // and keep it current every 2 min
 }
 
 async function start() {

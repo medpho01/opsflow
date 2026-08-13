@@ -19,7 +19,18 @@ type Detail = {
   labGroup: { subject: string } | null;
   related: { groupId: string; groupSubject: string; groupRole: string; sender: string; text: string; ts: string }[];
   messages: { id: string; direction: string; fromMe: boolean; sender: string; text: string; ts: string; intent: string | null; ticketId: string | null; isTeam: boolean; teamName: string | null }[];
+  mentions?: Record<string, string>;
+  suggestResolve?: { reason: string } | null;
 };
+
+// Replace "@919811111111" mentions with "@Name" using the resolved map.
+function withMentions(text: string, mentions?: Record<string, string>): string {
+  if (!text || !mentions) return text;
+  return text.replace(/@(\d{5,})/g, (m, id: string) => {
+    const name = mentions[id] || mentions[id.slice(-10)];
+    return name ? `@${name}` : m;
+  });
+}
 
 const STATUS_PHRASE: Record<string, string> = {
   CREATED: "order created, being scheduled", PENDING: "pending scheduling",
@@ -321,7 +332,7 @@ export function WhatsAppControlTower() {
                             : <span className="text-[11px] font-semibold text-zinc-400">{m.sender}</span>}
                           {isCase && !team && <span className="text-[9px] font-bold uppercase tracking-wide text-amber-400 bg-amber-500/15 px-1.5 rounded">◆ this case</span>}
                         </div>
-                        <div className="text-zinc-100 whitespace-pre-wrap">{m.text}</div>
+                        <div className="text-zinc-100 whitespace-pre-wrap">{withMentions(m.text, detail.mentions)}</div>
                         <div className="text-[10px] text-zinc-500 mt-1 text-right tabular-nums">{fmtTime(m.ts)}</div>
                       </div>
                     );
@@ -385,7 +396,7 @@ export function WhatsAppControlTower() {
                         <span className={`px-1 rounded ${r.groupRole === "PROVIDER" ? "bg-amber-500/15 text-amber-400" : "bg-blue-500/15 text-blue-400"}`}>{r.groupRole === "PROVIDER" ? "LAB" : "STORE"}</span>
                         {short(r.groupSubject)} · {clock(r.ts)}
                       </div>
-                      <div className="text-xs text-zinc-200 mt-1 whitespace-pre-wrap line-clamp-4">{r.text}</div>
+                      <div className="text-xs text-zinc-200 mt-1 whitespace-pre-wrap line-clamp-4">{withMentions(r.text, detail.mentions)}</div>
                       {!isProviderCase && <button onClick={() => { setTarget("store"); setReply(r.text); }} className="mt-1.5 text-[11px] text-emerald-400 hover:text-emerald-300 font-medium">↩ Use this to answer the store</button>}
                     </div>
                   ))}
@@ -401,6 +412,15 @@ export function WhatsAppControlTower() {
                 )}
                 <button onClick={() => { setTarget("lab"); setReply(`Team, need help on #${detail.ticket.orderId || detail.ticket.requestId}${detail.ticket.patient ? " (" + detail.ticket.patient + ")" : ""} — please confirm.`); }} className="text-left text-sm border border-zinc-700 hover:border-blue-500 rounded-lg px-3 py-2 text-zinc-200">→ Ask the lab <span className="block text-xs text-zinc-500">{detail.labGroup ? short(detail.labGroup.subject) : "no lab group linked"}</span></button>
               </div>
+              {detail.suggestResolve && (
+                <div className="mx-4 mt-4 rounded-lg border border-emerald-500/40 bg-emerald-500/10 p-3 flex items-start gap-2">
+                  <span className="text-emerald-400 text-sm">✓</span>
+                  <div className="flex-1">
+                    <div className="text-xs text-emerald-200">{detail.suggestResolve.reason}</div>
+                    <button onClick={() => setStatus("RESOLVED")} className="mt-2 text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white rounded-md px-3 py-1.5">Mark resolved</button>
+                  </div>
+                </div>
+              )}
               <div className="p-4 flex gap-2">
                 <button onClick={() => setStatus("RESOLVED")} className="flex-1 text-xs font-semibold border border-zinc-700 hover:border-emerald-500 hover:text-emerald-400 rounded-lg py-2 text-zinc-300">Resolve</button>
                 <button onClick={() => setStatus("WAITING_LAB")} className="flex-1 text-xs font-semibold border border-zinc-700 hover:border-amber-500 hover:text-amber-400 rounded-lg py-2 text-zinc-300">Wait · lab</button>

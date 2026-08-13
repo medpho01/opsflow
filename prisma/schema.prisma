@@ -877,6 +877,7 @@ model WaMessage {
   intent      String? // classifier output
   orderIds    Int[]          @default([])
   requestIds  Int[]          @default([])
+  refIds      String[]       @default([]) // lab reference ids (BLR…/HYD…) seen in the text
   raw         Json?
   createdAt   DateTime       @default(now())
 

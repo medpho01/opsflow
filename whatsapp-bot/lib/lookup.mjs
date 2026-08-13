@@ -45,6 +45,26 @@ export async function lookupIds(ids = []) {
   }
 }
 
+// Resolve city-prefixed lab reference ids (BLR…/HYD…) to our numeric order id
+// via Order.labOrderId. Returns a map ref → orderId for the refs that matched.
+export async function resolveRefIds(refs = []) {
+  if (!pool || refs.length === 0) return {};
+  const clean = [...new Set(refs.map((r) => String(r).toUpperCase()).filter(Boolean))];
+  if (clean.length === 0) return {};
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, upper("labOrderId") AS ref FROM public."Order" WHERE upper("labOrderId") = ANY($1::text[])`,
+      [clean]
+    );
+    const map = {};
+    for (const r of rows) if (r.ref && !map[r.ref]) map[r.ref] = r.id;
+    return map;
+  } catch (e) {
+    console.error("[lookup] resolveRefIds failed:", e.message);
+    return {};
+  }
+}
+
 export async function closePool() {
   if (pool) await pool.end().catch(() => {});
 }

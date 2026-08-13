@@ -12,8 +12,8 @@
  * hardcoded /labstack/i filter: only groups present + active are handled.
  */
 import { taskos, taskosQuery } from "./taskosdb.mjs";
-import { classify, extractIds, DISPOSITION, isLabstack } from "./classifier.mjs";
-import { lookupIds } from "./lookup.mjs";
+import { classify, extractIds, extractRefIds, DISPOSITION, isLabstack } from "./classifier.mjs";
+import { lookupIds, resolveRefIds } from "./lookup.mjs";
 
 // ── group cache (jid → config row) ─────────────────────────────────────────
 let groupCache = new Map();
@@ -132,7 +132,18 @@ export async function ingestMessage(m) {
 
   const intent = classify(text, sender);
   const { ids, requestIds } = extractIds(text);
-  const orderId = ids.find((x) => !requestIds.includes(x)) || null;
+  // City-prefixed lab reference ids (BLR…/HYD…) map to our order via labOrderId.
+  // Resolve them so a message that only quotes "BLR5560683" still threads to
+  // the right case and carries live order context.
+  const refIds = extractRefIds(text);
+  let refOrderIds = [];
+  if (refIds.length) {
+    const map = await resolveRefIds(refIds).catch(() => ({}));
+    refOrderIds = [...new Set(Object.values(map))].filter(Boolean);
+  }
+  const numericOrderIds = ids.filter((x) => !requestIds.includes(x)).map(Number).filter(Boolean);
+  const allOrderIds = [...new Set([...numericOrderIds, ...refOrderIds])];
+  const orderId = allOrderIds[0] || null;
   const requestId = requestIds[0] || null;
   const side = fromMe || isLabstack(sender) ? "LAB" : "PARTNER";
   const substantive = intent !== "NOISE" && intent !== "SYSTEM";
@@ -153,11 +164,11 @@ export async function ingestMessage(m) {
   }
 
   const stored = await taskosQuery(
-    `INSERT INTO wa_messages (id, "waMsgId", "groupId", "ticketId", direction, "fromMe", sender, "senderJid", text, ts, "replyToWaId", intent, "orderIds", "requestIds", "createdAt")
-     VALUES (gen_random_uuid()::text, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, now())
+    `INSERT INTO wa_messages (id, "waMsgId", "groupId", "ticketId", direction, "fromMe", sender, "senderJid", text, ts, "replyToWaId", intent, "orderIds", "requestIds", "refIds", "createdAt")
+     VALUES (gen_random_uuid()::text, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, now())
      ON CONFLICT ("waMsgId") DO NOTHING RETURNING id`,
     [waMsgId, group.id, ticketId, fromMe ? "OUT" : "IN", fromMe, sender, senderJid || null, text, ts, replyToWaId,
-     intent, ids.map(Number).filter(Boolean), requestIds.map(Number).filter(Boolean)]
+     intent, allOrderIds, requestIds.map(Number).filter(Boolean), refIds]
   );
 
   if (autoAsk) await enqueueOutbound({ targetJid: jid, text: autoAsk, groupId: group.id, ticketId });

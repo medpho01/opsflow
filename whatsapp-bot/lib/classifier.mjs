@@ -32,6 +32,17 @@ export function extractIds(text = "") {
   return { ids: [...ids], requestIds: [...requestIds], hasId: ids.size > 0 };
 }
 
+// Lab reference ids: city-prefixed booking numbers the store/lab quote in chat,
+// e.g. "BLR5560683", "HYD6013288", "DEL2221267". These map to Order.labOrderId,
+// not to our numeric order id — resolve them to an order via the replica.
+const REF_RE = /\b([A-Za-z]{2,4}\d{6,})\b/g;
+export function extractRefIds(text = "") {
+  const refs = new Set();
+  let r;
+  while ((r = REF_RE.exec(text))) refs.add(r[1].toUpperCase());
+  return [...refs];
+}
+
 // ── Intent classification ────────────────────────────────────────────────
 const SYSTEM_RE = /was added|was removed|left$|changed to|created group|end-to-end|pinned a message|changed the group|changed this group|Waiting for this message|This message was deleted|You deleted|image omitted|<Media omitted>|video omitted|audio omitted|document omitted|sticker omitted|GIF omitted|Contact card omitted|deleted this message|added |removed |joined using|security code/i;
 const ACK_RE = /^(ok(ay)?|k|done|thanks?( you)?|thankyou|welcome|sure|yes+|no+|noted|got it|on it|checking|check|great|fine|alright|👍+|🙏+|✅+|cc|@\S+)[\s.!👍🙏✅]*$/i;

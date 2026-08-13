@@ -15,8 +15,9 @@ type Case = {
 };
 type Detail = {
   ticket: { id: string; status: string; intent: string | null; orderId: number | null; requestId: number | null; patient: string | null; liveContext: Record<string, unknown> | null; contextSnapshot: Record<string, unknown> | null };
-  group: { id: string; jid: string; subject: string; labId: number | null; sendEnabled: boolean } | null;
+  group: { id: string; jid: string; subject: string; role: string; labId: number | null; sendEnabled: boolean } | null;
   labGroup: { subject: string } | null;
+  related: { groupId: string; groupSubject: string; groupRole: string; sender: string; text: string; ts: string }[];
   messages: { id: string; direction: string; fromMe: boolean; sender: string; text: string; ts: string; intent: string | null; ticketId: string | null }[];
 };
 
@@ -190,8 +191,19 @@ export function WhatsAppControlTower() {
     if (filter === "ACTION") return c.openTickets > 0 || c.answerReady || c.escalating;
     return true;
   });
+  async function relayToStore(groupId: string) {
+    if (!reply.trim()) return flash("Write the status to send");
+    const res = await fetch("/api/whatsapp/send", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ groupId, text: reply }) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return flash(data.error || "Send failed");
+    flash("Sent to the store group"); setReply(""); loadConvos();
+  }
+
   const ctx = (detail?.ticket.liveContext || detail?.ticket.contextSnapshot || {}) as Record<string, unknown>;
   const orderStatus = (ctx.orderStatus || ctx.status) as string | undefined;
+  const isProviderCase = detail?.group?.role === "PROVIDER";
+  const providerUpdates = (detail?.related || []).filter((r) => r.groupRole === "PROVIDER");
+  const storeQuery = (detail?.related || []).filter((r) => r.groupRole === "SUPPORT");
 
   return (
     <div className="flex flex-col h-full">
@@ -356,6 +368,27 @@ export function WhatsAppControlTower() {
                   </>
                 ) : <div className="text-sm text-zinc-500">No id on this message — ask the partner for the order/booking id.</div>}
               </div>
+              {(providerUpdates.length > 0 || storeQuery.length > 0) && (
+                <div className="p-4 border-b border-zinc-800 flex flex-col gap-2">
+                  <div className="text-[11px] uppercase tracking-wide font-semibold flex items-center gap-2">
+                    <span className={isProviderCase ? "text-blue-400" : "text-amber-400"}>{isProviderCase ? "Customer query · store side" : "Provider status · lab side"}</span>
+                    <span className="text-zinc-600">for #{detail.ticket.orderId || detail.ticket.requestId}</span>
+                  </div>
+                  {(isProviderCase ? storeQuery : providerUpdates).slice(0, 4).map((r, i) => (
+                    <div key={i} className="rounded-lg border border-zinc-700/60 bg-zinc-900/40 p-2">
+                      <div className="text-[10px] font-semibold text-zinc-400 flex items-center gap-1.5">
+                        <span className={`px-1 rounded ${r.groupRole === "PROVIDER" ? "bg-amber-500/15 text-amber-400" : "bg-blue-500/15 text-blue-400"}`}>{r.groupRole === "PROVIDER" ? "LAB" : "STORE"}</span>
+                        {short(r.groupSubject)} · {clock(r.ts)}
+                      </div>
+                      <div className="text-xs text-zinc-200 mt-1 whitespace-pre-wrap line-clamp-4">{r.text}</div>
+                      {!isProviderCase && <button onClick={() => { setTarget("store"); setReply(r.text); }} className="mt-1.5 text-[11px] text-emerald-400 hover:text-emerald-300 font-medium">↩ Use this to answer the store</button>}
+                    </div>
+                  ))}
+                  {isProviderCase && storeQuery[0] && (
+                    <button onClick={() => relayToStore(storeQuery[0].groupId)} className="text-left text-sm border border-zinc-700 hover:border-emerald-500 rounded-lg px-3 py-2 text-zinc-200">→ Send reply to the store <span className="block text-xs text-zinc-500">relays your message to {short(storeQuery[0].groupSubject)}</span></button>
+                  )}
+                </div>
+              )}
               <div className="p-4 border-b border-zinc-800 flex flex-col gap-2">
                 <div className="text-[11px] uppercase tracking-wide text-zinc-500 font-semibold">Suggested actions</div>
                 {orderStatus && (

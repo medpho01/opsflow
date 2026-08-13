@@ -37,6 +37,21 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   const groupMessages = msgs;
   const patient = await patientNameFor(ticket.orderId, ticket.requestId);
 
+  // Cross-group activity for THIS order: a Store case surfaces the Provider's
+  // status; a Provider case surfaces the Store's question. Maps status ↔ query.
+  let related: Array<{ groupId: string; groupSubject: string; groupRole: string; sender: string; text: string; ts: Date }> = [];
+  if (ticket.orderId || ticket.requestId) {
+    const relWhere: Prisma.WaMessageWhereInput = {
+      NOT: { groupId: ticket.groupId },
+      ...(ticket.orderId ? { orderIds: { has: ticket.orderId } } : { requestIds: { has: ticket.requestId! } }),
+    };
+    const rows = await prisma.waMessage.findMany({
+      where: relWhere, orderBy: { ts: "desc" }, take: 20,
+      include: { group: { select: { id: true, subject: true, role: true } } },
+    });
+    related = rows.map((m) => ({ groupId: m.group.id, groupSubject: m.group.subject, groupRole: m.group.role, sender: m.sender, text: m.text, ts: m.ts }));
+  }
+
   // Best-effort live context from the LabStack replica (falls back to snapshot).
   let live: unknown = null;
   if (ticket.orderId) {
@@ -79,6 +94,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       ? { id: ticket.group.id, jid: ticket.group.jid, subject: ticket.group.subject, role: ticket.group.role, storeId: ticket.group.storeId, labId: ticket.group.labId, sendEnabled: ticket.group.sendEnabled }
       : null,
     labGroup,
+    related,
     messages: groupMessages.map((m) => ({
       id: m.id, direction: m.direction, fromMe: m.fromMe, sender: m.sender,
       text: m.text, ts: m.ts, intent: m.intent, waMsgId: m.waMsgId,

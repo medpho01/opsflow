@@ -17,6 +17,9 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   });
   if (!ticket) return NextResponse.json({ error: "not found" }, { status: 404 });
 
+  // Opening a conversation marks the group read (clears its unread count).
+  prisma.waGroup.update({ where: { id: ticket.groupId }, data: { lastReadAt: new Date() } }).catch(() => {});
+
   // Show the recent conversation of the whole GROUP (not just this ticket's
   // linked messages) so the agent sees context. Last 120 by time, ascending.
   const recent = await prisma.waMessage.findMany({

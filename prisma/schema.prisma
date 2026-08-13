@@ -848,6 +848,7 @@ model WaGroup {
   autoAskIdOnMissing Boolean     @default(true) // auto-reply asking for an id when none given
   sendEnabled        Boolean     @default(false) // per-group send guard
   active             Boolean     @default(true) // listening on/off
+  lastReadAt         DateTime? // console: inbound messages after this count as unread
   createdAt          DateTime    @default(now())
   updatedAt          DateTime    @updatedAt
 

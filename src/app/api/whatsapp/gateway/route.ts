@@ -24,6 +24,7 @@ export async function GET(request: NextRequest) {
     online,
     connectedNumber: gw.connectedNumber,
     lastSeenAt: gw.lastSeenAt,
+    dryRun: gw.dryRun ?? null,
     qrDataUrl,
   });
 }

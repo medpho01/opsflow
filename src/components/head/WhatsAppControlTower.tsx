@@ -19,6 +19,7 @@ type Detail = {
   labGroup: { id: string; jid: string; subject: string; labId: number | null } | null;
   lab?: { id: number; name: string | null; city: string | null } | null;
   providerGroups?: { id: string; jid: string; subject: string; labId: number | null }[];
+  outbound?: { id: string; text: string; status: string; error: string | null; targetJid: string; createdAt: string; sentAt: string | null }[];
   bulkStatuses?: { orderId: number; status: string | null; appt: string | null; patient: string | null }[];
   related: { groupId: string; groupSubject: string; groupRole: string; sender: string; text: string; ts: string }[];
   messages: { id: string; direction: string; fromMe: boolean; sender: string; text: string; ts: string; intent: string | null; ticketId: string | null; isTeam: boolean; teamName: string | null; waMsgId: string; mediaType: string | null; mediaMime: string | null; ocrText: string | null; ocrJson: Record<string, unknown> | null; idType: string | null; idVia: string | null }[];
@@ -121,6 +122,7 @@ export function WhatsAppControlTower() {
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [gwOnline, setGwOnline] = useState(true);
+  const [gwDryRun, setGwDryRun] = useState(false);
   const [livewire, setLivewire] = useState(false);
   const prefilledId = useRef<string | null>(null);
   const caseAnchor = useRef<HTMLDivElement | null>(null);
@@ -142,7 +144,10 @@ export function WhatsAppControlTower() {
     if (res.ok) setDetail(await res.json());
   }, []);
 
-  useEffect(() => { loadConvos(); }, [loadConvos]);
+  const loadGw = useCallback(() => {
+    fetch("/api/whatsapp/gateway").then((r) => r.json()).then((g) => { setGwOnline(!!g.online); setGwDryRun(g.dryRun === true); }).catch(() => {});
+  }, []);
+  useEffect(() => { loadConvos(); loadGw(); }, [loadConvos, loadGw]);
   useEffect(() => { if (activeId) loadDetail(activeId); }, [activeId, loadDetail]);
 
   // Auto-interpret images that haven't been read yet (cloud vision). Runs once
@@ -184,10 +189,10 @@ export function WhatsAppControlTower() {
       loadConvos();
       if (groupRef.current) loadCases(groupRef.current);
       if (activeRef.current) loadDetail(activeRef.current);
-      fetch("/api/whatsapp/gateway").then((r) => r.json()).then((g) => setGwOnline(!!g.online)).catch(() => {});
+      loadGw();
     }, 15000);
     return () => { es.close(); clearInterval(poll); };
-  }, [loadConvos, loadCases, loadDetail]);
+  }, [loadConvos, loadCases, loadDetail, loadGw]);
 
   useEffect(() => {
     if (!detail) return;
@@ -264,6 +269,11 @@ export function WhatsAppControlTower() {
           <span className={`w-1.5 h-1.5 rounded-full ${gwOnline ? "bg-emerald-400" : "bg-rose-400"}`} />{gwOnline ? "Gateway online" : "Gateway offline"}
         </span>
         {livewire && <span className="text-[11px] text-emerald-400/80">● live</span>}
+        {gwDryRun && (
+          <span title="Gateway DRY_RUN is on — set WA_DRY_RUN=false and redeploy the gateway to actually send" className="inline-flex items-center gap-1.5 text-xs px-2 py-1 rounded-full border bg-amber-500/10 text-amber-400 border-amber-500/40 font-semibold">
+            ⚠ Dry-run — sends disabled
+          </span>
+        )}
         {totalUnread > 0 && <span className="text-xs text-zinc-400">{totalUnread} unread</span>}
         <a href="/head/settings/whatsapp" className="ml-auto text-xs text-zinc-400 hover:text-zinc-200 border border-zinc-800 rounded-lg px-3 py-1.5">⚙ Settings</a>
       </div>
@@ -421,6 +431,26 @@ export function WhatsAppControlTower() {
                   <button onClick={sendReply} disabled={busy} className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-semibold text-sm px-4 py-2.5 rounded-lg">Send ▸</button>
                 </div>
                 {detail.group && !detail.group.sendEnabled && <div className="text-[11px] text-amber-400">Sending is off for this group — enable it in Settings before replies actually send.</div>}
+                {detail.outbound && detail.outbound.length > 0 && (
+                  <div className="flex flex-col gap-1 pt-1">
+                    {detail.outbound.slice(0, 4).map((o) => (
+                      <div key={o.id} className="flex items-center gap-2 text-[11px]">
+                        <span className={`px-1.5 rounded font-semibold ${
+                          o.status === "SENT" ? "bg-emerald-500/15 text-emerald-300"
+                          : o.status === "FAILED" ? "bg-rose-500/15 text-rose-300"
+                          : o.status === "SENDING" ? "bg-blue-500/15 text-blue-300"
+                          : "bg-amber-500/15 text-amber-300"}`}>
+                          {o.status === "QUEUED" ? "QUEUED" : o.status === "SENT" ? "SENT" : o.status === "FAILED" ? "FAILED" : o.status}
+                        </span>
+                        <span className="text-zinc-500 truncate flex-1">{o.error ? o.error : o.text}</span>
+                        <span className="text-zinc-600 tabular-nums shrink-0">{clock(o.sentAt || o.createdAt)}</span>
+                      </div>
+                    ))}
+                    {detail.outbound.some((o) => o.status === "QUEUED") && gwDryRun && (
+                      <div className="text-[10px] text-amber-400">Queued messages won&apos;t send while the gateway is in dry-run.</div>
+                    )}
+                  </div>
+                )}
               </div>
             </>
           )}

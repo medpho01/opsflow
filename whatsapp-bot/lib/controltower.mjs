@@ -69,7 +69,8 @@ export const setQr = (qr) => gatewayUpsert({ status: "QR", qr, qrUpdatedAt: new 
 export const setConnected = (number) =>
   gatewayUpsert({ status: "CONNECTED", connectedNumber: number, qr: null, lastSeenAt: new Date() });
 export const setStatus = (status) => gatewayUpsert({ status });
-export const heartbeat = () => gatewayUpsert({ lastSeenAt: new Date() });
+export const heartbeat = (dryRun = null) =>
+  gatewayUpsert(dryRun === null ? { lastSeenAt: new Date() } : { lastSeenAt: new Date(), dryRun });
 
 // admin command (RELINK / LOGOUT) — read once and clear
 export async function consumeCommand() {

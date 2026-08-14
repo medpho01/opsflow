@@ -153,7 +153,7 @@ function startLoops() {
     } catch {}
   }, 5000);
 
-  setInterval(() => CT.heartbeat().catch(() => {}), 20000);
+  setInterval(() => CT.heartbeat(DRY_RUN).catch(() => {}), 20000);
   setInterval(() => CT.refreshGroups().catch(() => {}), 30000);
 
   // Groups can be empty right after a FRESH link (the phone hasn't pushed group

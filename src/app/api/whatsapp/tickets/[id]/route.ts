@@ -205,6 +205,15 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     orderBy: { subject: "asc" },
   });
 
+  // Delivery status of replies we sent from the console for this case, so the
+  // agent sees QUEUED / SENT / FAILED (+reason) instead of a silent void.
+  const outbound = await prisma.waOutbound.findMany({
+    where: { ticketId: ticket.id },
+    orderBy: { createdAt: "desc" },
+    take: 8,
+    select: { id: true, text: true, status: true, error: true, targetJid: true, createdAt: true, sentAt: true },
+  });
+
   return NextResponse.json({
     ticket: {
       id: ticket.id, status: ticket.status, intent: ticket.intent,
@@ -219,6 +228,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     labGroup,
     lab,
     providerGroups,
+    outbound,
     bulkStatuses,
     related,
     timeline,

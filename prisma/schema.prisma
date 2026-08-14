@@ -983,7 +983,8 @@ model WaGateway {
   qrUpdatedAt        DateTime?
   connectedNumber    String? // e.g. 919522584955
   lastSeenAt         DateTime?
-  command            String? // "RELINK" | "LOGOUT" — set by admin, cleared by gateway
+  dryRun             Boolean? // gateway's DRY_RUN kill switch — true = nothing sends
+  command            String? // "RELINK" | "LOGOUT" | "BACKFILL" — set by admin, cleared by gateway
   commandRequestedAt DateTime?
   updatedAt          DateTime        @updatedAt
 

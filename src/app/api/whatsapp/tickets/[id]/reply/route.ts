@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/db/client";
+import labstack, { labstackOr } from "@/lib/db/labstack";
 import { getSessionFromRequest } from "@/lib/auth/session";
 import { UserRole } from "@prisma/client";
 
@@ -29,10 +30,24 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     targetGroupId = ticket.group.id;
     nextStatus = "ANSWERED";
   } else if (target === "lab") {
-    if (!ticket.group.labId)
-      return NextResponse.json({ error: "no lab linked to this group — set it in Settings" }, { status: 400 });
-    const lab = await prisma.waGroup.findFirst({ where: { role: "PROVIDER", labId: ticket.group.labId } });
-    if (!lab) return NextResponse.json({ error: "no provider group found for this lab" }, { status: 400 });
+    // Prefer an explicitly chosen provider group (the dropdown); otherwise
+    // resolve the order's OWN lab, then the store group's mapped lab.
+    let lab = null;
+    if (body?.labGroupId) {
+      lab = await prisma.waGroup.findFirst({ where: { id: String(body.labGroupId), role: "PROVIDER" } });
+    }
+    if (!lab) {
+      let labId = ticket.group.labId;
+      if (ticket.orderId) {
+        const rows = await labstackOr(
+          labstack.$queryRaw<Array<{ labId: number | null }>>`SELECT "labId" FROM public."Order" WHERE id = ${ticket.orderId} LIMIT 1`,
+          [] as Array<{ labId: number | null }>, 3000, { breakerKey: "wa-reply-lab" }
+        );
+        labId = rows[0]?.labId ?? labId;
+      }
+      if (labId) lab = await prisma.waGroup.findFirst({ where: { role: "PROVIDER", labId } });
+    }
+    if (!lab) return NextResponse.json({ error: "no provider group for this order's lab — pick one from the list" }, { status: 400 });
     targetJid = lab.jid;
     targetGroupId = lab.id;
     nextStatus = "WAITING_LAB";

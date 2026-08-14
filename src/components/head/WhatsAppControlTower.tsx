@@ -16,7 +16,9 @@ type Case = {
 type Detail = {
   ticket: { id: string; status: string; intent: string | null; orderId: number | null; requestId: number | null; patient: string | null; lastHandledBy: { name: string; ts: string } | null; liveContext: Record<string, unknown> | null; contextSnapshot: Record<string, unknown> | null };
   group: { id: string; jid: string; subject: string; role: string; labId: number | null; sendEnabled: boolean } | null;
-  labGroup: { subject: string } | null;
+  labGroup: { id: string; jid: string; subject: string; labId: number | null } | null;
+  providerGroups?: { id: string; jid: string; subject: string; labId: number | null }[];
+  bulkStatuses?: { orderId: number; status: string | null; appt: string | null; patient: string | null }[];
   related: { groupId: string; groupSubject: string; groupRole: string; sender: string; text: string; ts: string }[];
   messages: { id: string; direction: string; fromMe: boolean; sender: string; text: string; ts: string; intent: string | null; ticketId: string | null; isTeam: boolean; teamName: string | null; waMsgId: string; mediaType: string | null; mediaMime: string | null; ocrText: string | null; ocrJson: Record<string, unknown> | null; idType: string | null; idVia: string | null }[];
   timeline?: { id: string; groupId: string; groupSubject: string; groupRole: string; sender: string; text: string; intent: string | null; ts: string; isTeam: boolean; teamName: string | null; isCurrentGroup: boolean }[];
@@ -86,6 +88,18 @@ function draftFor(d: Detail | null): string {
   const who = d.ticket.patient ? ` (${d.ticket.patient})` : "";
   return `#${d.ticket.orderId}${who} — ${STATUS_PHRASE[st] || st}${appt}`;
 }
+// Build a multi-line status reply covering every order named in the message.
+function bulkDraft(d: Detail | null): string {
+  if (!d?.bulkStatuses?.length) return "";
+  return d.bulkStatuses
+    .map((b) => {
+      const st = String(b.status || "").toUpperCase();
+      const who = b.patient ? ` (${b.patient})` : "";
+      const appt = b.appt ? ` · appt ${fmtTime(b.appt)}` : "";
+      return `#${b.orderId}${who} — ${st ? (STATUS_PHRASE[st] || st) : "no status found"}${appt}`;
+    })
+    .join("\n");
+}
 const isAnswerable = (intent: string | null, orderId: number | null, requestId: number | null) =>
   !!(orderId || requestId) && ["STATUS_CHECK", "REPORT_REQUEST", "CANCEL_REASON"].includes(intent || "");
 
@@ -102,6 +116,7 @@ export function WhatsAppControlTower() {
   const [target, setTarget] = useState<"store" | "lab" | "other">("store");
   const [reply, setReply] = useState("");
   const [toNumber, setToNumber] = useState("");
+  const [labGroupId, setLabGroupId] = useState<string>("");
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [gwOnline, setGwOnline] = useState(true);
@@ -177,6 +192,7 @@ export function WhatsAppControlTower() {
     if (!detail) return;
     if (prefilledId.current === detail.ticket.id) return;
     prefilledId.current = detail.ticket.id;
+    setLabGroupId(detail.labGroup?.id || "");
     if (isAnswerable(detail.ticket.intent, detail.ticket.orderId, detail.ticket.requestId)) {
       const d = draftFor(detail);
       if (d) { setReply(d); setTarget("store"); return; }
@@ -204,7 +220,7 @@ export function WhatsAppControlTower() {
     if (!activeId || !reply.trim()) return flash("Write a message first");
     setBusy(true);
     const res = await fetch(`/api/whatsapp/tickets/${activeId}/reply`, {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: reply, target, toNumber }),
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: reply, target, toNumber, labGroupId: labGroupId || undefined }),
     });
     setBusy(false);
     const data = await res.json().catch(() => ({}));
@@ -391,6 +407,14 @@ export function WhatsAppControlTower() {
                 {target === "other" && (
                   <input value={toNumber} onChange={(e) => setToNumber(e.target.value)} placeholder="Number with country code, e.g. 9198…" className="bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-100 focus:border-blue-500 outline-none" />
                 )}
+                {target === "lab" && (
+                  <select value={labGroupId} onChange={(e) => setLabGroupId(e.target.value)} className="bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-100 focus:border-blue-500 outline-none">
+                    <option value="">{detail.labGroup ? `${short(detail.labGroup.subject)} (order's lab)` : "— pick a lab group —"}</option>
+                    {(detail.providerGroups || []).filter((g) => g.id !== detail.labGroup?.id).map((g) => (
+                      <option key={g.id} value={g.id}>{short(g.subject)}</option>
+                    ))}
+                  </select>
+                )}
                 <div className="flex gap-2 items-end">
                   <textarea value={reply} onChange={(e) => setReply(e.target.value)} rows={2} placeholder="Write a reply, or use a suggested action →" className="flex-1 resize-none bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-100 focus:border-blue-500 outline-none" />
                   <button onClick={sendReply} disabled={busy} className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-semibold text-sm px-4 py-2.5 rounded-lg">Send ▸</button>
@@ -424,6 +448,24 @@ export function WhatsAppControlTower() {
                   </>
                 ) : <div className="text-sm text-zinc-500">No id on this message — ask the partner for the order/booking id.</div>}
               </div>
+              {detail.bulkStatuses && detail.bulkStatuses.length > 1 && (
+                <div className="p-4 border-b border-zinc-800 flex flex-col gap-2">
+                  <div className="text-[11px] uppercase tracking-wide text-zinc-500 font-semibold flex items-center gap-2">
+                    All orders in this message
+                    <span className="normal-case font-normal text-zinc-600">{detail.bulkStatuses.length}</span>
+                  </div>
+                  <div className="flex flex-col gap-1 max-h-52 overflow-y-auto pr-1">
+                    {detail.bulkStatuses.map((b) => (
+                      <div key={b.orderId} className="flex items-center gap-2 text-xs">
+                        <span className="font-mono text-zinc-500 w-14 shrink-0">#{b.orderId}</span>
+                        <span className="text-zinc-300 truncate flex-1">{b.patient || "—"}</span>
+                        <span className={`px-1.5 rounded text-[10px] font-semibold ${b.status ? "bg-blue-500/15 text-blue-300" : "bg-zinc-700/40 text-zinc-500"}`}>{b.status ? (STATUS_PHRASE[b.status.toUpperCase()] || b.status) : "no status"}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <button onClick={() => { setTarget("store"); setReply(bulkDraft(detail)); }} className="mt-1 text-left text-sm border border-zinc-700 hover:border-emerald-500 rounded-lg px-3 py-2 text-zinc-200">↩ Reply with all {detail.bulkStatuses.length} statuses <span className="block text-xs text-zinc-500">one line per order, to the store group</span></button>
+                </div>
+              )}
               {detail.timeline && detail.timeline.length > 1 && (() => {
                 const tl = detail.timeline;
                 const groupCount = new Set(tl.map((t) => t.groupId)).size;

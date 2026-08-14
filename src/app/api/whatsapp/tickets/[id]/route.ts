@@ -3,7 +3,7 @@ import prisma from "@/lib/db/client";
 import labstack, { labstackOr } from "@/lib/db/labstack";
 import { getSessionFromRequest } from "@/lib/auth/session";
 import { UserRole, WaTicketStatus, Prisma } from "@prisma/client";
-import { patientNameFor } from "@/lib/wa/patientNames";
+import { patientNameFor, patientNames } from "@/lib/wa/patientNames";
 import { loadTeam, makeTeamMatcher } from "@/lib/wa/team";
 
 // GET /api/whatsapp/tickets/:id — ticket + full thread + live order context
@@ -160,14 +160,42 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     live = rows[0] || null;
   }
 
-  // Resolve reply targets: store group = this group; lab group = a PROVIDER group with the same labId.
-  let labGroup: { id: string; jid: string; subject: string } | null = null;
-  if (ticket.group?.labId) {
+  // #1 Bulk status — one message often lists many orders ("71708 71961 …
+  // sample collection status"). Pull the latest status for EVERY order named
+  // across this case's thread so the agent can answer all of them at once.
+  const bulkOrderIds = [...new Set(taggedMsgs.flatMap((m) => m.orderIds || []))].filter(Boolean);
+  let bulkStatuses: Array<{ orderId: number; status: string | null; appt: string | null; patient: string | null }> = [];
+  if (bulkOrderIds.length > 1) {
+    const rows = await labstackOr(
+      labstack.$queryRaw<Array<{ id: number; status: string | null; appt: Date | null }>>(
+        Prisma.sql`SELECT id, "orderStatus"::text AS status, "appointmentTime" AS appt
+                   FROM public."Order" WHERE id IN (${Prisma.join(bulkOrderIds)})`
+      ),
+      [] as Array<{ id: number; status: string | null; appt: Date | null }>, 5000, { breakerKey: "wa-bulk-ctx" }
+    );
+    const names = await patientNames(bulkOrderIds, []);
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    bulkStatuses = bulkOrderIds
+      .map((oid) => ({ orderId: oid, status: byId.get(oid)?.status ?? null, appt: byId.get(oid)?.appt ? String(byId.get(oid)!.appt) : null, patient: names[`o${oid}`] || null }))
+      .sort((a, b) => a.orderId - b.orderId);
+  }
+
+  // #2 Reply targets. Store = this group. Lab = a PROVIDER group for the order's
+  // OWN lab (from live context), falling back to the store group's mapped lab.
+  // Also expose every provider group so the agent can pick when none is mapped.
+  const orderLabId = (live as { labId?: number } | null)?.labId ?? ticket.group?.labId ?? null;
+  let labGroup: { id: string; jid: string; subject: string; labId: number | null } | null = null;
+  if (orderLabId) {
     labGroup = await prisma.waGroup.findFirst({
-      where: { role: "PROVIDER", labId: ticket.group.labId },
-      select: { id: true, jid: true, subject: true },
+      where: { role: "PROVIDER", labId: orderLabId },
+      select: { id: true, jid: true, subject: true, labId: true },
     });
   }
+  const providerGroups = await prisma.waGroup.findMany({
+    where: { role: "PROVIDER", active: true },
+    select: { id: true, jid: true, subject: true, labId: true },
+    orderBy: { subject: "asc" },
+  });
 
   return NextResponse.json({
     ticket: {
@@ -181,6 +209,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       ? { id: ticket.group.id, jid: ticket.group.jid, subject: ticket.group.subject, role: ticket.group.role, storeId: ticket.group.storeId, labId: ticket.group.labId, sendEnabled: ticket.group.sendEnabled }
       : null,
     labGroup,
+    providerGroups,
+    bulkStatuses,
     related,
     timeline,
     mentions: mentionMap,

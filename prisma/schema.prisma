@@ -845,7 +845,7 @@ model WaGroup {
   role               WaGroupRole @default(SUPPORT)
   storeId            Int? // SUPPORT → partner/store (no FK, mirrors Task.storeId)
   labId              Int? // PROVIDER → lab
-  autoAskIdOnMissing Boolean     @default(true) // auto-reply asking for an id when none given
+  autoAskIdOnMissing Boolean     @default(false) // auto-reply asking for an id; OFF by default + gated by WA_AUTO_ASK
   sendEnabled        Boolean     @default(false) // per-group send guard
   active             Boolean     @default(true) // listening on/off
   lastReadAt         DateTime? // console: inbound messages after this count as unread

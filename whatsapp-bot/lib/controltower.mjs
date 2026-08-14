@@ -125,6 +125,10 @@ async function upsertTicket({ group, orderId, requestId, intent, ts }) {
 
 // ── message ingest ─────────────────────────────────────────────────────────
 const lastAskAt = new Map(); // jid → ts (debounce auto-ask)
+// Master kill switch for the "share the order id" auto-reply. OFF by default —
+// it must be explicitly enabled with WA_AUTO_ASK=true AND per-group opt-in.
+// Without this, an admin toggle alone can spam partner groups.
+const AUTO_ASK_ENABLED = process.env.WA_AUTO_ASK === "true";
 
 /**
  * Persist a message and (for substantive inbound) attach it to a ticket.
@@ -196,7 +200,7 @@ export async function ingestMessage(m) {
     // missing-id auto-reply (debounced 30 min/group). Suppressed when we
     // inherited an id from the quoted message — the reply IS anchored.
     const needsId = DISPOSITION[intent] === "AUTO_ANSWER" && !orderId && !requestId && !inheritedTicketId;
-    if (needsId && group.autoAskIdOnMissing) {
+    if (AUTO_ASK_ENABLED && needsId && group.autoAskIdOnMissing) {
       const last = lastAskAt.get(jid) || 0;
       if (Date.now() - last > 30 * 60 * 1000) {
         lastAskAt.set(jid, Date.now());

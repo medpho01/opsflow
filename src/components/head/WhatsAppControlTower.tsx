@@ -446,7 +446,10 @@ export function WhatsAppControlTower() {
                 {detail.ticket.lastHandledBy && <Row k="Last handled" v={`${detail.ticket.lastHandledBy.name} · ${clock(detail.ticket.lastHandledBy.ts)}`} />}
               </div>
               <div className="p-4 border-b border-zinc-800 flex flex-col gap-2">
-                <div className="text-[11px] uppercase tracking-wide text-zinc-500 font-semibold">Order context · live</div>
+                <div className="flex items-baseline gap-2">
+                  <div className="text-[11px] uppercase tracking-wide text-zinc-500 font-semibold">Order context · live</div>
+                  {ctx.statusUpdatedAt ? <span className="text-[10px] text-zinc-500">source updated {fmtTime(String(ctx.statusUpdatedAt))}</span> : null}
+                </div>
                 {orderStatus ? (
                   <>
                     <Row k="Status" v={String(orderStatus)} />

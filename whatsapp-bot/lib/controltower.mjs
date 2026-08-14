@@ -33,14 +33,19 @@ export const knownGroupCount = () => groupCache.size;
 // (default role SUPPORT for an admin to classify) and refreshes the subject on
 // existing ones — never overwrites an admin's role/mapping. Makes server
 // deploys turnkey: no manual seed step. `pairs` = iterable of [jid, subject].
-export async function syncGroups(pairs) {
+export async function syncGroups(pairs, preActiveJids = null) {
+  // preActiveJids: jids to activate on FIRST registration (e.g. hint matches).
+  // When null, every discovered group is pre-activated (legacy turnkey). On
+  // conflict we only refresh the subject — never the admin's active/role choice.
+  const activeSet = preActiveJids ? new Set(preActiveJids) : null;
   for (const [jid, subject] of pairs) {
+    const active = activeSet ? activeSet.has(jid) : true;
     try {
       await taskosQuery(
         `INSERT INTO wa_groups (id, jid, subject, role, active, "updatedAt")
-           VALUES (gen_random_uuid()::text, $1, $2, 'SUPPORT', true, now())
+           VALUES (gen_random_uuid()::text, $1, $2, 'SUPPORT', $3, now())
          ON CONFLICT (jid) DO UPDATE SET subject = EXCLUDED.subject, "updatedAt" = now()`,
-        [jid, subject]
+        [jid, subject, active]
       );
     } catch (e) { console.error("syncGroups:", e.message); }
   }

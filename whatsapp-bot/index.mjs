@@ -137,10 +137,10 @@ function startLoops() {
     try {
       const groups = await currentSock.groupFetchAllParticipating();
       for (const g of Object.values(groups)) groupSubjects.set(g.id, g.subject);
-      const pairs = Object.values(groups)
-        .map((g) => [g.id, g.subject])
-        .filter(([jid, subject]) => GROUP_ALLOW.has(jid) || (GROUP_RE ? GROUP_RE.test(subject || "") : true));
-      if (pairs.length) { await CT.syncGroups(pairs); console.log(`registered ${pairs.length} groups in the console`); }
+      const all = Object.values(groups).map((g) => [g.id, g.subject]);
+      // Register every group; pre-activate only the ones matching the listen hint.
+      const preActive = all.filter(([jid, subject]) => GROUP_ALLOW.has(jid) || (GROUP_RE ? GROUP_RE.test(subject || "") : false)).map(([jid]) => jid);
+      if (all.length) { await CT.syncGroups(all, preActive); console.log(`registered ${all.length} groups (${preActive.length} pre-activated) in the console`); }
     } catch (e) { console.error("group discovery:", e.message); }
   };
   setTimeout(discoverAndSync, 15000);    // catch the fresh-link case quickly
@@ -179,13 +179,15 @@ async function start() {
       try {
         const groups = await sock.groupFetchAllParticipating();
         for (const g of Object.values(groups)) groupSubjects.set(g.id, g.subject);
-        const scoped = [...groupSubjects.entries()].filter(([jid]) => inScope(jid));
-        banner(`In ${groupSubjects.size} groups · observing ${scoped.length} in scope (filter=/${GROUP_FILTER}/i):`);
-        for (const [jid, subject] of scoped) console.log(`  ${jid}   ${subject}`);
+        const all = [...groupSubjects.entries()];
+        const preActive = all.filter(([jid, subject]) => GROUP_ALLOW.has(jid) || (GROUP_RE ? GROUP_RE.test(subject || "") : false)).map(([jid]) => jid);
+        banner(`In ${groupSubjects.size} groups · ${preActive.length} match the listen hint (/${GROUP_FILTER}/i) — pick which to listen to in Settings:`);
+        for (const [jid, subject] of all) console.log(`  ${preActive.includes(jid) ? "•" : " "} ${jid}   ${subject}`);
         console.log("");
-        // Turnkey seeding: register discovered groups in the console for the
-        // admin to classify (idempotent — never overwrites their choices).
-        if (CT_ENABLED) await CT.syncGroups(scoped);
+        // Register EVERY group in the console so the admin sees the full roster
+        // and picks which to listen to. New groups land inactive; the ones that
+        // match the hint are pre-activated for a turnkey first run.
+        if (CT_ENABLED) await CT.syncGroups(all, preActive);
       } catch (e) { console.warn("Could not fetch groups:", e.message); }
     }
     if (connection === "close") {
@@ -278,7 +280,14 @@ function replyContext(m) {
 async function handle(m) {
   const jid = m.key.remoteJid || "";
   if (!jid.endsWith("@g.us")) return; // groups only
-  if (!inScope(jid)) return;          // skip out-of-scope (e.g. personal) groups
+  // Listen only to groups the admin picked (active). Discovery registers EVERY
+  // group so they can be chosen in Settings; until a group is activated we don't
+  // process it (no media pulled, nothing stored). Falls back to the env hint
+  // when the console DB isn't wired up (pure dry-run).
+  if (CT_ENABLED) {
+    const g = CT.getGroup(jid);
+    if (!g || !g.active) return;
+  } else if (!inScope(jid)) return;
 
   const text = extractText(m).trim();
   const media = mediaInfo(m);

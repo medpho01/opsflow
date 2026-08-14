@@ -18,13 +18,18 @@ export function WhatsAppSettings() {
   const [toast, setToast] = useState<string | null>(null);
   const [q, setQ] = useState("");
   const [roleFilter, setRoleFilter] = useState("ALL");
+  const [listenFilter, setListenFilter] = useState<"ALL" | "ON" | "OFF">("ALL");
   const [contacts, setContacts] = useState<{ id: string; name: string; phone: string | null; team: string | null }[]>([]);
   const [contactText, setContactText] = useState("");
   const flash = (m: string) => { setToast(m); setTimeout(() => setToast(null), 2200); };
 
   const shownGroups = groups.filter(
-    (g) => (roleFilter === "ALL" || g.role === roleFilter) && g.subject.toLowerCase().includes(q.toLowerCase())
+    (g) =>
+      (roleFilter === "ALL" || g.role === roleFilter) &&
+      (listenFilter === "ALL" || (listenFilter === "ON" ? g.active : !g.active)) &&
+      g.subject.toLowerCase().includes(q.toLowerCase())
   );
+  const listeningCount = groups.filter((g) => g.active).length;
 
   const loadGw = useCallback(async () => {
     const r = await fetch("/api/whatsapp/gateway"); if (r.ok) setGw(await r.json());
@@ -103,8 +108,16 @@ export function WhatsAppSettings() {
       <div className="rounded-xl border border-zinc-800 overflow-hidden">
         <div className="px-4 py-3 border-b border-zinc-800 flex items-center gap-3 flex-wrap">
           <div className="text-[11px] uppercase tracking-wide text-zinc-500 font-semibold">Group classification</div>
+          <span className="text-[11px] text-zinc-500">Listening to <b className="text-emerald-400">{listeningCount}</b> of {groups.length} groups</span>
           <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search groups…"
             className="ml-auto w-56 bg-zinc-900 border border-zinc-700 rounded-md px-3 py-1.5 text-xs text-zinc-200 focus:border-blue-500 outline-none" />
+          <div className="flex rounded-md border border-zinc-700 overflow-hidden text-xs">
+            {(["ALL", "ON", "OFF"] as const).map((v) => (
+              <button key={v} onClick={() => setListenFilter(v)} className={`px-2.5 py-1.5 font-medium ${listenFilter === v ? "bg-blue-600 text-white" : "bg-zinc-900 text-zinc-400 hover:text-zinc-200"}`}>
+                {v === "ALL" ? "All" : v === "ON" ? "Listening" : "Not listening"}
+              </button>
+            ))}
+          </div>
           <select value={roleFilter} onChange={(e) => setRoleFilter(e.target.value)}
             className="bg-zinc-900 border border-zinc-700 rounded-md px-2 py-1.5 text-xs text-zinc-300 focus:border-blue-500 outline-none">
             <option value="ALL">All roles</option>

@@ -254,8 +254,19 @@ async function downloadMedia(m) {
 }
 
 // Pull the quoted/replied-to message (WhatsApp "reply") for direct Q→A linking.
+// contextInfo can hang off ANY message type (text, image, document…), so we
+// look across them — a reply on a photo must keep the chain too.
 function replyContext(m) {
-  const ci = m.message?.extendedTextMessage?.contextInfo;
+  let msg = m.message || {};
+  msg = msg.ephemeralMessage?.message || msg.viewOnceMessage?.message || msg.viewOnceMessageV2?.message || msg;
+  const ci =
+    msg.extendedTextMessage?.contextInfo ||
+    msg.imageMessage?.contextInfo ||
+    msg.videoMessage?.contextInfo ||
+    msg.documentMessage?.contextInfo ||
+    msg.documentWithCaptionMessage?.message?.documentMessage?.contextInfo ||
+    msg.stickerMessage?.contextInfo ||
+    msg.audioMessage?.contextInfo;
   if (!ci?.stanzaId) return null;
   return {
     replyToId: ci.stanzaId,

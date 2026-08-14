@@ -149,13 +149,37 @@ export async function ingestMessage(m) {
     console.error("resolveEntities:", e.message);
     return { orderIds: [], requestIds: [], primary: null, ambiguous: [] };
   });
-  const allOrderIds = resolved.orderIds;
-  const validRequestIds = resolved.requestIds;
+  let allOrderIds = resolved.orderIds;
+  let validRequestIds = resolved.requestIds;
   const ambiguousIds = resolved.ambiguous.map((a) => a.n);
-  const orderId = resolved.primary?.orderId || null;
-  const requestId = resolved.primary?.requestId || null;
-  const idType = resolved.primary?.type || null;
-  const idVia = resolved.primary?.via || null;
+  let orderId = resolved.primary?.orderId || null;
+  let requestId = resolved.primary?.requestId || null;
+  let idType = resolved.primary?.type || null;
+  let idVia = resolved.primary?.via || null;
+  let inheritedTicketId = null;
+
+  // Reply-chain inheritance. People reply to a root message ("any update on
+  // 46259?") without repeating the id ("still pending?"). WhatsApp gives us the
+  // quoted message id (replyToWaId); if THIS message resolved no id of its own,
+  // inherit the quoted message's already-resolved order/request + ticket so the
+  // reply threads to the same case. One hop suffices — inheritance is applied
+  // at ingest, so the parent already carries any it inherited.
+  if (!orderId && !requestId && replyToWaId) {
+    const parent = (await taskosQuery(
+      `SELECT "orderIds", "requestIds", "ticketId", "idType", "idVia" FROM wa_messages WHERE "waMsgId" = $1 LIMIT 1`,
+      [replyToWaId]
+    )).rows[0];
+    if (parent && ((parent.orderIds && parent.orderIds.length) || (parent.requestIds && parent.requestIds.length))) {
+      allOrderIds = parent.orderIds || [];
+      validRequestIds = parent.requestIds || [];
+      orderId = allOrderIds[0] || null;
+      requestId = validRequestIds[0] || null;
+      idType = parent.idType || (orderId ? "ORDER" : requestId ? "REQUEST" : null);
+      idVia = `reply · ${parent.idVia || (orderId ? `order ${orderId}` : `request ${requestId}`)}`;
+      inheritedTicketId = parent.ticketId || null;
+    }
+  }
+
   const side = fromMe || isLabstack(sender) ? "LAB" : "PARTNER";
   const substantive = intent !== "NOISE" && intent !== "SYSTEM";
 
@@ -163,9 +187,9 @@ export async function ingestMessage(m) {
   let autoAsk = null;
   if (substantive && !fromMe) {
     ticketId = await upsertTicket({ group, orderId: orderId ? +orderId : null, requestId: requestId ? +requestId : null, intent, ts });
-    // missing-id auto-reply (debounced 30 min/group). Also fires when the only
-    // number we saw was ambiguous (couldn't safely tie it to one entity).
-    const needsId = DISPOSITION[intent] === "AUTO_ANSWER" && !orderId && !requestId;
+    // missing-id auto-reply (debounced 30 min/group). Suppressed when we
+    // inherited an id from the quoted message — the reply IS anchored.
+    const needsId = DISPOSITION[intent] === "AUTO_ANSWER" && !orderId && !requestId && !inheritedTicketId;
     if (needsId && group.autoAskIdOnMissing) {
       const last = lastAskAt.get(jid) || 0;
       if (Date.now() - last > 30 * 60 * 1000) {
@@ -175,11 +199,14 @@ export async function ingestMessage(m) {
     }
   }
 
+  // A reply (even a team ack) threads to the parent's case when it carried no
+  // id of its own — so the chain stays intact in the thread and timeline.
+  const threadTicketId = ticketId || inheritedTicketId;
   const stored = await taskosQuery(
     `INSERT INTO wa_messages (id, "waMsgId", "groupId", "ticketId", direction, "fromMe", sender, "senderJid", text, ts, "replyToWaId", intent, "orderIds", "requestIds", "refIds", "idType", "idVia", "ambiguousIds", "mediaType", "mediaMime", "createdAt")
      VALUES (gen_random_uuid()::text, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, now())
      ON CONFLICT ("waMsgId") DO NOTHING RETURNING id`,
-    [waMsgId, group.id, ticketId, fromMe ? "OUT" : "IN", fromMe, sender, senderJid || null, text, ts, replyToWaId,
+    [waMsgId, group.id, threadTicketId, fromMe ? "OUT" : "IN", fromMe, sender, senderJid || null, text, ts, replyToWaId,
      intent, allOrderIds, validRequestIds, refs.refs, idType, idVia, ambiguousIds, mediaKind, mediaMime]
   );
 

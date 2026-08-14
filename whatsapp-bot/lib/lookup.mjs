@@ -65,6 +65,81 @@ export async function resolveRefIds(refs = []) {
   }
 }
 
+// ── Canonical entity resolution ─────────────────────────────────────────────
+// Order / Request / Appointment ids overlap numerically, so a bare number can
+// name any of the three. We validate EVERYTHING against the replica and
+// canonicalize to a single Order key, tracking provenance. Policy ("ask when
+// not sure"): trust lab-refs, explicit request/appt labels, and bare numbers
+// that validate as an Order (the partner convention); flag as ambiguous a bare
+// number that is NOT an order but matches both a request and an appointment.
+//
+// Returns { orderIds:[canonical Order ids], requestIds:[validated Request ids],
+//   primary:{ orderId, requestId, type, via } | null, ambiguous:[{ n, in:[…] }] }
+export async function resolveEntities({ refs = [], reqLabeled = [], apptLabeled = [], bare = [] } = {}) {
+  const empty = { orderIds: [], requestIds: [], primary: null, ambiguous: [] };
+  if (!pool) return empty;
+  const orderIds = new Set();
+  const requestIds = new Set();
+  const ambiguous = [];
+  // provenance candidates in priority order; first with an orderId wins primary
+  const prov = []; // { orderId?, requestId?, type, via }
+
+  const asInts = (a) => [...new Set(a.map((x) => parseInt(x, 10)).filter(Number.isInteger))];
+  const q = async (sql, params) => { try { return (await pool.query(sql, params)).rows; } catch (e) { console.error("[resolve]", e.message); return []; } };
+
+  // 1) lab-refs (BLR…) → Order.labOrderId — unambiguous
+  const refMap = await resolveRefIds(refs);
+  for (const [ref, oid] of Object.entries(refMap)) { orderIds.add(oid); prov.push({ orderId: oid, type: "REF", via: ref }); }
+
+  // 2) appt-labeled → Appointment.order_id
+  const apptInts = asInts(apptLabeled);
+  if (apptInts.length) {
+    const rows = await q(`SELECT id, order_id FROM public."Appointment" WHERE id = ANY($1::int[])`, [apptInts]);
+    for (const row of rows) if (row.order_id) { orderIds.add(row.order_id); prov.push({ orderId: row.order_id, type: "APPOINTMENT", via: `appt ${row.id}` }); }
+  }
+
+  // 3) request-labeled → validate Request, then its Order via Order.requestId
+  const reqInts = asInts(reqLabeled);
+  if (reqInts.length) {
+    const validReq = await q(`SELECT id FROM public."Request" WHERE id = ANY($1::int[])`, [reqInts]);
+    const rids = validReq.map((x) => x.id);
+    for (const rid of rids) requestIds.add(rid);
+    if (rids.length) {
+      const ord = await q(`SELECT id, "requestId" FROM public."Order" WHERE "requestId" = ANY($1::int[])`, [rids]);
+      for (const row of ord) { orderIds.add(row.id); prov.push({ orderId: row.id, requestId: row.requestId, type: "REQUEST", via: `request ${row.requestId}` }); }
+      // a request with no order yet is still a valid case anchor
+      for (const rid of rids) if (!ord.some((o) => o.requestId === rid)) prov.push({ requestId: rid, type: "REQUEST", via: `request ${rid}` });
+    }
+  }
+
+  // 4) bare numbers → Order first (convention). Non-orders: probe request/appt.
+  const bareInts = asInts(bare);
+  if (bareInts.length) {
+    const asOrder = await q(`SELECT id FROM public."Order" WHERE id = ANY($1::int[])`, [bareInts]);
+    const orderSet = new Set(asOrder.map((x) => x.id));
+    for (const id of orderSet) { orderIds.add(id); prov.push({ orderId: id, type: "ORDER", via: `order ${id}` }); }
+    const leftover = bareInts.filter((n) => !orderSet.has(n));
+    if (leftover.length) {
+      const [asReq, asAppt] = await Promise.all([
+        q(`SELECT id FROM public."Request" WHERE id = ANY($1::int[])`, [leftover]),
+        q(`SELECT id, order_id FROM public."Appointment" WHERE id = ANY($1::int[])`, [leftover]),
+      ]);
+      const reqSet = new Set(asReq.map((x) => x.id));
+      const apptMap = new Map(asAppt.map((x) => [x.id, x.order_id]));
+      for (const n of leftover) {
+        const inReq = reqSet.has(n), inAppt = apptMap.has(n);
+        if (inReq && inAppt) { ambiguous.push({ n, in: ["request", "appointment"] }); continue; } // not sure → ask
+        if (inAppt) { const oid = apptMap.get(n); if (oid) { orderIds.add(oid); prov.push({ orderId: oid, type: "APPOINTMENT", via: `appt ${n}` }); } }
+        else if (inReq) { requestIds.add(n); prov.push({ requestId: n, type: "REQUEST", via: `request ${n}` }); }
+        // matches nothing → not an id (phone/pincode/qty); ignore
+      }
+    }
+  }
+
+  const primary = prov.find((p) => p.orderId) || prov.find((p) => p.requestId) || null;
+  return { orderIds: [...orderIds], requestIds: [...requestIds], primary, ambiguous };
+}
+
 export async function closePool() {
   if (pool) await pool.end().catch(() => {});
 }

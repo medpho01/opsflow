@@ -43,6 +43,36 @@ export function extractRefIds(text = "") {
   return [...refs];
 }
 
+// Structured reference extraction — keeps the id NAMESPACES apart so the
+// resolver can canonicalize safely. Order/Request/Appointment ids overlap
+// numerically (a bare "12345" is a valid id in all three), so we must not
+// collapse them here: we hand the resolver the LABELS the partner used and
+// let it validate against the replica.
+//   reqLabeled  — numbers written as "request #N" / "req N"
+//   apptLabeled — numbers written as "appointment N" / "appt #N"
+//   refs        — city-prefixed lab refs (BLR…), unambiguously an Order
+//   bare        — everything else (bare 5-6 digit numbers), NOT yet trusted
+export function extractReferences(text = "") {
+  const reqLabeled = new Set();
+  const apptLabeled = new Set();
+  const labeled = new Set(); // numbers already claimed by a label
+  let r;
+  const reqRe = /(?:request|req)\s*(?:id)?\s*#?\s*(\d{3,6})/gi;
+  while ((r = reqRe.exec(text))) { reqLabeled.add(r[1]); labeled.add(r[1]); }
+  const apptRe = /(?:appointment|appt|appmt)\s*(?:id)?\s*#?\s*(\d{3,6})/gi;
+  while ((r = apptRe.exec(text))) { apptLabeled.add(r[1]); labeled.add(r[1]); }
+  const refs = extractRefIds(text);
+  const bare = new Set();
+  const numRe = /(?<![\d/])(\d{5,6})(?![\d/])/g;
+  while ((r = numRe.exec(text))) { if (!labeled.has(r[1])) bare.add(r[1]); }
+  return {
+    reqLabeled: [...reqLabeled].map(Number),
+    apptLabeled: [...apptLabeled].map(Number),
+    bare: [...bare].map(Number),
+    refs,
+  };
+}
+
 // ── Intent classification ────────────────────────────────────────────────
 const SYSTEM_RE = /was added|was removed|left$|changed to|created group|end-to-end|pinned a message|changed the group|changed this group|Waiting for this message|This message was deleted|You deleted|image omitted|<Media omitted>|video omitted|audio omitted|document omitted|sticker omitted|GIF omitted|Contact card omitted|deleted this message|added |removed |joined using|security code/i;
 const ACK_RE = /^(ok(ay)?|k|done|thanks?( you)?|thankyou|welcome|sure|yes+|no+|noted|got it|on it|checking|check|great|fine|alright|👍+|🙏+|✅+|cc|@\S+)[\s.!👍🙏✅]*$/i;

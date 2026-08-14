@@ -875,9 +875,16 @@ model WaMessage {
   ts          DateTime // message timestamp
   replyToWaId String? // quoted message id (WhatsApp reply)
   intent      String? // classifier output
-  orderIds    Int[]          @default([])
-  requestIds  Int[]          @default([])
+  orderIds    Int[]          @default([]) // VALIDATED canonical Order ids only
+  requestIds  Int[]          @default([]) // VALIDATED Request ids only
   refIds      String[]       @default([]) // lab reference ids (BLR…/HYD…) seen in the text
+  idType      String? // provenance of the primary id: REF / ORDER / REQUEST / APPOINTMENT
+  idVia       String? // human trail, e.g. "appt 21877" or "request 15021"
+  ambiguousIds Int[]         @default([]) // bare numbers we would NOT guess (need clarification)
+  mediaPath   String? // stored media object key/path (images/docs)
+  mediaMime   String? // media mime type
+  ocrText     String? // extracted text from an image/doc
+  ocrJson     Json? // structured interpretation of the media
   raw         Json?
   createdAt   DateTime       @default(now())
 

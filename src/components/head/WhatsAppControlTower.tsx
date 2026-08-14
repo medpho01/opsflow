@@ -18,7 +18,7 @@ type Detail = {
   group: { id: string; jid: string; subject: string; role: string; labId: number | null; sendEnabled: boolean } | null;
   labGroup: { subject: string } | null;
   related: { groupId: string; groupSubject: string; groupRole: string; sender: string; text: string; ts: string }[];
-  messages: { id: string; direction: string; fromMe: boolean; sender: string; text: string; ts: string; intent: string | null; ticketId: string | null; isTeam: boolean; teamName: string | null }[];
+  messages: { id: string; direction: string; fromMe: boolean; sender: string; text: string; ts: string; intent: string | null; ticketId: string | null; isTeam: boolean; teamName: string | null; waMsgId: string; mediaType: string | null; mediaMime: string | null; ocrText: string | null; ocrJson: Record<string, unknown> | null; idType: string | null; idVia: string | null }[];
   timeline?: { id: string; groupId: string; groupSubject: string; groupRole: string; sender: string; text: string; intent: string | null; ts: string; isTeam: boolean; teamName: string | null; isCurrentGroup: boolean }[];
   mentions?: Record<string, string>;
   suggestResolve?: { reason: string } | null;
@@ -128,6 +128,28 @@ export function WhatsAppControlTower() {
 
   useEffect(() => { loadConvos(); }, [loadConvos]);
   useEffect(() => { if (activeId) loadDetail(activeId); }, [activeId, loadDetail]);
+
+  // Auto-interpret images that haven't been read yet (cloud vision). Runs once
+  // per image on case open; on success we reload so the interpretation shows.
+  const interpreting = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!detail) return;
+    const pending = detail.messages.filter((m) => m.mediaType === "image" && !m.ocrText && !interpreting.current.has(m.waMsgId));
+    if (pending.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      let any = false;
+      for (const m of pending) {
+        interpreting.current.add(m.waMsgId);
+        try {
+          const r = await fetch(`/api/whatsapp/media/${m.waMsgId}/interpret`, { method: "POST" });
+          if (r.ok) any = true;
+        } catch { /* ignore */ }
+      }
+      if (any && !cancelled && activeRef.current) loadDetail(activeRef.current);
+    })();
+    return () => { cancelled = true; };
+  }, [detail, loadDetail]);
 
   useEffect(() => {
     const es = new EventSource("/api/whatsapp/stream");
@@ -333,7 +355,24 @@ export function WhatsAppControlTower() {
                             : <span className="text-[11px] font-semibold text-zinc-400">{m.sender}</span>}
                           {isCase && !team && <span className="text-[9px] font-bold uppercase tracking-wide text-amber-400 bg-amber-500/15 px-1.5 rounded">◆ this case</span>}
                         </div>
+                        {m.mediaType === "image" && (
+                          <a href={`/api/whatsapp/media/${m.waMsgId}`} target="_blank" rel="noreferrer" className="block mb-1">
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                            <img src={`/api/whatsapp/media/${m.waMsgId}`} alt="attachment" className="max-h-64 rounded-lg border border-zinc-700/50 object-contain" />
+                          </a>
+                        )}
+                        {m.mediaType === "document" && (
+                          <a href={`/api/whatsapp/media/${m.waMsgId}`} target="_blank" rel="noreferrer" className="mb-1 flex items-center gap-2 rounded-lg border border-zinc-700/50 bg-zinc-900/50 px-3 py-2 text-xs text-blue-300 hover:border-blue-500/50">
+                            📄 <span className="underline">Open document</span>
+                          </a>
+                        )}
                         <div className="text-zinc-100 whitespace-pre-wrap">{withMentions(m.text, detail.mentions)}</div>
+                        {m.ocrText && (
+                          <div className="mt-1.5 rounded-md border border-zinc-700/50 bg-zinc-900/40 p-2">
+                            <div className="text-[9px] uppercase tracking-wide text-zinc-500 font-semibold mb-0.5">Interpreted from image</div>
+                            <div className="text-[11px] text-zinc-300 whitespace-pre-wrap line-clamp-6">{m.ocrText}</div>
+                          </div>
+                        )}
                         <div className="text-[10px] text-zinc-500 mt-1 text-right tabular-nums">{fmtTime(m.ts)}</div>
                       </div>
                     );

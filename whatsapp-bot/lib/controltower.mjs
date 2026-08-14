@@ -126,9 +126,17 @@ const lastAskAt = new Map(); // jid → ts (debounce auto-ask)
  * missing-id nudge is due.
  */
 export async function ingestMessage(m) {
-  const { jid, waMsgId, fromMe, sender, senderJid, text, ts, replyToWaId } = m;
+  const { jid, waMsgId, fromMe, sender, senderJid, replyToWaId } = m;
+  const { mediaKind = null, mediaMime = null, mediaFilename = null, mediaBytes = null } = m;
+  const ts = m.ts;
   const group = getGroup(jid);
   if (!group || !group.active) return { stored: false }; // not an admin-configured active group
+
+  // Caption-less media still needs a legible label in list views / threads.
+  const mediaLabel = mediaKind === "document" ? `📄 ${mediaFilename || "Document"}`
+    : mediaKind === "image" ? "📷 Photo"
+    : mediaKind ? `📎 ${mediaKind}` : "";
+  const text = (m.text && m.text.trim()) || mediaLabel;
 
   const intent = classify(text, sender);
   // Canonical, VALIDATED id resolution. Order/Request/Appointment ids overlap
@@ -168,15 +176,25 @@ export async function ingestMessage(m) {
   }
 
   const stored = await taskosQuery(
-    `INSERT INTO wa_messages (id, "waMsgId", "groupId", "ticketId", direction, "fromMe", sender, "senderJid", text, ts, "replyToWaId", intent, "orderIds", "requestIds", "refIds", "idType", "idVia", "ambiguousIds", "createdAt")
-     VALUES (gen_random_uuid()::text, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, now())
+    `INSERT INTO wa_messages (id, "waMsgId", "groupId", "ticketId", direction, "fromMe", sender, "senderJid", text, ts, "replyToWaId", intent, "orderIds", "requestIds", "refIds", "idType", "idVia", "ambiguousIds", "mediaType", "mediaMime", "createdAt")
+     VALUES (gen_random_uuid()::text, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, now())
      ON CONFLICT ("waMsgId") DO NOTHING RETURNING id`,
     [waMsgId, group.id, ticketId, fromMe ? "OUT" : "IN", fromMe, sender, senderJid || null, text, ts, replyToWaId,
-     intent, allOrderIds, validRequestIds, refs.refs, idType, idVia, ambiguousIds]
+     intent, allOrderIds, validRequestIds, refs.refs, idType, idVia, ambiguousIds, mediaKind, mediaMime]
   );
 
+  // Persist the raw bytes separately so the console can serve/interpret them.
+  if (mediaBytes && mediaMime) {
+    await taskosQuery(
+      `INSERT INTO wa_media (id, "waMsgId", "groupId", mime, bytes, "createdAt")
+       VALUES (gen_random_uuid()::text, $1, $2, $3, $4, now())
+       ON CONFLICT ("waMsgId") DO NOTHING`,
+      [waMsgId, group.id, mediaMime, mediaBytes]
+    ).catch((e) => console.error("wa_media insert:", e.message));
+  }
+
   if (autoAsk) await enqueueOutbound({ targetJid: jid, text: autoAsk, groupId: group.id, ticketId });
-  return { stored: !!stored.rows[0], ticketId, autoAsk, side, intent };
+  return { stored: !!stored.rows[0], ticketId, autoAsk, side, intent, media: mediaKind };
 }
 
 // ── outbound queue ─────────────────────────────────────────────────────────

@@ -221,6 +221,38 @@ function contentOf(msg = {}) {
 }
 function extractText(m) { return contentOf(m.message || {}); }
 
+// Identify an attachment on the message (image/document/video/audio/sticker).
+// Returns { kind, mime, filename } or null. WhatsApp wraps some media in
+// viewOnce/ephemeral envelopes, so we unwrap those first.
+function mediaInfo(m) {
+  let msg = m.message || {};
+  msg = msg.ephemeralMessage?.message || msg.viewOnceMessage?.message || msg.viewOnceMessageV2?.message || msg;
+  if (msg.imageMessage) return { kind: "image", mime: msg.imageMessage.mimetype || "image/jpeg", filename: null };
+  if (msg.documentMessage) return { kind: "document", mime: msg.documentMessage.mimetype || "application/octet-stream", filename: msg.documentMessage.fileName || null };
+  if (msg.documentWithCaptionMessage?.message?.documentMessage) {
+    const d = msg.documentWithCaptionMessage.message.documentMessage;
+    return { kind: "document", mime: d.mimetype || "application/octet-stream", filename: d.fileName || null };
+  }
+  if (msg.stickerMessage) return { kind: "sticker", mime: msg.stickerMessage.mimetype || "image/webp", filename: null };
+  if (msg.videoMessage) return { kind: "video", mime: msg.videoMessage.mimetype || "video/mp4", filename: null };
+  return null;
+}
+
+const MAX_MEDIA_BYTES = 12 * 1024 * 1024; // don't pull huge files into the gateway
+async function downloadMedia(m) {
+  try {
+    const buf = await baileys.downloadMediaMessage(
+      m, "buffer", {},
+      { reuploadRequest: currentSock?.updateMediaMessage?.bind(currentSock) }
+    );
+    if (!buf || buf.length === 0 || buf.length > MAX_MEDIA_BYTES) return null;
+    return buf;
+  } catch (e) {
+    console.error("media download:", e.message);
+    return null;
+  }
+}
+
 // Pull the quoted/replied-to message (WhatsApp "reply") for direct Q→A linking.
 function replyContext(m) {
   const ci = m.message?.extendedTextMessage?.contextInfo;
@@ -238,7 +270,8 @@ async function handle(m) {
   if (!inScope(jid)) return;          // skip out-of-scope (e.g. personal) groups
 
   const text = extractText(m).trim();
-  if (!text) return;
+  const media = mediaInfo(m);
+  if (!text && !media) return; // pure system/empty event — nothing to capture
   const fromMe = !!m.key.fromMe;
   const sender = fromMe ? "me (LabStack)" : (m.pushName || m.key.participant || "");
   const side = fromMe || isLabstack(sender) ? "LAB" : "PARTNER";
@@ -257,10 +290,18 @@ async function handle(m) {
   // ── CONTROL TOWER: persist to the taskos DB (messages + tickets) ─────────
   if (CT_ENABLED) {
     const tsSec = Number(m.messageTimestamp?.low ?? m.messageTimestamp ?? 0) || Math.floor(Date.now() / 1000);
+    // Pull the actual bytes for image/document media so the console can show
+    // and interpret it — a caption-less report screenshot is otherwise blind.
+    let mediaBytes = null;
+    if (media && (media.kind === "image" || media.kind === "document")) {
+      mediaBytes = await downloadMedia(m);
+    }
     try {
       await CT.ingestMessage({
         jid, waMsgId: m.key.id, fromMe, sender, senderJid: m.key.participant || null, text,
         ts: new Date(tsSec * 1000), replyToWaId: rc?.replyToId || null,
+        mediaKind: media?.kind || null, mediaMime: media?.mime || null,
+        mediaFilename: media?.filename || null, mediaBytes,
       });
     } catch (e) { console.error("CT ingest:", e.message); }
   }

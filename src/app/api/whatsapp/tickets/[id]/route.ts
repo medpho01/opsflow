@@ -189,6 +189,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       id: m.id, direction: m.direction, fromMe: m.fromMe, sender: m.sender,
       text: m.text, ts: m.ts, intent: m.intent, waMsgId: m.waMsgId,
       ticketId: m.ticketId, isTeam: m.isTeam, teamName: m.teamName,
+      mediaType: m.mediaType, mediaMime: m.mediaMime, ocrText: m.ocrText, ocrJson: m.ocrJson,
+      idType: m.idType, idVia: m.idVia,
     })),
   });
 }

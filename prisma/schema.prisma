@@ -897,6 +897,22 @@ model WaMessage {
   @@map("wa_messages")
 }
 
+// Raw media bytes for image/document messages, kept in the shared taskos DB so
+// the console container can serve them without a shared filesystem with the
+// gateway. One row per WhatsApp message; ocr* cache the vision interpretation.
+model WaMedia {
+  id        String   @id @default(cuid())
+  waMsgId   String   @unique
+  groupId   String
+  mime      String
+  bytes     Bytes
+  ocrText   String?
+  ocrJson   Json?
+  createdAt DateTime @default(now())
+
+  @@map("wa_media")
+}
+
 model WaTicket {
   id              String         @id @default(cuid())
   groupId         String

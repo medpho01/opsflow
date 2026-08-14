@@ -185,11 +185,19 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   // Also expose every provider group so the agent can pick when none is mapped.
   const orderLabId = (live as { labId?: number } | null)?.labId ?? ticket.group?.labId ?? null;
   let labGroup: { id: string; jid: string; subject: string; labId: number | null } | null = null;
+  let lab: { id: number; name: string | null; city: string | null } | null = null;
   if (orderLabId) {
     labGroup = await prisma.waGroup.findFirst({
       where: { role: "PROVIDER", labId: orderLabId },
       select: { id: true, jid: true, subject: true, labId: true },
     });
+    // The lab the order is actually assigned to (real name from the replica).
+    const labRows = await labstackOr(
+      labstack.$queryRaw<Array<{ id: number; name: string | null; city: string | null }>>`
+        SELECT id, "labName" AS name, city FROM public."Lab" WHERE id = ${orderLabId} LIMIT 1`,
+      [] as Array<{ id: number; name: string | null; city: string | null }>, 3000, { breakerKey: "wa-lab-name" }
+    );
+    lab = labRows[0] || null;
   }
   const providerGroups = await prisma.waGroup.findMany({
     where: { role: "PROVIDER", active: true },
@@ -209,6 +217,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       ? { id: ticket.group.id, jid: ticket.group.jid, subject: ticket.group.subject, role: ticket.group.role, storeId: ticket.group.storeId, labId: ticket.group.labId, sendEnabled: ticket.group.sendEnabled }
       : null,
     labGroup,
+    lab,
     providerGroups,
     bulkStatuses,
     related,

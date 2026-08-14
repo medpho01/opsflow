@@ -17,6 +17,7 @@ type Detail = {
   ticket: { id: string; status: string; intent: string | null; orderId: number | null; requestId: number | null; patient: string | null; lastHandledBy: { name: string; ts: string } | null; liveContext: Record<string, unknown> | null; contextSnapshot: Record<string, unknown> | null };
   group: { id: string; jid: string; subject: string; role: string; labId: number | null; sendEnabled: boolean } | null;
   labGroup: { id: string; jid: string; subject: string; labId: number | null } | null;
+  lab?: { id: number; name: string | null; city: string | null } | null;
   providerGroups?: { id: string; jid: string; subject: string; labId: number | null }[];
   bulkStatuses?: { orderId: number; status: string | null; appt: string | null; patient: string | null }[];
   related: { groupId: string; groupSubject: string; groupRole: string; sender: string; text: string; ts: string }[];
@@ -433,6 +434,14 @@ export function WhatsAppControlTower() {
                 {detail.ticket.patient && <Row k="Patient" v={detail.ticket.patient} />}
                 <Row k="Order" v={detail.ticket.orderId ? `#${detail.ticket.orderId}` : detail.ticket.requestId ? `Req #${detail.ticket.requestId}` : "— none —"} mono />
                 <Row k="Store" v={short(detail.group?.subject || "—")} />
+                {(detail.lab || detail.labGroup) && (
+                  <Row
+                    k="Lab"
+                    v={detail.lab?.name
+                      ? `${detail.lab.name}${detail.lab.city ? " · " + detail.lab.city : ""}`
+                      : short(detail.labGroup?.subject || "—")}
+                  />
+                )}
                 <Row k="Intent" v={detail.ticket.intent || "—"} />
                 {detail.ticket.lastHandledBy && <Row k="Last handled" v={`${detail.ticket.lastHandledBy.name} · ${clock(detail.ticket.lastHandledBy.ts)}`} />}
               </div>

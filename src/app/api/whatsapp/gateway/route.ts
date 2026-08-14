@@ -36,8 +36,8 @@ export async function POST(request: NextRequest) {
 
   const body = await request.json().catch(() => ({}));
   const command = String(body?.command || "").toUpperCase();
-  if (!["RELINK", "LOGOUT"].includes(command))
-    return NextResponse.json({ error: "command must be RELINK or LOGOUT" }, { status: 400 });
+  if (!["RELINK", "LOGOUT", "BACKFILL"].includes(command))
+    return NextResponse.json({ error: "command must be RELINK, LOGOUT or BACKFILL" }, { status: 400 });
 
   await prisma.waGateway.upsert({
     where: { id: "default" },

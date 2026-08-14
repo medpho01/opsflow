@@ -35,6 +35,7 @@ const { useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = b
 
 const DRY_RUN = process.env.DRY_RUN !== "false"; // default TRUE — safe
 const LOG_FILE = process.env.LOG_FILE || "./dry-run.log.jsonl";
+const BACKFILL_DAYS = Number(process.env.BACKFILL_DAYS || 3); // history window
 const logger = pino({ level: "silent" });
 
 // ── Group scoping ─────────────────────────────────────────────────────────
@@ -121,6 +122,33 @@ function startLoops() {
         try { await currentSock?.logout(); } catch {}
         try { fs.rmSync("./auth", { recursive: true, force: true }); } catch {}
         reconnect();
+      } else if (cmd === "BACKFILL") {
+        // Re-resolve threads/ids for the recent window right away (reliable),
+        // then ask WhatsApp for a fresh recent-history sync so the
+        // messaging-history.set handler can backfill any missed media.
+        console.log(`admin command: BACKFILL (${BACKFILL_DAYS}d)`);
+        try {
+          const res = await CT.reresolveWindow({ days: BACKFILL_DAYS });
+          console.log(`backfill re-resolve: ${JSON.stringify(res)}`);
+        } catch (e) { console.error("backfill resolve:", e.message); }
+        try {
+          if (typeof currentSock?.fetchMessageHistory === "function") {
+            // Anchor at the newest message per active group and pull a page of
+            // recent history; results arrive via messaging-history.set.
+            const anchors = await CT.newestPerActiveGroup();
+            for (const a of anchors) {
+              if (!a.waMsgId) continue;
+              try {
+                await currentSock.fetchMessageHistory(
+                  50,
+                  { remoteJid: a.jid, id: a.waMsgId, fromMe: a.fromMe },
+                  Math.floor(new Date(a.ts).getTime() / 1000)
+                );
+              } catch { /* per-group best-effort */ }
+            }
+            console.log(`backfill: requested history for ${anchors.length} groups`);
+          }
+        } catch (e) { console.error("backfill history:", e.message); }
       }
     } catch {}
   }, 5000);
@@ -208,6 +236,22 @@ async function start() {
     for (const m of messages) {
       try { await handle(m); } catch (e) { console.error("handle error:", e.message); }
     }
+  });
+
+  // Historical messages WhatsApp pushes on (re)connect, or in response to a
+  // fetchMessageHistory request. Processing them through the SAME pipeline is
+  // idempotent and backfills anything we missed while offline or before media
+  // capture — including image bytes, as long as WhatsApp still serves them.
+  sock.ev.on("messaging-history.set", async ({ messages }) => {
+    if (!messages?.length) return;
+    const cutoff = Math.floor(Date.now() / 1000) - BACKFILL_DAYS * 86400;
+    let done = 0;
+    for (const m of messages) {
+      const ts = Number(m.messageTimestamp?.low ?? m.messageTimestamp ?? 0);
+      if (ts && ts < cutoff) continue; // keep to the recent window
+      try { await handle(m); done++; } catch { /* best-effort */ }
+    }
+    if (done) console.log(`history sync: processed ${done}/${messages.length} recent messages`);
   });
 }
 

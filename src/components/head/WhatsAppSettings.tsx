@@ -57,7 +57,7 @@ export function WhatsAppSettings() {
 
   async function command(command: string) {
     await fetch("/api/whatsapp/gateway", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ command }) });
-    flash(command === "LOGOUT" ? "Unlinking…" : "Re-linking — scan the new QR");
+    flash(command === "LOGOUT" ? "Unlinking…" : command === "BACKFILL" ? "Backfilling last 3 days — re-resolving threads & pulling media…" : "Re-linking — scan the new QR");
     loadGw();
   }
 
@@ -88,6 +88,7 @@ export function WhatsAppSettings() {
             <div className="text-xs text-zinc-500">{gw?.online ? "Linked device · online" : "Gateway offline"}{gw?.lastSeenAt ? ` · last seen ${new Date(gw.lastSeenAt).toLocaleTimeString()}` : ""}</div>
           </div>
           <div className="ml-auto flex gap-2">
+            <button onClick={() => command("BACKFILL")} className="text-xs font-semibold border border-zinc-700 hover:border-emerald-500 hover:text-emerald-400 rounded-lg px-3 py-2 text-zinc-300">Backfill last 3 days</button>
             <button onClick={() => command("RELINK")} className="text-xs font-semibold border border-zinc-700 hover:border-blue-500 rounded-lg px-3 py-2 text-zinc-300">Re-link (show QR)</button>
             <button onClick={() => command("LOGOUT")} className="text-xs font-semibold border border-zinc-700 hover:border-rose-500 hover:text-rose-400 rounded-lg px-3 py-2 text-zinc-300">Unlink</button>
           </div>

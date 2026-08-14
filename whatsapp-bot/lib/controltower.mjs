@@ -215,6 +215,14 @@ export async function ingestMessage(m) {
      intent, allOrderIds, validRequestIds, refs.refs, idType, idVia, ambiguousIds, mediaKind, mediaMime]
   );
 
+  // Backfill-safe: if this message row already existed as text-only (media was
+  // dropped before capture), tag its media flags now so the console shows it.
+  if (mediaKind) {
+    await taskosQuery(
+      `UPDATE wa_messages SET "mediaType"=$2, "mediaMime"=$3 WHERE "waMsgId"=$1 AND "mediaType" IS DISTINCT FROM $2`,
+      [waMsgId, mediaKind, mediaMime]
+    ).catch(() => {});
+  }
   // Persist the raw bytes separately so the console can serve/interpret them.
   if (mediaBytes && mediaMime) {
     await taskosQuery(
@@ -227,6 +235,80 @@ export async function ingestMessage(m) {
 
   if (autoAsk) await enqueueOutbound({ targetJid: jid, text: autoAsk, groupId: group.id, ticketId });
   return { stored: !!stored.rows[0], ticketId, autoAsk, side, intent, media: mediaKind };
+}
+
+/**
+ * Re-resolve stored messages in a recent window against the CURRENT logic:
+ * validate ids, canonicalize to an order, and inherit order/request + ticket
+ * down reply chains. Fixes threading/ids retroactively for messages captured
+ * before this logic existed. Does NOT touch media (bytes were never stored;
+ * media backfill needs a WhatsApp history re-fetch). Idempotent.
+ * Processes oldest→newest so a reply's parent is already re-resolved.
+ */
+export async function reresolveWindow({ days = 3 } = {}) {
+  await refreshGroups();
+  const rows = (await taskosQuery(
+    `SELECT m."waMsgId", m.text, m."replyToWaId", m."fromMe", m.sender, m.ts, m.intent, g.jid AS gjid
+       FROM wa_messages m JOIN wa_groups g ON g.id = m."groupId"
+      WHERE m.ts >= now() - ($1 || ' days')::interval AND g.active = true
+      ORDER BY m.ts ASC`,
+    [String(days)]
+  )).rows;
+
+  let updated = 0, inherited = 0, tickets = 0;
+  for (const r of rows) {
+    const refs = extractReferences(r.text || "");
+    const resolved = await resolveEntities(refs).catch(() => ({ orderIds: [], requestIds: [], primary: null, ambiguous: [] }));
+    let allOrderIds = resolved.orderIds;
+    let validRequestIds = resolved.requestIds;
+    let orderId = resolved.primary?.orderId || null;
+    let requestId = resolved.primary?.requestId || null;
+    let idType = resolved.primary?.type || null;
+    let idVia = resolved.primary?.via || null;
+    let ticketId = null;
+
+    if (!orderId && !requestId && r.replyToWaId) {
+      const parent = (await taskosQuery(
+        `SELECT "orderIds", "requestIds", "ticketId", "idType", "idVia" FROM wa_messages WHERE "waMsgId" = $1 LIMIT 1`,
+        [r.replyToWaId]
+      )).rows[0];
+      if (parent && ((parent.orderIds && parent.orderIds.length) || (parent.requestIds && parent.requestIds.length))) {
+        allOrderIds = parent.orderIds || [];
+        validRequestIds = parent.requestIds || [];
+        orderId = allOrderIds[0] || null;
+        requestId = validRequestIds[0] || null;
+        idType = parent.idType || (orderId ? "ORDER" : requestId ? "REQUEST" : null);
+        idVia = `reply · ${parent.idVia || (orderId ? `order ${orderId}` : `request ${requestId}`)}`;
+        ticketId = parent.ticketId || null;
+        inherited++;
+      }
+    }
+
+    const group = getGroup(r.gjid);
+    const substantive = r.intent !== "NOISE" && r.intent !== "SYSTEM";
+    if (group && substantive && !r.fromMe && (orderId || requestId)) {
+      ticketId = await upsertTicket({ group, orderId: orderId ? +orderId : null, requestId: requestId ? +requestId : null, intent: r.intent, ts: r.ts });
+      tickets++;
+    }
+
+    await taskosQuery(
+      `UPDATE wa_messages SET "orderIds"=$2, "requestIds"=$3, "refIds"=$4, "idType"=$5, "idVia"=$6, "ambiguousIds"=$7, "ticketId"=COALESCE($8, "ticketId") WHERE "waMsgId"=$1`,
+      [r.waMsgId, allOrderIds, validRequestIds, refs.refs, idType, idVia, resolved.ambiguous.map((a) => a.n), ticketId]
+    );
+    updated++;
+  }
+  return { scanned: rows.length, updated, inherited, tickets };
+}
+
+// Newest stored message per active group — used to anchor a history re-fetch.
+export async function newestPerActiveGroup() {
+  const rows = (await taskosQuery(
+    `SELECT DISTINCT ON (g.jid) g.jid, m."waMsgId", m."fromMe", m.ts
+       FROM wa_messages m JOIN wa_groups g ON g.id = m."groupId"
+      WHERE g.active = true
+      ORDER BY g.jid, m.ts DESC`
+  )).rows;
+  return rows;
 }
 
 // ── outbound queue ─────────────────────────────────────────────────────────

@@ -59,8 +59,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     return NextResponse.json({ error: "target must be store, lab, or other" }, { status: 400 });
   }
 
+  // Optional threaded reply: quote a specific message (the gateway only
+  // renders the quote when it lives in the same target chat).
+  const quotedWaId = body?.quotedWaMsgId ? String(body.quotedWaMsgId) : null;
+
   await prisma.waOutbound.create({
-    data: { targetJid, text, groupId: targetGroupId, ticketId: ticket.id, createdById: user.id },
+    data: { targetJid, text, groupId: targetGroupId, ticketId: ticket.id, createdById: user.id, quotedWaId },
   });
   if (nextStatus) {
     await prisma.waTicket.update({ where: { id: ticket.id }, data: { status: nextStatus, lastActivityAt: new Date() } });

@@ -119,6 +119,7 @@ export function WhatsAppControlTower() {
   const [reply, setReply] = useState("");
   const [toNumber, setToNumber] = useState("");
   const [labGroupId, setLabGroupId] = useState<string>("");
+  const [replyTo, setReplyTo] = useState<{ waMsgId: string; sender: string; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [gwOnline, setGwOnline] = useState(true);
@@ -199,6 +200,9 @@ export function WhatsAppControlTower() {
     if (prefilledId.current === detail.ticket.id) return;
     prefilledId.current = detail.ticket.id;
     setLabGroupId(detail.labGroup?.id || "");
+    // Thread replies by default: quote the customer's latest message.
+    const lastCustomer = [...detail.messages].reverse().find((m) => !m.isTeam && m.waMsgId);
+    setReplyTo(lastCustomer ? { waMsgId: lastCustomer.waMsgId, sender: lastCustomer.sender, text: lastCustomer.text } : null);
     if (isAnswerable(detail.ticket.intent, detail.ticket.orderId, detail.ticket.requestId)) {
       const d = draftFor(detail);
       if (d) { setReply(d); setTarget("store"); return; }
@@ -226,13 +230,13 @@ export function WhatsAppControlTower() {
     if (!activeId || !reply.trim()) return flash("Write a message first");
     setBusy(true);
     const res = await fetch(`/api/whatsapp/tickets/${activeId}/reply`, {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: reply, target, toNumber, labGroupId: labGroupId || undefined }),
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: reply, target, toNumber, labGroupId: labGroupId || undefined, quotedWaMsgId: target === "store" && replyTo ? replyTo.waMsgId : undefined }),
     });
     setBusy(false);
     const data = await res.json().catch(() => ({}));
     if (!res.ok) return flash(data.error || "Send failed");
     flash(`Queued → ${target === "store" ? "store group" : target === "lab" ? "lab group" : "number"}`);
-    setReply(""); loadConvos(); if (openGroup) loadCases(openGroup.id); loadDetail(activeId);
+    setReply(""); setReplyTo(null); loadConvos(); if (openGroup) loadCases(openGroup.id); loadDetail(activeId);
   }
   async function setStatus(status: string) {
     if (!activeId) return;
@@ -381,6 +385,13 @@ export function WhatsAppControlTower() {
                             ? <span className="text-[11px] font-semibold text-blue-300">{m.teamName || "Team"} <span className="text-zinc-500 font-normal">· LS team</span></span>
                             : <span className="text-[11px] font-semibold text-zinc-400">{m.sender}</span>}
                           {isCase && !team && <span className="text-[9px] font-bold uppercase tracking-wide text-amber-400 bg-amber-500/15 px-1.5 rounded">◆ this case</span>}
+                          {!team && m.waMsgId && (
+                            <button
+                              onClick={() => { setReplyTo({ waMsgId: m.waMsgId, sender: m.sender, text: m.text }); setTarget("store"); }}
+                              title="Reply to this message in the group"
+                              className="ml-auto text-[10px] text-zinc-500 hover:text-blue-300"
+                            >↩ Reply</button>
+                          )}
                         </div>
                         {m.mediaType === "image" && (
                           <a href={`/api/whatsapp/media/${m.waMsgId}`} target="_blank" rel="noreferrer" className="block mb-1">
@@ -425,6 +436,15 @@ export function WhatsAppControlTower() {
                       <option key={g.id} value={g.id}>{short(g.subject)}</option>
                     ))}
                   </select>
+                )}
+                {target === "store" && replyTo && (
+                  <div className="flex items-start gap-2 rounded-lg border-l-2 border-blue-500 bg-zinc-900/60 px-2.5 py-1.5">
+                    <div className="flex-1 min-w-0">
+                      <div className="text-[10px] font-semibold text-blue-300">↩ Replying to {replyTo.sender}</div>
+                      <div className="text-[11px] text-zinc-400 truncate">{replyTo.text}</div>
+                    </div>
+                    <button onClick={() => setReplyTo(null)} className="text-zinc-500 hover:text-zinc-300 text-sm leading-none">✕</button>
+                  </div>
                 )}
                 <div className="flex gap-2 items-end">
                   <textarea value={reply} onChange={(e) => setReply(e.target.value)} rows={2} placeholder="Write a reply, or use a suggested action →" className="flex-1 resize-none bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-100 focus:border-blue-500 outline-none" />

@@ -345,7 +345,24 @@ export async function drainOutbound(send, { limit = 5 } = {}) {
     }
     await taskosQuery(`UPDATE wa_outbound SET status='SENDING', attempts=attempts+1 WHERE id=$1`, [row.id]);
     try {
-      const waId = await send(row.targetJid, row.text, row.quotedWaId);
+      // Build a quoted stub so the reply threads under the original message.
+      // WhatsApp only renders a quote when the quoted message lives in the SAME
+      // chat, so require the quoted message's group jid to match the target.
+      let quoted = null;
+      if (row.quotedWaId) {
+        const qm = (await taskosQuery(
+          `SELECT m."waMsgId", m."senderJid", m."fromMe", m.text, g.jid AS gjid
+             FROM wa_messages m JOIN wa_groups g ON g.id = m."groupId"
+            WHERE m."waMsgId" = $1 LIMIT 1`, [row.quotedWaId]
+        )).rows[0];
+        if (qm && qm.gjid === row.targetJid) {
+          quoted = {
+            key: { remoteJid: qm.gjid, id: qm.waMsgId, fromMe: !!qm.fromMe, participant: qm.senderJid || undefined },
+            message: { conversation: qm.text || "" },
+          };
+        }
+      }
+      const waId = await send(row.targetJid, row.text, quoted);
       await taskosQuery(`UPDATE wa_outbound SET status='SENT', "sentWaMsgId"=$2, "sentAt"=now() WHERE id=$1`, [row.id, waId || null]);
       sent++;
     } catch (e) {

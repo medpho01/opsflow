@@ -102,9 +102,11 @@ function startLoops() {
   if (loopsStarted || !CT_ENABLED) return;
   loopsStarted = true;
 
-  const send = async (jid, text) => {
+  const send = async (jid, text, quoted = null) => {
     if (!currentSock) throw new Error("gateway not connected");
-    const r = await currentSock.sendMessage(jid, { text });
+    // `quoted` is a minimal WAMessage stub {key, message}; when present the
+    // reply renders as a threaded quote in the group instead of a new message.
+    const r = await currentSock.sendMessage(jid, { text }, quoted ? { quoted } : {});
     await new Promise((res) => setTimeout(res, 1200)); // human-paced spacing
     return r?.key?.id;
   };

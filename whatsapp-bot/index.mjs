@@ -107,11 +107,19 @@ function startLoops() {
   if (loopsStarted || !CT_ENABLED) return;
   loopsStarted = true;
 
-  const send = async (jid, text, quoted = null) => {
+  const send = async (jid, text, { quoted = null, media = null } = {}) => {
     if (!currentSock) throw new Error("gateway not connected");
-    // `quoted` is a minimal WAMessage stub {key, message}; when present the
-    // reply renders as a threaded quote in the group instead of a new message.
-    const r = await currentSock.sendMessage(jid, { text }, quoted ? { quoted } : {});
+    // `quoted` threads the reply under the original; `media` attaches a file.
+    let content;
+    if (media && media.bytes) {
+      const caption = text || undefined;
+      content = (media.mime || "").startsWith("image/")
+        ? { image: media.bytes, caption, mimetype: media.mime }
+        : { document: media.bytes, fileName: media.name || "file", mimetype: media.mime || "application/octet-stream", caption };
+    } else {
+      content = { text };
+    }
+    const r = await currentSock.sendMessage(jid, content, quoted ? { quoted } : {});
     await new Promise((res) => setTimeout(res, 1200)); // human-paced spacing
     return r?.key?.id;
   };

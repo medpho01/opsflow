@@ -126,6 +126,8 @@ export function WhatsAppControlTower() {
   const [toNumber, setToNumber] = useState("");
   const [labGroupId, setLabGroupId] = useState<string>("");
   const [replyTo, setReplyTo] = useState<{ waMsgId: string; sender: string; text: string } | null>(null);
+  const [attachment, setAttachment] = useState<File | null>(null);
+  const fileInput = useRef<HTMLInputElement | null>(null);
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [gwOnline, setGwOnline] = useState(true);
@@ -206,6 +208,7 @@ export function WhatsAppControlTower() {
     if (prefilledId.current === detail.ticket.id) return;
     prefilledId.current = detail.ticket.id;
     setLabGroupId(detail.labGroup?.id || "");
+    setAttachment(null);
     // Thread replies by default: quote the customer's latest message.
     const lastCustomer = [...detail.messages].reverse().find((m) => !m.isTeam && m.waMsgId);
     setReplyTo(lastCustomer ? { waMsgId: lastCustomer.waMsgId, sender: lastCustomer.sender, text: lastCustomer.text } : null);
@@ -233,16 +236,29 @@ export function WhatsAppControlTower() {
   function backToGroups() { setNav("groups"); setOpenGroup(null); setActiveId(null); setDetail(null); }
 
   async function sendReply() {
-    if (!activeId || !reply.trim()) return flash("Write a message first");
+    if (!activeId || (!reply.trim() && !attachment)) return flash("Write a message or attach a file");
     setBusy(true);
-    const res = await fetch(`/api/whatsapp/tickets/${activeId}/reply`, {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: reply, target, toNumber, labGroupId: labGroupId || undefined, quotedWaMsgId: target === "store" && replyTo ? replyTo.waMsgId : undefined }),
-    });
+    const quotedWaMsgId = target === "store" && replyTo ? replyTo.waMsgId : undefined;
+    let res: Response;
+    if (attachment) {
+      const fd = new FormData();
+      fd.append("text", reply); fd.append("target", target);
+      if (toNumber) fd.append("toNumber", toNumber);
+      if (labGroupId) fd.append("labGroupId", labGroupId);
+      if (quotedWaMsgId) fd.append("quotedWaMsgId", quotedWaMsgId);
+      fd.append("file", attachment);
+      res = await fetch(`/api/whatsapp/tickets/${activeId}/reply`, { method: "POST", body: fd });
+    } else {
+      res = await fetch(`/api/whatsapp/tickets/${activeId}/reply`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: reply, target, toNumber, labGroupId: labGroupId || undefined, quotedWaMsgId }),
+      });
+    }
     setBusy(false);
     const data = await res.json().catch(() => ({}));
     if (!res.ok) return flash(data.error || "Send failed");
     flash(`Queued → ${target === "store" ? "store group" : target === "lab" ? "lab group" : "number"}`);
-    setReply(""); setReplyTo(null); loadConvos(); if (openGroup) loadCases(openGroup.id); loadDetail(activeId);
+    setReply(""); setReplyTo(null); setAttachment(null); loadConvos(); if (openGroup) loadCases(openGroup.id); loadDetail(activeId);
   }
   async function setStatus(status: string) {
     if (!activeId) return;
@@ -452,7 +468,17 @@ export function WhatsAppControlTower() {
                     <button onClick={() => setReplyTo(null)} className="text-zinc-500 hover:text-zinc-300 text-sm leading-none">✕</button>
                   </div>
                 )}
+                {attachment && (
+                  <div className="flex items-center gap-2 rounded-lg border border-zinc-700 bg-zinc-900/60 px-2.5 py-1.5 text-xs">
+                    <span className="text-zinc-300">{attachment.type.startsWith("image/") ? "🖼️" : "📄"}</span>
+                    <span className="text-zinc-200 truncate flex-1">{attachment.name}</span>
+                    <span className="text-zinc-500">{Math.ceil(attachment.size / 1024)} KB</span>
+                    <button onClick={() => { setAttachment(null); if (fileInput.current) fileInput.current.value = ""; }} className="text-zinc-500 hover:text-zinc-300">✕</button>
+                  </div>
+                )}
                 <div className="flex gap-2 items-end">
+                  <input ref={fileInput} type="file" className="hidden" accept="image/*,application/pdf,.pdf,.jpg,.jpeg,.png,.webp" onChange={(e) => setAttachment(e.target.files?.[0] || null)} />
+                  <button onClick={() => fileInput.current?.click()} title="Attach a file or image" className="shrink-0 h-[42px] w-10 flex items-center justify-center border border-zinc-700 hover:border-blue-500 rounded-lg text-zinc-400 hover:text-zinc-200">📎</button>
                   <textarea value={reply} onChange={(e) => setReply(e.target.value)} rows={2} placeholder="Write a reply, or use a suggested action →" className="flex-1 resize-none bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-100 focus:border-blue-500 outline-none" />
                   <button onClick={sendReply} disabled={busy} className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-semibold text-sm px-4 py-2.5 rounded-lg">Send ▸</button>
                 </div>

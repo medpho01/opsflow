@@ -980,6 +980,9 @@ model WaOutbound {
   error       String?
   sentWaMsgId String?
   quotedWaId  String? // reply-to a specific inbound message
+  mediaMime   String? // when set, this outbound carries an attachment
+  mediaName   String? // original filename (documents)
+  mediaBytes  Bytes? // the attachment bytes (short-lived; sent then done)
   createdAt   DateTime         @default(now())
   sentAt      DateTime?
 

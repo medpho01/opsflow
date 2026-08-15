@@ -13,10 +13,25 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
 
   const { id } = await params;
-  const body = await request.json().catch(() => ({}));
+  // Accept JSON (text only) or multipart/form-data (text + an attachment).
+  let body: Record<string, unknown> = {};
+  let media: { mime: string; name: string; bytes: Buffer } | null = null;
+  const ctype = request.headers.get("content-type") || "";
+  if (ctype.includes("multipart/form-data")) {
+    const form = await request.formData();
+    body = Object.fromEntries([...form.entries()].filter(([, v]) => typeof v === "string")) as Record<string, unknown>;
+    const file = form.get("file");
+    if (file && typeof file !== "string") {
+      const buf = Buffer.from(await file.arrayBuffer());
+      if (buf.length > 16 * 1024 * 1024) return NextResponse.json({ error: "attachment too large (max 16MB)" }, { status: 400 });
+      if (buf.length > 0) media = { mime: file.type || "application/octet-stream", name: file.name || "file", bytes: buf };
+    }
+  } else {
+    body = await request.json().catch(() => ({}));
+  }
   const text = String(body?.text || "").trim();
   const target = String(body?.target || "store");
-  if (!text) return NextResponse.json({ error: "text is required" }, { status: 400 });
+  if (!text && !media) return NextResponse.json({ error: "text or an attachment is required" }, { status: 400 });
 
   const ticket = await prisma.waTicket.findUnique({ where: { id }, include: { group: true } });
   if (!ticket || !ticket.group) return NextResponse.json({ error: "ticket not found" }, { status: 404 });
@@ -64,7 +79,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   const quotedWaId = body?.quotedWaMsgId ? String(body.quotedWaMsgId) : null;
 
   await prisma.waOutbound.create({
-    data: { targetJid, text, groupId: targetGroupId, ticketId: ticket.id, createdById: user.id, quotedWaId },
+    data: {
+      targetJid, text, groupId: targetGroupId, ticketId: ticket.id, createdById: user.id, quotedWaId,
+      ...(media ? { mediaMime: media.mime, mediaName: media.name, mediaBytes: media.bytes } : {}),
+    },
   });
   if (nextStatus) {
     await prisma.waTicket.update({ where: { id: ticket.id }, data: { status: nextStatus, lastActivityAt: new Date() } });

@@ -331,7 +331,7 @@ export async function enqueueOutbound({ targetJid, text, groupId = null, ticketI
  */
 export async function drainOutbound(send, { limit = 5 } = {}) {
   const rows = (await taskosQuery(
-    `SELECT o.id, o."targetJid", o.text, o."groupId", o."quotedWaId", g."sendEnabled", g.subject
+    `SELECT o.id, o."targetJid", o.text, o."groupId", o."quotedWaId", o."mediaMime", o."mediaName", o."mediaBytes", g."sendEnabled", g.subject
        FROM wa_outbound o LEFT JOIN wa_groups g ON g.id = o."groupId"
       WHERE o.status = 'QUEUED' ORDER BY o."createdAt" ASC LIMIT $1`, [limit]
   )).rows;
@@ -362,7 +362,8 @@ export async function drainOutbound(send, { limit = 5 } = {}) {
           };
         }
       }
-      const waId = await send(row.targetJid, row.text, quoted);
+      const media = row.mediaBytes ? { mime: row.mediaMime, name: row.mediaName, bytes: row.mediaBytes } : null;
+      const waId = await send(row.targetJid, row.text, { quoted, media });
       await taskosQuery(`UPDATE wa_outbound SET status='SENT', "sentWaMsgId"=$2, "sentAt"=now() WHERE id=$1`, [row.id, waId || null]);
       sent++;
     } catch (e) {

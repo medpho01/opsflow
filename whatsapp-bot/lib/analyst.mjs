@@ -60,7 +60,7 @@ async function gatherCase({ orderId, requestId }) {
     ? `m."orderIds" @> ARRAY[${Number(orderId)}]::int[]`
     : `m."requestIds" @> ARRAY[${Number(requestId)}]::int[]`;
   return (await taskosQuery(
-    `SELECT m."waMsgId", m."fromMe", m.sender, m."senderJid", m.text, m.ts, m.intent,
+    `SELECT m."waMsgId", m."fromMe", m.sender, m."senderJid", m.text, m."ocrText", m.ts, m.intent,
             g.subject AS gsubject, g.role AS grole
        FROM wa_messages m JOIN wa_groups g ON g.id = m."groupId"
       WHERE ${col} ORDER BY m.ts ASC LIMIT 200`
@@ -147,13 +147,17 @@ export async function analyzeActiveCases({ limit = 8, model, apiKey } = {}) {
     const look = await lookupIds([idKey]).catch(() => ({ orders: [], requests: [] }));
     const dbRow = c.orderId ? (look.orders || [])[0] : (look.requests || [])[0];
 
-    const hashSrc = msgs.map((m) => m.waMsgId).join(",") + "|" + String(msgs[msgs.length - 1]?.ts || "") + "|" + JSON.stringify(dbRow || {});
+    const hashSrc = msgs.map((m) => m.waMsgId + (m.ocrText ? "*" : "")).join(",") + "|" + String(msgs[msgs.length - 1]?.ts || "") + "|" + JSON.stringify(dbRow || {});
     const inputHash = crypto.createHash("sha1").update(hashSrc).digest("hex");
     const col = c.orderId ? "orderId" : "requestId";
     const existing = (await taskosQuery(`SELECT "inputHash" FROM wa_case_briefs WHERE "${col}" = $1`, [idKey])).rows[0];
     if (existing && existing.inputHash === inputHash) continue; // nothing changed → no spend
 
-    const tagged = msgs.map((m) => ({ ts: m.ts, actor: m.fromMe ? "You" : (m.sender || "?"), role: actorRole(m, matchTeam), group: m.gsubject, text: (m.text || "").slice(0, 500) }));
+    const tagged = msgs.map((m) => ({
+      ts: m.ts, actor: m.fromMe ? "You" : (m.sender || "?"), role: actorRole(m, matchTeam), group: m.gsubject,
+      text: (m.text || "").slice(0, 500),
+      ...(m.ocrText ? { image: m.ocrText.slice(0, 500) } : {}),
+    }));
     const brief = await callAnalyst({ apiKey, model, orderId: c.orderId, requestId: c.requestId, dbRow, messages: tagged });
     if (!brief) continue;
     await upsertBrief(c, brief, inputHash, model);

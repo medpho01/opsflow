@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import WhatsAppInbox from "./WhatsAppInbox";
 
 type Conversation = {
   groupId: string; subject: string; role: string; ticketId: string | null;
@@ -132,6 +133,7 @@ export function WhatsAppControlTower() {
   const [toast, setToast] = useState<string | null>(null);
   const [gwOnline, setGwOnline] = useState(true);
   const [gwDryRun, setGwDryRun] = useState(false);
+  const [view, setView] = useState<"crm" | "inbox">("crm");
   const [livewire, setLivewire] = useState(false);
   const prefilledId = useRef<string | null>(null);
   const caseAnchor = useRef<HTMLDivElement | null>(null);
@@ -234,6 +236,11 @@ export function WhatsAppControlTower() {
     setConvos((cs) => cs.map((x) => (x.groupId === c.groupId ? { ...x, unread: 0 } : x)));
   }
   function backToGroups() { setNav("groups"); setOpenGroup(null); setActiveId(null); setDetail(null); }
+  function openCaseFromInbox(groupId: string, ticketId: string) {
+    const c = convos.find((x) => x.groupId === groupId);
+    setView("crm"); setOpenGroup({ id: groupId, subject: c?.subject || "" }); setNav("cases");
+    loadCases(groupId); setActiveId(ticketId);
+  }
 
   async function sendReply() {
     if (!activeId || (!reply.trim() && !attachment)) return flash("Write a message or attach a file");
@@ -291,6 +298,13 @@ export function WhatsAppControlTower() {
     <div className="flex flex-col h-full">
       <div className="flex items-center gap-3 px-5 py-3 border-b border-zinc-800">
         <h1 className="text-lg font-semibold text-zinc-100">WhatsApp Control Tower</h1>
+        <div className="flex rounded-lg border border-zinc-700 overflow-hidden text-xs">
+          {(["inbox", "crm"] as const).map((v) => (
+            <button key={v} onClick={() => setView(v)} className={`px-3 py-1.5 font-semibold ${view === v ? "bg-blue-600 text-white" : "bg-zinc-900 text-zinc-400 hover:text-zinc-200"}`}>
+              {v === "inbox" ? "💬 Inbox" : "◆ CRM"}
+            </button>
+          ))}
+        </div>
         <span className={`inline-flex items-center gap-1.5 text-xs px-2 py-1 rounded-full border ${gwOnline ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/30" : "bg-rose-500/10 text-rose-400 border-rose-500/30"}`}>
           <span className={`w-1.5 h-1.5 rounded-full ${gwOnline ? "bg-emerald-400" : "bg-rose-400"}`} />{gwOnline ? "Gateway online" : "Gateway offline"}
         </span>
@@ -304,7 +318,9 @@ export function WhatsAppControlTower() {
         <a href="/head/settings/whatsapp" className="ml-auto text-xs text-zinc-400 hover:text-zinc-200 border border-zinc-800 rounded-lg px-3 py-1.5">⚙ Settings</a>
       </div>
 
-      <div className="grid grid-cols-[340px_1fr_320px] flex-1 min-h-0">
+      {view === "inbox" && <WhatsAppInbox gwDryRun={gwDryRun} onOpenCase={openCaseFromInbox} />}
+
+      <div className={`${view === "crm" ? "grid" : "hidden"} grid-cols-[340px_1fr_320px] flex-1 min-h-0`}>
         {/* LEFT: groups → cases drill-down */}
         <div className="border-r border-zinc-800 flex flex-col min-h-0">
           {nav === "groups" ? (

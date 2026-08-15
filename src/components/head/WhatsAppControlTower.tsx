@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import WhatsAppInbox from "./WhatsAppInbox";
+import WhatsAppAnalytics from "./WhatsAppAnalytics";
 
 type Conversation = {
   groupId: string; subject: string; role: string; ticketId: string | null;
@@ -398,7 +399,9 @@ export function WhatsAppControlTower() {
         {/* CENTER: case thread */}
         <div className="flex flex-col min-h-0 border-r border-zinc-800">
           {!detail ? (
-            <div className="flex-1 grid place-items-center text-zinc-600 text-sm">{nav === "cases" ? "Select a case" : "Select a conversation"}</div>
+            nav === "groups"
+              ? <WhatsAppAnalytics />
+              : <div className="flex-1 grid place-items-center text-zinc-600 text-sm">Select a case</div>
           ) : (
             <>
               <div className="px-4 py-3 border-b border-zinc-800 flex items-center gap-2">
@@ -605,7 +608,28 @@ export function WhatsAppControlTower() {
                   <button onClick={() => { setTarget("store"); setReply(bulkDraft(detail)); }} className="mt-1 text-left text-sm border border-zinc-700 hover:border-emerald-500 rounded-lg px-3 py-2 text-zinc-200">↩ Reply with all {detail.bulkStatuses.length} statuses <span className="block text-xs text-zinc-500">one line per order, to the store group</span></button>
                 </div>
               )}
-              {detail.timeline && detail.timeline.length > 1 && (() => {
+              {detail.brief?.timeline && detail.brief.timeline.length > 0 && (
+                <div className="p-4 border-b border-zinc-800 flex flex-col gap-2">
+                  <div className="text-[11px] uppercase tracking-wide text-violet-300 font-semibold flex items-center gap-2">
+                    ✦ Order timeline <span className="normal-case font-normal text-zinc-600">by AI analyst</span>
+                  </div>
+                  <div className="relative pl-4 flex flex-col gap-3 max-h-[340px] overflow-y-auto pr-1">
+                    <div className="absolute left-[3px] top-1.5 bottom-1.5 w-px bg-zinc-700/60" />
+                    {detail.brief.timeline.map((t, i) => (
+                      <div key={i} className="relative">
+                        <span className={`absolute -left-[13px] top-1.5 w-2 h-2 rounded-full ring-2 ring-zinc-900 ${t.role === "Ops" ? "bg-blue-400" : t.role === "Lab" ? "bg-amber-400" : "bg-emerald-400"}`} />
+                        <div className="flex items-center gap-1.5 text-[10px] flex-wrap">
+                          <span className={`px-1 rounded font-semibold ${t.role === "Lab" ? "bg-amber-500/15 text-amber-400" : t.role === "Ops" ? "bg-blue-500/15 text-blue-300" : "bg-emerald-500/15 text-emerald-300"}`}>{t.role}</span>
+                          <span className="font-medium text-zinc-300">{t.actor}</span>
+                          {t.ts && <span className="text-zinc-600 ml-auto tabular-nums">{(() => { try { return fmtTime(t.ts); } catch { return t.ts; } })()}</span>}
+                        </div>
+                        <div className="text-xs text-zinc-300 mt-0.5 whitespace-pre-wrap">{t.event}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {!detail.brief?.timeline?.length && detail.timeline && detail.timeline.length > 1 && (() => {
                 const tl = detail.timeline;
                 const groupCount = new Set(tl.map((t) => t.groupId)).size;
                 return (

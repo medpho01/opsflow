@@ -133,7 +133,7 @@ export async function analyzeActiveCases({ limit = 8, model, apiKey } = {}) {
   const cases = (await taskosQuery(
     `SELECT DISTINCT t."orderId", t."requestId"
        FROM wa_tickets t
-      WHERE t.status NOT IN ('RESOLVED','CLOSED') AND (t."orderId" IS NOT NULL OR t."requestId" IS NOT NULL)
+      WHERE t.status <> 'RESOLVED' AND (t."orderId" IS NOT NULL OR t."requestId" IS NOT NULL)
       LIMIT 300`
   )).rows;
 

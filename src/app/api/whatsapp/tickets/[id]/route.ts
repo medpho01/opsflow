@@ -160,10 +160,14 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     live = rows[0] || null;
   }
 
-  // #1 Bulk status — one message often lists many orders ("71708 71961 …
-  // sample collection status"). Pull the latest status for EVERY order named
-  // across this case's thread so the agent can answer all of them at once.
-  const bulkOrderIds = [...new Set(taggedMsgs.flatMap((m) => m.orderIds || []))].filter(Boolean);
+  // #1 Bulk status — ONLY when a single message genuinely lists many orders
+  // ("71708 71961 … sample collection status"). Previously we unioned every
+  // order across the whole thread, which made a single-order case look like it
+  // had 27 orders. Now we take the one message with the most ids (if >1).
+  const multiMsg = taggedMsgs
+    .filter((m) => (m.orderIds || []).length > 1)
+    .sort((a, b) => (b.orderIds?.length || 0) - (a.orderIds?.length || 0))[0];
+  const bulkOrderIds = multiMsg ? [...new Set(multiMsg.orderIds)] : [];
   let bulkStatuses: Array<{ orderId: number; status: string | null; appt: string | null; patient: string | null }> = [];
   if (bulkOrderIds.length > 1) {
     const rows = await labstackOr(

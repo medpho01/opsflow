@@ -22,9 +22,14 @@ import { classify, extractIds, DISPOSITION, isLabstack } from "./lib/classifier.
 import { lookupIds } from "./lib/lookup.mjs";
 import { compose } from "./lib/reply.mjs";
 import * as CT from "./lib/controltower.mjs";
+import * as Analyst from "./lib/analyst.mjs";
 
 // Control Tower integration is active only when the taskos DB is configured.
 const CT_ENABLED = !!process.env.TASKOS_DATABASE_URL;
+// Case analyst (LLM). Runs only when an Anthropic key is present.
+const ANALYST_API_KEY = process.env.ANTHROPIC_API_KEY || "";
+const ANALYST_MODEL = process.env.WA_ANALYST_MODEL || "claude-sonnet-5";
+const ANALYST_ENABLED = CT_ENABLED && !!ANALYST_API_KEY && process.env.WA_ANALYST !== "false";
 let currentSock = null;   // updated each (re)connect so loops use the live socket
 let loopsStarted = false;
 
@@ -157,6 +162,17 @@ function startLoops() {
 
   setInterval(() => CT.heartbeat(DRY_RUN).catch(() => {}), 20000);
   setInterval(() => CT.refreshGroups().catch(() => {}), 30000);
+
+  // Case analyst: continuously (but change-detected) synthesize an LLM brief
+  // per active order — status, timeline, resolution, in-context suggestions.
+  if (ANALYST_ENABLED) {
+    console.log(`case analyst ON (model=${ANALYST_MODEL})`);
+    setInterval(() => {
+      Analyst.analyzeActiveCases({ limit: 8, model: ANALYST_MODEL, apiKey: ANALYST_API_KEY })
+        .then((r) => { if (r?.analyzed) console.log(`analyst: ${r.analyzed}/${r.candidates} cases`); })
+        .catch((e) => console.error("analyst loop:", e.message));
+    }, 30000);
+  }
 
   // Groups can be empty right after a FRESH link (the phone hasn't pushed group
   // metadata to the new device yet), so the one-shot discovery on "open" may

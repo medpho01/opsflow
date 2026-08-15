@@ -913,6 +913,32 @@ model WaMedia {
   @@map("wa_media")
 }
 
+// LLM-synthesized case brief per order/request. A background analyst reads all
+// of an order's messages (across groups) + the live LabStack state and produces
+// an accurate status, cross-group timeline, resolution verdict, and in-context
+// suggested replies. Keyed by the canonical order (or request) so one brief
+// serves every group's case for it. inputHash lets the analyst skip re-work
+// when nothing changed — bounding token spend even in continuous mode.
+model WaCaseBrief {
+  id             String   @id @default(cuid())
+  orderId        Int?     @unique
+  requestId      Int?     @unique
+  status         String? // plain-English current status
+  resolved       Boolean  @default(false)
+  resolvedReason String?
+  waiting        String? // who is waiting on whom / the next action
+  timeline       Json? // [{ ts, actor, role, event }]
+  suggestions    Json? // { store: "...", lab: "..." }
+  actors         Json? // optional per-sender role map
+  model          String?
+  inputHash      String? // hash of the analyzed inputs; skip re-run when unchanged
+  analyzedAt     DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  createdAt      DateTime @default(now())
+
+  @@map("wa_case_briefs")
+}
+
 model WaTicket {
   id              String         @id @default(cuid())
   groupId         String

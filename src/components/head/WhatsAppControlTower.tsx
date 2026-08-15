@@ -26,6 +26,12 @@ type Detail = {
   timeline?: { id: string; groupId: string; groupSubject: string; groupRole: string; sender: string; text: string; intent: string | null; ts: string; isTeam: boolean; teamName: string | null; isCurrentGroup: boolean }[];
   mentions?: Record<string, string>;
   suggestResolve?: { reason: string } | null;
+  brief?: {
+    status: string | null; resolved: boolean; resolvedReason: string | null; waiting: string | null;
+    timeline: { ts: string; actor: string; role: string; event: string }[] | null;
+    suggestions: { store?: string; lab?: string } | null;
+    analyzedAt: string; model: string | null;
+  } | null;
 };
 
 // Replace "@919811111111" mentions with "@Name" using the resolved map.
@@ -480,6 +486,35 @@ export function WhatsAppControlTower() {
         <div className="flex flex-col min-h-0 overflow-y-auto">
           {detail && (
             <>
+              {detail.brief && (
+                <div className="p-4 border-b border-zinc-800 flex flex-col gap-2 bg-violet-500/5">
+                  <div className="text-[11px] uppercase tracking-wide text-violet-300 font-semibold flex items-center gap-2">
+                    ✦ AI brief
+                    {detail.brief.resolved && <span className="text-[9px] font-bold uppercase text-emerald-400 bg-emerald-500/15 px-1.5 rounded">resolved</span>}
+                  </div>
+                  {detail.brief.status && <div className="text-sm text-zinc-100">{detail.brief.status}</div>}
+                  {detail.brief.waiting && <div className="text-xs text-amber-300">⏳ {detail.brief.waiting}</div>}
+                  {detail.brief.resolved && detail.brief.resolvedReason && (
+                    <div className="mt-1 rounded-lg border border-emerald-500/40 bg-emerald-500/10 p-2">
+                      <div className="text-[11px] text-emerald-200">{detail.brief.resolvedReason}</div>
+                      {detail.ticket.status !== "RESOLVED" && (
+                        <button onClick={() => setStatus("RESOLVED")} className="mt-1.5 text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white rounded-md px-3 py-1">Mark resolved</button>
+                      )}
+                    </div>
+                  )}
+                  {(detail.brief.suggestions?.store || detail.brief.suggestions?.lab) && (
+                    <div className="flex flex-col gap-1.5 mt-1">
+                      {detail.brief.suggestions?.store && (
+                        <button onClick={() => { setTarget("store"); setReply(detail.brief!.suggestions!.store!); }} className="text-left text-xs border border-zinc-700 hover:border-emerald-500 rounded-lg px-2.5 py-1.5 text-zinc-200">↩ To customer <span className="block text-[11px] text-zinc-500 line-clamp-2">{detail.brief.suggestions.store}</span></button>
+                      )}
+                      {detail.brief.suggestions?.lab && (
+                        <button onClick={() => { setTarget("lab"); setReply(detail.brief!.suggestions!.lab!); }} className="text-left text-xs border border-zinc-700 hover:border-blue-500 rounded-lg px-2.5 py-1.5 text-zinc-200">→ To lab <span className="block text-[11px] text-zinc-500 line-clamp-2">{detail.brief.suggestions.lab}</span></button>
+                      )}
+                    </div>
+                  )}
+                  <div className="text-[10px] text-zinc-600">analyzed {fmtTime(detail.brief.analyzedAt)}{detail.brief.model ? ` · ${detail.brief.model}` : ""}</div>
+                </div>
+              )}
               <div className="p-4 border-b border-zinc-800 flex flex-col gap-2">
                 {detail.ticket.patient && <Row k="Patient" v={detail.ticket.patient} />}
                 <Row k="Order" v={detail.ticket.orderId ? `#${detail.ticket.orderId}` : detail.ticket.requestId ? `Req #${detail.ticket.requestId}` : "— none —"} mono />

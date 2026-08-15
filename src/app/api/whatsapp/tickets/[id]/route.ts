@@ -205,6 +205,14 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     orderBy: { subject: "asc" },
   });
 
+  // LLM case brief (status / timeline / resolution / suggestions), keyed by the
+  // canonical order or request. Produced continuously by the gateway analyst.
+  const brief = (ticket.orderId || ticket.requestId)
+    ? await prisma.waCaseBrief.findFirst({
+        where: ticket.orderId ? { orderId: ticket.orderId } : { requestId: ticket.requestId! },
+      })
+    : null;
+
   // Delivery status of replies we sent from the console for this case, so the
   // agent sees QUEUED / SENT / FAILED (+reason) instead of a silent void.
   const outbound = await prisma.waOutbound.findMany({
@@ -229,6 +237,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     lab,
     providerGroups,
     outbound,
+    brief,
     bulkStatuses,
     related,
     timeline,

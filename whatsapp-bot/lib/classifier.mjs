@@ -32,10 +32,13 @@ export function extractIds(text = "") {
   return { ids: [...ids], requestIds: [...requestIds], hasId: ids.size > 0 };
 }
 
-// Lab reference ids: city-prefixed booking numbers the store/lab quote in chat,
-// e.g. "BLR5560683", "HYD6013288", "DEL2221267". These map to Order.labOrderId,
-// not to our numeric order id — resolve them to an order via the replica.
-const REF_RE = /\b([A-Za-z]{2,4}\d{6,})\b/g;
+// Lab reference ids: booking numbers the store/lab quote in chat. Two shapes:
+//   • city-prefixed digits  — "BLR5560683", "HYD6013288", "DEL2221267"
+//   • interleaved alphanum  — "VL7CAE0F" (Thyrocare etc.)
+// Both map to Order.labOrderId (not our numeric order id). We over-capture any
+// 6–14 char token that has BOTH a letter and a digit; every candidate is then
+// VALIDATED against the replica (resolveRefIds), so non-refs simply drop.
+const REF_RE = /\b((?=[A-Za-z0-9]*[A-Za-z])(?=[A-Za-z0-9]*\d)[A-Za-z0-9]{6,14})\b/g;
 export function extractRefIds(text = "") {
   const refs = new Set();
   let r;

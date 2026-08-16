@@ -22,6 +22,49 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   // Opening a conversation marks the group read (clears its unread count).
   prisma.waGroup.update({ where: { id: ticket.groupId }, data: { lastReadAt: new Date() } }).catch(() => {});
 
+  // Recognise the order from the CONVERSATION when the case opened id-less. The
+  // same thread usually names the order id or the lab reference id in a nearby
+  // message (a lab reply, an image caption, "VL7CAE0F - schedule for…"). Adopt it
+  // so the case resolves patient / status / lab instead of sitting id-less, and
+  // persist it so the whole thread carries the context going forward.
+  if (!ticket.orderId && !ticket.requestId) {
+    const conv = await prisma.waMessage.findMany({
+      where: { ticketId: id }, orderBy: { ts: "desc" }, take: 80,
+      select: { text: true, orderIds: true, requestIds: true, refIds: true },
+    });
+    let adoptOrder: number | null = null;
+    let adoptRequest: number | null = null;
+    for (const m of conv) {
+      if (m.orderIds?.length) { adoptOrder = m.orderIds[0]; break; }
+      if (m.requestIds?.length) { adoptRequest = m.requestIds[0]; break; }
+    }
+    if (!adoptOrder && !adoptRequest) {
+      // Lab reference ids: stored refIds + a broad re-scan of the text (formats
+      // like "VL7CAE0F" the gateway's narrow extractor can miss). Validated below.
+      const refSet = new Set<string>();
+      for (const m of conv) {
+        for (const r of m.refIds || []) refSet.add(r.toUpperCase());
+        for (const tok of (m.text || "").toUpperCase().match(/\b(?=[A-Z0-9]*[A-Z])(?=[A-Z0-9]*\d)[A-Z0-9]{6,14}\b/g) || []) refSet.add(tok);
+      }
+      const refs = [...refSet].slice(0, 25);
+      if (refs.length) {
+        const rows = await labstackOr(
+          labstack.$queryRaw<Array<{ id: number }>>`SELECT id FROM public."Order" WHERE upper("labOrderId") IN (${Prisma.join(refs)}) ORDER BY id DESC LIMIT 1`,
+          [] as Array<{ id: number }>,
+        );
+        if (rows.length) adoptOrder = rows[0].id;
+      }
+    }
+    if (adoptOrder || adoptRequest) {
+      ticket.orderId = adoptOrder;
+      ticket.requestId = adoptRequest;
+      await prisma.waTicket.update({ where: { id }, data: { orderId: adoptOrder, requestId: adoptRequest } }).catch(() => {});
+      if (adoptOrder) {
+        await prisma.$executeRaw`UPDATE wa_messages SET "orderIds" = array_append("orderIds", ${adoptOrder}) WHERE "ticketId" = ${id} AND NOT (${adoptOrder} = ANY("orderIds"))`.catch(() => {});
+      }
+    }
+  }
+
   // Thread the conversation to THIS order/request (the case) when we have an id,
   // so the agent works one order in isolation. Fall back to the group thread.
   let msgs: Prisma.WaMessageGetPayload<object>[] = [];

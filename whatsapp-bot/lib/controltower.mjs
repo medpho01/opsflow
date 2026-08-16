@@ -14,6 +14,7 @@
 import { taskos, taskosQuery } from "./taskosdb.mjs";
 import { classify, extractIds, extractReferences, DISPOSITION, isLabstack } from "./classifier.mjs";
 import { lookupIds, resolveEntities } from "./lookup.mjs";
+import { loadTeam, makeTeamMatcher } from "./team.mjs";
 
 // ── group cache (jid → config row) ─────────────────────────────────────────
 let groupCache = new Map();
@@ -200,42 +201,76 @@ export async function ingestMessage(m) {
   // INTERNAL groups are investigation — they still store + thread to the order
   // for the timeline/analyst, but they don't spawn their own cases. This is
   // what stops lab status posts and ops chatter from becoming phantom cases.
+  // Is this our team responding, or a customer asking? A team member replies
+  // from their OWN phone (direction IN, not fromMe) — the roster tells us. This
+  // is how we credit native WhatsApp replies as real responses.
+  const matchTeam = makeTeamMatcher(await loadTeam());
+  const matched = fromMe ? null : matchTeam(sender, senderJid);
+  const isTeamMsg = fromMe || !!matched || isLabstack(sender);
+  const teamName = fromMe ? "You" : (matched || (isLabstack(sender) ? sender : null));
+
   let ticketId = null;
   let autoAsk = null;
-  if (substantive && !fromMe && group.role === "SUPPORT") {
-    // Conversational carry-forward: a bare follow-up with no id, no ref and no
-    // reply-quote ("still pending?", "user said urine sample missed") almost
-    // always continues the order just being discussed in this group. Attach it
-    // to the group's most-recent open case active within the window, instead of
-    // spawning a stray no-id case. New topics normally cite an id, so they skip
-    // this path and resolve on their own.
-    if (!orderId && !requestId && !inheritedTicketId) {
+  if (substantive && group.role === "SUPPORT") {
+    // Find the case this message belongs to: reply-chain → by id → active thread
+    // (conversational carry-forward for a bare follow-up with no id/quote).
+    ticketId = inheritedTicketId || null;
+    if (!ticketId && (orderId || requestId)) {
+      const ex = (await taskosQuery(
+        `SELECT id FROM wa_tickets WHERE "groupId" = $1 AND ${orderId ? '"orderId" = $2' : '"requestId" = $2'} AND status <> 'RESOLVED' ORDER BY "lastActivityAt" DESC LIMIT 1`,
+        [group.id, orderId || requestId]
+      )).rows[0];
+      if (ex) ticketId = ex.id;
+    }
+    if (!ticketId) {
       const active = (await taskosQuery(
         `SELECT id, "orderId", "requestId" FROM wa_tickets
-          WHERE "groupId" = $1 AND status <> 'RESOLVED'
-            AND ("orderId" IS NOT NULL OR "requestId" IS NOT NULL)
+          WHERE "groupId" = $1 AND status <> 'RESOLVED' AND ("orderId" IS NOT NULL OR "requestId" IS NOT NULL)
             AND "lastActivityAt" > now() - ($2 || ' minutes')::interval
           ORDER BY "lastActivityAt" DESC LIMIT 1`,
         [group.id, String(CARRY_MINUTES)]
       )).rows[0];
       if (active) {
         ticketId = active.id;
-        if (active.orderId) { orderId = active.orderId; allOrderIds = [active.orderId]; idType = "CONTEXT"; idVia = `active thread · order ${active.orderId}`; }
-        else if (active.requestId) { requestId = active.requestId; validRequestIds = [active.requestId]; idType = "CONTEXT"; idVia = `active thread · request ${active.requestId}`; }
-        await taskosQuery(`UPDATE wa_tickets SET "lastActivityAt" = $2 WHERE id = $1`, [ticketId, ts]).catch(() => {});
+        if (active.orderId) { orderId = active.orderId; allOrderIds = [active.orderId]; idType = idType || "CONTEXT"; idVia = idVia || `active thread · order ${active.orderId}`; }
+        else if (active.requestId) { requestId = active.requestId; validRequestIds = [active.requestId]; idType = idType || "CONTEXT"; idVia = idVia || `active thread · request ${active.requestId}`; }
       }
     }
-    if (!ticketId) {
-      ticketId = await upsertTicket({ group, orderId: orderId ? +orderId : null, requestId: requestId ? +requestId : null, intent, ts });
-    }
-    // missing-id auto-reply (debounced 30 min/group). Suppressed when we
-    // inherited an id from the quoted message — the reply IS anchored.
-    const needsId = DISPOSITION[intent] === "AUTO_ANSWER" && !orderId && !requestId && !inheritedTicketId;
-    if (AUTO_ASK_ENABLED && needsId && group.autoAskIdOnMissing) {
-      const last = lastAskAt.get(jid) || 0;
-      if (Date.now() - last > 30 * 60 * 1000) {
-        lastAskAt.set(jid, Date.now());
-        autoAsk = "Please share the order/booking ID and your query so we can act on it 🙏";
+
+    if (isTeamMsg) {
+      // TEAM RESPONSE (native phone OR console echo) → mark the case answered and
+      // stamp who / when / channel. Never creates a new case.
+      if (ticketId) {
+        await taskosQuery(
+          `UPDATE wa_tickets SET
+             status = CASE WHEN status IN ('NEW','OPEN','WAITING_LAB','WAITING_INFO') THEN 'ANSWERED' ELSE status END,
+             "firstResponseAt" = COALESCE("firstResponseAt", $2),
+             "respondedVia" = COALESCE("respondedVia", $3),
+             "lastResponderName" = $4,
+             "lastActivityAt" = $2
+           WHERE id = $1`,
+          [ticketId, ts, fromMe ? "console" : "native", teamName || "team"]
+        ).catch(() => {});
+      }
+    } else {
+      // CUSTOMER QUERY → create the case if none matched; reopen if it had been
+      // answered/resolved (a follow-up means the query isn't done).
+      if (!ticketId) {
+        ticketId = await upsertTicket({ group, orderId: orderId ? +orderId : null, requestId: requestId ? +requestId : null, intent, ts });
+      } else {
+        await taskosQuery(
+          `UPDATE wa_tickets SET status = CASE WHEN status IN ('ANSWERED','RESOLVED') THEN 'OPEN' ELSE status END,
+             "resolvedAt" = CASE WHEN status = 'RESOLVED' THEN NULL ELSE "resolvedAt" END, "lastActivityAt" = $2 WHERE id = $1`,
+          [ticketId, ts]
+        ).catch(() => {});
+      }
+      const needsId = DISPOSITION[intent] === "AUTO_ANSWER" && !orderId && !requestId && !inheritedTicketId;
+      if (AUTO_ASK_ENABLED && needsId && group.autoAskIdOnMissing) {
+        const last = lastAskAt.get(jid) || 0;
+        if (Date.now() - last > 30 * 60 * 1000) {
+          lastAskAt.set(jid, Date.now());
+          autoAsk = "Please share the order/booking ID and your query so we can act on it 🙏";
+        }
       }
     }
   }

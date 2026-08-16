@@ -20,6 +20,10 @@ import { taskosQuery } from "./taskosdb.mjs";
 import { lookupIds } from "./lookup.mjs";
 
 const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
+// Auto-resolve a case when the analyst says resolved AND the thread has been
+// quiet this many minutes. Off with WA_AUTORESOLVE=false.
+const AUTORESOLVE = process.env.WA_AUTORESOLVE !== "false";
+const RESOLVE_QUIET_MIN = Number(process.env.WA_RESOLVE_QUIET_MIN || 120);
 
 // ── team roster (to tag Ops actors) ─────────────────────────────────────────
 let teamCache = { at: 0, list: [] };
@@ -192,6 +196,18 @@ export async function analyzeActiveCases({ limit = 8, model, apiKey } = {}) {
     }
     if (!brief) continue; // parse skip
     await upsertBrief(c, brief, inputHash, model);
+    // Auto-resolve: the analyst judged it resolved AND the thread has gone quiet
+    // (no new message for the guard window) — reflects resolutions handled in
+    // WhatsApp without anyone clicking, but never closes a live conversation.
+    if (brief.resolved && AUTORESOLVE) {
+      const lastTs = new Date(msgs[msgs.length - 1]?.ts || 0).getTime();
+      if (Date.now() - lastTs > RESOLVE_QUIET_MIN * 60_000) {
+        await taskosQuery(
+          `UPDATE wa_tickets SET status='RESOLVED', "resolvedAt"=now() WHERE "${col}" = $1 AND status <> 'RESOLVED'`,
+          [idKey]
+        ).catch(() => {});
+      }
+    }
     analyzed++;
   }
   return { candidates: cases.length, analyzed };

@@ -48,6 +48,19 @@ export async function GET(request: NextRequest) {
       SELECT count(*) AS total, count(*) FILTER (WHERE resolved) AS resolved FROM wa_case_briefs`,
   ]);
 
+  // Response & resolution health — channel-agnostic (native WhatsApp OR console).
+  const resp = await prisma.$queryRaw<Array<{ open: bigint; responded: bigint; native: bigint; console: bigint; avg_first_min: number | null; stale: bigint; resolved_24h: bigint }>>`
+    SELECT
+      count(*) FILTER (WHERE status <> 'RESOLVED') AS open,
+      count(*) FILTER (WHERE status <> 'RESOLVED' AND "firstResponseAt" IS NOT NULL) AS responded,
+      count(*) FILTER (WHERE "respondedVia" = 'native') AS native,
+      count(*) FILTER (WHERE "respondedVia" = 'console') AS console,
+      avg(EXTRACT(EPOCH FROM ("firstResponseAt" - "createdAt")) / 60)
+        FILTER (WHERE "firstResponseAt" IS NOT NULL AND "createdAt" > now() - interval '7 days') AS avg_first_min,
+      count(*) FILTER (WHERE status <> 'RESOLVED' AND "lastActivityAt" < now() - interval '24 hours') AS stale,
+      count(*) FILTER (WHERE status = 'RESOLVED' AND "resolvedAt" > now() - interval '1 day') AS resolved_24h
+    FROM wa_tickets`;
+
   const n = (v: bigint | undefined) => Number(v || 0);
   const list = (rows: Array<{ n: bigint } & Record<string, unknown>>, key: string) =>
     rows.map((r) => ({ label: String(r[key] ?? "—"), n: n(r.n) }));
@@ -64,5 +77,13 @@ export async function GET(request: NextRequest) {
     ageBuckets: ["0-1h", "1-4h", "4-24h", "24h+"].map((b) => ({ label: b, n: n(ageBuckets.find((x) => x.bucket === b)?.n) })),
     volume: { d1: n(volume[0]?.d1), d7: n(volume[0]?.d7) },
     briefs: { total: n(briefs[0]?.total), resolved: n(briefs[0]?.resolved) },
+    response: {
+      open: n(resp[0]?.open),
+      responded: n(resp[0]?.responded),
+      respondedRate: n(resp[0]?.open) ? Math.round((n(resp[0]?.responded) / n(resp[0]?.open)) * 100) : 0,
+      native: n(resp[0]?.native), console: n(resp[0]?.console),
+      avgFirstMin: Math.round(Number(resp[0]?.avg_first_min || 0)),
+      stale24h: n(resp[0]?.stale), resolved24h: n(resp[0]?.resolved_24h),
+    },
   });
 }

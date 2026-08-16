@@ -952,6 +952,9 @@ model WaTicket {
   assignedToId    Int? // User.id (no FK, mirrors Task assignment pattern)
   slaDueAt        DateTime?
   firstMessageId  String?
+  firstResponseAt DateTime? // when our team first responded (native or console)
+  respondedVia    String? // "native" (WhatsApp app) | "console"
+  lastResponderName String? // team member who last responded
   lastActivityAt  DateTime       @default(now())
   resolvedAt      DateTime?
   createdAt       DateTime       @default(now())

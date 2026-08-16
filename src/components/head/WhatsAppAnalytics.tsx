@@ -7,6 +7,7 @@ type Data = {
   totals: { open: number; resolvedToday: number; listening: number; unread: number };
   byStatus: Bar[]; byIntent: Bar[]; byStore: Bar[]; byLab: Bar[]; ageBuckets: Bar[];
   volume: { d1: number; d7: number }; briefs: { total: number; resolved: number };
+  response?: { open: number; responded: number; respondedRate: number; native: number; console: number; avgFirstMin: number; stale24h: number; resolved24h: number };
 };
 const short = (s: string) => (s || "").replace(/labstack/gi, "LS");
 
@@ -35,6 +36,22 @@ export default function WhatsAppAnalytics({ onPickGroup }: { onPickGroup?: () =>
         <Stat label="Listening" value={d.totals.listening} tint="text-zinc-300" />
       </div>
 
+      {d.response && (
+        <Panel title="Response & resolution health">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <Mini label="Responded" value={`${d.response.respondedRate}%`} sub={`${d.response.responded}/${d.response.open} open`} tint="text-emerald-300" />
+            <Mini label="Avg 1st response" value={d.response.avgFirstMin ? `${d.response.avgFirstMin}m` : "—"} sub="last 7d" tint="text-blue-300" />
+            <Mini label="Stale >24h" value={String(d.response.stale24h)} sub="untouched open" tint={d.response.stale24h > 0 ? "text-rose-300" : "text-zinc-300"} />
+            <Mini label="Resolved · 24h" value={String(d.response.resolved24h)} sub="organic" tint="text-emerald-300" />
+          </div>
+          <div className="flex items-center gap-3 mt-1 text-[11px] text-zinc-500">
+            <span>Replies via:</span>
+            <span className="text-zinc-300">📱 native {d.response.native}</span>
+            <span className="text-zinc-300">🖥️ console {d.response.console}</span>
+            <span className="ml-auto">both channels counted as responses</span>
+          </div>
+        </Panel>
+      )}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <Panel title="Open by status"><Bars rows={d.byStatus} color="bg-blue-500/60" /></Panel>
         <Panel title="Open by intent"><Bars rows={d.byIntent} color="bg-violet-500/60" /></Panel>
@@ -67,6 +84,15 @@ function Stat({ label, value, tint }: { label: string; value: number; tint: stri
     <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-4">
       <div className={`text-3xl font-semibold ${tint}`}>{value}</div>
       <div className="text-xs text-zinc-500 mt-1">{label}</div>
+    </div>
+  );
+}
+function Mini({ label, value, sub, tint }: { label: string; value: string; sub?: string; tint: string }) {
+  return (
+    <div className="rounded-lg border border-zinc-700/60 bg-zinc-900/40 p-3">
+      <div className={`text-2xl font-semibold ${tint}`}>{value}</div>
+      <div className="text-[11px] text-zinc-400">{label}</div>
+      {sub && <div className="text-[10px] text-zinc-600">{sub}</div>}
     </div>
   );
 }

@@ -132,6 +132,20 @@ function labDraft(d: Detail | null): string {
   if (it === "SLOT_CHECK" || it === "FEASIBILITY_QUOTE") return `${t} — please confirm the available slot / feasibility.`;
   return `${t} — please check and confirm.`;
 }
+// The store-facing note that rides with a forwarded lab reply. Store speaks in
+// order ids (not lab refs), and the message should tell them what to DO next.
+function forwardNote(d: Detail | null, caption?: string): string {
+  if (!d) return caption || "";
+  const who = d.ticket.patient ? ` (${d.ticket.patient})` : "";
+  const head = `#${d.ticket.orderId || d.ticket.requestId}${who} — `;
+  const it = (d.ticket.intent || "").toUpperCase();
+  if (it === "SLOT_CHECK" || it === "RESCHEDULE" || it === "FEASIBILITY_QUOTE")
+    return `${head}available slots shared by the lab 👇 Please confirm the preferred slot and we'll book it.`;
+  if (it === "REPORT_REQUEST") return `${head}report shared by the lab 👇`;
+  if (it === "SERVICEABILITY") return `${head}serviceability confirmed by the lab 👇`;
+  if (it === "STATUS_CHECK") return `${head}update from the lab 👇`;
+  return `${head}${caption?.trim() || "update from the lab"} 👇`;
+}
 // The NEXT reply to the CUSTOMER — analyst suggestion if present, else the status.
 function storeDraft(d: Detail | null): string {
   if (!d) return "";
@@ -175,6 +189,9 @@ export function WhatsAppControlTower() {
   const [labGroupId, setLabGroupId] = useState<string>("");
   const [replyTo, setReplyTo] = useState<{ waMsgId: string; sender: string; text: string } | null>(null);
   const [attachment, setAttachment] = useState<File | null>(null);
+  // When set, the composer forwards a lab/provider message (its text + captured
+  // media) to the store group instead of sending a normal reply.
+  const [forward, setForward] = useState<{ sourceWaMsgId: string; storeSubject: string; hasMedia: boolean; storeGroupId?: string } | null>(null);
   const fileInput = useRef<HTMLInputElement | null>(null);
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
@@ -203,6 +220,14 @@ export function WhatsAppControlTower() {
     setTarget(tg);
     const untouched = reply.trim() === "" || reply === autoDraft.current;
     if (untouched && tg !== "other") { const t = targetDraft(tg, detail); autoDraft.current = t; setReply(t); }
+  };
+  // Relay a lab/provider message (text + captured media) back to the store group.
+  const startForward = (m: { waMsgId: string; text: string; mediaType: string | null; hasBytes?: boolean }) => {
+    const store = (detail?.related || []).find((r) => r.groupRole === "SUPPORT");
+    const hasMedia = (m.mediaType === "image" || m.mediaType === "document") && m.hasBytes !== false;
+    setForward({ sourceWaMsgId: m.waMsgId, storeSubject: store ? short(store.groupSubject) : "the store group", hasMedia, storeGroupId: store?.groupId });
+    autoDraft.current = ""; setReplyTo(null);
+    setReply(forwardNote(detail, m.text));
   };
 
   const loadConvos = useCallback(async () => {
@@ -311,7 +336,23 @@ export function WhatsAppControlTower() {
   }
 
   async function sendReply() {
-    if (!activeId || (!reply.trim() && !attachment)) return flash("Write a message or attach a file");
+    if (!activeId) return;
+    // Forward mode: relay the lab's message (text + captured media) to the store.
+    if (forward) {
+      if (!reply.trim() && !forward.hasMedia) return flash("Add a note or forward the media");
+      setBusy(true);
+      const res = await fetch(`/api/whatsapp/tickets/${activeId}/forward`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sourceWaMsgId: forward.sourceWaMsgId, storeGroupId: forward.storeGroupId, text: reply, quote: true }),
+      });
+      setBusy(false);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) return flash(data.error || "Forward failed");
+      flash(`Forwarded to ${data.queuedTo}${data.hadMedia ? " (with image)" : ""}`);
+      setReply(""); autoDraft.current = ""; setForward(null); loadConvos(); loadDetail(activeId);
+      return;
+    }
+    if (!reply.trim() && !attachment) return flash("Write a message or attach a file");
     setBusy(true);
     const quotedWaMsgId = target === "store" && replyTo ? replyTo.waMsgId : undefined;
     let res: Response;
@@ -348,19 +389,19 @@ export function WhatsAppControlTower() {
     if (filter === "ACTION") return c.openTickets > 0 || c.answerReady || c.escalating;
     return true;
   });
-  async function relayToStore(groupId: string) {
-    if (!reply.trim()) return flash("Write the status to send");
-    const res = await fetch("/api/whatsapp/send", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ groupId, text: reply }) });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) return flash(data.error || "Send failed");
-    flash("Sent to the store group"); setReply(""); loadConvos();
-  }
-
   const ctx = (detail?.ticket.liveContext || detail?.ticket.contextSnapshot || {}) as Record<string, unknown>;
   const orderStatus = (ctx.orderStatus || ctx.status) as string | undefined;
   const isProviderCase = detail?.group?.role === "PROVIDER";
   const providerUpdates = (detail?.related || []).filter((r) => r.groupRole === "PROVIDER");
   const storeQuery = (detail?.related || []).filter((r) => r.groupRole === "SUPPORT");
+  // The lab message worth relaying to the store: newest non-team message, favouring
+  // one that carries a captured image/document (the payload the store needs).
+  const labReplyToForward = (() => {
+    if (!isProviderCase || !detail) return null;
+    const labMsgs = detail.messages.filter((m) => !m.isTeam && m.waMsgId);
+    return [...labMsgs].reverse().find((m) => (m.mediaType === "image" || m.mediaType === "document") && m.hasBytes !== false)
+      || [...labMsgs].reverse()[0] || null;
+  })();
 
   return (
     <div className="flex flex-col h-full">
@@ -506,12 +547,19 @@ export function WhatsAppControlTower() {
                             ? <span className="text-[11px] font-semibold text-blue-300">{m.teamName || "Team"} <span className="text-zinc-500 font-normal">· LS team</span></span>
                             : <span className="text-[11px] font-semibold text-zinc-400">{m.sender}</span>}
                           {isCase && !team && <span className="text-[9px] font-bold uppercase tracking-wide text-amber-400 bg-amber-500/15 px-1.5 rounded">◆ this case</span>}
-                          {!team && m.waMsgId && (
+                          {!team && m.waMsgId && !isProviderCase && (
                             <button
                               onClick={() => { setReplyTo({ waMsgId: m.waMsgId, sender: m.sender, text: m.text }); setTarget("store"); }}
                               title="Reply to this message in the group"
                               className="ml-auto text-[10px] text-zinc-500 hover:text-blue-300"
                             >↩ Reply</button>
+                          )}
+                          {!team && m.waMsgId && isProviderCase && (
+                            <button
+                              onClick={() => startForward(m)}
+                              title="Forward this lab message (with its image) to the store group"
+                              className="ml-auto text-[10px] text-emerald-400 hover:text-emerald-300 font-medium"
+                            >→ Forward to store{(m.mediaType === "image" || m.mediaType === "document") && m.hasBytes !== false ? " 🖼️" : ""}</button>
                           )}
                         </div>
                         {m.mediaType === "image" && (
@@ -551,14 +599,25 @@ export function WhatsAppControlTower() {
                 })()}
               </div>
               <div className="border-t border-zinc-800 p-3 flex flex-col gap-2 bg-zinc-900/40">
-                <div className="flex items-center gap-2 text-xs">
-                  <span className="uppercase tracking-wide text-zinc-500 font-semibold">Send to</span>
-                  {(["store", "lab", "other"] as const).map((tg) => (
-                    <button key={tg} onClick={() => switchTarget(tg)} className={`px-2.5 py-1 rounded-full border text-xs font-medium ${target === tg ? "bg-blue-600 border-blue-600 text-white" : "border-zinc-700 text-zinc-400 hover:border-zinc-500"}`}>
-                      {tg === "store" ? "Store group" : tg === "lab" ? `Lab${detail.labGroup ? " · " + short(detail.labGroup.subject).slice(0, 14) : ""}` : "Other number"}
-                    </button>
-                  ))}
-                </div>
+                {forward ? (
+                  <div className="flex items-start gap-2 rounded-lg border-l-2 border-emerald-500 bg-emerald-500/5 px-2.5 py-1.5">
+                    <div className="flex-1 min-w-0 text-xs">
+                      <div className="font-semibold text-emerald-300">→ Forwarding to {forward.storeSubject}{forward.hasMedia ? " · with the lab's image" : ""}</div>
+                      <div className="text-zinc-400">Edit the note below and Send — it quotes the store&apos;s question so it lands on their thread.</div>
+                    </div>
+                    <button onClick={() => { setForward(null); setReply(""); autoDraft.current = ""; }} className="text-zinc-500 hover:text-zinc-300 text-sm leading-none">✕</button>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2 text-xs">
+                    <span className="uppercase tracking-wide text-zinc-500 font-semibold">Send to</span>
+                    {(["store", "lab", "other"] as const).map((tg) => (
+                      <button key={tg} onClick={() => switchTarget(tg)} className={`px-2.5 py-1 rounded-full border text-xs font-medium ${target === tg ? "bg-blue-600 border-blue-600 text-white" : "border-zinc-700 text-zinc-400 hover:border-zinc-500"}`}>
+                        {tg === "store" ? "Store group" : tg === "lab" ? `Lab${detail.labGroup ? " · " + short(detail.labGroup.subject).slice(0, 14) : ""}` : "Other number"}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {!forward && (<>
                 {target === "other" && (
                   <input value={toNumber} onChange={(e) => setToNumber(e.target.value)} placeholder="Number with country code, e.g. 9198…" className="bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-100 focus:border-blue-500 outline-none" />
                 )}
@@ -580,6 +639,7 @@ export function WhatsAppControlTower() {
                     <button onClick={() => setReplyTo(null)} className="text-zinc-500 hover:text-zinc-300 text-sm leading-none">✕</button>
                   </div>
                 )}
+                </>)}
                 {attachment && (
                   <div className="flex items-center gap-2 rounded-lg border border-zinc-700 bg-zinc-900/60 px-2.5 py-1.5 text-xs">
                     <span className="text-zinc-300">{attachment.type.startsWith("image/") ? "🖼️" : "📄"}</span>
@@ -591,7 +651,7 @@ export function WhatsAppControlTower() {
                 <div className="flex gap-2 items-end">
                   <input ref={fileInput} type="file" className="hidden" accept="image/*,application/pdf,.pdf,.jpg,.jpeg,.png,.webp" onChange={(e) => setAttachment(e.target.files?.[0] || null)} />
                   <button onClick={() => fileInput.current?.click()} title="Attach a file or image" className="shrink-0 h-[42px] w-10 flex items-center justify-center border border-zinc-700 hover:border-blue-500 rounded-lg text-zinc-400 hover:text-zinc-200">📎</button>
-                  <textarea value={reply} onChange={(e) => setReply(e.target.value)} rows={2} placeholder="Write a reply, or use a suggested action →" className="flex-1 resize-none bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-100 focus:border-blue-500 outline-none" />
+                  <textarea value={reply} onChange={(e) => setReply(e.target.value)} rows={2} placeholder={forward ? "Note to the store (sent with the lab's attachment)…" : "Write a reply, or use a suggested action →"} className="flex-1 resize-none bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-100 focus:border-blue-500 outline-none" />
                   <button onClick={sendReply} disabled={busy} className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-semibold text-sm px-4 py-2.5 rounded-lg">Send ▸</button>
                 </div>
                 {detail.group && !detail.group.sendEnabled && <div className="text-[11px] text-amber-400">Sending is off for this group — enable it in Settings before replies actually send.</div>}
@@ -767,8 +827,8 @@ export function WhatsAppControlTower() {
                       {!isProviderCase && <button onClick={() => pick("store", r.text)} className="mt-1.5 text-[11px] text-emerald-400 hover:text-emerald-300 font-medium">↩ Use this to answer the store</button>}
                     </div>
                   ))}
-                  {isProviderCase && storeQuery[0] && (
-                    <button onClick={() => relayToStore(storeQuery[0].groupId)} className="text-left text-sm border border-zinc-700 hover:border-emerald-500 rounded-lg px-3 py-2 text-zinc-200">→ Send reply to the store <span className="block text-xs text-zinc-500">relays your message to {short(storeQuery[0].groupSubject)}</span></button>
+                  {isProviderCase && labReplyToForward && (
+                    <button onClick={() => startForward(labReplyToForward)} className="text-left text-sm border border-emerald-600/50 bg-emerald-500/5 hover:border-emerald-500 rounded-lg px-3 py-2 text-zinc-200">→ Forward lab&apos;s reply to store{(labReplyToForward.mediaType === "image" || labReplyToForward.mediaType === "document") && labReplyToForward.hasBytes !== false ? " 🖼️" : ""} <span className="block text-xs text-zinc-500">carries the lab&apos;s {labReplyToForward.mediaType === "image" ? "image" : labReplyToForward.mediaType === "document" ? "file" : "message"} to {storeQuery[0] ? short(storeQuery[0].groupSubject) : "the store group"}, quoting their question</span></button>
                   )}
                 </div>
               )}

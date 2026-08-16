@@ -13,6 +13,8 @@ console.log(`Re-resolving messages from the last ${days} day(s) in active groups
 try {
   const res = await CT.reresolveWindow({ days });
   console.log(`✓ scanned ${res.scanned} · updated ${res.updated} · inherited-via-reply ${res.inherited} · tickets upserted ${res.tickets}`);
+  const rr = await CT.backfillResponses();
+  console.log(`✓ responses stamped on ${rr.stamped}/${rr.tickets} open cases`);
 } catch (e) {
   console.error("backfill failed:", e.message);
   process.exit(1);

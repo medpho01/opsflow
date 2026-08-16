@@ -371,6 +371,48 @@ export async function reresolveWindow({ days = 3 } = {}) {
   return { scanned: rows.length, updated, inherited, tickets };
 }
 
+/**
+ * One-time backfill: stamp firstResponseAt / respondedVia / lastResponderName
+ * (and flip status to ANSWERED) on existing open cases from the team messages
+ * ALREADY captured — so the response/health metrics are meaningful immediately
+ * instead of only for new activity. Idempotent (COALESCE keeps existing stamps).
+ */
+export async function backfillResponses() {
+  const matchTeam = makeTeamMatcher(await loadTeam());
+  const tickets = (await taskosQuery(
+    `SELECT id, "groupId", "orderId", "requestId" FROM wa_tickets WHERE status <> 'RESOLVED'`
+  )).rows;
+
+  let stamped = 0;
+  for (const t of tickets) {
+    const hasId = t.orderId || t.requestId;
+    const idCond = t.orderId ? `$3 = ANY(m."orderIds")` : t.requestId ? `$3 = ANY(m."requestIds")` : `false`;
+    const params = hasId ? [t.id, t.groupId, hasId] : [t.id, t.groupId];
+    const msgs = (await taskosQuery(
+      `SELECT m."fromMe", m.sender, m."senderJid", m.ts
+         FROM wa_messages m
+        WHERE m."ticketId" = $1 OR (m."groupId" = $2 AND ${idCond})
+        ORDER BY m.ts ASC`,
+      params
+    )).rows;
+    const team = msgs.filter((m) => m.fromMe || !!matchTeam(m.sender, m.senderJid) || isLabstack(m.sender));
+    if (!team.length) continue;
+    const first = team[0], lastT = team[team.length - 1];
+    const responder = lastT.fromMe ? "You" : (matchTeam(lastT.sender, lastT.senderJid) || lastT.sender);
+    await taskosQuery(
+      `UPDATE wa_tickets SET
+         "firstResponseAt" = COALESCE("firstResponseAt", $2),
+         "respondedVia" = COALESCE("respondedVia", $3),
+         "lastResponderName" = COALESCE("lastResponderName", $4),
+         status = CASE WHEN status IN ('NEW','OPEN','WAITING_LAB','WAITING_INFO') THEN 'ANSWERED' ELSE status END
+       WHERE id = $1`,
+      [t.id, first.ts, first.fromMe ? "console" : "native", responder]
+    ).catch(() => {});
+    stamped++;
+  }
+  return { tickets: tickets.length, stamped };
+}
+
 // Newest stored message per active group — used to anchor a history re-fetch.
 export async function newestPerActiveGroup() {
   const rows = (await taskosQuery(

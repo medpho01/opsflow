@@ -129,6 +129,9 @@ const lastAskAt = new Map(); // jid → ts (debounce auto-ask)
 // it must be explicitly enabled with WA_AUTO_ASK=true AND per-group opt-in.
 // Without this, an admin toggle alone can spam partner groups.
 const AUTO_ASK_ENABLED = process.env.WA_AUTO_ASK === "true";
+// Window for conversational carry-forward: a no-id follow-up in a CX group
+// attaches to a case active within this many minutes.
+const CARRY_MINUTES = Number(process.env.WA_CARRY_MINUTES || 30);
 
 /**
  * Persist a message and (for substantive inbound) attach it to a ticket.
@@ -200,7 +203,31 @@ export async function ingestMessage(m) {
   let ticketId = null;
   let autoAsk = null;
   if (substantive && !fromMe && group.role === "SUPPORT") {
-    ticketId = await upsertTicket({ group, orderId: orderId ? +orderId : null, requestId: requestId ? +requestId : null, intent, ts });
+    // Conversational carry-forward: a bare follow-up with no id, no ref and no
+    // reply-quote ("still pending?", "user said urine sample missed") almost
+    // always continues the order just being discussed in this group. Attach it
+    // to the group's most-recent open case active within the window, instead of
+    // spawning a stray no-id case. New topics normally cite an id, so they skip
+    // this path and resolve on their own.
+    if (!orderId && !requestId && !inheritedTicketId) {
+      const active = (await taskosQuery(
+        `SELECT id, "orderId", "requestId" FROM wa_tickets
+          WHERE "groupId" = $1 AND status <> 'RESOLVED'
+            AND ("orderId" IS NOT NULL OR "requestId" IS NOT NULL)
+            AND "lastActivityAt" > now() - ($2 || ' minutes')::interval
+          ORDER BY "lastActivityAt" DESC LIMIT 1`,
+        [group.id, String(CARRY_MINUTES)]
+      )).rows[0];
+      if (active) {
+        ticketId = active.id;
+        if (active.orderId) { orderId = active.orderId; allOrderIds = [active.orderId]; idType = "CONTEXT"; idVia = `active thread · order ${active.orderId}`; }
+        else if (active.requestId) { requestId = active.requestId; validRequestIds = [active.requestId]; idType = "CONTEXT"; idVia = `active thread · request ${active.requestId}`; }
+        await taskosQuery(`UPDATE wa_tickets SET "lastActivityAt" = $2 WHERE id = $1`, [ticketId, ts]).catch(() => {});
+      }
+    }
+    if (!ticketId) {
+      ticketId = await upsertTicket({ group, orderId: orderId ? +orderId : null, requestId: requestId ? +requestId : null, intent, ts });
+    }
     // missing-id auto-reply (debounced 30 min/group). Suppressed when we
     // inherited an id from the quoted message — the reply IS anchored.
     const needsId = DISPOSITION[intent] === "AUTO_ANSWER" && !orderId && !requestId && !inheritedTicketId;

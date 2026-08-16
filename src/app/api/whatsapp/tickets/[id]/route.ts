@@ -70,6 +70,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   }
   // Only expose the mentions actually referenced in the thread's text.
   const mentionMap: Record<string, string> = {};
+  const unresolved = new Set<string>();
   const mentionRe = /@(\d{5,})/g;
   for (const m of taggedMsgs) {
     let mm: RegExpExecArray | null;
@@ -78,7 +79,20 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       const raw = mm[1];
       const name = mentions[raw] || mentions[last10(raw)];
       if (name) mentionMap[raw] = name;
+      else unresolved.add(raw);
     }
+  }
+  // Resolve leftover @mentions (often WhatsApp LID numbers, not phones) against
+  // anyone who has EVER spoken — their senderJid local-part → pushName.
+  if (unresolved.size) {
+    const ids = [...unresolved];
+    const rows = await prisma.$queryRaw<Array<{ lp: string; sender: string }>>(
+      Prisma.sql`SELECT DISTINCT split_part("senderJid", '@', 1) AS lp, sender
+                 FROM wa_messages
+                 WHERE "senderJid" IS NOT NULL AND sender <> ''
+                   AND split_part("senderJid", '@', 1) IN (${Prisma.join(ids)})`
+    ).catch(() => []);
+    for (const r of rows) if (r.lp && r.sender && !mentionMap[r.lp]) mentionMap[r.lp] = r.sender;
   }
 
   // Cross-group activity for THIS order: a Store case surfaces the Provider's

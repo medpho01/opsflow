@@ -89,22 +89,30 @@ async function callAnalyst({ apiKey, model, orderId, requestId, dbRow, messages 
     `LIVE DB STATE: ${JSON.stringify(dbRow || {})}\n` +
     `MESSAGES (chronological, actor-tagged):\n${JSON.stringify(messages)}\n\n` +
     `Return JSON exactly shaped like: ${SCHEMA_HINT}`;
+  const res = await fetch(ANTHROPIC_URL, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
+    body: JSON.stringify({ model, max_tokens: 2500, system: SYSTEM, messages: [{ role: "user", content: user }] }),
+  });
+  if (!res.ok) {
+    // API-level failure → signal the loop to back off (don't hammer/spam).
+    const body = (await res.text().catch(() => "")).slice(0, 200);
+    const e = new Error(`api ${res.status}`);
+    if (res.status === 429 || res.status === 529) e.backoffMs = 60_000;                       // rate / overloaded
+    else if (res.status === 401 || res.status === 403) e.backoffMs = 600_000;                  // bad key
+    else if (res.status === 400 && /credit|billing|balance/i.test(body)) e.backoffMs = 600_000; // out of credit
+    console.error("[analyst] api", res.status, body);
+    throw e;
+  }
+  const data = await res.json();
+  if (data?.stop_reason === "max_tokens") console.warn("[analyst] hit max_tokens for", orderId || requestId);
   try {
-    const res = await fetch(ANTHROPIC_URL, {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
-      body: JSON.stringify({ model, max_tokens: 2500, system: SYSTEM, messages: [{ role: "user", content: user }] }),
-    });
-    if (!res.ok) { console.error("[analyst] api", res.status, (await res.text().catch(() => "")).slice(0, 200)); return null; }
-    const data = await res.json();
-    if (data?.stop_reason === "max_tokens") console.warn("[analyst] hit max_tokens for", orderId || requestId);
     let txt = (data?.content || []).filter((b) => b.type === "text").map((b) => b.text).join("").trim();
     txt = txt.replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
-    // Isolate the JSON object (drops any stray prose around it).
     const a = txt.indexOf("{"), z = txt.lastIndexOf("}");
     if (a >= 0 && z > a) txt = txt.slice(a, z + 1);
     return JSON.parse(txt);
-  } catch (e) { console.error("[analyst] call:", e.message); return null; }
+  } catch (e) { console.error("[analyst] parse:", e.message); return null; } // per-case skip, no backoff
 }
 
 const QUERY_TYPES = new Set(["STATUS_CHECK", "RESCHEDULE", "CANCEL_REQUEST", "CANCEL_REASON", "REPORT_REQUEST", "NEW_BOOKING", "SLOT_CHECK", "SERVICEABILITY", "FEASIBILITY_QUOTE", "ESCALATION", "PATIENT_DATA", "TECH_ISSUE", "CREATE_ACTION", "OTHER"]);
@@ -141,8 +149,11 @@ async function upsertBrief(c, b, inputHash, model) {
  * Analyze up to `limit` active cases whose inputs changed since last run.
  * Called on an interval by the gateway.
  */
+let cooldownUntil = 0; // set when the API says rate/credit/auth — pause the loop
+
 export async function analyzeActiveCases({ limit = 8, model, apiKey } = {}) {
   if (!apiKey) return { skipped: "no-api-key" };
+  if (Date.now() < cooldownUntil) return { skipped: "cooldown", untilMs: cooldownUntil - Date.now() };
   const matchTeam = makeTeamMatcher(await loadTeam());
   const cases = (await taskosQuery(
     `SELECT DISTINCT t."orderId", t."requestId"
@@ -172,8 +183,14 @@ export async function analyzeActiveCases({ limit = 8, model, apiKey } = {}) {
       text: (m.text || "").slice(0, 500),
       ...(m.ocrText ? { image: m.ocrText.slice(0, 500) } : {}),
     }));
-    const brief = await callAnalyst({ apiKey, model, orderId: c.orderId, requestId: c.requestId, dbRow, messages: tagged });
-    if (!brief) continue;
+    let brief;
+    try {
+      brief = await callAnalyst({ apiKey, model, orderId: c.orderId, requestId: c.requestId, dbRow, messages: tagged });
+    } catch (e) {
+      if (e.backoffMs) { cooldownUntil = Date.now() + e.backoffMs; console.warn(`[analyst] backing off ${Math.round(e.backoffMs / 1000)}s (${e.message})`); break; }
+      console.error("[analyst] case:", e.message); continue; // transient (e.g. network) → skip case
+    }
+    if (!brief) continue; // parse skip
     await upsertBrief(c, brief, inputHash, model);
     analyzed++;
   }

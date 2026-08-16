@@ -27,7 +27,8 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
 
   const url = new URL(request.url);
-  const type = url.searchParams.get("type") === "cases" ? "cases" : "messages";
+  const t = url.searchParams.get("type");
+  const type = t === "cases" ? "cases" : t === "summary" ? "summary" : "messages";
   const days = Math.min(Math.max(Number(url.searchParams.get("days")) || 7, 1), 90);
   const since = new Date(Date.now() - days * 86400_000);
   const matchTeam = makeTeamMatcher(await loadTeam());
@@ -37,7 +38,18 @@ export async function GET(request: NextRequest) {
   let csv: string;
   let filename: string;
 
-  if (type === "cases") {
+  if (type === "summary") {
+    // One row per query type across open cases — the "major types" rollup.
+    const rows = await prisma.$queryRaw<Array<{ qt: string; n: bigint }>>`
+      SELECT COALESCE(intent, 'OTHER') AS qt, count(*) AS n
+      FROM wa_tickets WHERE status <> 'RESOLVED' GROUP BY 1 ORDER BY 2 DESC`;
+    const total = rows.reduce((s, r) => s + Number(r.n), 0) || 1;
+    const lines = [row(["Query type", "Open cases", "Share %"])];
+    for (const r of rows) lines.push(row([r.qt, Number(r.n), ((Number(r.n) / total) * 100).toFixed(1)]));
+    lines.push(row(["TOTAL", total, "100.0"]));
+    csv = lines.join("\r\n");
+    filename = "wa-query-summary.csv";
+  } else if (type === "cases") {
     const tickets = await prisma.waTicket.findMany({
       where: { OR: [{ status: { not: "RESOLVED" } }, { resolvedAt: { gte: since } }] },
       orderBy: { lastActivityAt: "desc" },
@@ -72,15 +84,15 @@ export async function GET(request: NextRequest) {
       where: { ts: { gte: since } },
       orderBy: { ts: "asc" },
       take: 50000,
-      select: { ts: true, direction: true, fromMe: true, sender: true, senderJid: true, text: true, ocrText: true, intent: true, orderIds: true, group: { select: { subject: true, role: true } } },
+      select: { ts: true, direction: true, fromMe: true, sender: true, senderJid: true, text: true, ocrText: true, mediaType: true, intent: true, orderIds: true, group: { select: { subject: true, role: true } } },
     });
-    const header = ["Time", "Customer/Group", "Group role", "Actor", "Sender", "Direction", "Order id(s)", "Intent", "Message", "Image summary"];
+    const header = ["Time", "Customer/Group", "Group role", "Actor", "Sender", "Direction", "Order id(s)", "Intent", "Attachment", "Message", "Image summary"];
     const lines = [row(header)];
     for (const m of msgs) {
       const isTeam = m.fromMe || !!matchTeam(m.sender, m.senderJid);
       lines.push(row([
         m.ts.toISOString(), m.group?.subject || "", m.group?.role || "", roleOf(m.group?.role ?? null, isTeam),
-        m.fromMe ? "You" : m.sender, m.direction, (m.orderIds || []).join(" "), m.intent || "", m.text, m.ocrText || "",
+        m.fromMe ? "You" : m.sender, m.direction, (m.orderIds || []).join(" "), m.intent || "", m.mediaType || "", m.text, m.ocrText || "",
       ]));
     }
     csv = lines.join("\r\n");

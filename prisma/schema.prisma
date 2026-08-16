@@ -923,6 +923,7 @@ model WaCaseBrief {
   id             String   @id @default(cuid())
   orderId        Int?     @unique
   requestId      Int?     @unique
+  queryType      String? // canonical query type the LLM classified (kills "other")
   status         String? // plain-English current status
   resolved       Boolean  @default(false)
   resolvedReason String?

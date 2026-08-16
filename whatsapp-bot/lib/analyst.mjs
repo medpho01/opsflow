@@ -80,7 +80,7 @@ const SYSTEM = [
   "Reply with a SINGLE JSON object and nothing else — no prose, no code fences.",
 ].join("\n");
 
-const SCHEMA_HINT = '{"status":"one line, the order\'s true current state","resolved":true|false,"resolvedReason":"short why","waiting":"who must do what next","timeline":[{"ts":"iso","actor":"display name","role":"Ops|Customer|Lab","event":"what happened"}],"suggestions":{"store":"ready reply to the customer or empty","lab":"ready message to the lab or empty"}}';
+const SCHEMA_HINT = '{"queryType":"the CUSTOMER\'s actual request — one of STATUS_CHECK|RESCHEDULE|CANCEL_REQUEST|CANCEL_REASON|REPORT_REQUEST|NEW_BOOKING|SLOT_CHECK|SERVICEABILITY|FEASIBILITY_QUOTE|ESCALATION|PATIENT_DATA|TECH_ISSUE|CREATE_ACTION|OTHER (use OTHER only when truly none fit)","status":"one line, the order\'s true current state","resolved":true|false,"resolvedReason":"short why","waiting":"who must do what next","timeline":[{"ts":"iso","actor":"display name","role":"Ops|Customer|Lab","event":"what happened"}],"suggestions":{"store":"ready reply to the customer or empty","lab":"ready message to the lab or empty"}}';
 
 async function callAnalyst({ apiKey, model, orderId, requestId, dbRow, messages }) {
   const user =
@@ -102,24 +102,33 @@ async function callAnalyst({ apiKey, model, orderId, requestId, dbRow, messages 
   } catch (e) { console.error("[analyst] call:", e.message); return null; }
 }
 
+const QUERY_TYPES = new Set(["STATUS_CHECK", "RESCHEDULE", "CANCEL_REQUEST", "CANCEL_REASON", "REPORT_REQUEST", "NEW_BOOKING", "SLOT_CHECK", "SERVICEABILITY", "FEASIBILITY_QUOTE", "ESCALATION", "PATIENT_DATA", "TECH_ISSUE", "CREATE_ACTION", "OTHER"]);
+
 async function upsertBrief(c, b, inputHash, model) {
   const col = c.orderId ? "orderId" : "requestId";
   const val = c.orderId || c.requestId;
+  const queryType = QUERY_TYPES.has(String(b.queryType || "").toUpperCase()) ? String(b.queryType).toUpperCase() : null;
   const exists = (await taskosQuery(`SELECT id FROM wa_case_briefs WHERE "${col}" = $1`, [val])).rows[0];
   const vals = [b.status || null, !!b.resolved, b.resolvedReason || null, b.waiting || null,
-    JSON.stringify(b.timeline || []), JSON.stringify(b.suggestions || {}), JSON.stringify(b.actors || {}), model || null, inputHash];
+    JSON.stringify(b.timeline || []), JSON.stringify(b.suggestions || {}), JSON.stringify(b.actors || {}), model || null, inputHash, queryType];
   if (exists) {
     await taskosQuery(
       `UPDATE wa_case_briefs SET status=$2, resolved=$3, "resolvedReason"=$4, waiting=$5, timeline=$6,
-              suggestions=$7, actors=$8, model=$9, "inputHash"=$10, "analyzedAt"=now(), "updatedAt"=now() WHERE id=$1`,
+              suggestions=$7, actors=$8, model=$9, "inputHash"=$10, "queryType"=$11, "analyzedAt"=now(), "updatedAt"=now() WHERE id=$1`,
       [exists.id, ...vals]
     );
   } else {
     await taskosQuery(
-      `INSERT INTO wa_case_briefs (id, "${col}", status, resolved, "resolvedReason", waiting, timeline, suggestions, actors, model, "inputHash", "analyzedAt", "updatedAt", "createdAt")
-       VALUES (gen_random_uuid()::text, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now(), now(), now())`,
+      `INSERT INTO wa_case_briefs (id, "${col}", status, resolved, "resolvedReason", waiting, timeline, suggestions, actors, model, "inputHash", "queryType", "analyzedAt", "updatedAt", "createdAt")
+       VALUES (gen_random_uuid()::text, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, now(), now(), now())`,
       [val, ...vals]
     );
+  }
+  // Write the LLM's classification back onto the open case(s) for this order,
+  // so the console + analytics show a real query type instead of "other".
+  if (queryType) {
+    const tcol = c.orderId ? "orderId" : "requestId";
+    await taskosQuery(`UPDATE wa_tickets SET intent = $2 WHERE "${tcol}" = $1 AND status <> 'RESOLVED'`, [val, queryType]).catch(() => {});
   }
 }
 

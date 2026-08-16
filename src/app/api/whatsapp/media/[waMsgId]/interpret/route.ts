@@ -20,7 +20,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   const { waMsgId } = await params;
   const msg = await prisma.waMessage.findUnique({
     where: { waMsgId },
-    select: { id: true, groupId: true, ticketId: true, intent: true, mediaType: true, ocrText: true, ocrJson: true, orderIds: true, refIds: true },
+    select: { id: true, groupId: true, ticketId: true, intent: true, mediaType: true, ocrText: true, ocrJson: true, orderIds: true, refIds: true, group: { select: { role: true } } },
   });
   if (!msg) return NextResponse.json({ error: "not found" }, { status: 404 });
   if (msg.ocrText) return NextResponse.json({ ocrText: msg.ocrText, ocrJson: msg.ocrJson, cached: true });
@@ -91,20 +91,23 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   }
   resolvedOrderIds = [...new Set(resolvedOrderIds)];
 
-  // Merge into the message and thread a case on the first resolved order.
+  // Always merge the ids so the message threads to the order (investigation +
+  // timeline). Only open/attach a CASE when the image is in a CX group — a
+  // lab's screenshot is investigation, not a new query.
   let threadedOrderId: number | null = null;
   const merged = [...new Set([...(msg.orderIds || []), ...resolvedOrderIds])];
+  const mergedRefs = [...new Set([...(msg.refIds || []), ...candRefs])];
   if (resolvedOrderIds.length) {
     threadedOrderId = resolvedOrderIds[0];
     let ticketId = msg.ticketId;
-    if (!ticketId) {
+    if (!ticketId && msg.group?.role === "SUPPORT") {
       const existing = await prisma.waTicket.findFirst({ where: { groupId: msg.groupId, orderId: threadedOrderId } });
       const ticket = existing ?? await prisma.waTicket.create({
         data: { groupId: msg.groupId, orderId: threadedOrderId, intent: msg.intent, status: "OPEN", lastActivityAt: new Date() },
       });
       ticketId = ticket.id;
     }
-    await prisma.waMessage.update({ where: { id: msg.id }, data: { orderIds: { set: merged }, refIds: { set: [...new Set([...(msg.refIds || []), ...candRefs])] }, ticketId } }).catch(() => {});
+    await prisma.waMessage.update({ where: { id: msg.id }, data: { orderIds: { set: merged }, refIds: { set: mergedRefs }, ...(ticketId ? { ticketId } : {}) } }).catch(() => {});
   }
 
   const ocrJson = { model: VISION_MODEL, at: new Date().toISOString(), orderIds: resolvedOrderIds, labRefs: candRefs, status: parsed.status || null, patient: parsed.patient || null };

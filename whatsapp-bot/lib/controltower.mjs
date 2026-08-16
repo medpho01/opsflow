@@ -193,9 +193,13 @@ export async function ingestMessage(m) {
   const side = fromMe || isLabstack(sender) ? "LAB" : "PARTNER";
   const substantive = intent !== "NOISE" && intent !== "SYSTEM";
 
+  // A QUERY only originates in a CX (SUPPORT) group. Messages in PROVIDER/
+  // INTERNAL groups are investigation — they still store + thread to the order
+  // for the timeline/analyst, but they don't spawn their own cases. This is
+  // what stops lab status posts and ops chatter from becoming phantom cases.
   let ticketId = null;
   let autoAsk = null;
-  if (substantive && !fromMe) {
+  if (substantive && !fromMe && group.role === "SUPPORT") {
     ticketId = await upsertTicket({ group, orderId: orderId ? +orderId : null, requestId: requestId ? +requestId : null, intent, ts });
     // missing-id auto-reply (debounced 30 min/group). Suppressed when we
     // inherited an id from the quoted message — the reply IS anchored.

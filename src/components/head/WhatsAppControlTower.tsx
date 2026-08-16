@@ -494,7 +494,8 @@ export function WhatsAppControlTower() {
                 )}
                 {target === "lab" && (
                   <select value={labGroupId} onChange={(e) => setLabGroupId(e.target.value)} className="bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-100 focus:border-blue-500 outline-none">
-                    <option value="">{detail.labGroup ? `${short(detail.labGroup.subject)} (order's lab)` : "— pick a lab group —"}</option>
+                    {detail.labGroup && <option value={detail.labGroup.id}>{short(detail.labGroup.subject)} · order&apos;s lab</option>}
+                    <option value="">— pick a lab group —</option>
                     {(detail.providerGroups || []).filter((g) => g.id !== detail.labGroup?.id).map((g) => (
                       <option key={g.id} value={g.id}>{short(g.subject)}</option>
                     ))}

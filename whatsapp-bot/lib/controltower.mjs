@@ -13,7 +13,7 @@
  */
 import { taskos, taskosQuery } from "./taskosdb.mjs";
 import { classify, extractIds, extractReferences, DISPOSITION, isLabstack } from "./classifier.mjs";
-import { lookupIds, resolveEntities } from "./lookup.mjs";
+import { lookupIds, resolveEntities, orderLabs } from "./lookup.mjs";
 import { loadTeam, makeTeamMatcher } from "./team.mjs";
 
 // ── group cache (jid → config row) ─────────────────────────────────────────
@@ -496,6 +496,39 @@ export async function backfillProviderCases({ days = 7 } = {}) {
     }
   }
   return { scanned: rows.length, created, attached, answered };
+}
+
+/**
+ * Auto-map each PROVIDER group to its lab: infer group.labId from the labIds of
+ * the orders discussed in that group (the orders in "Orange Ops" belong to the
+ * Orange lab). So "Send to Lab" auto-routes without anyone hand-mapping labId.
+ * Only sets it when confident (a clear dominant lab). Never overwrites an
+ * existing mapping.
+ */
+export async function mapLabGroups() {
+  const groups = (await taskosQuery(
+    `SELECT id FROM wa_groups WHERE role = 'PROVIDER' AND active = true AND "labId" IS NULL`
+  )).rows;
+  let mapped = 0;
+  for (const g of groups) {
+    const ords = (await taskosQuery(
+      `SELECT DISTINCT o AS oid FROM wa_messages m, unnest(m."orderIds") o WHERE m."groupId" = $1 LIMIT 300`,
+      [g.id]
+    )).rows.map((r) => r.oid).filter(Boolean);
+    if (ords.length < 3) continue;
+    const rows = await orderLabs(ords).catch(() => []);
+    const counts = {};
+    for (const r of rows) if (r.labId) counts[r.labId] = (counts[r.labId] || 0) + 1;
+    const top = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
+    // require a clear dominant lab (>=3 orders and >=60% share) to avoid mis-map
+    const total = Object.values(counts).reduce((s, n) => s + n, 0);
+    if (top && top[1] >= 3 && top[1] / total >= 0.6) {
+      await taskosQuery(`UPDATE wa_groups SET "labId" = $2 WHERE id = $1 AND "labId" IS NULL`, [g.id, +top[0]]).catch(() => {});
+      mapped++;
+    }
+  }
+  await refreshGroups();
+  return { candidates: groups.length, mapped };
 }
 
 // Newest stored message per active group — used to anchor a history re-fetch.

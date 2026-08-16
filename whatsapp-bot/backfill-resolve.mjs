@@ -17,6 +17,8 @@ try {
   console.log(`✓ responses stamped on ${rr.stamped}/${rr.tickets} open cases`);
   const pc = await CT.backfillProviderCases({ days });
   console.log(`✓ provider cases: created ${pc.created} · attached ${pc.attached} · answered ${pc.answered} (scanned ${pc.scanned})`);
+  const lm = await CT.mapLabGroups();
+  console.log(`✓ lab-group mapping: mapped ${lm.mapped}/${lm.candidates} provider groups to their lab`);
 } catch (e) {
   console.error("backfill failed:", e.message);
   process.exit(1);

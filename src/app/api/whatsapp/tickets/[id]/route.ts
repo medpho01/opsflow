@@ -217,6 +217,20 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     );
     lab = labRows[0] || null;
   }
+  // Fallback: if no provider group is id-mapped to this lab yet, match by name
+  // (lab "Orange Health - Hyderabad" → group "LS <> Orange Ops") so the agent
+  // doesn't have to pick the lab that we already know.
+  if (!labGroup && lab?.name) {
+    const kw = lab.name
+      .split(/[\s\-<>|.,]+/)
+      .find((w) => w.length > 2 && !/^(health|healthtech|diagnostics?|labs?|lab|centre|center|pvt|ltd|llp|the|and)$/i.test(w));
+    if (kw) {
+      labGroup = await prisma.waGroup.findFirst({
+        where: { role: "PROVIDER", active: true, subject: { contains: kw, mode: "insensitive" } },
+        select: { id: true, jid: true, subject: true, labId: true },
+      });
+    }
+  }
   const providerGroups = await prisma.waGroup.findMany({
     where: { role: "PROVIDER", active: true },
     select: { id: true, jid: true, subject: true, labId: true },

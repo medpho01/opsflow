@@ -140,6 +140,16 @@ export async function resolveEntities({ refs = [], reqLabeled = [], apptLabeled 
   return { orderIds: [...orderIds], requestIds: [...requestIds], primary, ambiguous };
 }
 
+// Order → labId, for inferring which lab a provider group belongs to.
+export async function orderLabs(ids = []) {
+  if (!pool || !ids.length) return [];
+  const intIds = [...new Set(ids.map((x) => parseInt(x, 10)).filter(Number.isInteger))];
+  if (!intIds.length) return [];
+  try {
+    return (await pool.query(`SELECT id, "labId" FROM public."Order" WHERE id = ANY($1::int[]) AND "labId" IS NOT NULL`, [intIds])).rows;
+  } catch (e) { console.error("[lookup] orderLabs:", e.message); return []; }
+}
+
 export async function closePool() {
   if (pool) await pool.end().catch(() => {});
 }

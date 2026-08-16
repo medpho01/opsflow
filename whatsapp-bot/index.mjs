@@ -151,6 +151,10 @@ function startLoops() {
           console.log(`backfill responses: ${JSON.stringify(rr)}`);
         } catch (e) { console.error("backfill responses:", e.message); }
         try {
+          const pc = await CT.backfillProviderCases({ days: BACKFILL_DAYS });
+          console.log(`backfill provider cases: ${JSON.stringify(pc)}`);
+        } catch (e) { console.error("backfill provider cases:", e.message); }
+        try {
           if (typeof currentSock?.fetchMessageHistory === "function") {
             // Anchor at the newest message per active group and pull a page of
             // recent history; results arrive via messaging-history.set.

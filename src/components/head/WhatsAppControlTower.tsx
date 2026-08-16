@@ -110,6 +110,15 @@ function bulkDraft(d: Detail | null): string {
     })
     .join("\n");
 }
+// One-tap reschedule: a message to the lab with the order's current appointment.
+function rescheduleDraft(d: Detail | null): string {
+  if (!d) return "";
+  const ctx = (d.ticket.liveContext || d.ticket.contextSnapshot || {}) as Record<string, unknown>;
+  const id = d.ticket.orderId || d.ticket.requestId;
+  const who = d.ticket.patient ? ` (${d.ticket.patient})` : "";
+  const appt = ctx.appointmentTime ? ` Current appt: ${fmtTime(String(ctx.appointmentTime))}.` : "";
+  return `Reschedule requested for #${id}${who}.${appt} Please confirm the new slot 🙏`;
+}
 const isAnswerable = (intent: string | null, orderId: number | null, requestId: number | null) =>
   !!(orderId || requestId) && ["STATUS_CHECK", "REPORT_REQUEST", "CANCEL_REASON"].includes(intent || "");
 
@@ -697,6 +706,7 @@ export function WhatsAppControlTower() {
                 {orderStatus && (
                   <button onClick={() => { setTarget("store"); setReply(draftFor(detail)); }} className="text-left text-sm border border-zinc-700 hover:border-emerald-500 rounded-lg px-3 py-2 text-zinc-200">↩ Reply with status <span className="block text-xs text-zinc-500">to the store group</span></button>
                 )}
+                <button onClick={() => { setTarget("lab"); setReply(rescheduleDraft(detail)); }} className={`text-left text-sm border rounded-lg px-3 py-2 text-zinc-200 ${detail.ticket.intent === "RESCHEDULE" ? "border-amber-500/60 bg-amber-500/5" : "border-zinc-700 hover:border-amber-500"}`}>↻ Reschedule via lab <span className="block text-xs text-zinc-500">pre-fills current appt · moves to Wait · lab on send</span></button>
                 <button onClick={() => { setTarget("lab"); setReply(`Team, need help on #${detail.ticket.orderId || detail.ticket.requestId}${detail.ticket.patient ? " (" + detail.ticket.patient + ")" : ""} — please confirm.`); }} className="text-left text-sm border border-zinc-700 hover:border-blue-500 rounded-lg px-3 py-2 text-zinc-200">→ Ask the lab <span className="block text-xs text-zinc-500">{detail.labGroup ? short(detail.labGroup.subject) : "no lab group linked"}</span></button>
               </div>
               {detail.suggestResolve && (

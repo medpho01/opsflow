@@ -428,6 +428,76 @@ export async function backfillResponses() {
   return { tickets: tickets.length, stamped };
 }
 
+/**
+ * One-time backfill: replay the provider-request logic over recent PROVIDER-group
+ * history, so lab groups surface their existing requests immediately instead of
+ * only from new messages. Mirrors ingest: opens a PROVIDER case for an actionable
+ * lab message, threads it, and credits team responses. Idempotent.
+ */
+export async function backfillProviderCases({ days = 7 } = {}) {
+  await refreshGroups();
+  const matchTeam = makeTeamMatcher(await loadTeam());
+  const rows = (await taskosQuery(
+    `SELECT m."waMsgId", m."fromMe", m.sender, m."senderJid", m.ts, m.intent,
+            m."orderIds", m."requestIds", m."refIds", m."ticketId", g.jid AS gjid
+       FROM wa_messages m JOIN wa_groups g ON g.id = m."groupId"
+      WHERE g.active = true AND g.role = 'PROVIDER' AND m.ts >= now() - ($1 || ' days')::interval
+      ORDER BY m.ts ASC`,
+    [String(days)]
+  )).rows;
+
+  let created = 0, attached = 0, answered = 0;
+  for (const r of rows) {
+    if (r.intent === "NOISE" || r.intent === "SYSTEM") continue;
+    const group = getGroup(r.gjid);
+    if (!group) continue;
+    const orderId = (r.orderIds || [])[0] || null;
+    const requestId = (r.requestIds || [])[0] || null;
+    const isTeamMsg = r.fromMe || !!matchTeam(r.sender, r.senderJid) || isLabstack(r.sender);
+
+    let ticketId = r.ticketId || null;
+    if (!ticketId && (orderId || requestId)) {
+      const ex = (await taskosQuery(
+        `SELECT id FROM wa_tickets WHERE "groupId" = $1 AND ${orderId ? '"orderId" = $2' : '"requestId" = $2'} AND status <> 'RESOLVED' ORDER BY "lastActivityAt" DESC LIMIT 1`,
+        [group.id, orderId || requestId]
+      )).rows[0];
+      if (ex) ticketId = ex.id;
+    }
+    if (!ticketId) {
+      const active = (await taskosQuery(
+        `SELECT id FROM wa_tickets WHERE "groupId" = $1 AND status <> 'RESOLVED' AND ("orderId" IS NOT NULL OR "requestId" IS NOT NULL)
+            AND "lastActivityAt" > $2::timestamptz - ($3 || ' minutes')::interval ORDER BY "lastActivityAt" DESC LIMIT 1`,
+        [group.id, r.ts, String(CARRY_MINUTES)]
+      )).rows[0];
+      if (active) ticketId = active.id;
+    }
+
+    if (isTeamMsg) {
+      if (ticketId) {
+        const responder = r.fromMe ? "You" : (matchTeam(r.sender, r.senderJid) || r.sender);
+        await taskosQuery(
+          `UPDATE wa_tickets SET status = CASE WHEN status IN ('NEW','OPEN','WAITING_LAB','WAITING_INFO') THEN 'ANSWERED' ELSE status END,
+             "firstResponseAt" = COALESCE("firstResponseAt", $2), "respondedVia" = COALESCE("respondedVia", $3),
+             "lastResponderName" = COALESCE("lastResponderName", $4), "lastActivityAt" = GREATEST("lastActivityAt", $2) WHERE id = $1`,
+          [ticketId, r.ts, r.fromMe ? "console" : "native", responder]
+        ).catch(() => {});
+        answered++;
+      }
+    } else {
+      const worthy = PROVIDER_ACTIONABLE.has(r.intent) || orderId || requestId || (r.refIds || []).length > 0;
+      if (!ticketId && worthy) {
+        ticketId = await upsertTicket({ group, orderId, requestId, intent: r.intent, ts: r.ts, origin: "PROVIDER" });
+        created++;
+      }
+    }
+    if (ticketId && !r.ticketId) {
+      await taskosQuery(`UPDATE wa_messages SET "ticketId" = $2 WHERE "waMsgId" = $1`, [r.waMsgId, ticketId]).catch(() => {});
+      attached++;
+    }
+  }
+  return { scanned: rows.length, created, attached, answered };
+}
+
 // Newest stored message per active group — used to anchor a history re-fetch.
 export async function newestPerActiveGroup() {
   const rows = (await taskosQuery(

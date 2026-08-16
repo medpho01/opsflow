@@ -15,6 +15,8 @@ try {
   console.log(`✓ scanned ${res.scanned} · updated ${res.updated} · inherited-via-reply ${res.inherited} · tickets upserted ${res.tickets}`);
   const rr = await CT.backfillResponses();
   console.log(`✓ responses stamped on ${rr.stamped}/${rr.tickets} open cases`);
+  const pc = await CT.backfillProviderCases({ days });
+  console.log(`✓ provider cases: created ${pc.created} · attached ${pc.attached} · answered ${pc.answered} (scanned ${pc.scanned})`);
 } catch (e) {
   console.error("backfill failed:", e.message);
   process.exit(1);

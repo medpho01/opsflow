@@ -17,6 +17,12 @@ services:
       SOURCE_DATABASE_URL: ${SOURCE_DATABASE_URL:-}
       DRY_RUN: ${WA_DRY_RUN:-true}
       GROUP_FILTER: ${WA_GROUP_FILTER:-labstack}
+      # Anthropic API — powers the LLM case analyst (status, query type,
+      # resolution, suggestions). Leave blank to disable (gateway no-ops it).
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      WA_ANALYST_MODEL: ${WA_ANALYST_MODEL:-}
+      WA_ANALYST: ${WA_ANALYST:-}
+      BACKFILL_DAYS: ${BACKFILL_DAYS:-3}
     volumes:
       - wa_auth:/app/auth
     extra_hosts:

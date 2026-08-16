@@ -102,6 +102,11 @@ services:
       # Set true when pointing at a DB whose `taskos` schema already
       # exists and you don't want Prisma to try reconciling drift.
       SKIP_PRISMA_PUSH: ${SKIP_PRISMA_PUSH:-false}
+      # Anthropic API — powers WhatsApp image OCR / order-id extraction from
+      # screenshots (the /interpret route runs in this app container). Leave
+      # blank to disable image interpretation (it no-ops cleanly).
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      WA_VISION_MODEL: ${WA_VISION_MODEL:-}
     ports:
       - "${APP_PORT:-3000}:3000"
     # Required for host.docker.internal to resolve on Linux (no-op on

@@ -77,7 +77,8 @@ const SYSTEM = [
   "You are given ONE order's WhatsApp messages (may span multiple groups, each already tagged with the actor) and its live database state.",
   "Judge the TRUE current state, who must act next, and whether it is resolved — a case is resolved when the customer's query has been answered or the order reached a terminal state, even if closed in chat rather than in the console.",
   "Write suggested replies in the voice of Ops: concise, specific, ready to send. Leave a suggestion empty if none is warranted.",
-  "Reply with a SINGLE JSON object and nothing else — no prose, no code fences.",
+  "Keep the timeline to AT MOST 8 entries (the key beats — merge or drop minor ones) and keep every string short (one line).",
+  "Reply with a SINGLE JSON object and nothing else — no prose, no code fences, no trailing commentary.",
 ].join("\n");
 
 const SCHEMA_HINT = '{"queryType":"the CUSTOMER\'s actual request — one of STATUS_CHECK|RESCHEDULE|CANCEL_REQUEST|CANCEL_REASON|REPORT_REQUEST|NEW_BOOKING|SLOT_CHECK|SERVICEABILITY|FEASIBILITY_QUOTE|ESCALATION|PATIENT_DATA|TECH_ISSUE|CREATE_ACTION|OTHER (use OTHER only when truly none fit)","status":"one line, the order\'s true current state","resolved":true|false,"resolvedReason":"short why","waiting":"who must do what next","timeline":[{"ts":"iso","actor":"display name","role":"Ops|Customer|Lab","event":"what happened"}],"suggestions":{"store":"ready reply to the customer or empty","lab":"ready message to the lab or empty"}}';
@@ -92,12 +93,16 @@ async function callAnalyst({ apiKey, model, orderId, requestId, dbRow, messages 
     const res = await fetch(ANTHROPIC_URL, {
       method: "POST",
       headers: { "content-type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
-      body: JSON.stringify({ model, max_tokens: 1000, system: SYSTEM, messages: [{ role: "user", content: user }] }),
+      body: JSON.stringify({ model, max_tokens: 2500, system: SYSTEM, messages: [{ role: "user", content: user }] }),
     });
     if (!res.ok) { console.error("[analyst] api", res.status, (await res.text().catch(() => "")).slice(0, 200)); return null; }
     const data = await res.json();
+    if (data?.stop_reason === "max_tokens") console.warn("[analyst] hit max_tokens for", orderId || requestId);
     let txt = (data?.content || []).filter((b) => b.type === "text").map((b) => b.text).join("").trim();
     txt = txt.replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
+    // Isolate the JSON object (drops any stray prose around it).
+    const a = txt.indexOf("{"), z = txt.lastIndexOf("}");
+    if (a >= 0 && z > a) txt = txt.slice(a, z + 1);
     return JSON.parse(txt);
   } catch (e) { console.error("[analyst] call:", e.message); return null; }
 }

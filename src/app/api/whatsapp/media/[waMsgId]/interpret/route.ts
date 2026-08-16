@@ -51,7 +51,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       method: "POST",
       headers: { "content-type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
       body: JSON.stringify({
-        model: VISION_MODEL, max_tokens: 500,
+        model: VISION_MODEL, max_tokens: 800,
         messages: [{ role: "user", content: [
           { type: "image", source: { type: "base64", media_type: mime, data: buf.toString("base64") } },
           { type: "text", text: prompt },
@@ -65,6 +65,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const data = await res.json();
     let txt = (data?.content || []).filter((b: { type: string }) => b.type === "text").map((b: { text: string }) => b.text).join("").trim();
     txt = txt.replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
+    const a = txt.indexOf("{"), z = txt.lastIndexOf("}");
+    if (a >= 0 && z > a) txt = txt.slice(a, z + 1);
     parsed = JSON.parse(txt);
   } catch (e) {
     return NextResponse.json({ error: "vision-call-error", detail: (e as Error).message }, { status: 502 });

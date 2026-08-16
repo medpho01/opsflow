@@ -352,10 +352,40 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     if (body.status === "RESOLVED") data.resolvedAt = new Date();
   }
   if (body.assignedToId !== undefined) data.assignedToId = body.assignedToId === null ? null : Number(body.assignedToId);
+
+  // Manually link this case to an order id (the fallback when a thread lost its
+  // id — a lab reply with no number, an image-only message, etc.). Validate the
+  // id against the replica so we never bind a case to a non-existent order, then
+  // tag the case's messages so the thread, timeline and context resolve.
+  let relinkOrderId: number | null = null;
+  if (body.orderId !== undefined) {
+    if (body.orderId === null) {
+      data.orderId = null;
+    } else {
+      const oid = Number(body.orderId);
+      if (!Number.isInteger(oid) || oid <= 0) return NextResponse.json({ error: "invalid order id" }, { status: 400 });
+      const exists = await labstackOr(
+        labstack.$queryRaw<Array<{ id: number }>>`SELECT id FROM public."Order" WHERE id = ${oid} LIMIT 1`,
+        [] as Array<{ id: number }>,
+      );
+      if (!exists.length) return NextResponse.json({ error: `order ${oid} not found` }, { status: 400 });
+      data.orderId = oid;
+      data.requestId = null;
+      relinkOrderId = oid;
+    }
+  }
+
   if (Object.keys(data).length === 0) return NextResponse.json({ error: "no fields" }, { status: 400 });
 
   try {
     const ticket = await prisma.waTicket.update({ where: { id }, data });
+    // Backfill the order id onto every message already threaded to this case so
+    // the whole conversation carries the context going forward.
+    if (relinkOrderId) {
+      await prisma.$executeRaw`
+        UPDATE wa_messages SET "orderIds" = array_append("orderIds", ${relinkOrderId})
+        WHERE "ticketId" = ${id} AND NOT (${relinkOrderId} = ANY("orderIds"))`;
+    }
     return NextResponse.json({ ticket });
   } catch {
     return NextResponse.json({ error: "not found" }, { status: 404 });

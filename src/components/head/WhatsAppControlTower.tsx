@@ -192,6 +192,7 @@ export function WhatsAppControlTower() {
   // When set, the composer forwards a lab/provider message (its text + captured
   // media) to the store group instead of sending a normal reply.
   const [forward, setForward] = useState<{ sourceWaMsgId: string; storeSubject: string; hasMedia: boolean; storeGroupId?: string } | null>(null);
+  const [linkId, setLinkId] = useState("");
   const fileInput = useRef<HTMLInputElement | null>(null);
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
@@ -382,6 +383,17 @@ export function WhatsAppControlTower() {
     flash(`Marked ${status.replace("_", " ").toLowerCase()}`);
     loadConvos(); if (openGroup) loadCases(openGroup.id); loadDetail(activeId);
   }
+  // Manually bind a case that lost its id to an order — pulls patient/status/lab
+  // context and tags the thread so the whole conversation carries it.
+  async function linkOrder() {
+    if (!activeId) return;
+    const oid = Number(linkId.trim());
+    if (!Number.isInteger(oid) || oid <= 0) return flash("Enter a numeric order id");
+    const res = await fetch(`/api/whatsapp/tickets/${activeId}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ orderId: oid }) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return flash(data.error || "Could not link");
+    flash(`Linked to order #${oid}`); setLinkId(""); loadConvos(); if (openGroup) loadCases(openGroup.id); loadDetail(activeId);
+  }
 
   const shown = convos.filter((c) => {
     if (q && !c.subject.toLowerCase().includes(q.toLowerCase())) return false;
@@ -518,7 +530,7 @@ export function WhatsAppControlTower() {
         </div>
 
         {/* CENTER: case thread */}
-        <div className="flex flex-col min-h-0 border-r border-zinc-800">
+        <div className="flex flex-col min-h-0 min-w-0 border-r border-zinc-800">
           {!detail ? (
             nav === "groups"
               ? <WhatsAppAnalytics />
@@ -585,7 +597,7 @@ export function WhatsAppControlTower() {
                             </a>
                           )
                         )}
-                        <div className="text-zinc-100 whitespace-pre-wrap">{withMentions(m.text, detail.mentions)}</div>
+                        <div className="text-zinc-100 whitespace-pre-wrap break-words">{withMentions(m.text, detail.mentions)}</div>
                         {m.ocrText && (
                           <div className="mt-1.5 rounded-md border border-zinc-700/50 bg-zinc-900/40 p-2">
                             <div className="text-[9px] uppercase tracking-wide text-zinc-500 font-semibold mb-0.5">Interpreted from image</div>
@@ -681,7 +693,7 @@ export function WhatsAppControlTower() {
         </div>
 
         {/* RIGHT: case context + resolve */}
-        <div className="flex flex-col min-h-0 overflow-y-auto">
+        <div className="flex flex-col min-h-0 min-w-0 overflow-y-auto">
           {detail && (
             <>
               {detail.brief && (
@@ -716,6 +728,13 @@ export function WhatsAppControlTower() {
               <div className="p-4 border-b border-zinc-800 flex flex-col gap-2">
                 {detail.ticket.patient && <Row k="Patient" v={detail.ticket.patient} />}
                 <Row k="Order" v={detail.ticket.orderId ? `#${detail.ticket.orderId}` : detail.ticket.requestId ? `Req #${detail.ticket.requestId}` : "— none —"} mono />
+                {!detail.ticket.orderId && !detail.ticket.requestId && (
+                  <div className="flex items-center gap-1.5 -mt-1">
+                    <input value={linkId} onChange={(e) => setLinkId(e.target.value.replace(/\D/g, ""))} onKeyDown={(e) => { if (e.key === "Enter") linkOrder(); }} placeholder="link order id…" className="w-28 bg-zinc-900 border border-zinc-700 rounded px-2 py-1 text-xs text-zinc-100 focus:border-blue-500 outline-none" />
+                    <button onClick={linkOrder} className="text-xs font-semibold border border-zinc-700 hover:border-emerald-500 hover:text-emerald-400 rounded px-2 py-1 text-zinc-300">Link</button>
+                    <span className="text-[10px] text-zinc-600">pulls patient · status · lab</span>
+                  </div>
+                )}
                 <Row k="Store" v={short(detail.group?.subject || "—")} />
                 {(detail.lab || detail.labGroup) && (
                   <Row

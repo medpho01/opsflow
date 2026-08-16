@@ -222,9 +222,24 @@ export async function ingestMessage(m) {
   const isProvider = group.role === "PROVIDER";
   if (substantive && (isCX || isProvider)) {
     const origin = isCX ? "CUSTOMER" : "PROVIDER";
-    // Find the case this message belongs to: reply-chain → by id → active thread
-    // (conversational carry-forward for a bare follow-up with no id/quote).
+    // Find the case this message belongs to: reply-chain → our-outreach subject →
+    // by id → active thread (conversational carry-forward for a bare follow-up).
     ticketId = inheritedTicketId || null;
+    // Context from our OWN outreach: if we recently messaged THIS group about an
+    // order (an "ask the lab" / reschedule / forward carrying #id + lab ref), a
+    // bare reply here is about that order — adopt it as the subject instead of
+    // spawning a "needs an id" case. Labs answer slower, so allow a wider window.
+    if (!orderId && !requestId) {
+      const seed = (await taskosQuery(
+        `SELECT t."orderId", t."requestId" FROM wa_outbound o JOIN wa_tickets t ON t.id = o."ticketId"
+          WHERE o."targetJid" = $1 AND (t."orderId" IS NOT NULL OR t."requestId" IS NOT NULL)
+            AND o."createdAt" > now() - ($2 || ' minutes')::interval
+          ORDER BY o."createdAt" DESC LIMIT 1`,
+        [jid, String(CARRY_MINUTES * 4)]
+      )).rows[0];
+      if (seed?.orderId) { orderId = seed.orderId; allOrderIds = [seed.orderId]; idType = idType || "CONTEXT"; idVia = idVia || `context · we asked this group about order ${seed.orderId}`; }
+      else if (seed?.requestId) { requestId = seed.requestId; validRequestIds = [seed.requestId]; idType = idType || "CONTEXT"; idVia = idVia || `context · we asked this group about request ${seed.requestId}`; }
+    }
     if (!ticketId && (orderId || requestId)) {
       const ex = (await taskosQuery(
         `SELECT id FROM wa_tickets WHERE "groupId" = $1 AND ${orderId ? '"orderId" = $2' : '"requestId" = $2'} AND status <> 'RESOLVED' ORDER BY "lastActivityAt" DESC LIMIT 1`,

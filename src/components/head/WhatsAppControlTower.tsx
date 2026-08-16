@@ -98,6 +98,38 @@ function draftFor(d: Detail | null): string {
   const who = d.ticket.patient ? ` (${d.ticket.patient})` : "";
   return `#${d.ticket.orderId}${who} — ${STATUS_PHRASE[st] || st}${appt}`;
 }
+// The order's LAB reference id (labs identify orders by this, not our order id).
+function labRef(d: Detail | null): string {
+  const ctx = (d?.ticket.liveContext || {}) as Record<string, unknown>;
+  return String(ctx.labOrderId || "").trim();
+}
+// Order tag for lab-facing messages — includes the lab ref so the lab can find it.
+function orderTag(d: Detail): string {
+  const id = d.ticket.orderId || d.ticket.requestId;
+  const who = d.ticket.patient ? ` (${d.ticket.patient})` : "";
+  const ref = labRef(d);
+  return `#${id}${who}${ref ? ` [lab ref ${ref}]` : ""}`;
+}
+// The NEXT action to the LAB (the ask that moves the case forward), not a status
+// restatement. Prefers the analyst's in-context suggestion.
+function labDraft(d: Detail | null): string {
+  if (!d) return "";
+  const ref = labRef(d);
+  if (d.brief?.suggestions?.lab) return d.brief.suggestions.lab + (ref ? ` [lab ref ${ref}]` : "");
+  const it = (d.ticket.intent || "").toUpperCase();
+  const t = orderTag(d);
+  if (it === "REPORT_REQUEST") return `${t} — when will the report be delivered? Please share the ETA 🙏`;
+  if (it === "STATUS_CHECK") return `${t} — any update on the current status? Customer is following up.`;
+  if (it === "CANCEL_REQUEST" || it === "CANCEL_REASON") return `${t} — please confirm cancellation and share the reason.`;
+  if (it === "SERVICEABILITY") return `${t} — please confirm serviceability for this location.`;
+  if (it === "SLOT_CHECK" || it === "FEASIBILITY_QUOTE") return `${t} — please confirm the available slot / feasibility.`;
+  return `${t} — please check and confirm.`;
+}
+// The NEXT reply to the CUSTOMER — analyst suggestion if present, else the status.
+function storeDraft(d: Detail | null): string {
+  if (!d) return "";
+  return d.brief?.suggestions?.store || draftFor(d);
+}
 // Build a multi-line status reply covering every order named in the message.
 function bulkDraft(d: Detail | null): string {
   if (!d?.bulkStatuses?.length) return "";
@@ -114,10 +146,8 @@ function bulkDraft(d: Detail | null): string {
 function rescheduleDraft(d: Detail | null): string {
   if (!d) return "";
   const ctx = (d.ticket.liveContext || d.ticket.contextSnapshot || {}) as Record<string, unknown>;
-  const id = d.ticket.orderId || d.ticket.requestId;
-  const who = d.ticket.patient ? ` (${d.ticket.patient})` : "";
   const appt = ctx.appointmentTime ? ` Current appt: ${fmtTime(String(ctx.appointmentTime))}.` : "";
-  return `Reschedule requested for #${id}${who}.${appt} Please confirm the new slot 🙏`;
+  return `Reschedule requested for ${orderTag(d)}.${appt} Please confirm the new slot 🙏`;
 }
 const isAnswerable = (intent: string | null, orderId: number | null, requestId: number | null) =>
   !!(orderId || requestId) && ["STATUS_CHECK", "REPORT_REQUEST", "CANCEL_REASON"].includes(intent || "");
@@ -224,6 +254,9 @@ export function WhatsAppControlTower() {
     // Thread replies by default: quote the customer's latest message.
     const lastCustomer = [...detail.messages].reverse().find((m) => !m.isTeam && m.waMsgId);
     setReplyTo(lastCustomer ? { waMsgId: lastCustomer.waMsgId, sender: lastCustomer.sender, text: lastCustomer.text } : null);
+    // Prefill the NEXT action, not a status restatement — prefer the analyst's
+    // in-context suggestion; else the status answer for answerable cases.
+    if (detail.brief?.suggestions?.store) { setReply(detail.brief.suggestions.store); setTarget("store"); return; }
     if (isAnswerable(detail.ticket.intent, detail.ticket.orderId, detail.ticket.requestId)) {
       const d = draftFor(detail);
       if (d) { setReply(d); setTarget("store"); return; }
@@ -704,11 +737,9 @@ export function WhatsAppControlTower() {
               )}
               <div className="p-4 border-b border-zinc-800 flex flex-col gap-2">
                 <div className="text-[11px] uppercase tracking-wide text-zinc-500 font-semibold">Suggested actions</div>
-                {orderStatus && (
-                  <button onClick={() => { setTarget("store"); setReply(draftFor(detail)); }} className="text-left text-sm border border-zinc-700 hover:border-emerald-500 rounded-lg px-3 py-2 text-zinc-200">↩ Reply with status <span className="block text-xs text-zinc-500">to the store group</span></button>
-                )}
-                <button onClick={() => { setTarget("lab"); setReply(rescheduleDraft(detail)); }} className={`text-left text-sm border rounded-lg px-3 py-2 text-zinc-200 ${detail.ticket.intent === "RESCHEDULE" ? "border-amber-500/60 bg-amber-500/5" : "border-zinc-700 hover:border-amber-500"}`}>↻ Reschedule via lab <span className="block text-xs text-zinc-500">pre-fills current appt · moves to Wait · lab on send</span></button>
-                <button onClick={() => { setTarget("lab"); setReply(`Team, need help on #${detail.ticket.orderId || detail.ticket.requestId}${detail.ticket.patient ? " (" + detail.ticket.patient + ")" : ""} — please confirm.`); }} className="text-left text-sm border border-zinc-700 hover:border-blue-500 rounded-lg px-3 py-2 text-zinc-200">→ Ask the lab <span className="block text-xs text-zinc-500">{detail.labGroup ? short(detail.labGroup.subject) : "no lab group linked"}</span></button>
+                <button onClick={() => { setTarget("store"); setReply(storeDraft(detail)); }} className="text-left text-sm border border-zinc-700 hover:border-emerald-500 rounded-lg px-3 py-2 text-zinc-200">↩ Reply to customer <span className="block text-xs text-zinc-500">{detail.brief?.suggestions?.store ? "AI-suggested next reply" : "with current status"}</span></button>
+                <button onClick={() => { setTarget("lab"); setReply(rescheduleDraft(detail)); }} className={`text-left text-sm border rounded-lg px-3 py-2 text-zinc-200 ${detail.ticket.intent === "RESCHEDULE" ? "border-amber-500/60 bg-amber-500/5" : "border-zinc-700 hover:border-amber-500"}`}>↻ Reschedule via lab <span className="block text-xs text-zinc-500">current appt + lab ref · moves to Wait · lab on send</span></button>
+                <button onClick={() => { setTarget("lab"); setReply(labDraft(detail)); }} className="text-left text-sm border border-zinc-700 hover:border-blue-500 rounded-lg px-3 py-2 text-zinc-200">→ Ask the lab <span className="block text-xs text-zinc-500">next action + lab ref{detail.labGroup ? " · " + short(detail.labGroup.subject) : ""}</span></button>
               </div>
               {detail.suggestResolve && (
                 <div className="mx-4 mt-4 rounded-lg border border-emerald-500/40 bg-emerald-500/10 p-3 flex items-start gap-2">

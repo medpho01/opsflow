@@ -159,7 +159,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const rows = await labstackOr(
       labstack.$queryRaw<Array<Record<string, unknown>>>`
         SELECT id, "orderStatus", "appointmentTime", "phleboName", "phleboNumber",
-               "statusUpdatedAt", "cancelReason", "labId", "orderType"
+               "statusUpdatedAt", "cancelReason", "labId", "orderType", "labOrderId"
         FROM public."Order" WHERE id = ${ticket.orderId} LIMIT 1`,
       [] as Array<Record<string, unknown>>, 4000, { breakerKey: "wa-order-ctx" }
     );

@@ -22,6 +22,7 @@ type Detail = {
   lab?: { id: number; name: string | null; city: string | null } | null;
   providerGroups?: { id: string; jid: string; subject: string; labId: number | null }[];
   outbound?: { id: string; text: string; status: string; error: string | null; targetJid: string; createdAt: string; sentAt: string | null }[];
+  labAsk?: { askedAt: string; awaiting: boolean; repliedAt: string | null; status: string; targetJid: string } | null;
   bulkStatuses?: { orderId: number; status: string | null; appt: string | null; patient: string | null }[];
   related: { groupId: string; groupSubject: string; groupRole: string; sender: string; text: string; ts: string }[];
   messages: { id: string; direction: string; fromMe: boolean; sender: string; text: string; ts: string; intent: string | null; ticketId: string | null; isTeam: boolean; teamName: string | null; waMsgId: string; mediaType: string | null; mediaMime: string | null; ocrText: string | null; ocrJson: Record<string, unknown> | null; idType: string | null; idVia: string | null }[];
@@ -61,7 +62,13 @@ const SHORT_INTENT: Record<string, string> = {
 };
 const fmtTime = (s: string) => new Date(s).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
 const clock = (s: string) => new Date(s).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit" });
-const ago = (s: string) => { const m = Math.floor((Date.now() - new Date(s).getTime()) / 60000); return m < 1 ? "now" : m < 60 ? `${m}m` : `${Math.floor(m / 60)}h`; };
+const ago = (s: string) => {
+  const m = Math.floor((Date.now() - new Date(s).getTime()) / 60000);
+  if (m < 1) return "just now";
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  return h < 24 ? `${h}h ago` : `${Math.floor(h / 24)}d ago`;
+};
 const short = (s: string) => s.replace(/labstack/ig, "LS");
 
 function intentChip(intent: string | null) {
@@ -176,9 +183,27 @@ export function WhatsAppControlTower() {
   const [view, setView] = useState<"crm" | "inbox">("crm");
   const [livewire, setLivewire] = useState(false);
   const prefilledId = useRef<string | null>(null);
+  // The last draft we auto-filled. If the composer still holds it (user hasn't
+  // typed over it), switching the SEND TO target re-drafts for that target.
+  const autoDraft = useRef("");
   const caseAnchor = useRef<HTMLDivElement | null>(null);
   const activeRef = useRef<string | null>(null); activeRef.current = activeId;
   const groupRef = useRef<string | null>(null); groupRef.current = openGroup?.id || null;
+
+  // Set the target AND the draft together, remembering it as the auto-draft.
+  const pick = (tg: "store" | "lab" | "other", text: string) => {
+    setTarget(tg); autoDraft.current = text; setReply(text);
+  };
+  // The default draft for a given target: acknowledge to the customer, ask the lab.
+  const targetDraft = (tg: "store" | "lab" | "other", d: Detail | null) =>
+    tg === "lab" ? labDraft(d) : tg === "store" ? storeDraft(d) : "";
+  // Switching SEND TO re-drafts for that target — but never clobbers text the
+  // user typed. Store = acknowledgement, Lab = the next ask (with lab ref id).
+  const switchTarget = (tg: "store" | "lab" | "other") => {
+    setTarget(tg);
+    const untouched = reply.trim() === "" || reply === autoDraft.current;
+    if (untouched && tg !== "other") { const t = targetDraft(tg, detail); autoDraft.current = t; setReply(t); }
+  };
 
   const loadConvos = useCallback(async () => {
     const res = await fetch("/api/whatsapp/conversations");
@@ -256,12 +281,12 @@ export function WhatsAppControlTower() {
     setReplyTo(lastCustomer ? { waMsgId: lastCustomer.waMsgId, sender: lastCustomer.sender, text: lastCustomer.text } : null);
     // Prefill the NEXT action, not a status restatement — prefer the analyst's
     // in-context suggestion; else the status answer for answerable cases.
-    if (detail.brief?.suggestions?.store) { setReply(detail.brief.suggestions.store); setTarget("store"); return; }
+    if (detail.brief?.suggestions?.store) { pick("store", detail.brief.suggestions.store); return; }
     if (isAnswerable(detail.ticket.intent, detail.ticket.orderId, detail.ticket.requestId)) {
       const d = draftFor(detail);
-      if (d) { setReply(d); setTarget("store"); return; }
+      if (d) { pick("store", d); return; }
     }
-    setReply("");
+    pick("store", "");
   }, [detail]);
 
   // Scroll the case's own message into view when a case opens.
@@ -308,7 +333,7 @@ export function WhatsAppControlTower() {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) return flash(data.error || "Send failed");
     flash(`Queued → ${target === "store" ? "store group" : target === "lab" ? "lab group" : "number"}`);
-    setReply(""); setReplyTo(null); setAttachment(null); loadConvos(); if (openGroup) loadCases(openGroup.id); loadDetail(activeId);
+    setReply(""); autoDraft.current = ""; setReplyTo(null); setAttachment(null); loadConvos(); if (openGroup) loadCases(openGroup.id); loadDetail(activeId);
   }
   async function setStatus(status: string) {
     if (!activeId) return;
@@ -517,7 +542,7 @@ export function WhatsAppControlTower() {
                 <div className="flex items-center gap-2 text-xs">
                   <span className="uppercase tracking-wide text-zinc-500 font-semibold">Send to</span>
                   {(["store", "lab", "other"] as const).map((tg) => (
-                    <button key={tg} onClick={() => setTarget(tg)} className={`px-2.5 py-1 rounded-full border text-xs font-medium ${target === tg ? "bg-blue-600 border-blue-600 text-white" : "border-zinc-700 text-zinc-400 hover:border-zinc-500"}`}>
+                    <button key={tg} onClick={() => switchTarget(tg)} className={`px-2.5 py-1 rounded-full border text-xs font-medium ${target === tg ? "bg-blue-600 border-blue-600 text-white" : "border-zinc-700 text-zinc-400 hover:border-zinc-500"}`}>
                       {tg === "store" ? "Store group" : tg === "lab" ? `Lab${detail.labGroup ? " · " + short(detail.labGroup.subject).slice(0, 14) : ""}` : "Other number"}
                     </button>
                   ))}
@@ -606,10 +631,10 @@ export function WhatsAppControlTower() {
                   {(detail.brief.suggestions?.store || detail.brief.suggestions?.lab) && (
                     <div className="flex flex-col gap-1.5 mt-1">
                       {detail.brief.suggestions?.store && (
-                        <button onClick={() => { setTarget("store"); setReply(detail.brief!.suggestions!.store!); }} className="text-left text-xs border border-zinc-700 hover:border-emerald-500 rounded-lg px-2.5 py-1.5 text-zinc-200">↩ To customer <span className="block text-[11px] text-zinc-500 line-clamp-2">{detail.brief.suggestions.store}</span></button>
+                        <button onClick={() => pick("store", storeDraft(detail))} className="text-left text-xs border border-zinc-700 hover:border-emerald-500 rounded-lg px-2.5 py-1.5 text-zinc-200">↩ To customer <span className="block text-[11px] text-zinc-500 line-clamp-2">{detail.brief.suggestions.store}</span></button>
                       )}
                       {detail.brief.suggestions?.lab && (
-                        <button onClick={() => { setTarget("lab"); setReply(detail.brief!.suggestions!.lab!); }} className="text-left text-xs border border-zinc-700 hover:border-blue-500 rounded-lg px-2.5 py-1.5 text-zinc-200">→ To lab <span className="block text-[11px] text-zinc-500 line-clamp-2">{detail.brief.suggestions.lab}</span></button>
+                        <button onClick={() => pick("lab", labDraft(detail))} className="text-left text-xs border border-zinc-700 hover:border-blue-500 rounded-lg px-2.5 py-1.5 text-zinc-200">→ To lab <span className="block text-[11px] text-zinc-500 line-clamp-2">{labDraft(detail)}</span></button>
                       )}
                     </div>
                   )}
@@ -661,7 +686,7 @@ export function WhatsAppControlTower() {
                       </div>
                     ))}
                   </div>
-                  <button onClick={() => { setTarget("store"); setReply(bulkDraft(detail)); }} className="mt-1 text-left text-sm border border-zinc-700 hover:border-emerald-500 rounded-lg px-3 py-2 text-zinc-200">↩ Reply with all {detail.bulkStatuses.length} statuses <span className="block text-xs text-zinc-500">one line per order, to the store group</span></button>
+                  <button onClick={() => pick("store", bulkDraft(detail))} className="mt-1 text-left text-sm border border-zinc-700 hover:border-emerald-500 rounded-lg px-3 py-2 text-zinc-200">↩ Reply with all {detail.bulkStatuses.length} statuses <span className="block text-xs text-zinc-500">one line per order, to the store group</span></button>
                 </div>
               )}
               {detail.brief?.timeline && detail.brief.timeline.length > 0 && (
@@ -727,7 +752,7 @@ export function WhatsAppControlTower() {
                         {short(r.groupSubject)} · {clock(r.ts)}
                       </div>
                       <div className="text-xs text-zinc-200 mt-1 whitespace-pre-wrap line-clamp-4">{withMentions(r.text, detail.mentions)}</div>
-                      {!isProviderCase && <button onClick={() => { setTarget("store"); setReply(r.text); }} className="mt-1.5 text-[11px] text-emerald-400 hover:text-emerald-300 font-medium">↩ Use this to answer the store</button>}
+                      {!isProviderCase && <button onClick={() => pick("store", r.text)} className="mt-1.5 text-[11px] text-emerald-400 hover:text-emerald-300 font-medium">↩ Use this to answer the store</button>}
                     </div>
                   ))}
                   {isProviderCase && storeQuery[0] && (
@@ -737,9 +762,20 @@ export function WhatsAppControlTower() {
               )}
               <div className="p-4 border-b border-zinc-800 flex flex-col gap-2">
                 <div className="text-[11px] uppercase tracking-wide text-zinc-500 font-semibold">Suggested actions</div>
-                <button onClick={() => { setTarget("store"); setReply(storeDraft(detail)); }} className="text-left text-sm border border-zinc-700 hover:border-emerald-500 rounded-lg px-3 py-2 text-zinc-200">↩ Reply to customer <span className="block text-xs text-zinc-500">{detail.brief?.suggestions?.store ? "AI-suggested next reply" : "with current status"}</span></button>
-                <button onClick={() => { setTarget("lab"); setReply(rescheduleDraft(detail)); }} className={`text-left text-sm border rounded-lg px-3 py-2 text-zinc-200 ${detail.ticket.intent === "RESCHEDULE" ? "border-amber-500/60 bg-amber-500/5" : "border-zinc-700 hover:border-amber-500"}`}>↻ Reschedule via lab <span className="block text-xs text-zinc-500">current appt + lab ref · moves to Wait · lab on send</span></button>
-                <button onClick={() => { setTarget("lab"); setReply(labDraft(detail)); }} className="text-left text-sm border border-zinc-700 hover:border-blue-500 rounded-lg px-3 py-2 text-zinc-200">→ Ask the lab <span className="block text-xs text-zinc-500">next action + lab ref{detail.labGroup ? " · " + short(detail.labGroup.subject) : ""}</span></button>
+                {detail.labAsk?.awaiting && (
+                  <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200 flex items-start gap-2">
+                    <span>⏳</span>
+                    <span>Asked the lab {ago(detail.labAsk.askedAt)} — <b>no reply yet</b>. Give them time before re-asking to avoid spamming the group.</span>
+                  </div>
+                )}
+                {detail.labAsk && !detail.labAsk.awaiting && detail.labAsk.repliedAt && (
+                  <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-200 flex items-start gap-2">
+                    <span>✓</span><span>Lab replied {ago(detail.labAsk.repliedAt)} after our ask.</span>
+                  </div>
+                )}
+                <button onClick={() => pick("store", storeDraft(detail))} className="text-left text-sm border border-zinc-700 hover:border-emerald-500 rounded-lg px-3 py-2 text-zinc-200">↩ Reply to customer <span className="block text-xs text-zinc-500">{detail.brief?.suggestions?.store ? "AI-suggested next reply" : "with current status"}</span></button>
+                <button onClick={() => pick("lab", rescheduleDraft(detail))} className={`text-left text-sm border rounded-lg px-3 py-2 text-zinc-200 ${detail.ticket.intent === "RESCHEDULE" ? "border-amber-500/60 bg-amber-500/5" : "border-zinc-700 hover:border-amber-500"}`}>↻ Reschedule via lab <span className="block text-xs text-zinc-500">current appt + lab ref · moves to Wait · lab on send</span></button>
+                <button onClick={() => pick("lab", labDraft(detail))} className={`text-left text-sm border rounded-lg px-3 py-2 text-zinc-200 ${detail.labAsk?.awaiting ? "border-amber-500/50 bg-amber-500/5" : "border-zinc-700 hover:border-blue-500"}`}>{detail.labAsk?.awaiting ? "→ Re-ask the lab" : "→ Ask the lab"} <span className="block text-xs text-zinc-500">{detail.labAsk?.awaiting ? `already asked ${ago(detail.labAsk.askedAt)} · no reply` : `next action + lab ref${detail.labGroup ? " · " + short(detail.labGroup.subject) : ""}`}</span></button>
               </div>
               {detail.suggestResolve && (
                 <div className="mx-4 mt-4 rounded-lg border border-emerald-500/40 bg-emerald-500/10 p-3 flex items-start gap-2">

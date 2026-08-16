@@ -254,6 +254,39 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     select: { id: true, text: true, status: true, error: true, targetJid: true, createdAt: true, sentAt: true },
   });
 
+  // Have we already asked the lab and are we still waiting on their reply? Lets
+  // the console show "asked 2h ago · no reply yet" so we don't re-ping the lab
+  // every time the case is opened. A lab reply = any inbound in that group after
+  // our ask.
+  const provForAsk = [...providerGroups, ...(labGroup ? [labGroup] : [])];
+  const jidToGroupId = new Map(provForAsk.map((g) => [g.jid, g.id] as const));
+  let labAsk: { askedAt: string; awaiting: boolean; repliedAt: string | null; status: string; targetJid: string } | null = null;
+  if (jidToGroupId.size > 0) {
+    const lastAsk = await prisma.waOutbound.findFirst({
+      where: { ticketId: ticket.id, targetJid: { in: [...jidToGroupId.keys()] }, status: { in: ["QUEUED", "SENT"] } },
+      orderBy: { createdAt: "desc" },
+      select: { targetJid: true, createdAt: true, sentAt: true, status: true },
+    });
+    if (lastAsk) {
+      const since = lastAsk.sentAt ?? lastAsk.createdAt;
+      const gid = jidToGroupId.get(lastAsk.targetJid);
+      const reply = gid
+        ? await prisma.waMessage.findFirst({
+            where: { groupId: gid, direction: "IN", fromMe: false, ts: { gt: since } },
+            orderBy: { ts: "asc" },
+            select: { ts: true },
+          })
+        : null;
+      labAsk = {
+        askedAt: since.toISOString(),
+        awaiting: !reply,
+        repliedAt: reply ? reply.ts.toISOString() : null,
+        status: lastAsk.status,
+        targetJid: lastAsk.targetJid,
+      };
+    }
+  }
+
   return NextResponse.json({
     ticket: {
       id: ticket.id, status: ticket.status, intent: ticket.intent,
@@ -269,6 +302,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     lab,
     providerGroups,
     outbound,
+    labAsk,
     brief,
     bulkStatuses,
     related,

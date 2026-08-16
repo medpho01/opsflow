@@ -48,6 +48,17 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   const handledMsg = [...taggedMsgs].reverse().find((m) => m.isTeam);
   const lastHandledBy = handledMsg ? { name: handledMsg.teamName || "Team", ts: handledMsg.ts } : null;
 
+  // Which media messages actually have their bytes stored? A message can carry a
+  // mediaType (we saw the attachment) yet have no bytes — download failed, or it
+  // arrived via history where WhatsApp no longer serves the media. The console
+  // must say so honestly instead of rendering an invisible broken image.
+  const mediaWaIds = taggedMsgs.filter((m) => m.mediaType).map((m) => m.waMsgId);
+  const mediaBytesSet = new Set<string>();
+  if (mediaWaIds.length) {
+    const have = await prisma.waMedia.findMany({ where: { waMsgId: { in: mediaWaIds } }, select: { waMsgId: true } });
+    for (const r of have) mediaBytesSet.add(r.waMsgId);
+  }
+
   // Resolve @mentions (e.g. "@919811111111" / "@271686813356076") to names.
   // Two sources: the team roster, and anyone who has spoken in the thread
   // (their senderJid → pushName). Keyed by the full local-part and its last 10
@@ -313,7 +324,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       id: m.id, direction: m.direction, fromMe: m.fromMe, sender: m.sender,
       text: m.text, ts: m.ts, intent: m.intent, waMsgId: m.waMsgId,
       ticketId: m.ticketId, isTeam: m.isTeam, teamName: m.teamName,
-      mediaType: m.mediaType, mediaMime: m.mediaMime, ocrText: m.ocrText, ocrJson: m.ocrJson,
+      mediaType: m.mediaType, mediaMime: m.mediaMime, hasBytes: mediaBytesSet.has(m.waMsgId),
+      ocrText: m.ocrText, ocrJson: m.ocrJson,
       idType: m.idType, idVia: m.idVia,
     })),
   });

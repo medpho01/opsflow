@@ -25,7 +25,7 @@ type Detail = {
   labAsk?: { askedAt: string; awaiting: boolean; repliedAt: string | null; status: string; targetJid: string } | null;
   bulkStatuses?: { orderId: number; status: string | null; appt: string | null; patient: string | null }[];
   related: { groupId: string; groupSubject: string; groupRole: string; sender: string; text: string; ts: string }[];
-  messages: { id: string; direction: string; fromMe: boolean; sender: string; text: string; ts: string; intent: string | null; ticketId: string | null; isTeam: boolean; teamName: string | null; waMsgId: string; mediaType: string | null; mediaMime: string | null; ocrText: string | null; ocrJson: Record<string, unknown> | null; idType: string | null; idVia: string | null }[];
+  messages: { id: string; direction: string; fromMe: boolean; sender: string; text: string; ts: string; intent: string | null; ticketId: string | null; isTeam: boolean; teamName: string | null; waMsgId: string; mediaType: string | null; mediaMime: string | null; hasBytes?: boolean; ocrText: string | null; ocrJson: Record<string, unknown> | null; idType: string | null; idVia: string | null }[];
   timeline?: { id: string; groupId: string; groupSubject: string; groupRole: string; sender: string; text: string; intent: string | null; ts: string; isTeam: boolean; teamName: string | null; isCurrentGroup: boolean }[];
   mentions?: Record<string, string>;
   suggestResolve?: { reason: string } | null;
@@ -515,15 +515,27 @@ export function WhatsAppControlTower() {
                           )}
                         </div>
                         {m.mediaType === "image" && (
-                          <a href={`/api/whatsapp/media/${m.waMsgId}`} target="_blank" rel="noreferrer" className="block mb-1">
-                            {/* eslint-disable-next-line @next/next/no-img-element */}
-                            <img src={`/api/whatsapp/media/${m.waMsgId}`} alt="attachment" className="max-h-64 rounded-lg border border-zinc-700/50 object-contain" />
-                          </a>
+                          m.hasBytes === false ? (
+                            <div className="mb-1 flex items-start gap-2 rounded-lg border border-amber-600/40 bg-amber-500/5 px-3 py-2 text-xs text-amber-300">
+                              🖼️ <span>Image not captured — the gateway couldn&apos;t download it (offline when sent, or WhatsApp no longer serves it). Re-run <b>Backfill</b> on the gateway to try re-fetching recent media.</span>
+                            </div>
+                          ) : (
+                            <a href={`/api/whatsapp/media/${m.waMsgId}`} target="_blank" rel="noreferrer" className="block mb-1">
+                              {/* eslint-disable-next-line @next/next/no-img-element */}
+                              <img src={`/api/whatsapp/media/${m.waMsgId}`} alt="attachment" className="max-h-64 rounded-lg border border-zinc-700/50 object-contain" />
+                            </a>
+                          )
                         )}
                         {m.mediaType === "document" && (
-                          <a href={`/api/whatsapp/media/${m.waMsgId}`} target="_blank" rel="noreferrer" className="mb-1 flex items-center gap-2 rounded-lg border border-zinc-700/50 bg-zinc-900/50 px-3 py-2 text-xs text-blue-300 hover:border-blue-500/50">
-                            📄 <span className="underline">Open document</span>
-                          </a>
+                          m.hasBytes === false ? (
+                            <div className="mb-1 flex items-center gap-2 rounded-lg border border-amber-600/40 bg-amber-500/5 px-3 py-2 text-xs text-amber-300">
+                              📄 <span>Document not captured — re-run Backfill to try re-fetching it.</span>
+                            </div>
+                          ) : (
+                            <a href={`/api/whatsapp/media/${m.waMsgId}`} target="_blank" rel="noreferrer" className="mb-1 flex items-center gap-2 rounded-lg border border-zinc-700/50 bg-zinc-900/50 px-3 py-2 text-xs text-blue-300 hover:border-blue-500/50">
+                              📄 <span className="underline">Open document</span>
+                            </a>
+                          )
                         )}
                         <div className="text-zinc-100 whitespace-pre-wrap">{withMentions(m.text, detail.mentions)}</div>
                         {m.ocrText && (

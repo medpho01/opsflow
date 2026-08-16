@@ -45,8 +45,13 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const tc = m.fromMe ? null : matchTeam(m.sender, m.senderJid);
     return { ...m, isTeam: m.fromMe || !!tc, teamName: m.fromMe ? "You" : tc?.name || null };
   });
-  const handledMsg = [...taggedMsgs].reverse().find((m) => m.isTeam);
-  const lastHandledBy = handledMsg ? { name: handledMsg.teamName || "Team", ts: handledMsg.ts } : null;
+  const handledIdx = taggedMsgs.map((m) => m.isTeam).lastIndexOf(true);
+  const handledMsg = handledIdx >= 0 ? taggedMsgs[handledIdx] : null;
+  // How much customer/store/lab activity has landed AFTER our team's last reply.
+  // A "last handled" time next to newer unanswered messages reads as handled when
+  // the case is actually cold — so surface the gap.
+  const newSince = handledIdx >= 0 ? taggedMsgs.slice(handledIdx + 1).filter((m) => !m.isTeam).length : taggedMsgs.filter((m) => !m.isTeam).length;
+  const lastHandledBy = handledMsg ? { name: handledMsg.teamName || "Team", ts: handledMsg.ts, newSince } : null;
 
   // Which media messages actually have their bytes stored? A message can carry a
   // mediaType (we saw the attachment) yet have no bytes — download failed, or it

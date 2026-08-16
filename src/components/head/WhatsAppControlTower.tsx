@@ -16,7 +16,7 @@ type Case = {
   lastActivityAt: string; snippet: string | null;
 };
 type Detail = {
-  ticket: { id: string; status: string; intent: string | null; orderId: number | null; requestId: number | null; patient: string | null; lastHandledBy: { name: string; ts: string } | null; liveContext: Record<string, unknown> | null; contextSnapshot: Record<string, unknown> | null };
+  ticket: { id: string; status: string; intent: string | null; orderId: number | null; requestId: number | null; patient: string | null; lastHandledBy: { name: string; ts: string; newSince?: number } | null; liveContext: Record<string, unknown> | null; contextSnapshot: Record<string, unknown> | null };
   group: { id: string; jid: string; subject: string; role: string; labId: number | null; sendEnabled: boolean } | null;
   labGroup: { id: string; jid: string; subject: string; labId: number | null } | null;
   lab?: { id: number; name: string | null; city: string | null } | null;
@@ -666,7 +666,7 @@ export function WhatsAppControlTower() {
                   />
                 )}
                 <Row k="Intent" v={detail.ticket.intent || "—"} />
-                {detail.ticket.lastHandledBy && <Row k="Last handled" v={`${detail.ticket.lastHandledBy.name} · ${clock(detail.ticket.lastHandledBy.ts)}`} />}
+                {detail.ticket.lastHandledBy && <Row k="Last handled" v={`${detail.ticket.lastHandledBy.name} · ${clock(detail.ticket.lastHandledBy.ts)}${detail.ticket.lastHandledBy.newSince ? ` · ⚠ ${detail.ticket.lastHandledBy.newSince} new since` : ""}`} />}
               </div>
               <div className="p-4 border-b border-zinc-800 flex flex-col gap-2">
                 <div className="flex items-baseline gap-2">

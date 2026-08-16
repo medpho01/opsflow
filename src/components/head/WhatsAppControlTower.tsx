@@ -316,7 +316,18 @@ export function WhatsAppControlTower() {
           </span>
         )}
         {totalUnread > 0 && <span className="text-xs text-zinc-400">{totalUnread} unread</span>}
-        <a href="/head/settings/whatsapp" className="ml-auto text-xs text-zinc-400 hover:text-zinc-200 border border-zinc-800 rounded-lg px-3 py-1.5">⚙ Settings</a>
+        <details className="relative ml-auto">
+          <summary className="list-none cursor-pointer text-xs text-zinc-400 hover:text-zinc-200 border border-zinc-800 rounded-lg px-3 py-1.5">⤓ Export</summary>
+          <div className="absolute right-0 mt-1 z-20 bg-zinc-900 border border-zinc-700 rounded-lg p-1.5 flex flex-col gap-0.5 w-56 shadow-xl">
+            <div className="text-[10px] uppercase tracking-wide text-zinc-500 px-2 pt-1">Queries (pivot by type)</div>
+            <a href="/api/whatsapp/export?type=cases&days=30" className="text-xs text-zinc-200 hover:bg-zinc-800 rounded px-2 py-1.5">Queries · last 30 days</a>
+            <a href="/api/whatsapp/export?type=cases&days=90" className="text-xs text-zinc-200 hover:bg-zinc-800 rounded px-2 py-1.5">Queries · last 90 days</a>
+            <div className="text-[10px] uppercase tracking-wide text-zinc-500 px-2 pt-1.5">Chats (raw messages)</div>
+            <a href="/api/whatsapp/export?type=messages&days=7" className="text-xs text-zinc-200 hover:bg-zinc-800 rounded px-2 py-1.5">Chats · last 7 days</a>
+            <a href="/api/whatsapp/export?type=messages&days=30" className="text-xs text-zinc-200 hover:bg-zinc-800 rounded px-2 py-1.5">Chats · last 30 days</a>
+          </div>
+        </details>
+        <a href="/head/settings/whatsapp" className="text-xs text-zinc-400 hover:text-zinc-200 border border-zinc-800 rounded-lg px-3 py-1.5">⚙ Settings</a>
       </div>
 
       {view === "inbox" && <WhatsAppInbox gwDryRun={gwDryRun} onOpenCase={openCaseFromInbox} />}

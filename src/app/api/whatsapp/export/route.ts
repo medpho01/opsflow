@@ -66,14 +66,15 @@ export async function GET(request: NextRequest) {
     const briefByOrder = new Map(briefs.filter((b) => b.orderId).map((b) => [b.orderId, b]));
     const briefByReq = new Map(briefs.filter((b) => b.requestId).map((b) => [b.requestId, b]));
 
-    const header = ["Case ID", "Customer group", "Order", "Request", "Patient", "Query type", "Status", "AI status", "Next action", "Created", "Last activity", "Resolved at"];
+    const header = ["Case ID", "Origin", "Group", "Order", "Request", "Patient", "Query type", "Status", "Responded via", "First response", "Responder", "AI status", "Next action", "Created", "Last activity", "Resolved at"];
     const lines = [row(header)];
     for (const t of tickets) {
       const b = t.orderId ? briefByOrder.get(t.orderId) : t.requestId ? briefByReq.get(t.requestId) : null;
       const patient = (t.orderId && names[`o${t.orderId}`]) || (t.requestId && names[`r${t.requestId}`]) || "";
       lines.push(row([
-        t.id, t.group?.subject || "", t.orderId || "", t.requestId || "", patient,
-        b?.queryType || t.intent || "OTHER", t.status, b?.status || "", b?.waiting || "",
+        t.id, t.origin === "PROVIDER" ? "Provider request" : "Customer query", t.group?.subject || "", t.orderId || "", t.requestId || "", patient,
+        b?.queryType || t.intent || "OTHER", t.status, t.respondedVia || "", t.firstResponseAt?.toISOString() || "", t.lastResponderName || "",
+        b?.status || "", b?.waiting || "",
         t.createdAt.toISOString(), t.lastActivityAt.toISOString(), t.resolvedAt?.toISOString() || "",
       ]));
     }

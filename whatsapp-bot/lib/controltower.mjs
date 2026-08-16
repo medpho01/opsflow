@@ -98,7 +98,7 @@ async function enrichContext(orderId, requestId) {
 }
 
 // find an open ticket for this group+id, else create one
-async function upsertTicket({ group, orderId, requestId, intent, ts }) {
+async function upsertTicket({ group, orderId, requestId, intent, ts, origin = "CUSTOMER" }) {
   const idCond = orderId ? `"orderId" = $2` : requestId ? `"requestId" = $2` : `"orderId" IS NULL AND "requestId" IS NULL`;
   const idVal = orderId || requestId || null;
   const params = idVal ? [group.id, idVal] : [group.id];
@@ -117,9 +117,9 @@ async function upsertTicket({ group, orderId, requestId, intent, ts }) {
   const ctx = await enrichContext(orderId, requestId);
   const status = !idVal ? "WAITING_INFO" : "OPEN";
   const r = await taskosQuery(
-    `INSERT INTO wa_tickets (id, "groupId", "storeId", status, "orderId", "requestId", intent, "contextSnapshot", "lastActivityAt", "createdAt", "updatedAt")
-     VALUES (gen_random_uuid()::text, $1, $2, $3, $4, $5, $6, $7, $8, now(), now()) RETURNING id`,
-    [group.id, group.storeId, status, orderId, requestId, intent, ctx ? JSON.stringify(ctx) : null, ts]
+    `INSERT INTO wa_tickets (id, "groupId", "storeId", origin, status, "orderId", "requestId", intent, "contextSnapshot", "lastActivityAt", "createdAt", "updatedAt")
+     VALUES (gen_random_uuid()::text, $1, $2, $3, $4, $5, $6, $7, $8, $9, now(), now()) RETURNING id`,
+    [group.id, group.storeId, origin, status, orderId, requestId, intent, ctx ? JSON.stringify(ctx) : null, ts]
   );
   return r.rows[0].id;
 }
@@ -133,6 +133,13 @@ const AUTO_ASK_ENABLED = process.env.WA_AUTO_ASK === "true";
 // Window for conversational carry-forward: a no-id follow-up in a CX group
 // attaches to a case active within this many minutes.
 const CARRY_MINUTES = Number(process.env.WA_CARRY_MINUTES || 30);
+// A lab message counts as a PROVIDER REQUEST (worth a case) when it's one of
+// these intents — or cites an id. Pure status updates / acks stay investigation.
+const PROVIDER_ACTIONABLE = new Set([
+  "SERVICEABILITY", "REPORT_REQUEST", "RESCHEDULE", "CANCEL_REQUEST", "CANCEL_REASON",
+  "PATIENT_DATA", "FEASIBILITY_QUOTE", "ESCALATION", "CREATE_ACTION", "NEW_BOOKING",
+  "SLOT_CHECK", "TECH_ISSUE", "STATUS_CHECK",
+]);
 
 /**
  * Persist a message and (for substantive inbound) attach it to a ticket.
@@ -211,7 +218,10 @@ export async function ingestMessage(m) {
 
   let ticketId = null;
   let autoAsk = null;
-  if (substantive && group.role === "SUPPORT") {
+  const isCX = group.role === "SUPPORT";
+  const isProvider = group.role === "PROVIDER";
+  if (substantive && (isCX || isProvider)) {
+    const origin = isCX ? "CUSTOMER" : "PROVIDER";
     // Find the case this message belongs to: reply-chain → by id → active thread
     // (conversational carry-forward for a bare follow-up with no id/quote).
     ticketId = inheritedTicketId || null;
@@ -239,7 +249,7 @@ export async function ingestMessage(m) {
 
     if (isTeamMsg) {
       // TEAM RESPONSE (native phone OR console echo) → mark the case answered and
-      // stamp who / when / channel. Never creates a new case.
+      // stamp who / when / channel. Works for both lanes; never creates a case.
       if (ticketId) {
         await taskosQuery(
           `UPDATE wa_tickets SET
@@ -253,23 +263,28 @@ export async function ingestMessage(m) {
         ).catch(() => {});
       }
     } else {
-      // CUSTOMER QUERY → create the case if none matched; reopen if it had been
-      // answered/resolved (a follow-up means the query isn't done).
-      if (!ticketId) {
-        ticketId = await upsertTicket({ group, orderId: orderId ? +orderId : null, requestId: requestId ? +requestId : null, intent, ts });
-      } else {
+      // A CUSTOMER QUERY (CX group) or a PROVIDER REQUEST (lab group). For labs
+      // we only open a case for an ACTIONABLE request (or one citing an id) —
+      // pure status/acks stay investigation, so lab groups surface real work
+      // without the noise.
+      const worthy = isCX || PROVIDER_ACTIONABLE.has(intent) || !!orderId || !!requestId || refs.refs.length > 0;
+      if (!ticketId && worthy) {
+        ticketId = await upsertTicket({ group, orderId: orderId ? +orderId : null, requestId: requestId ? +requestId : null, intent, ts, origin });
+      } else if (ticketId) {
         await taskosQuery(
           `UPDATE wa_tickets SET status = CASE WHEN status IN ('ANSWERED','RESOLVED') THEN 'OPEN' ELSE status END,
              "resolvedAt" = CASE WHEN status = 'RESOLVED' THEN NULL ELSE "resolvedAt" END, "lastActivityAt" = $2 WHERE id = $1`,
           [ticketId, ts]
         ).catch(() => {});
       }
-      const needsId = DISPOSITION[intent] === "AUTO_ANSWER" && !orderId && !requestId && !inheritedTicketId;
-      if (AUTO_ASK_ENABLED && needsId && group.autoAskIdOnMissing) {
-        const last = lastAskAt.get(jid) || 0;
-        if (Date.now() - last > 30 * 60 * 1000) {
-          lastAskAt.set(jid, Date.now());
-          autoAsk = "Please share the order/booking ID and your query so we can act on it 🙏";
+      if (isCX) {
+        const needsId = DISPOSITION[intent] === "AUTO_ANSWER" && !orderId && !requestId && !inheritedTicketId;
+        if (AUTO_ASK_ENABLED && needsId && group.autoAskIdOnMissing) {
+          const last = lastAskAt.get(jid) || 0;
+          if (Date.now() - last > 30 * 60 * 1000) {
+            lastAskAt.set(jid, Date.now());
+            autoAsk = "Please share the order/booking ID and your query so we can act on it 🙏";
+          }
         }
       }
     }

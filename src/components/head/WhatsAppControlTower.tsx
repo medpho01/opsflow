@@ -11,7 +11,7 @@ type Conversation = {
   topIntent: string | null; topOrderId: number | null; answerReady: boolean; escalating: boolean;
 };
 type Case = {
-  ticketId: string; status: string; intent: string | null;
+  ticketId: string; status: string; intent: string | null; origin?: string;
   orderId: number | null; requestId: number | null; patient: string | null;
   lastActivityAt: string; snippet: string | null;
 };
@@ -393,6 +393,7 @@ export function WhatsAppControlTower() {
                     className={`w-full text-left px-3 py-2.5 border-b border-zinc-800/60 ${activeId === cs.ticketId ? "bg-zinc-800/60" : "hover:bg-zinc-900"}`}>
                     <div className="flex items-center gap-2">
                       <span className="font-semibold text-sm text-zinc-100 truncate">{cs.patient || (cs.orderId || cs.requestId ? `#${cs.orderId || cs.requestId}` : "Needs an id")}</span>
+                      {cs.origin === "PROVIDER" && <span className="text-[9px] font-bold uppercase tracking-wide text-amber-400 bg-amber-500/15 px-1.5 rounded">lab request</span>}
                       <span className={`ml-auto text-[10px] font-semibold px-1.5 py-0.5 rounded ${statusChip(cs.status)}`}>{cs.status.replace("_", " ").toLowerCase()}</span>
                     </div>
                     <div className="flex items-center gap-1.5 mt-1">

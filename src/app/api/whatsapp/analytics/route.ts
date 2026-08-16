@@ -61,6 +61,9 @@ export async function GET(request: NextRequest) {
       count(*) FILTER (WHERE status = 'RESOLVED' AND "resolvedAt" > now() - interval '1 day') AS resolved_24h
     FROM wa_tickets`;
 
+  const origins = await prisma.$queryRaw<Array<{ origin: string; n: bigint }>>`
+    SELECT origin, count(*) AS n FROM wa_tickets WHERE ${OPEN} GROUP BY 1`;
+
   const n = (v: bigint | undefined) => Number(v || 0);
   const list = (rows: Array<{ n: bigint } & Record<string, unknown>>, key: string) =>
     rows.map((r) => ({ label: String(r[key] ?? "—"), n: n(r.n) }));
@@ -77,6 +80,10 @@ export async function GET(request: NextRequest) {
     ageBuckets: ["0-1h", "1-4h", "4-24h", "24h+"].map((b) => ({ label: b, n: n(ageBuckets.find((x) => x.bucket === b)?.n) })),
     volume: { d1: n(volume[0]?.d1), d7: n(volume[0]?.d7) },
     briefs: { total: n(briefs[0]?.total), resolved: n(briefs[0]?.resolved) },
+    origins: {
+      customer: n(origins.find((o) => o.origin === "CUSTOMER")?.n),
+      provider: n(origins.find((o) => o.origin === "PROVIDER")?.n),
+    },
     response: {
       open: n(resp[0]?.open),
       responded: n(resp[0]?.responded),

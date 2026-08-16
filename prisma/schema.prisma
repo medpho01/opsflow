@@ -944,6 +944,7 @@ model WaTicket {
   id              String         @id @default(cuid())
   groupId         String
   storeId         Int?
+  origin          String         @default("CUSTOMER") // CUSTOMER query (CX group) | PROVIDER request (lab group)
   status          WaTicketStatus @default(NEW)
   orderId         Int?
   requestId       Int?

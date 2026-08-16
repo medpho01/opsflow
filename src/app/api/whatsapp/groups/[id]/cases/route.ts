@@ -30,7 +30,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   );
 
   const cases = tickets.map((t) => ({
-    ticketId: t.id, status: t.status, intent: t.intent,
+    ticketId: t.id, status: t.status, intent: t.intent, origin: t.origin,
     orderId: t.orderId, requestId: t.requestId,
     patient: (t.orderId && names[`o${t.orderId}`]) || (t.requestId && names[`r${t.requestId}`]) || null,
     lastActivityAt: t.lastActivityAt,

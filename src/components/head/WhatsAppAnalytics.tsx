@@ -8,6 +8,7 @@ type Data = {
   byStatus: Bar[]; byIntent: Bar[]; byStore: Bar[]; byLab: Bar[]; ageBuckets: Bar[];
   volume: { d1: number; d7: number }; briefs: { total: number; resolved: number };
   response?: { open: number; responded: number; respondedRate: number; native: number; console: number; avgFirstMin: number; stale24h: number; resolved24h: number };
+  origins?: { customer: number; provider: number };
 };
 const short = (s: string) => (s || "").replace(/labstack/gi, "LS");
 
@@ -29,6 +30,13 @@ export default function WhatsAppAnalytics({ onPickGroup }: { onPickGroup?: () =>
         <p className="text-sm text-zinc-500">Live across every group you&apos;re listening to. Open a chat on the left to work cases.</p>
       </div>
 
+      {d.origins && (
+        <div className="flex gap-4 text-sm">
+          <span className="text-zinc-400">Open work:</span>
+          <span className="text-emerald-300 font-semibold">{d.origins.customer} customer queries</span>
+          <span className="text-amber-300 font-semibold">{d.origins.provider} provider requests</span>
+        </div>
+      )}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <Stat label="Open cases" value={d.totals.open} tint="text-blue-300" />
         <Stat label="Resolved · 24h" value={d.totals.resolvedToday} tint="text-emerald-300" />

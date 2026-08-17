@@ -28,33 +28,82 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   // so the case resolves patient / status / lab instead of sitting id-less, and
   // persist it so the whole thread carries the context going forward.
   if (!ticket.orderId && !ticket.requestId) {
-    const conv = await prisma.waMessage.findMany({
-      where: { ticketId: id }, orderBy: { ts: "desc" }, take: 80,
-      select: { text: true, orderIds: true, requestIds: true, refIds: true },
-    });
+    type ConvMsg = { text: string; orderIds: number[]; requestIds: number[]; refIds: string[] };
+    const scan = (where: Prisma.WaMessageWhereInput, take: number) =>
+      prisma.waMessage.findMany({ where, orderBy: { ts: "desc" }, take, select: { text: true, orderIds: true, requestIds: true, refIds: true } }) as Promise<ConvMsg[]>;
+    // Lab reference ids in a set of messages → distinct order ids. Uses stored
+    // refIds AND a broad re-scan of the text (formats like "VL7CAE0F" the
+    // gateway's narrow extractor can miss); every candidate is validated against
+    // Order.labOrderId, so non-refs drop.
+    const refsToOrders = async (msgs: ConvMsg[]): Promise<number[]> => {
+      const refSet = new Set<string>();
+      for (const m of msgs) {
+        for (const r of m.refIds || []) refSet.add(r.toUpperCase());
+        for (const tok of (m.text || "").toUpperCase().match(/\b(?=[A-Z0-9]*[A-Z])(?=[A-Z0-9]*\d)[A-Z0-9]{6,14}\b/g) || []) refSet.add(tok);
+      }
+      const refs = [...refSet].slice(0, 40);
+      if (!refs.length) return [];
+      const rows = await labstackOr(
+        labstack.$queryRaw<Array<{ id: number }>>`SELECT DISTINCT id FROM public."Order" WHERE upper("labOrderId") IN (${Prisma.join(refs)})`,
+        [] as Array<{ id: number }>,
+      );
+      return rows.map((r) => r.id);
+    };
+
     let adoptOrder: number | null = null;
     let adoptRequest: number | null = null;
-    for (const m of conv) {
+
+    // 1) This case's own thread — trust the most recent id it carries.
+    const own = await scan({ ticketId: id }, 80);
+    for (const m of own) {
       if (m.orderIds?.length) { adoptOrder = m.orderIds[0]; break; }
       if (m.requestIds?.length) { adoptRequest = m.requestIds[0]; break; }
     }
     if (!adoptOrder && !adoptRequest) {
-      // Lab reference ids: stored refIds + a broad re-scan of the text (formats
-      // like "VL7CAE0F" the gateway's narrow extractor can miss). Validated below.
+      const ords = await refsToOrders(own);
+      if (ords.length === 1) adoptOrder = ords[0];
+    }
+
+    // 2) Conversation-window fallback — the displayed thread is usually the group
+    // timeline, not this ticket's messages, and a busy lab group discusses many
+    // orders. Bound to the time window around THIS case and bind to the order in
+    // the id-bearing message CLOSEST to it — the nearest context wins.
+    if (!adoptOrder && !adoptRequest) {
+      const anchors = (own.length ? await prisma.waMessage.findMany({ where: { ticketId: id }, select: { ts: true } }) : [])
+        .map((m) => m.ts.getTime());
+      if (!anchors.length) anchors.push((ticket.lastActivityAt || ticket.createdAt).getTime());
+      const lo = new Date(Math.min(...anchors) - 120 * 60000);
+      const hi = new Date(Math.max(...anchors) + 120 * 60000);
+      const near = await prisma.waMessage.findMany({
+        where: { groupId: ticket.groupId, ts: { gte: lo, lte: hi } },
+        orderBy: { ts: "asc" }, take: 300,
+        select: { ts: true, text: true, orderIds: true, refIds: true },
+      });
+      // Resolve every lab ref seen in the window to an order, once.
       const refSet = new Set<string>();
-      for (const m of conv) {
+      for (const m of near) {
         for (const r of m.refIds || []) refSet.add(r.toUpperCase());
         for (const tok of (m.text || "").toUpperCase().match(/\b(?=[A-Z0-9]*[A-Z])(?=[A-Z0-9]*\d)[A-Z0-9]{6,14}\b/g) || []) refSet.add(tok);
       }
-      const refs = [...refSet].slice(0, 25);
-      if (refs.length) {
-        const rows = await labstackOr(
-          labstack.$queryRaw<Array<{ id: number }>>`SELECT id FROM public."Order" WHERE upper("labOrderId") IN (${Prisma.join(refs)}) ORDER BY id DESC LIMIT 1`,
-          [] as Array<{ id: number }>,
-        );
-        if (rows.length) adoptOrder = rows[0].id;
+      const refList = [...refSet].slice(0, 60);
+      const refRows = refList.length
+        ? await labstackOr(
+            labstack.$queryRaw<Array<{ id: number; ref: string }>>`SELECT id, upper("labOrderId") AS ref FROM public."Order" WHERE upper("labOrderId") IN (${Prisma.join(refList)})`,
+            [] as Array<{ id: number; ref: string }>,
+          )
+        : [];
+      const refMap = new Map(refRows.map((r) => [r.ref, r.id]));
+      let bestDist = Infinity;
+      for (const m of near) {
+        const ords = new Set<number>(m.orderIds || []);
+        for (const r of m.refIds || []) { const o = refMap.get(r.toUpperCase()); if (o) ords.add(o); }
+        for (const tok of (m.text || "").toUpperCase().match(/\b(?=[A-Z0-9]*[A-Z])(?=[A-Z0-9]*\d)[A-Z0-9]{6,14}\b/g) || []) { const o = refMap.get(tok); if (o) ords.add(o); }
+        if (!ords.size) continue;
+        const dist = Math.min(...anchors.map((a) => Math.abs(a - m.ts.getTime())));
+        if (dist < bestDist) { bestDist = dist; adoptOrder = [...ords][0]; }
       }
     }
+
     if (adoptOrder || adoptRequest) {
       ticket.orderId = adoptOrder;
       ticket.requestId = adoptRequest;

@@ -12,6 +12,44 @@
  */
 import pg from "pg";
 
+// Intent → which namespace the number most plausibly names.
+// Scheduling/booking talk is about a live Request/Appointment; status/report
+// talk is about a fulfilment Order. This is a PRIOR, not a rule — freshness and
+// entity state can still override it below.
+const SCHEDULE_INTENTS = new Set(["RESCHEDULE", "CANCEL_REQUEST", "NEW_BOOKING", "SLOT_CHECK", "SERVICEABILITY", "FEASIBILITY_QUOTE", "CREATE_ACTION"]);
+const STATUS_INTENTS = new Set(["STATUS_CHECK", "REPORT_REQUEST", "CANCEL_REASON", "OUTBOUND_UPDATE"]);
+// Orders in a terminal state are weak candidates for a live conversation.
+const TERMINAL_ORDER = new Set(["REPORT_DELIVERED", "REPORT_UPLOADED", "COMPLETED", "CANCELLED", "CANCELED", "CLOSED"]);
+
+function daysBetween(later, earlier) {
+  if (!later || !earlier) return null;
+  return (new Date(later).getTime() - new Date(earlier).getTime()) / 86_400_000;
+}
+// Score a candidate entity for "is THIS the thing the conversation is about?"
+// Higher = better. The signals: intent prior, live-vs-terminal state, and how
+// fresh the entity is relative to the message.
+function scoreCandidate(c, intent, convTs) {
+  let s = 0;
+  if (c.kind === "order") {
+    const st = (c.row.status || "").toUpperCase();
+    if (STATUS_INTENTS.has(intent)) s += 3;
+    if (SCHEDULE_INTENTS.has(intent)) s -= 1;            // you don't reschedule an order
+    if (TERMINAL_ORDER.has(st)) s -= 3;                  // delivered/cancelled → weak
+    const gap = daysBetween(convTs, c.row.statusUpdatedAt);
+    if (gap != null && gap > 30) s -= 3;                 // order last moved >30d before the chat
+    else if (gap != null && gap >= 0) s += 1;            // recently-touched order
+  } else if (c.kind === "request") {
+    if (SCHEDULE_INTENTS.has(intent)) s += 3;
+    s += 1;                                              // a request is a live anchor
+    const gap = daysBetween(convTs, c.row.createdAt);
+    if (gap != null && gap > 90) s -= 2;                 // very old request, weaker
+  } else if (c.kind === "appt") {
+    if (SCHEDULE_INTENTS.has(intent)) s += 2;
+    s += 1;
+  }
+  return s;
+}
+
 const CONN = process.env.SOURCE_DATABASE_URL;
 if (!CONN) console.warn("[lookup] SOURCE_DATABASE_URL not set — lookups will fail (dry-run still classifies).");
 
@@ -75,7 +113,7 @@ export async function resolveRefIds(refs = []) {
 //
 // Returns { orderIds:[canonical Order ids], requestIds:[validated Request ids],
 //   primary:{ orderId, requestId, type, via } | null, ambiguous:[{ n, in:[…] }] }
-export async function resolveEntities({ refs = [], reqLabeled = [], apptLabeled = [], bare = [] } = {}) {
+export async function resolveEntities({ refs = [], reqLabeled = [], apptLabeled = [], bare = [], intent = null, convTs = null } = {}) {
   const empty = { orderIds: [], requestIds: [], primary: null, ambiguous: [] };
   if (!pool) return empty;
   const orderIds = new Set();
@@ -112,26 +150,55 @@ export async function resolveEntities({ refs = [], reqLabeled = [], apptLabeled 
     }
   }
 
-  // 4) bare numbers → Order first (convention). Non-orders: probe request/appt.
+  // 4) bare numbers → RANK across Order / Request / Appointment by consistency
+  // with the conversation, instead of blindly preferring Order. A number can
+  // exist in all three namespaces (a delivered Order #28305 from months ago AND
+  // a live reschedule Request #28305); the old Order-first rule bound to the dead
+  // order. We pull all candidates and score them by intent + freshness + state.
   const bareInts = asInts(bare);
   if (bareInts.length) {
-    const asOrder = await q(`SELECT id FROM public."Order" WHERE id = ANY($1::int[])`, [bareInts]);
-    const orderSet = new Set(asOrder.map((x) => x.id));
-    for (const id of orderSet) { orderIds.add(id); prov.push({ orderId: id, type: "ORDER", via: `order ${id}` }); }
-    const leftover = bareInts.filter((n) => !orderSet.has(n));
-    if (leftover.length) {
-      const [asReq, asAppt] = await Promise.all([
-        q(`SELECT id FROM public."Request" WHERE id = ANY($1::int[])`, [leftover]),
-        q(`SELECT id, order_id FROM public."Appointment" WHERE id = ANY($1::int[])`, [leftover]),
-      ]);
-      const reqSet = new Set(asReq.map((x) => x.id));
-      const apptMap = new Map(asAppt.map((x) => [x.id, x.order_id]));
-      for (const n of leftover) {
-        const inReq = reqSet.has(n), inAppt = apptMap.has(n);
-        if (inReq && inAppt) { ambiguous.push({ n, in: ["request", "appointment"] }); continue; } // not sure → ask
-        if (inAppt) { const oid = apptMap.get(n); if (oid) { orderIds.add(oid); prov.push({ orderId: oid, type: "APPOINTMENT", via: `appt ${n}` }); } }
-        else if (inReq) { requestIds.add(n); prov.push({ requestId: n, type: "REQUEST", via: `request ${n}` }); }
-        // matches nothing → not an id (phone/pincode/qty); ignore
+    const [ords, reqs, appts] = await Promise.all([
+      q(`SELECT id, "orderStatus"::text AS status, "statusUpdatedAt" FROM public."Order" WHERE id = ANY($1::int[])`, [bareInts]),
+      q(`SELECT id, "status"::text AS status, "createdAt" FROM public."Request" WHERE id = ANY($1::int[])`, [bareInts]),
+      q(`SELECT id, order_id FROM public."Appointment" WHERE id = ANY($1::int[])`, [bareInts]),
+    ]);
+    const oMap = new Map(ords.map((r) => [r.id, r]));
+    const rMap = new Map(reqs.map((r) => [r.id, r]));
+    const aMap = new Map(appts.map((r) => [r.id, r]));
+    for (const n of bareInts) {
+      const cand = [];
+      if (oMap.has(n)) cand.push({ kind: "order", row: oMap.get(n) });
+      if (rMap.has(n)) cand.push({ kind: "request", row: rMap.get(n) });
+      if (aMap.has(n)) cand.push({ kind: "appt", row: aMap.get(n) });
+      if (!cand.length) continue; // matches nothing → not an id (phone/pincode/qty)
+
+      const scored = cand.map((c) => ({ ...c, s: scoreCandidate(c, intent, convTs) }))
+                         .sort((a, b) => b.s - a.s);
+      const win = scored[0];
+      const runner = scored[1] || null;
+      let confidence = cand.length === 1 ? "high" : (win.s - runner.s <= 1 ? "low" : "high");
+      let warning = null;
+      const alt = runner ? { kind: runner.kind, id: n } : null;
+      const note = runner ? ` (ranked over ${runner.kind} ${n})` : "";
+
+      if (win.kind === "order") {
+        const st = (win.row.status || "").toUpperCase();
+        const gap = daysBetween(convTs, win.row.statusUpdatedAt);
+        // Staleness/contradiction guard: a terminal order last touched long before
+        // the chat is almost never what a live thread is about — flag it loudly.
+        if (TERMINAL_ORDER.has(st) && gap != null && gap > 30) {
+          warning = `order is ${st}, last updated ~${Math.round(gap)}d before this message`;
+          confidence = "low";
+        }
+        orderIds.add(win.row.id);
+        prov.push({ orderId: win.row.id, type: "ORDER", via: `order ${win.row.id}${note}`, confidence, warning, alt });
+      } else if (win.kind === "appt") {
+        const oid = win.row.order_id;
+        if (oid) { orderIds.add(oid); prov.push({ orderId: oid, type: "APPOINTMENT", via: `appt ${n}${note}`, confidence, alt }); }
+        else { requestIds.add(n); } // appt with no order — keep the number as a weak anchor
+      } else {
+        requestIds.add(n);
+        prov.push({ requestId: n, type: "REQUEST", via: `request ${n}${note}`, confidence, alt });
       }
     }
   }

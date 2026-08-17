@@ -166,7 +166,10 @@ export async function ingestMessage(m) {
   // replica, canonicalizing to a single Order key and flagging what it can't
   // safely decide. This is what stops us from showing the wrong patient.
   const refs = extractReferences(text);
-  const resolved = await resolveEntities(refs).catch((e) => {
+  // Pass the intent + message time so a bare number resolves to the entity the
+  // conversation is actually about (a live reschedule Request, not a year-old
+  // delivered Order that shares the id) — not just "the first Order that matches".
+  const resolved = await resolveEntities({ ...refs, intent, convTs: ts }).catch((e) => {
     console.error("resolveEntities:", e.message);
     return { orderIds: [], requestIds: [], primary: null, ambiguous: [] };
   });
@@ -176,7 +179,11 @@ export async function ingestMessage(m) {
   let orderId = resolved.primary?.orderId || null;
   let requestId = resolved.primary?.requestId || null;
   let idType = resolved.primary?.type || null;
-  let idVia = resolved.primary?.via || null;
+  // Carry the ranking reason / staleness warning into provenance so the console
+  // can show "low confidence — order delivered months ago" instead of asserting it.
+  let idVia = resolved.primary?.warning
+    ? `${resolved.primary.via} · ⚠ ${resolved.primary.warning}`
+    : resolved.primary?.via || null;
   let inheritedTicketId = null;
 
   // Reply-chain inheritance. People reply to a root message ("any update on
@@ -359,13 +366,13 @@ export async function reresolveWindow({ days = 3 } = {}) {
   let updated = 0, inherited = 0, tickets = 0;
   for (const r of rows) {
     const refs = extractReferences(r.text || "");
-    const resolved = await resolveEntities(refs).catch(() => ({ orderIds: [], requestIds: [], primary: null, ambiguous: [] }));
+    const resolved = await resolveEntities({ ...refs, intent: r.intent, convTs: r.ts }).catch(() => ({ orderIds: [], requestIds: [], primary: null, ambiguous: [] }));
     let allOrderIds = resolved.orderIds;
     let validRequestIds = resolved.requestIds;
     let orderId = resolved.primary?.orderId || null;
     let requestId = resolved.primary?.requestId || null;
     let idType = resolved.primary?.type || null;
-    let idVia = resolved.primary?.via || null;
+    let idVia = resolved.primary?.warning ? `${resolved.primary.via} · ⚠ ${resolved.primary.warning}` : (resolved.primary?.via || null);
     let ticketId = null;
 
     if (!orderId && !requestId && r.replyToWaId) {

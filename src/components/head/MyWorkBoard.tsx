@@ -141,6 +141,53 @@ function storeNameOf(t: Task): string {
   return metaStr(t, "storeName") || (t.storeId != null ? `Store #${t.storeId}` : "");
 }
 
+// ─── CSV export (client-side, mirrors the filtered view) ────────────────
+// Excel-safe: UTF-8 BOM, CRLF rows, every cell quoted, and leading
+// =/+/-/@ neutralised so a cell can't execute as a spreadsheet formula.
+function csvCell(v: unknown): string {
+  const s = v == null ? "" : String(v);
+  const safe = /^[=+\-@]/.test(s) ? `'${s}` : s;
+  return `"${safe.replace(/"/g, '""')}"`;
+}
+function fmtIst(s: string | null): string {
+  if (!s) return "";
+  const d = new Date(s);
+  if (isNaN(d.getTime())) return "";
+  return d.toLocaleString("en-IN", {
+    timeZone: "Asia/Kolkata", year: "numeric", month: "short",
+    day: "2-digit", hour: "2-digit", minute: "2-digit",
+  });
+}
+const SLA_LABEL: Record<Task["slaStatus"], string> = {
+  breached: "Breached", critical: "Critical", warning: "Warning", safe: "In SLA",
+};
+function tasksToCsv(tasks: Task[]): string {
+  const headers = [
+    "Task ID", "Order ID", "Order Type", "Title", "Rule", "Patient", "Store",
+    "Assignee", "Assigned", "Priority", "SLA Status", "Min Remaining",
+    "SLA Deadline (IST)", "Breached At (IST)", "Appointment (IST)",
+    "Status", "Bucket", "Created (IST)",
+  ];
+  const rows = tasks.map((t) => [
+    t.id, t.entityId, t.orderType, t.title,
+    t.taskRule?.name || t.taskRuleId,
+    metaStr(t, "patientName"), storeNameOf(t),
+    t.assignedTo?.name || "Unassigned", t.assignedTo ? "Yes" : "No",
+    t.priority, SLA_LABEL[t.slaStatus], Math.round(t.minutesRemaining),
+    fmtIst(t.slaDeadline), fmtIst(t.slaBreachedAt), fmtIst(t.appointmentTime),
+    t.status, t.viewBucket, fmtIst(t.createdAt),
+  ]);
+  return "﻿" + [headers, ...rows].map((r) => r.map(csvCell).join(",")).join("\r\n");
+}
+function downloadCsv(filename: string, csv: string): void {
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 // ─── Assignee chip ────────────────────────────────────────────────────
 // Stable colour per name (hash → palette index) so the same agent reads as
 // the same colour across rows without us hand-maintaining a map.
@@ -1231,6 +1278,7 @@ export default function MyWorkBoard({ currentUser }: { currentUser: CurrentUser 
   const isAgent = currentUser.role === "OPS_AGENT";
 
   const [tab, setTab] = useState<Tab>("today");
+  const [exportOpen, setExportOpen] = useState(false);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1631,6 +1679,19 @@ export default function MyWorkBoard({ currentUser }: { currentUser: CurrentUser 
     [tasks]
   );
 
+  // Export the CURRENT view (all active filters already applied) to CSV. Scope
+  // "all" = every open task across Today+Tomorrow+Stuck (so a Breached/Critical
+  // SLA filter captures ALL breaching orders regardless of which tab is open);
+  // a tab scope exports just that tab. Done tasks are excluded from "all".
+  const openFiltered = useMemo(() => filteredTasks.filter((t) => t.viewBucket !== "done"), [filteredTasks]);
+  const doExport = useCallback((scope: "all" | Tab) => {
+    const list = scope === "all" ? openFiltered : byBucket[scope];
+    if (!list.length) return;
+    const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-");
+    downloadCsv(`smartview-${scope}-${stamp}.csv`, tasksToCsv(list));
+    setExportOpen(false);
+  }, [openFiltered, byBucket]);
+
   const lastUpdatedRel = useMemo(() => {
     const sec = Math.floor((now.getTime() - lastUpdated.getTime()) / 1000);
     if (sec < 60) return "just now";
@@ -1656,13 +1717,46 @@ export default function MyWorkBoard({ currentUser }: { currentUser: CurrentUser 
             </span>
           </div>
         </div>
-        <button
-          onClick={() => fetchTasks()}
-          disabled={loading}
-          className="px-3 py-1.5 text-sm bg-zinc-800 border border-zinc-700 rounded text-zinc-200 hover:bg-zinc-700 disabled:opacity-50"
-        >
-          ⟳ Refresh
-        </button>
+        <div className="flex items-center gap-2">
+          {!isAgent && (
+            <div className="relative">
+              <button
+                onClick={() => setExportOpen((o) => !o)}
+                disabled={loading || openFiltered.length === 0}
+                className="px-3 py-1.5 text-sm bg-zinc-800 border border-zinc-700 rounded text-zinc-200 hover:bg-zinc-700 disabled:opacity-50"
+                title="Download the current view (filters applied) as CSV / Excel"
+              >
+                ⤓ Export
+              </button>
+              {exportOpen && (
+                <>
+                  <button className="fixed inset-0 z-40 cursor-default" aria-label="Close export menu" onClick={() => setExportOpen(false)} />
+                  <div className="absolute right-0 mt-1 z-50 w-64 bg-zinc-900 border border-zinc-700 rounded-lg shadow-xl p-1 text-sm">
+                    <div className="px-3 py-1.5 text-[11px] uppercase tracking-wide text-zinc-500 font-semibold">Export to CSV · filters applied</div>
+                    <button onClick={() => doExport("all")} className="w-full text-left px-3 py-2 rounded hover:bg-zinc-800 text-zinc-200 flex items-center justify-between gap-2">
+                      <span>All open <span className="text-zinc-500">(Today + Tomorrow + Stuck)</span></span>
+                      <span className="text-zinc-500 tabular-nums">{openFiltered.length}</span>
+                    </button>
+                    <button onClick={() => doExport(tab)} className="w-full text-left px-3 py-2 rounded hover:bg-zinc-800 text-zinc-200 flex items-center justify-between gap-2">
+                      <span>Current tab <span className="text-zinc-500 capitalize">({tab})</span></span>
+                      <span className="text-zinc-500 tabular-nums">{byBucket[tab].length}</span>
+                    </button>
+                    <div className="px-3 py-1.5 text-[11px] text-zinc-600 leading-snug border-t border-zinc-800 mt-1">
+                      Tip: filter <b className="text-zinc-400">SLA → Breached / Critical / Warning</b> first to export exactly the breaching orders.
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+          <button
+            onClick={() => fetchTasks()}
+            disabled={loading}
+            className="px-3 py-1.5 text-sm bg-zinc-800 border border-zinc-700 rounded text-zinc-200 hover:bg-zinc-700 disabled:opacity-50"
+          >
+            ⟳ Refresh
+          </button>
+        </div>
       </div>
 
       {/* Sticky control deck — filter bar + tab strip pin to the top of

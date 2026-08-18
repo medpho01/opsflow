@@ -98,7 +98,8 @@ async function enrichContext(orderId, requestId) {
 }
 
 // find an open ticket for this group+id, else create one
-async function upsertTicket({ group, orderId, requestId, intent, ts, origin = "CUSTOMER" }) {
+async function upsertTicket({ group, orderId, requestId, intent, ts, origin = "CUSTOMER",
+                              entityKind = null, idConfidence = null, idWarning = null, idAlt = null }) {
   const idCond = orderId ? `"orderId" = $2` : requestId ? `"requestId" = $2` : `"orderId" IS NULL AND "requestId" IS NULL`;
   const idVal = orderId || requestId || null;
   const params = idVal ? [group.id, idVal] : [group.id];
@@ -107,19 +108,24 @@ async function upsertTicket({ group, orderId, requestId, intent, ts, origin = "C
        ORDER BY "lastActivityAt" DESC LIMIT 1`,
     params
   );
+  const altJson = idAlt ? JSON.stringify(idAlt) : null;
   if (found.rows[0]) {
+    // Refresh the resolution provenance on re-touch, but never overwrite a value
+    // with null (COALESCE) so a bare follow-up doesn't wipe the original decision.
     await taskosQuery(
-      `UPDATE wa_tickets SET "lastActivityAt" = $2, intent = COALESCE($3, intent) WHERE id = $1`,
-      [found.rows[0].id, ts, intent]
+      `UPDATE wa_tickets SET "lastActivityAt" = $2, intent = COALESCE($3, intent),
+         "entityKind" = COALESCE($4, "entityKind"), "idConfidence" = COALESCE($5, "idConfidence"),
+         "idWarning" = $6, "idAlt" = COALESCE($7::jsonb, "idAlt") WHERE id = $1`,
+      [found.rows[0].id, ts, intent, entityKind, idConfidence, idWarning, altJson]
     );
     return found.rows[0].id;
   }
   const ctx = await enrichContext(orderId, requestId);
   const status = !idVal ? "WAITING_INFO" : "OPEN";
   const r = await taskosQuery(
-    `INSERT INTO wa_tickets (id, "groupId", "storeId", origin, status, "orderId", "requestId", intent, "contextSnapshot", "lastActivityAt", "createdAt", "updatedAt")
-     VALUES (gen_random_uuid()::text, $1, $2, $3, $4, $5, $6, $7, $8, $9, now(), now()) RETURNING id`,
-    [group.id, group.storeId, origin, status, orderId, requestId, intent, ctx ? JSON.stringify(ctx) : null, ts]
+    `INSERT INTO wa_tickets (id, "groupId", "storeId", origin, status, "orderId", "requestId", "entityKind", "idConfidence", "idWarning", "idAlt", intent, "contextSnapshot", "lastActivityAt", "createdAt", "updatedAt")
+     VALUES (gen_random_uuid()::text, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12, $13, now(), now()) RETURNING id`,
+    [group.id, group.storeId, origin, status, orderId, requestId, entityKind, idConfidence, idWarning, altJson, intent, ctx ? JSON.stringify(ctx) : null, ts]
   );
   return r.rows[0].id;
 }
@@ -291,7 +297,18 @@ export async function ingestMessage(m) {
       // without the noise.
       const worthy = isCX || PROVIDER_ACTIONABLE.has(intent) || !!orderId || !!requestId || refs.refs.length > 0;
       if (!ticketId && worthy) {
-        ticketId = await upsertTicket({ group, orderId: orderId ? +orderId : null, requestId: requestId ? +requestId : null, intent, ts, origin });
+        // Carry the resolver's confidence ONLY when the case binds to exactly what
+        // the resolver decided. If the id came from carry-forward / reply-chain
+        // (a deliberate context binding), treat it as high-confidence, no warning.
+        const p = resolved.primary;
+        const boundToPrimary = p && ((p.orderId && +p.orderId === +orderId) || (p.requestId && +p.requestId === +requestId));
+        ticketId = await upsertTicket({
+          group, orderId: orderId ? +orderId : null, requestId: requestId ? +requestId : null, intent, ts, origin,
+          entityKind: boundToPrimary ? p.type : (orderId ? "ORDER" : requestId ? "REQUEST" : null),
+          idConfidence: boundToPrimary ? (p.confidence || "high") : "high",
+          idWarning: boundToPrimary ? (p.warning || null) : null,
+          idAlt: boundToPrimary ? (p.alt || null) : null,
+        });
       } else if (ticketId) {
         await taskosQuery(
           `UPDATE wa_tickets SET status = CASE WHEN status IN ('ANSWERED','RESOLVED') THEN 'OPEN' ELSE status END,
@@ -395,7 +412,15 @@ export async function reresolveWindow({ days = 3 } = {}) {
     const group = getGroup(r.gjid);
     const substantive = r.intent !== "NOISE" && r.intent !== "SYSTEM";
     if (group && substantive && !r.fromMe && (orderId || requestId)) {
-      ticketId = await upsertTicket({ group, orderId: orderId ? +orderId : null, requestId: requestId ? +requestId : null, intent: r.intent, ts: r.ts });
+      const p = resolved.primary;
+      const boundToPrimary = p && ((p.orderId && +p.orderId === +orderId) || (p.requestId && +p.requestId === +requestId));
+      ticketId = await upsertTicket({
+        group, orderId: orderId ? +orderId : null, requestId: requestId ? +requestId : null, intent: r.intent, ts: r.ts,
+        entityKind: boundToPrimary ? p.type : (orderId ? "ORDER" : requestId ? "REQUEST" : null),
+        idConfidence: boundToPrimary ? (p.confidence || "high") : "high",
+        idWarning: boundToPrimary ? (p.warning || null) : null,
+        idAlt: boundToPrimary ? (p.alt || null) : null,
+      });
       tickets++;
     }
 

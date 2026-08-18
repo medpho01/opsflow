@@ -16,7 +16,7 @@ type Case = {
   lastActivityAt: string; snippet: string | null;
 };
 type Detail = {
-  ticket: { id: string; status: string; intent: string | null; orderId: number | null; requestId: number | null; patient: string | null; lastHandledBy: { name: string; ts: string; newSince?: number } | null; liveContext: Record<string, unknown> | null; contextSnapshot: Record<string, unknown> | null };
+  ticket: { id: string; status: string; intent: string | null; orderId: number | null; requestId: number | null; patient: string | null; lastHandledBy: { name: string; ts: string; newSince?: number } | null; liveContext: Record<string, unknown> | null; contextSnapshot: Record<string, unknown> | null; entity?: { kind: string | null; confidence: string; warning: string | null; alt: { kind: string; id: number } | null } };
   group: { id: string; jid: string; subject: string; role: string; labId: number | null; sendEnabled: boolean } | null;
   labGroup: { id: string; jid: string; subject: string; labId: number | null } | null;
   lab?: { id: number; name: string | null; city: string | null } | null;
@@ -193,6 +193,7 @@ export function WhatsAppControlTower() {
   // media) to the store group instead of sending a normal reply.
   const [forward, setForward] = useState<{ sourceWaMsgId: string; storeSubject: string; hasMedia: boolean; storeGroupId?: string } | null>(null);
   const [linkId, setLinkId] = useState("");
+  const [linkKind, setLinkKind] = useState<"order" | "request">("order");
   const fileInput = useRef<HTMLInputElement | null>(null);
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
@@ -383,16 +384,25 @@ export function WhatsAppControlTower() {
     flash(`Marked ${status.replace("_", " ").toLowerCase()}`);
     loadConvos(); if (openGroup) loadCases(openGroup.id); loadDetail(activeId);
   }
-  // Manually bind a case that lost its id to an order — pulls patient/status/lab
-  // context and tags the thread so the whole conversation carries it.
-  async function linkOrder() {
+  // Manually bind a case that lost its id to an order OR request — pulls
+  // patient/status/lab context and tags the thread so the conversation carries it.
+  async function linkEntity() {
     if (!activeId) return;
-    const oid = Number(linkId.trim());
-    if (!Number.isInteger(oid) || oid <= 0) return flash("Enter a numeric order id");
-    const res = await fetch(`/api/whatsapp/tickets/${activeId}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ orderId: oid }) });
+    const n = Number(linkId.trim());
+    if (!Number.isInteger(n) || n <= 0) return flash(`Enter a numeric ${linkKind} id`);
+    const res = await fetch(`/api/whatsapp/tickets/${activeId}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(linkKind === "order" ? { orderId: n } : { requestId: n }) });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) return flash(data.error || "Could not link");
-    flash(`Linked to order #${oid}`); setLinkId(""); loadConvos(); if (openGroup) loadCases(openGroup.id); loadDetail(activeId);
+    flash(`Linked to ${linkKind} #${n}`); setLinkId(""); loadConvos(); if (openGroup) loadCases(openGroup.id); loadDetail(activeId);
+  }
+  // Switch a mis-resolved case to the resolver's runner-up (e.g. a live reschedule
+  // that bound to a year-old delivered order → the actual Request).
+  async function swapEntity(alt: { kind: string; id: number }) {
+    if (!activeId) return;
+    const res = await fetch(`/api/whatsapp/tickets/${activeId}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ swapTo: alt }) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return flash(data.error || "Could not switch");
+    flash(`Switched to ${alt.kind} #${alt.id}`); loadConvos(); if (openGroup) loadCases(openGroup.id); loadDetail(activeId);
   }
 
   const shown = convos.filter((c) => {
@@ -727,14 +737,43 @@ export function WhatsAppControlTower() {
               )}
               <div className="p-4 border-b border-zinc-800 flex flex-col gap-2">
                 {detail.ticket.patient && <Row k="Patient" v={detail.ticket.patient} />}
-                <Row k="Order" v={detail.ticket.orderId ? `#${detail.ticket.orderId}` : detail.ticket.requestId ? `Req #${detail.ticket.requestId}` : "— none —"} mono />
-                {!detail.ticket.orderId && !detail.ticket.requestId && (
-                  <div className="flex items-center gap-1.5 -mt-1">
-                    <input value={linkId} onChange={(e) => setLinkId(e.target.value.replace(/\D/g, ""))} onKeyDown={(e) => { if (e.key === "Enter") linkOrder(); }} placeholder="link order id…" className="w-28 bg-zinc-900 border border-zinc-700 rounded px-2 py-1 text-xs text-zinc-100 focus:border-blue-500 outline-none" />
-                    <button onClick={linkOrder} className="text-xs font-semibold border border-zinc-700 hover:border-emerald-500 hover:text-emerald-400 rounded px-2 py-1 text-zinc-300">Link</button>
-                    <span className="text-[10px] text-zinc-600">pulls patient · status · lab</span>
-                  </div>
-                )}
+                {(() => {
+                  const e = detail.ticket.entity;
+                  const isReq = !!detail.ticket.requestId && !detail.ticket.orderId;
+                  const kindLabel = isReq ? "Request" : "Order";
+                  const idText = detail.ticket.orderId ? `#${detail.ticket.orderId}` : detail.ticket.requestId ? `#${detail.ticket.requestId}` : "— none —";
+                  const low = !!e && e.confidence === "low";
+                  const altLabel = (k: string) => (k === "request" ? "Request" : k === "appt" ? "Appointment" : "Order");
+                  return (
+                    <>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[13px] text-zinc-500 w-[72px] shrink-0">{kindLabel}</span>
+                        <span className="text-sm font-mono text-zinc-100">{idText}</span>
+                        {low && <span className="text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400 border border-amber-500/30">low confidence</span>}
+                      </div>
+                      {e?.warning && (
+                        <div className="flex items-start gap-2 rounded-lg border border-amber-600/40 bg-amber-500/5 px-2.5 py-1.5 text-[11px] text-amber-300 leading-snug">
+                          <span>⚠</span><span>{e.warning}. This thread may be about a newer request, not this {kindLabel.toLowerCase()}.</span>
+                        </div>
+                      )}
+                      {e?.alt && (
+                        <button onClick={() => swapEntity(e.alt!)} className="text-left text-[11px] border border-zinc-700 hover:border-blue-500 rounded-lg px-2.5 py-1.5 text-zinc-300">
+                          ↪ Looks like {altLabel(e.alt.kind)} #{e.alt.id} — <span className="text-blue-300 font-semibold">switch to it</span>
+                        </button>
+                      )}
+                      {!detail.ticket.orderId && !detail.ticket.requestId && (
+                        <div className="flex items-center gap-1.5">
+                          <select value={linkKind} onChange={(ev) => setLinkKind(ev.target.value as "order" | "request")} className="bg-zinc-900 border border-zinc-700 rounded px-1.5 py-1 text-xs text-zinc-300 focus:border-blue-500 outline-none">
+                            <option value="order">Order</option>
+                            <option value="request">Request</option>
+                          </select>
+                          <input value={linkId} onChange={(ev) => setLinkId(ev.target.value.replace(/\D/g, ""))} onKeyDown={(ev) => { if (ev.key === "Enter") linkEntity(); }} placeholder={`link ${linkKind} id…`} className="w-24 bg-zinc-900 border border-zinc-700 rounded px-2 py-1 text-xs text-zinc-100 focus:border-blue-500 outline-none" />
+                          <button onClick={linkEntity} className="text-xs font-semibold border border-zinc-700 hover:border-emerald-500 hover:text-emerald-400 rounded px-2 py-1 text-zinc-300">Link</button>
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
                 <Row k="Store" v={short(detail.group?.subject || "—")} />
                 {(detail.lab || detail.labGroup) && (
                   <Row
@@ -748,9 +787,11 @@ export function WhatsAppControlTower() {
                 {detail.ticket.lastHandledBy && <Row k="Last handled" v={`${detail.ticket.lastHandledBy.name} · ${clock(detail.ticket.lastHandledBy.ts)}${detail.ticket.lastHandledBy.newSince ? ` · ⚠ ${detail.ticket.lastHandledBy.newSince} new since` : ""}`} />}
               </div>
               <div className="p-4 border-b border-zinc-800 flex flex-col gap-2">
+                {(() => { const isReq = !!detail.ticket.requestId && !detail.ticket.orderId; return (
+                <>
                 <div className="flex items-baseline gap-2">
-                  <div className="text-[11px] uppercase tracking-wide text-zinc-500 font-semibold">Order context · live</div>
-                  {ctx.statusUpdatedAt ? <span className="text-[10px] text-zinc-500">source updated {fmtTime(String(ctx.statusUpdatedAt))}</span> : null}
+                  <div className="text-[11px] uppercase tracking-wide text-zinc-500 font-semibold">{isReq ? "Request" : "Order"} context · live</div>
+                  {ctx.statusUpdatedAt ? <span className="text-[10px] text-zinc-500">source updated {fmtTime(String(ctx.statusUpdatedAt))}</span> : ctx.createdAt ? <span className="text-[10px] text-zinc-500">created {fmtTime(String(ctx.createdAt))}</span> : null}
                 </div>
                 {orderStatus ? (
                   <>
@@ -758,9 +799,12 @@ export function WhatsAppControlTower() {
                     {ctx.appointmentTime ? <Row k="Appt" v={fmtTime(String(ctx.appointmentTime))} /> : null}
                     {ctx.phleboName ? <Row k="Phlebo" v={`${ctx.phleboName}${ctx.phleboNumber ? " · " + ctx.phleboNumber : ""}`} /> : null}
                     {ctx.cancelReason ? <Row k="Reason" v={String(ctx.cancelReason)} /> : null}
+                    {isReq && ctx.isServiceable !== undefined && ctx.isServiceable !== null ? <Row k="Serviceable" v={ctx.isServiceable ? "Yes" : "No"} /> : null}
                     {ctx.quotedPrice ? <Row k="Quote" v={`₹${ctx.quotedPrice}`} /> : null}
                   </>
-                ) : <div className="text-sm text-zinc-500">No id on this message — ask the partner for the order/booking id.</div>}
+                ) : <div className="text-sm text-zinc-500">No id on this message — link the order/request id above, or ask the partner for it.</div>}
+                </>
+                ); })()}
               </div>
               {detail.bulkStatuses && detail.bulkStatuses.length > 1 && (
                 <div className="p-4 border-b border-zinc-800 flex flex-col gap-2">

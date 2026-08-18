@@ -948,6 +948,10 @@ model WaTicket {
   status          WaTicketStatus @default(NEW)
   orderId         Int?
   requestId       Int?
+  entityKind      String? // ORDER | REQUEST | APPOINTMENT — the namespace the id was resolved to
+  idConfidence    String? // high | low — how sure the resolver is this is the right entity
+  idWarning       String? // staleness / contradiction note (e.g. "order delivered 238d before the chat")
+  idAlt           Json? // { kind, id } — the runner-up candidate, for a one-click switch
   intent          String?
   contextSnapshot Json? // order/request context captured from the replica
   assignedToId    Int? // User.id (no FK, mirrors Task assignment pattern)

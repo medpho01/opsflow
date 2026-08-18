@@ -399,6 +399,14 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     ticket: {
       id: ticket.id, status: ticket.status, intent: ticket.intent,
       orderId: ticket.orderId, requestId: ticket.requestId,
+      // Entity-resolution provenance — which namespace the id resolved to, how
+      // sure we are, any staleness warning, and the runner-up to switch to.
+      entity: {
+        kind: ticket.entityKind || (ticket.orderId ? "ORDER" : ticket.requestId ? "REQUEST" : null),
+        confidence: ticket.idConfidence || "high",
+        warning: ticket.idWarning || null,
+        alt: (ticket.idAlt as { kind: string; id: number } | null) || null,
+      },
       contextSnapshot: ticket.contextSnapshot, liveContext: live, patient, lastHandledBy,
       assignedToId: ticket.assignedToId, slaDueAt: ticket.slaDueAt,
       lastActivityAt: ticket.lastActivityAt, createdAt: ticket.createdAt,
@@ -445,38 +453,52 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   }
   if (body.assignedToId !== undefined) data.assignedToId = body.assignedToId === null ? null : Number(body.assignedToId);
 
-  // Manually link this case to an order id (the fallback when a thread lost its
-  // id — a lab reply with no number, an image-only message, etc.). Validate the
-  // id against the replica so we never bind a case to a non-existent order, then
-  // tag the case's messages so the thread, timeline and context resolve.
-  let relinkOrderId: number | null = null;
-  if (body.orderId !== undefined) {
-    if (body.orderId === null) {
-      data.orderId = null;
+  // Manually (re)bind the case to the correct entity: link an order/request id
+  // when a thread lost it, or SWAP to the resolver's runner-up when it guessed
+  // wrong (a live reschedule that bound to a year-old delivered order). Validate
+  // against the replica, clear the low-confidence warning (human-confirmed), and
+  // re-tag the thread so context/timeline resolve to the right thing.
+  if (body.orderId === null) data.orderId = null;
+  if (body.requestId === null) data.requestId = null;
+
+  const bind = body.swapTo?.kind && body.swapTo?.id
+    ? { kind: String(body.swapTo.kind).toLowerCase(), id: Number(body.swapTo.id) }
+    : body.orderId != null ? { kind: "order", id: Number(body.orderId) }
+    : body.requestId != null ? { kind: "request", id: Number(body.requestId) }
+    : null;
+
+  let relink: { col: "orderIds" | "requestIds"; id: number } | null = null;
+  if (bind) {
+    if (!Number.isInteger(bind.id) || bind.id <= 0) return NextResponse.json({ error: "invalid id" }, { status: 400 });
+    if (bind.kind === "order") {
+      const exists = await labstackOr(labstack.$queryRaw<Array<{ id: number }>>`SELECT id FROM public."Order" WHERE id = ${bind.id} LIMIT 1`, [] as Array<{ id: number }>);
+      if (!exists.length) return NextResponse.json({ error: `order ${bind.id} not found` }, { status: 400 });
+      data.orderId = bind.id; data.requestId = null; data.entityKind = "ORDER";
+      relink = { col: "orderIds", id: bind.id };
+    } else if (bind.kind === "request") {
+      const exists = await labstackOr(labstack.$queryRaw<Array<{ id: number }>>`SELECT id FROM public."Request" WHERE id = ${bind.id} LIMIT 1`, [] as Array<{ id: number }>);
+      if (!exists.length) return NextResponse.json({ error: `request ${bind.id} not found` }, { status: 400 });
+      data.requestId = bind.id; data.orderId = null; data.entityKind = "REQUEST";
+      relink = { col: "requestIds", id: bind.id };
     } else {
-      const oid = Number(body.orderId);
-      if (!Number.isInteger(oid) || oid <= 0) return NextResponse.json({ error: "invalid order id" }, { status: 400 });
-      const exists = await labstackOr(
-        labstack.$queryRaw<Array<{ id: number }>>`SELECT id FROM public."Order" WHERE id = ${oid} LIMIT 1`,
-        [] as Array<{ id: number }>,
-      );
-      if (!exists.length) return NextResponse.json({ error: `order ${oid} not found` }, { status: 400 });
-      data.orderId = oid;
-      data.requestId = null;
-      relinkOrderId = oid;
+      return NextResponse.json({ error: "swapTo.kind must be order or request" }, { status: 400 });
     }
+    data.idConfidence = "high";
+    data.idWarning = null;
+    data.idAlt = Prisma.DbNull;
   }
 
   if (Object.keys(data).length === 0) return NextResponse.json({ error: "no fields" }, { status: 400 });
 
   try {
     const ticket = await prisma.waTicket.update({ where: { id }, data });
-    // Backfill the order id onto every message already threaded to this case so
-    // the whole conversation carries the context going forward.
-    if (relinkOrderId) {
-      await prisma.$executeRaw`
-        UPDATE wa_messages SET "orderIds" = array_append("orderIds", ${relinkOrderId})
-        WHERE "ticketId" = ${id} AND NOT (${relinkOrderId} = ANY("orderIds"))`;
+    // Tag every message already threaded to this case with the bound id so the
+    // whole conversation carries the corrected context going forward.
+    if (relink) {
+      await prisma.$executeRawUnsafe(
+        `UPDATE wa_messages SET "${relink.col}" = array_append("${relink.col}", $1) WHERE "ticketId" = $2 AND NOT ($1 = ANY("${relink.col}"))`,
+        relink.id, id,
+      );
     }
     return NextResponse.json({ ticket });
   } catch {

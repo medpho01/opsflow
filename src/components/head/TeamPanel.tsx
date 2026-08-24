@@ -162,7 +162,7 @@ function fmtDdMmYyyy(iso: string): string {
   return m ? `${m[3]}/${m[2]}/${m[1]}` : iso;
 }
 
-const roleLabel: Record<string, string> = { OPS_AGENT: "Ops Agent", STORE_ADMIN: "Store Admin" };
+const roleLabel: Record<string, string> = { OPS_AGENT: "Ops Agent", OPS_ADMIN: "Ops Admin", STORE_ADMIN: "Store Admin" };
 const rosterStatusColor: Record<string, string> = {
   ACTIVE: "bg-green-500",
   ON_FIELD: "bg-blue-500",
@@ -457,6 +457,7 @@ function EditDrawer({
                       className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
                     >
                       <option value="OPS_AGENT">Ops Agent</option>
+                      <option value="OPS_ADMIN">Ops Admin</option>
                       <option value="STORE_ADMIN">Store Admin</option>
                     </select>
                   </div>
@@ -997,6 +998,7 @@ export default function TeamPanel() {
                   className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
                 >
                   <option value="OPS_AGENT">Ops Agent</option>
+                  <option value="OPS_ADMIN">Ops Admin</option>
                   <option value="STORE_ADMIN">Store Admin</option>
                 </select>
               </div>

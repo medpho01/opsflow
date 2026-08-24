@@ -20,6 +20,7 @@ datasource db {
 
 enum UserRole {
   OPS_HEAD
+  OPS_ADMIN // full super-admin powers (coerced to OPS_HEAD for authorization); distinct label only
   STORE_ADMIN
   OPS_AGENT
 }

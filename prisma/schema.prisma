@@ -155,7 +155,7 @@ model UserSavedFilter {
 model TeamMember {
   id                 Int            @id @default(autoincrement())
   userId             Int            @unique
-  maxConcurrentTasks Int            @default(5)
+  maxConcurrentTasks Int            @default(100)
   isActive           Boolean        @default(true)
   autoAssignEnabled  Boolean        @default(true)
   assignmentPriority Int            @default(5)

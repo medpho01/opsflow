@@ -359,7 +359,7 @@ export async function GET(request: NextRequest) {
       role: u.role,
       rosterStatus,
       openTasks: u.assignedTasks.length,
-      maxTasks: u.teamMember?.maxConcurrentTasks ?? 5,
+      maxTasks: u.teamMember?.maxConcurrentTasks ?? 100,
       storeIds: u.teamMember?.storeAssignments.map((a) => a.storeId) ?? [],
     };
   });

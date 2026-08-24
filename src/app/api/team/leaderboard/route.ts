@@ -133,7 +133,7 @@ export async function GET(request: NextRequest) {
       ? Math.round((sla.onTime / sla.total) * 1000) / 10
       : null;
 
-    const maxConcurrentTasks = u.teamMember?.maxConcurrentTasks ?? 5;
+    const maxConcurrentTasks = u.teamMember?.maxConcurrentTasks ?? 100;
     const currentLoad = u._count.assignedTasks;
     const utilizationPct = maxConcurrentTasks > 0 ? Math.round((currentLoad / maxConcurrentTasks) * 100) : 0;
 

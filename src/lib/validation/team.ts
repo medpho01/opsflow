@@ -57,7 +57,7 @@ export const createTeamMemberSchema = z.object({
   storeIds:           z.array(z.coerce.number().int().positive()).default([]),
   skillTagIds:        z.array(z.coerce.number().int().positive()).default([]),
   capabilityDataSourceIds: z.array(z.string().min(1)).default([]),
-  maxConcurrentTasks: maxConcurrentTasksField.default(5),
+  maxConcurrentTasks:  maxConcurrentTasksField.default(100),
 });
 export type CreateTeamMemberInput = z.infer<typeof createTeamMemberSchema>;
 

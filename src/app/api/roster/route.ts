@@ -60,7 +60,7 @@ export async function GET(request: NextRequest) {
     email: m.email,
     role: m.role,
     teamMemberId: m.teamMember?.id ?? null,
-    maxConcurrentTasks: m.teamMember?.maxConcurrentTasks ?? 5,
+    maxConcurrentTasks: m.teamMember?.maxConcurrentTasks ?? 100,
     storeIds: m.teamMember?.storeAssignments.map((a) => a.storeId) ?? [],
     skills: m.teamMember?.skills.map((s) => s.skillTag.label) ?? [],
     rosterEntry: m.teamMember?.dailyRosters?.[0] ?? null,

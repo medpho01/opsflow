@@ -9,7 +9,7 @@ import { loadTeam, makeTeamMatcher } from "@/lib/wa/team";
 // actor role (team/customer/lab) so the stream reads like the real chat.
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const user = await getSessionFromRequest(request);
-  if (!user || user.role !== UserRole.OPS_HEAD)
+  if (!user || (user.role !== UserRole.OPS_HEAD && user.role !== UserRole.OPS_AGENT))
     return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
 
   const { id } = await params;

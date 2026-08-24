@@ -9,7 +9,7 @@ import { UserRole } from "@prisma/client";
 // Enqueues an outbound message (the gateway sends it) and advances the ticket.
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const user = await getSessionFromRequest(request);
-  if (!user || user.role !== UserRole.OPS_HEAD)
+  if (!user || (user.role !== UserRole.OPS_HEAD && user.role !== UserRole.OPS_AGENT))
     return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
 
   const { id } = await params;

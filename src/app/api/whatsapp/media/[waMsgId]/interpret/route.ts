@@ -14,7 +14,7 @@ const VISION_MODEL = process.env.WA_VISION_MODEL || "claude-haiku-4-5-20251001";
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ waMsgId: string }> }) {
   const user = await getSessionFromRequest(request);
-  if (!user || user.role !== UserRole.OPS_HEAD)
+  if (!user || (user.role !== UserRole.OPS_HEAD && user.role !== UserRole.OPS_AGENT))
     return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
 
   const { waMsgId } = await params;

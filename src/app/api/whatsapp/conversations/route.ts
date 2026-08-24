@@ -50,7 +50,7 @@ LIMIT 250`;
 
 export async function GET(request: NextRequest) {
   const user = await getSessionFromRequest(request);
-  if (!user || user.role !== UserRole.OPS_HEAD)
+  if (!user || (user.role !== UserRole.OPS_HEAD && user.role !== UserRole.OPS_AGENT))
     return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
 
   const rows = await prisma.$queryRawUnsafe<Array<Record<string, unknown>>>(SQL);

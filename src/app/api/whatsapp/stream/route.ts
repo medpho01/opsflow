@@ -10,7 +10,7 @@ export const dynamic = "force-dynamic";
 // refetches on each ping.
 export async function GET(request: NextRequest) {
   const user = await getSessionFromRequest(request);
-  if (!user || user.role !== UserRole.OPS_HEAD)
+  if (!user || (user.role !== UserRole.OPS_HEAD && user.role !== UserRole.OPS_AGENT))
     return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
 
   const encoder = new TextEncoder();

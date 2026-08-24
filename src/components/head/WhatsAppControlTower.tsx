@@ -173,7 +173,7 @@ function rescheduleDraft(d: Detail | null): string {
 const isAnswerable = (intent: string | null, orderId: number | null, requestId: number | null) =>
   !!(orderId || requestId) && ["STATUS_CHECK", "REPORT_REQUEST", "CANCEL_REASON"].includes(intent || "");
 
-export function WhatsAppControlTower() {
+export function WhatsAppControlTower({ canAdmin = true }: { canAdmin?: boolean } = {}) {
   const [convos, setConvos] = useState<Conversation[]>([]);
   const [totalUnread, setTotalUnread] = useState(0);
   const [filter, setFilter] = useState<"ALL" | "UNREAD" | "ACTION">("ALL");
@@ -458,7 +458,7 @@ export function WhatsAppControlTower() {
             <a href="/api/whatsapp/export?type=messages&days=30" className="text-xs text-zinc-200 hover:bg-zinc-800 rounded px-2 py-1.5">Chats · last 30 days</a>
           </div>
         </details>
-        <a href="/head/settings/whatsapp" className="text-xs text-zinc-400 hover:text-zinc-200 border border-zinc-800 rounded-lg px-3 py-1.5">⚙ Settings</a>
+        {canAdmin && <a href="/head/settings/whatsapp" className="text-xs text-zinc-400 hover:text-zinc-200 border border-zinc-800 rounded-lg px-3 py-1.5">⚙ Settings</a>}
       </div>
 
       {view === "inbox" && <WhatsAppInbox gwDryRun={gwDryRun} onOpenCase={openCaseFromInbox} />}

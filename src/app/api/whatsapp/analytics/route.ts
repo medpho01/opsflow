@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic";
 // the taskos side (fast; no replica needed). Open cases = tickets not resolved.
 export async function GET(request: NextRequest) {
   const user = await getSessionFromRequest(request);
-  if (!user || user.role !== UserRole.OPS_HEAD)
+  if (!user || (user.role !== UserRole.OPS_HEAD && user.role !== UserRole.OPS_AGENT))
     return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
 
   const OPEN = Prisma.sql`t.status <> 'RESOLVED'`;

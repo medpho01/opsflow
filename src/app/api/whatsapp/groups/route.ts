@@ -6,7 +6,7 @@ import { UserRole } from "@prisma/client";
 // GET /api/whatsapp/groups — all groups for the Settings classification table
 export async function GET(request: NextRequest) {
   const user = await getSessionFromRequest(request);
-  if (!user || user.role !== UserRole.OPS_HEAD)
+  if (!user || (user.role !== UserRole.OPS_HEAD && user.role !== UserRole.OPS_AGENT))
     return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
 
   const groups = await prisma.waGroup.findMany({ orderBy: { subject: "asc" } });

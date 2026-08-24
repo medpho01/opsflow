@@ -7,7 +7,9 @@ import { UserRole } from "@prisma/client";
 // GET /api/whatsapp/gateway — connection status + live QR (as a data URL)
 export async function GET(request: NextRequest) {
   const user = await getSessionFromRequest(request);
-  if (!user || user.role !== UserRole.OPS_HEAD)
+  // Agents may READ gateway status (for the online/dry-run pill); only the Lead
+  // can connect / change it (POST stays OPS_HEAD-only below).
+  if (!user || (user.role !== UserRole.OPS_HEAD && user.role !== UserRole.OPS_AGENT))
     return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
 
   const gw = await prisma.waGateway.findUnique({ where: { id: "default" } });

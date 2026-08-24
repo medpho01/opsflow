@@ -9,7 +9,7 @@ import { loadTeam, makeTeamMatcher } from "@/lib/wa/team";
 // GET /api/whatsapp/tickets/:id — ticket + full thread + live order context
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const user = await getSessionFromRequest(request);
-  if (!user || user.role !== UserRole.OPS_HEAD)
+  if (!user || (user.role !== UserRole.OPS_HEAD && user.role !== UserRole.OPS_AGENT))
     return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
 
   const { id } = await params;
@@ -439,7 +439,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 // PATCH /api/whatsapp/tickets/:id — change status / assignment
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const user = await getSessionFromRequest(request);
-  if (!user || user.role !== UserRole.OPS_HEAD)
+  if (!user || (user.role !== UserRole.OPS_HEAD && user.role !== UserRole.OPS_AGENT))
     return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
 
   const { id } = await params;

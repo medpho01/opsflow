@@ -8,7 +8,7 @@ import { UserRole } from "@prisma/client";
 // taskos DB (wa_media), captured by the gateway.
 export async function GET(request: NextRequest, { params }: { params: Promise<{ waMsgId: string }> }) {
   const user = await getSessionFromRequest(request);
-  if (!user || user.role !== UserRole.OPS_HEAD)
+  if (!user || (user.role !== UserRole.OPS_HEAD && user.role !== UserRole.OPS_AGENT))
     return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
 
   const { waMsgId } = await params;

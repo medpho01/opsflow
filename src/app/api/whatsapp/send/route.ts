@@ -7,7 +7,7 @@ import { UserRole } from "@prisma/client";
 // body: { text, groupId? , toNumber? }
 export async function POST(request: NextRequest) {
   const user = await getSessionFromRequest(request);
-  if (!user || user.role !== UserRole.OPS_HEAD)
+  if (!user || (user.role !== UserRole.OPS_HEAD && user.role !== UserRole.OPS_AGENT))
     return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
 
   // JSON (text) or multipart (text + attachment), like the case reply route.

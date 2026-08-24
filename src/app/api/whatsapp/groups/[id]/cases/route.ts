@@ -8,7 +8,7 @@ import { patientNames } from "@/lib/wa/patientNames";
 // group shows its cases so the team clears them one order at a time (CRM).
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const user = await getSessionFromRequest(request);
-  if (!user || user.role !== UserRole.OPS_HEAD)
+  if (!user || (user.role !== UserRole.OPS_HEAD && user.role !== UserRole.OPS_AGENT))
     return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
 
   const { id: groupId } = await params;

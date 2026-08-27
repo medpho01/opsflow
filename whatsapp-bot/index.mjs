@@ -111,6 +111,30 @@ function startLoops() {
     if (!currentSock) throw new Error("gateway not connected");
     // `quoted` threads the reply under the original; `media` attaches a file;
     // `mentions` is an array of jids to @-notify (text carries "@<localpart>").
+    // Resolve mention jids to the group's ACTUAL participant jids so the tag
+    // lights up even when the stored jid differs (phone vs LID). Rewrites the
+    // "@<localpart>" token in the text to match whatever jid we end up using.
+    if (mentions && mentions.length && jid.endsWith("@g.us")) {
+      try {
+        const meta = await currentSock.groupMetadata(jid);
+        const parts = meta?.participants || [];
+        const last10 = (j) => (j || "").split("@")[0].replace(/\D/g, "").slice(-10);
+        const resolved = [];
+        for (const m of mentions) {
+          const hit = parts.find((p) => p.id === m)
+            || parts.find((p) => last10(p.id) && last10(p.id) === last10(m))
+            || parts.find((p) => p.jid && (p.jid === m || (last10(p.jid) && last10(p.jid) === last10(m))))
+            || parts.find((p) => p.phoneNumber && last10(p.phoneNumber) === last10(m));
+          const rid = hit?.id || m;
+          if (rid !== m) {
+            const oldLocal = m.split("@")[0], newLocal = rid.split("@")[0];
+            if (oldLocal && newLocal) text = (text || "").split("@" + oldLocal).join("@" + newLocal);
+          }
+          resolved.push(rid);
+        }
+        mentions = [...new Set(resolved)];
+      } catch (e) { console.error("mention resolve:", e.message); }
+    }
     let content;
     if (media && media.bytes) {
       const caption = text || undefined;

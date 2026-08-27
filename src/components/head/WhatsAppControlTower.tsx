@@ -218,6 +218,9 @@ export function WhatsAppControlTower({ canAdmin = true }: { canAdmin?: boolean }
   const [ncNumber, setNcNumber] = useState("");
   const [ncText, setNcText] = useState("");
   const [ncBusy, setNcBusy] = useState(false);
+  const [ncMentions, setNcMentions] = useState<Mention[]>([]);
+  const [ncParticipants, setNcParticipants] = useState<Mention[]>([]);
+  const [ncTagOpen, setNcTagOpen] = useState(false);
   const [linkId, setLinkId] = useState("");
   const [linkKind, setLinkKind] = useState<"order" | "request">("order");
   const fileInput = useRef<HTMLInputElement | null>(null);
@@ -284,6 +287,14 @@ export function WhatsAppControlTower({ canAdmin = true }: { canAdmin?: boolean }
       .then((d) => setNcGroups((d.groups || []).filter((g: { active?: boolean }) => g.active !== false)))
       .catch(() => {});
   }, [newChat, ncGroups.length]);
+  // Load taggable people whenever the New-chat group changes (clear when none).
+  useEffect(() => {
+    setNcMentions([]); setNcTagOpen(false);
+    if (!ncGroupId) { setNcParticipants([]); return; }
+    fetch(`/api/whatsapp/groups/${ncGroupId}/participants`).then((r) => r.json())
+      .then((d) => setNcParticipants(Array.isArray(d.participants) ? d.participants : []))
+      .catch(() => setNcParticipants([]));
+  }, [ncGroupId]);
 
   // Auto-interpret images that haven't been read yet (cloud vision). Runs once
   // per image on case open; on success we reload so the interpretation shows.
@@ -428,18 +439,24 @@ export function WhatsAppControlTower({ canAdmin = true }: { canAdmin?: boolean }
     setMentions((m) => (m.some((x) => x.jid === p.jid) ? m : [...m, p]));
     setTagOpen(false);
   }
+  function insertNcMention(p: Mention) {
+    setNcText((t) => `${t}${t && !t.endsWith(" ") ? " " : ""}@${p.name} `);
+    setNcMentions((m) => (m.some((x) => x.jid === p.jid) ? m : [...m, p]));
+    setNcTagOpen(false);
+  }
   // Start a brand-new conversation to a group or a raw number (existing /send API).
   async function sendNewChat() {
     const to = ncGroupId ? { groupId: ncGroupId } : ncNumber.trim() ? { toNumber: ncNumber.trim() } : null;
     if (!to) return flash("Pick a group or enter a number");
     if (!ncText.trim()) return flash("Write a message");
+    const { text: outText, jids } = applyMentions(ncText.trim(), ncMentions);
     setNcBusy(true);
-    const res = await fetch("/api/whatsapp/send", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...to, text: ncText.trim() }) });
+    const res = await fetch("/api/whatsapp/send", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...to, text: outText, mentions: jids }) });
     setNcBusy(false);
     const d = await res.json().catch(() => ({}));
     if (!res.ok) return flash(d.error || "Send failed");
     flash("New conversation queued");
-    setNewChat(false); setNcText(""); setNcNumber(""); setNcGroupId(""); loadConvos();
+    setNewChat(false); setNcText(""); setNcNumber(""); setNcGroupId(""); setNcMentions([]); loadConvos();
   }
   async function setStatus(status: string) {
     if (!activeId) return;
@@ -540,7 +557,34 @@ export function WhatsAppControlTower({ canAdmin = true }: { canAdmin?: boolean }
             <div className="text-center text-[11px] text-zinc-600">or</div>
             <label className="text-[11px] uppercase tracking-wide text-zinc-500 font-semibold">A phone number</label>
             <input value={ncNumber} onChange={(e) => { setNcNumber(e.target.value.replace(/[^\d+]/g, "")); if (e.target.value) setNcGroupId(""); }} placeholder="With country code, e.g. 9198…" className="bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-100 focus:border-blue-500 outline-none" />
-            <textarea value={ncText} onChange={(e) => setNcText(e.target.value)} rows={3} placeholder="Message…" className="bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-100 focus:border-blue-500 outline-none resize-none" />
+            {ncMentions.length > 0 && (
+              <div className="flex flex-wrap items-center gap-1.5">
+                {ncMentions.map((m) => (
+                  <span key={m.jid} className="inline-flex items-center gap-1 text-[11px] bg-blue-500/15 text-blue-300 border border-blue-500/30 rounded-full px-2 py-0.5">
+                    @{m.name}
+                    <button onClick={() => setNcMentions((x) => x.filter((y) => y.jid !== m.jid))} className="text-blue-300/70 hover:text-blue-200">✕</button>
+                  </span>
+                ))}
+              </div>
+            )}
+            <div className="relative">
+              <textarea value={ncText} onChange={(e) => setNcText(e.target.value)} rows={3} placeholder="Message…" className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-100 focus:border-blue-500 outline-none resize-none" />
+              {ncGroupId && (
+                <button onClick={() => setNcTagOpen((o) => !o)} title="Tag someone in this group" className="absolute right-2 bottom-2 h-7 w-7 flex items-center justify-center border border-zinc-700 hover:border-blue-500 rounded-lg text-zinc-400 hover:text-zinc-200 bg-zinc-900">@</button>
+              )}
+              {ncTagOpen && (
+                <>
+                  <button className="fixed inset-0 z-40 cursor-default" aria-label="Close" onClick={() => setNcTagOpen(false)} />
+                  <div className="absolute right-2 bottom-11 z-50 w-56 max-h-52 overflow-y-auto bg-zinc-900 border border-zinc-700 rounded-lg shadow-xl py-1">
+                    <div className="px-3 py-1.5 text-[10px] uppercase tracking-wide text-zinc-500">Tag in this group</div>
+                    {ncParticipants.length === 0 && <div className="px-3 py-2 text-xs text-zinc-500 italic">No one has spoken here yet.</div>}
+                    {ncParticipants.map((p) => (
+                      <button key={p.jid} onClick={() => insertNcMention(p)} className="w-full text-left px-3 py-1.5 text-sm text-zinc-200 hover:bg-zinc-800 truncate">@{p.name}</button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
             <div className="flex items-center justify-end gap-2">
               <button onClick={() => setNewChat(false)} className="text-sm text-zinc-400 hover:text-zinc-200 px-3 py-2">Cancel</button>
               <button onClick={sendNewChat} disabled={ncBusy} className="text-sm font-semibold text-white bg-blue-600 hover:bg-blue-500 disabled:opacity-50 rounded-lg px-4 py-2">{ncBusy ? "Sending…" : "Send ▸"}</button>

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/db/client";
 import labstack, { labstackOr } from "@/lib/db/labstack";
 import { getSessionFromRequest } from "@/lib/auth/session";
+import { normalizeMentions } from "@/lib/wa/mentions";
 import { UserRole } from "@prisma/client";
 
 // POST /api/whatsapp/tickets/:id/reply
@@ -77,10 +78,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   // Optional threaded reply: quote a specific message (the gateway only
   // renders the quote when it lives in the same target chat).
   const quotedWaId = body?.quotedWaMsgId ? String(body.quotedWaMsgId) : null;
+  const mentions = normalizeMentions(body?.mentions);
 
   await prisma.waOutbound.create({
     data: {
       targetJid, text, groupId: targetGroupId, ticketId: ticket.id, createdById: user.id, quotedWaId,
+      ...(mentions.length ? { mentions } : {}),
       ...(media ? { mediaMime: media.mime, mediaName: media.name, mediaBytes: media.bytes } : {}),
     },
   });

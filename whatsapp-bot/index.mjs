@@ -107,9 +107,10 @@ function startLoops() {
   if (loopsStarted || !CT_ENABLED) return;
   loopsStarted = true;
 
-  const send = async (jid, text, { quoted = null, media = null } = {}) => {
+  const send = async (jid, text, { quoted = null, media = null, mentions = null } = {}) => {
     if (!currentSock) throw new Error("gateway not connected");
-    // `quoted` threads the reply under the original; `media` attaches a file.
+    // `quoted` threads the reply under the original; `media` attaches a file;
+    // `mentions` is an array of jids to @-notify (text carries "@<localpart>").
     let content;
     if (media && media.bytes) {
       const caption = text || undefined;
@@ -119,6 +120,7 @@ function startLoops() {
     } else {
       content = { text };
     }
+    if (mentions && mentions.length) content.mentions = mentions;
     const r = await currentSock.sendMessage(jid, content, quoted ? { quoted } : {});
     await new Promise((res) => setTimeout(res, 1200)); // human-paced spacing
     return r?.key?.id;

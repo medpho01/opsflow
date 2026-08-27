@@ -173,6 +173,23 @@ function rescheduleDraft(d: Detail | null): string {
 const isAnswerable = (intent: string | null, orderId: number | null, requestId: number | null) =>
   !!(orderId || requestId) && ["STATUS_CHECK", "REPORT_REQUEST", "CANCEL_REASON"].includes(intent || "");
 
+type Mention = { name: string; jid: string; localpart: string };
+// WhatsApp renders a mention only when the text carries "@<localpart>" and the
+// jid is passed alongside. The composer shows "@Name" for readability; on send we
+// swap each still-present "@Name" for "@localpart" and collect the jids to notify.
+function applyMentions(text: string, mentions: Mention[]): { text: string; jids: string[] } {
+  let out = text;
+  const jids: string[] = [];
+  for (const m of mentions) {
+    const token = `@${m.name}`;
+    if (out.includes(token)) {
+      out = out.split(token).join(`@${m.localpart}`);
+      if (!jids.includes(m.jid)) jids.push(m.jid);
+    }
+  }
+  return { text: out, jids };
+}
+
 export function WhatsAppControlTower({ canAdmin = true }: { canAdmin?: boolean } = {}) {
   const [convos, setConvos] = useState<Conversation[]>([]);
   const [totalUnread, setTotalUnread] = useState(0);
@@ -192,6 +209,15 @@ export function WhatsAppControlTower({ canAdmin = true }: { canAdmin?: boolean }
   // When set, the composer forwards a lab/provider message (its text + captured
   // media) to the store group instead of sending a normal reply.
   const [forward, setForward] = useState<{ sourceWaMsgId: string; storeSubject: string; hasMedia: boolean; storeGroupId?: string } | null>(null);
+  const [mentions, setMentions] = useState<Mention[]>([]);
+  const [participants, setParticipants] = useState<Mention[]>([]);
+  const [tagOpen, setTagOpen] = useState(false);
+  const [newChat, setNewChat] = useState(false);
+  const [ncGroups, setNcGroups] = useState<{ id: string; subject: string; sendEnabled: boolean }[]>([]);
+  const [ncGroupId, setNcGroupId] = useState("");
+  const [ncNumber, setNcNumber] = useState("");
+  const [ncText, setNcText] = useState("");
+  const [ncBusy, setNcBusy] = useState(false);
   const [linkId, setLinkId] = useState("");
   const [linkKind, setLinkKind] = useState<"order" | "request">("order");
   const fileInput = useRef<HTMLInputElement | null>(null);
@@ -252,6 +278,12 @@ export function WhatsAppControlTower({ canAdmin = true }: { canAdmin?: boolean }
   }, []);
   useEffect(() => { loadConvos(); loadGw(); }, [loadConvos, loadGw]);
   useEffect(() => { if (activeId) loadDetail(activeId); }, [activeId, loadDetail]);
+  useEffect(() => {
+    if (!newChat || ncGroups.length) return;
+    fetch("/api/whatsapp/groups").then((r) => r.json())
+      .then((d) => setNcGroups((d.groups || []).filter((g: { active?: boolean }) => g.active !== false)))
+      .catch(() => {});
+  }, [newChat, ncGroups.length]);
 
   // Auto-interpret images that haven't been read yet (cloud vision). Runs once
   // per image on case open; on success we reload so the interpretation shows.
@@ -357,26 +389,57 @@ export function WhatsAppControlTower({ canAdmin = true }: { canAdmin?: boolean }
     if (!reply.trim() && !attachment) return flash("Write a message or attach a file");
     setBusy(true);
     const quotedWaMsgId = target === "store" && replyTo ? replyTo.waMsgId : undefined;
+    const { text: outText, jids } = applyMentions(reply, mentions);
     let res: Response;
     if (attachment) {
       const fd = new FormData();
-      fd.append("text", reply); fd.append("target", target);
+      fd.append("text", outText); fd.append("target", target);
       if (toNumber) fd.append("toNumber", toNumber);
       if (labGroupId) fd.append("labGroupId", labGroupId);
       if (quotedWaMsgId) fd.append("quotedWaMsgId", quotedWaMsgId);
+      if (jids.length) fd.append("mentions", JSON.stringify(jids));
       fd.append("file", attachment);
       res = await fetch(`/api/whatsapp/tickets/${activeId}/reply`, { method: "POST", body: fd });
     } else {
       res = await fetch(`/api/whatsapp/tickets/${activeId}/reply`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: reply, target, toNumber, labGroupId: labGroupId || undefined, quotedWaMsgId }),
+        body: JSON.stringify({ text: outText, target, toNumber, labGroupId: labGroupId || undefined, quotedWaMsgId, mentions: jids }),
       });
     }
     setBusy(false);
     const data = await res.json().catch(() => ({}));
     if (!res.ok) return flash(data.error || "Send failed");
     flash(`Queued → ${target === "store" ? "store group" : target === "lab" ? "lab group" : "number"}`);
-    setReply(""); autoDraft.current = ""; setReplyTo(null); setAttachment(null); loadConvos(); if (openGroup) loadCases(openGroup.id); loadDetail(activeId);
+    setReply(""); autoDraft.current = ""; setReplyTo(null); setAttachment(null); setMentions([]); loadConvos(); if (openGroup) loadCases(openGroup.id); loadDetail(activeId);
+  }
+  // Load the taggable people for whichever group we're posting to, then open the picker.
+  async function openTagPicker() {
+    const gid = target === "lab" ? (labGroupId || detail?.labGroup?.id) : detail?.group?.id;
+    if (!gid) return flash("Pick a group to tag someone");
+    try {
+      const r = await fetch(`/api/whatsapp/groups/${gid}/participants`);
+      const d = await r.json().catch(() => ({}));
+      setParticipants(Array.isArray(d.participants) ? d.participants : []);
+      setTagOpen(true);
+    } catch { flash("Couldn't load people"); }
+  }
+  function insertMention(p: Mention) {
+    setReply((t) => `${t}${t && !t.endsWith(" ") ? " " : ""}@${p.name} `);
+    setMentions((m) => (m.some((x) => x.jid === p.jid) ? m : [...m, p]));
+    setTagOpen(false);
+  }
+  // Start a brand-new conversation to a group or a raw number (existing /send API).
+  async function sendNewChat() {
+    const to = ncGroupId ? { groupId: ncGroupId } : ncNumber.trim() ? { toNumber: ncNumber.trim() } : null;
+    if (!to) return flash("Pick a group or enter a number");
+    if (!ncText.trim()) return flash("Write a message");
+    setNcBusy(true);
+    const res = await fetch("/api/whatsapp/send", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...to, text: ncText.trim() }) });
+    setNcBusy(false);
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok) return flash(d.error || "Send failed");
+    flash("New conversation queued");
+    setNewChat(false); setNcText(""); setNcNumber(""); setNcGroupId(""); loadConvos();
   }
   async function setStatus(status: string) {
     if (!activeId) return;
@@ -446,7 +509,8 @@ export function WhatsAppControlTower({ canAdmin = true }: { canAdmin?: boolean }
           </span>
         )}
         {totalUnread > 0 && <span className="text-xs text-zinc-400">{totalUnread} unread</span>}
-        <details className="relative ml-auto">
+        <button onClick={() => setNewChat(true)} className="ml-auto text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 rounded-lg px-3 py-1.5">＋ New chat</button>
+        <details className="relative">
           <summary className="list-none cursor-pointer text-xs text-zinc-400 hover:text-zinc-200 border border-zinc-800 rounded-lg px-3 py-1.5">⤓ Export</summary>
           <div className="absolute right-0 mt-1 z-20 bg-zinc-900 border border-zinc-700 rounded-lg p-1.5 flex flex-col gap-0.5 w-56 shadow-xl">
             <div className="text-[10px] uppercase tracking-wide text-zinc-500 px-2 pt-1">Queries (pivot by type)</div>
@@ -460,6 +524,31 @@ export function WhatsAppControlTower({ canAdmin = true }: { canAdmin?: boolean }
         </details>
         {canAdmin && <a href="/head/settings/whatsapp" className="text-xs text-zinc-400 hover:text-zinc-200 border border-zinc-800 rounded-lg px-3 py-1.5">⚙ Settings</a>}
       </div>
+
+      {newChat && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={() => setNewChat(false)}>
+          <div className="w-full max-w-md bg-zinc-900 border border-zinc-700 rounded-2xl shadow-2xl p-5 flex flex-col gap-3" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between">
+              <h2 className="text-base font-semibold text-zinc-100">Start a new conversation</h2>
+              <button onClick={() => setNewChat(false)} className="text-zinc-500 hover:text-zinc-300">✕</button>
+            </div>
+            <label className="text-[11px] uppercase tracking-wide text-zinc-500 font-semibold">Send to a group</label>
+            <select value={ncGroupId} onChange={(e) => { setNcGroupId(e.target.value); if (e.target.value) setNcNumber(""); }} className="bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-100 focus:border-blue-500 outline-none">
+              <option value="">— pick a group —</option>
+              {ncGroups.map((g) => <option key={g.id} value={g.id}>{short(g.subject)}{!g.sendEnabled ? " (sending off)" : ""}</option>)}
+            </select>
+            <div className="text-center text-[11px] text-zinc-600">or</div>
+            <label className="text-[11px] uppercase tracking-wide text-zinc-500 font-semibold">A phone number</label>
+            <input value={ncNumber} onChange={(e) => { setNcNumber(e.target.value.replace(/[^\d+]/g, "")); if (e.target.value) setNcGroupId(""); }} placeholder="With country code, e.g. 9198…" className="bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-100 focus:border-blue-500 outline-none" />
+            <textarea value={ncText} onChange={(e) => setNcText(e.target.value)} rows={3} placeholder="Message…" className="bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-100 focus:border-blue-500 outline-none resize-none" />
+            <div className="flex items-center justify-end gap-2">
+              <button onClick={() => setNewChat(false)} className="text-sm text-zinc-400 hover:text-zinc-200 px-3 py-2">Cancel</button>
+              <button onClick={sendNewChat} disabled={ncBusy} className="text-sm font-semibold text-white bg-blue-600 hover:bg-blue-500 disabled:opacity-50 rounded-lg px-4 py-2">{ncBusy ? "Sending…" : "Send ▸"}</button>
+            </div>
+            <p className="text-[11px] text-zinc-600">Signed automatically as “Sent by Labstack Operations”.</p>
+          </div>
+        </div>
+      )}
 
       {view === "inbox" && <WhatsAppInbox gwDryRun={gwDryRun} onOpenCase={openCaseFromInbox} />}
 
@@ -670,10 +759,36 @@ export function WhatsAppControlTower({ canAdmin = true }: { canAdmin?: boolean }
                     <button onClick={() => { setAttachment(null); if (fileInput.current) fileInput.current.value = ""; }} className="text-zinc-500 hover:text-zinc-300">✕</button>
                   </div>
                 )}
+                {mentions.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="text-[10px] uppercase tracking-wide text-zinc-500">Tagging</span>
+                    {mentions.map((m) => (
+                      <span key={m.jid} className="inline-flex items-center gap-1 text-[11px] bg-blue-500/15 text-blue-300 border border-blue-500/30 rounded-full px-2 py-0.5">
+                        @{m.name}
+                        <button onClick={() => setMentions((x) => x.filter((y) => y.jid !== m.jid))} className="text-blue-300/70 hover:text-blue-200">✕</button>
+                      </span>
+                    ))}
+                  </div>
+                )}
                 <div className="flex gap-2 items-end">
                   <input ref={fileInput} type="file" className="hidden" accept="image/*,application/pdf,.pdf,.jpg,.jpeg,.png,.webp" onChange={(e) => setAttachment(e.target.files?.[0] || null)} />
                   <button onClick={() => fileInput.current?.click()} title="Attach a file or image" className="shrink-0 h-[42px] w-10 flex items-center justify-center border border-zinc-700 hover:border-blue-500 rounded-lg text-zinc-400 hover:text-zinc-200">📎</button>
-                  <textarea value={reply} onChange={(e) => setReply(e.target.value)} rows={2} placeholder={forward ? "Note to the store (sent with the lab's attachment)…" : "Write a reply, or use a suggested action →"} className="flex-1 resize-none bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-100 focus:border-blue-500 outline-none" />
+                  <div className="relative shrink-0">
+                    <button onClick={openTagPicker} title="Tag someone in this group" className="h-[42px] w-10 flex items-center justify-center border border-zinc-700 hover:border-blue-500 rounded-lg text-zinc-400 hover:text-zinc-200">@</button>
+                    {tagOpen && (
+                      <>
+                        <button className="fixed inset-0 z-40 cursor-default" aria-label="Close" onClick={() => setTagOpen(false)} />
+                        <div className="absolute bottom-full left-0 mb-1 z-50 w-60 max-h-60 overflow-y-auto bg-zinc-900 border border-zinc-700 rounded-lg shadow-xl py-1">
+                          <div className="px-3 py-1.5 text-[10px] uppercase tracking-wide text-zinc-500">Tag in this group</div>
+                          {participants.length === 0 && <div className="px-3 py-2 text-xs text-zinc-500 italic">No one has spoken here yet.</div>}
+                          {participants.map((p) => (
+                            <button key={p.jid} onClick={() => insertMention(p)} className="w-full text-left px-3 py-1.5 text-sm text-zinc-200 hover:bg-zinc-800 truncate">@{p.name}</button>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                  <textarea value={reply} onChange={(e) => setReply(e.target.value)} rows={2} placeholder={forward ? "Note to the store (sent with the lab's attachment)…" : "Write a reply, tag with @, or use a suggested action →"} className="flex-1 resize-none bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-100 focus:border-blue-500 outline-none" />
                   <button onClick={sendReply} disabled={busy} className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-semibold text-sm px-4 py-2.5 rounded-lg">Send ▸</button>
                 </div>
                 {detail.group && !detail.group.sendEnabled && <div className="text-[11px] text-amber-400">Sending is off for this group — enable it in Settings before replies actually send.</div>}

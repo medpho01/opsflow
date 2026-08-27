@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/db/client";
 import { getSessionFromRequest } from "@/lib/auth/session";
+import { normalizeMentions } from "@/lib/wa/mentions";
 import { UserRole } from "@prisma/client";
 
 // POST /api/whatsapp/send — free text to a group (by id) or a raw number.
@@ -45,9 +46,11 @@ export async function POST(request: NextRequest) {
   }
 
   const quotedWaId = body?.quotedWaMsgId ? String(body.quotedWaMsgId) : null;
+  const mentions = normalizeMentions(body?.mentions);
   await prisma.waOutbound.create({
     data: {
       targetJid, text, groupId, createdById: user.id, quotedWaId,
+      ...(mentions.length ? { mentions } : {}),
       ...(media ? { mediaMime: media.mime, mediaName: media.name, mediaBytes: media.bytes } : {}),
     },
   });

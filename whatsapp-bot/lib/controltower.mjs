@@ -602,9 +602,19 @@ export async function enqueueOutbound({ targetJid, text, groupId = null, ticketI
  * Drain queued outbound rows. `send(targetJid, text, quotedWaId)` must return
  * the sent WhatsApp message id (or throw). Respects per-group sendEnabled.
  */
+// Every message we send is signed so partners always know it came from ops.
+// Configurable via WA_SIGNATURE (set empty to disable). Italic in WhatsApp.
+const SIGNATURE = (process.env.WA_SIGNATURE ?? "Sent by Labstack Operations").trim();
+function signText(text) {
+  const body = (text || "").trimEnd();
+  if (!SIGNATURE) return body;
+  if (body.includes(SIGNATURE)) return body; // already signed — don't double-sign
+  return body ? `${body}\n\n_${SIGNATURE}_` : `_${SIGNATURE}_`;
+}
+
 export async function drainOutbound(send, { limit = 5 } = {}) {
   const rows = (await taskosQuery(
-    `SELECT o.id, o."targetJid", o.text, o."groupId", o."quotedWaId", o."mediaMime", o."mediaName", o."mediaBytes", g."sendEnabled", g.subject
+    `SELECT o.id, o."targetJid", o.text, o."groupId", o."quotedWaId", o."mentions", o."mediaMime", o."mediaName", o."mediaBytes", g."sendEnabled", g.subject
        FROM wa_outbound o LEFT JOIN wa_groups g ON g.id = o."groupId"
       WHERE o.status = 'QUEUED' ORDER BY o."createdAt" ASC LIMIT $1`, [limit]
   )).rows;
@@ -636,7 +646,10 @@ export async function drainOutbound(send, { limit = 5 } = {}) {
         }
       }
       const media = row.mediaBytes ? { mime: row.mediaMime, name: row.mediaName, bytes: row.mediaBytes } : null;
-      const waId = await send(row.targetJid, row.text, { quoted, media });
+      // @-mentions: jids to notify (the text already carries "@<localpart>").
+      let mentions = null;
+      try { mentions = Array.isArray(row.mentions) ? row.mentions : (row.mentions ? JSON.parse(row.mentions) : null); } catch { mentions = null; }
+      const waId = await send(row.targetJid, signText(row.text), { quoted, media, mentions: mentions?.length ? mentions : null });
       await taskosQuery(`UPDATE wa_outbound SET status='SENT', "sentWaMsgId"=$2, "sentAt"=now() WHERE id=$1`, [row.id, waId || null]);
       sent++;
     } catch (e) {

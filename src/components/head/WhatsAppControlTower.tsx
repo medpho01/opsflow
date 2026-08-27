@@ -212,6 +212,7 @@ export function WhatsAppControlTower({ canAdmin = true }: { canAdmin?: boolean }
   const [mentions, setMentions] = useState<Mention[]>([]);
   const [participants, setParticipants] = useState<Mention[]>([]);
   const [tagOpen, setTagOpen] = useState(false);
+  const [tagQuery, setTagQuery] = useState("");
   const [newChat, setNewChat] = useState(false);
   const [ncGroups, setNcGroups] = useState<{ id: string; subject: string; sendEnabled: boolean }[]>([]);
   const [ncGroupId, setNcGroupId] = useState("");
@@ -295,6 +296,15 @@ export function WhatsAppControlTower({ canAdmin = true }: { canAdmin?: boolean }
       .then((d) => setNcParticipants(Array.isArray(d.participants) ? d.participants : []))
       .catch(() => setNcParticipants([]));
   }, [ncGroupId]);
+  // Preload the case composer's taggable people so typing "@" filters instantly.
+  // (store = the case group, lab = the picked lab group.)
+  const tagGroupId = target === "lab" ? (labGroupId || detail?.labGroup?.id || "") : (detail?.group?.id || "");
+  useEffect(() => {
+    if (!tagGroupId) { setParticipants([]); return; }
+    fetch(`/api/whatsapp/groups/${tagGroupId}/participants`).then((r) => r.json())
+      .then((d) => setParticipants(Array.isArray(d.participants) ? d.participants : []))
+      .catch(() => setParticipants([]));
+  }, [tagGroupId]);
 
   // Auto-interpret images that haven't been read yet (cloud vision). Runs once
   // per image on case open; on success we reload so the interpretation shows.
@@ -423,21 +433,22 @@ export function WhatsAppControlTower({ canAdmin = true }: { canAdmin?: boolean }
     flash(`Queued → ${target === "store" ? "store group" : target === "lab" ? "lab group" : "number"}`);
     setReply(""); autoDraft.current = ""; setReplyTo(null); setAttachment(null); setMentions([]); loadConvos(); if (openGroup) loadCases(openGroup.id); loadDetail(activeId);
   }
-  // Load the taggable people for whichever group we're posting to, then open the picker.
-  async function openTagPicker() {
-    const gid = target === "lab" ? (labGroupId || detail?.labGroup?.id) : detail?.group?.id;
-    if (!gid) return flash("Pick a group to tag someone");
-    try {
-      const r = await fetch(`/api/whatsapp/groups/${gid}/participants`);
-      const d = await r.json().catch(() => ({}));
-      setParticipants(Array.isArray(d.participants) ? d.participants : []);
-      setTagOpen(true);
-    } catch { flash("Couldn't load people"); }
+  // Typing "@" (or the @ button) opens the picker; the query is whatever follows
+  // the last "@" in the box, so it filters live as you type.
+  function onReplyChange(v: string) {
+    setReply(v);
+    const mt = v.match(/@([^@\n]*)$/);
+    if (mt && participants.length) { setTagQuery(mt[1]); setTagOpen(true); }
+    else setTagOpen(false);
+  }
+  function openTagPicker() {
+    if (!participants.length) return flash("No one has spoken in this group yet");
+    setTagQuery(""); setTagOpen((o) => !o);
   }
   function insertMention(p: Mention) {
-    setReply((t) => `${t}${t && !t.endsWith(" ") ? " " : ""}@${p.name} `);
+    setReply((t) => /@([^@\n]*)$/.test(t) ? t.replace(/@([^@\n]*)$/, `@${p.name} `) : `${t}${t && !t.endsWith(" ") ? " " : ""}@${p.name} `);
     setMentions((m) => (m.some((x) => x.jid === p.jid) ? m : [...m, p]));
-    setTagOpen(false);
+    setTagOpen(false); setTagQuery("");
   }
   function insertNcMention(p: Mention) {
     setNcText((t) => `${t}${t && !t.endsWith(" ") ? " " : ""}@${p.name} `);
@@ -817,22 +828,26 @@ export function WhatsAppControlTower({ canAdmin = true }: { canAdmin?: boolean }
                 <div className="flex gap-2 items-end">
                   <input ref={fileInput} type="file" className="hidden" accept="image/*,application/pdf,.pdf,.jpg,.jpeg,.png,.webp" onChange={(e) => setAttachment(e.target.files?.[0] || null)} />
                   <button onClick={() => fileInput.current?.click()} title="Attach a file or image" className="shrink-0 h-[42px] w-10 flex items-center justify-center border border-zinc-700 hover:border-blue-500 rounded-lg text-zinc-400 hover:text-zinc-200">📎</button>
-                  <div className="relative shrink-0">
-                    <button onClick={openTagPicker} title="Tag someone in this group" className="h-[42px] w-10 flex items-center justify-center border border-zinc-700 hover:border-blue-500 rounded-lg text-zinc-400 hover:text-zinc-200">@</button>
+                  <button onClick={openTagPicker} title="Tag someone in this group" className="shrink-0 h-[42px] w-10 flex items-center justify-center border border-zinc-700 hover:border-blue-500 rounded-lg text-zinc-400 hover:text-zinc-200">@</button>
+                  <div className="relative flex-1">
                     {tagOpen && (
                       <>
                         <button className="fixed inset-0 z-40 cursor-default" aria-label="Close" onClick={() => setTagOpen(false)} />
-                        <div className="absolute bottom-full left-0 mb-1 z-50 w-60 max-h-60 overflow-y-auto bg-zinc-900 border border-zinc-700 rounded-lg shadow-xl py-1">
-                          <div className="px-3 py-1.5 text-[10px] uppercase tracking-wide text-zinc-500">Tag in this group</div>
-                          {participants.length === 0 && <div className="px-3 py-2 text-xs text-zinc-500 italic">No one has spoken here yet.</div>}
-                          {participants.map((p) => (
-                            <button key={p.jid} onClick={() => insertMention(p)} className="w-full text-left px-3 py-1.5 text-sm text-zinc-200 hover:bg-zinc-800 truncate">@{p.name}</button>
-                          ))}
+                        <div className="absolute bottom-full left-0 mb-1 z-50 w-64 max-h-60 overflow-y-auto bg-zinc-900 border border-zinc-700 rounded-lg shadow-xl py-1">
+                          <div className="px-3 py-1.5 text-[10px] uppercase tracking-wide text-zinc-500">Tag someone {tagQuery ? `· “${tagQuery}”` : ""}</div>
+                          {(() => {
+                            const shown = participants.filter((p) => !tagQuery || p.name.toLowerCase().includes(tagQuery.toLowerCase())).slice(0, 8);
+                            if (!participants.length) return <div className="px-3 py-2 text-xs text-zinc-500 italic">No one has spoken here yet.</div>;
+                            if (!shown.length) return <div className="px-3 py-2 text-xs text-zinc-500 italic">No match for “{tagQuery}”.</div>;
+                            return shown.map((p) => (
+                              <button key={p.jid} onClick={() => insertMention(p)} className="w-full text-left px-3 py-1.5 text-sm text-zinc-200 hover:bg-zinc-800 truncate">@{p.name}</button>
+                            ));
+                          })()}
                         </div>
                       </>
                     )}
+                    <textarea value={reply} onChange={(e) => onReplyChange(e.target.value)} rows={2} placeholder={forward ? "Note to the store (sent with the lab's attachment)…" : "Write a reply, type @ to tag, or use a suggested action →"} className="w-full resize-none bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-100 focus:border-blue-500 outline-none" />
                   </div>
-                  <textarea value={reply} onChange={(e) => setReply(e.target.value)} rows={2} placeholder={forward ? "Note to the store (sent with the lab's attachment)…" : "Write a reply, tag with @, or use a suggested action →"} className="flex-1 resize-none bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-100 focus:border-blue-500 outline-none" />
                   <button onClick={sendReply} disabled={busy} className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-semibold text-sm px-4 py-2.5 rounded-lg">Send ▸</button>
                 </div>
                 {detail.group && !detail.group.sendEnabled && <div className="text-[11px] text-amber-400">Sending is off for this group — enable it in Settings before replies actually send.</div>}

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { applyMentions, type Mention } from "@/lib/wa/mentions";
 
 type Convo = { groupId: string; subject: string; role: string; lastText: string; lastTs: string; unread: number };
 type Msg = {
@@ -24,6 +25,10 @@ export default function WhatsAppInbox({ gwDryRun, onOpenCase }: { gwDryRun: bool
   const [reply, setReply] = useState("");
   const [replyTo, setReplyTo] = useState<Msg | null>(null);
   const [attachment, setAttachment] = useState<File | null>(null);
+  const [mentions, setMentions] = useState<Mention[]>([]);
+  const [participants, setParticipants] = useState<Mention[]>([]);
+  const [tagOpen, setTagOpen] = useState(false);
+  const [tagQuery, setTagQuery] = useState("");
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement | null>(null);
@@ -47,30 +52,50 @@ export default function WhatsAppInbox({ gwDryRun, onOpenCase }: { gwDryRun: bool
     return () => clearInterval(t);
   }, [loadConvos, loadMsgs]);
   useEffect(() => { const t = setTimeout(() => bottom.current?.scrollIntoView({ behavior: "smooth" }), 80); return () => clearTimeout(t); }, [msgs.length]);
-  useEffect(() => { setSelected(null); setReplyTo(null); setReply(""); setAttachment(null); }, [openId]);
+  useEffect(() => { setSelected(null); setReplyTo(null); setReply(""); setAttachment(null); setMentions([]); setTagOpen(false); }, [openId]);
+  // Preload taggable people for the open chat so typing "@" filters instantly.
+  useEffect(() => {
+    if (!openId) { setParticipants([]); return; }
+    fetch(`/api/whatsapp/groups/${openId}/participants`).then((r) => r.json())
+      .then((d) => setParticipants(Array.isArray(d.participants) ? d.participants : []))
+      .catch(() => setParticipants([]));
+  }, [openId]);
 
   const filtered = convos.filter((c) => !q || c.subject.toLowerCase().includes(q.toLowerCase()));
+
+  function onReplyChange(v: string) {
+    setReply(v);
+    const mt = v.match(/@([^@\n]*)$/);
+    if (mt && participants.length) { setTagQuery(mt[1]); setTagOpen(true); } else setTagOpen(false);
+  }
+  function pickMention(p: Mention) {
+    setReply((t) => /@([^@\n]*)$/.test(t) ? t.replace(/@([^@\n]*)$/, `@${p.name} `) : `${t}${t && !t.endsWith(" ") ? " " : ""}@${p.name} `);
+    setMentions((m) => (m.some((x) => x.jid === p.jid) ? m : [...m, p]));
+    setTagOpen(false); setTagQuery("");
+  }
 
   async function send() {
     if (!openId || (!reply.trim() && !attachment)) return flash("Write a message or attach a file");
     setBusy(true);
+    const { text: outText, jids } = applyMentions(reply, mentions);
     let res: Response;
     if (attachment) {
       const fd = new FormData();
-      fd.append("text", reply); fd.append("groupId", openId);
+      fd.append("text", outText); fd.append("groupId", openId);
       if (replyTo) fd.append("quotedWaMsgId", replyTo.waMsgId);
+      if (jids.length) fd.append("mentions", JSON.stringify(jids));
       fd.append("file", attachment);
       res = await fetch("/api/whatsapp/send", { method: "POST", body: fd });
     } else {
       res = await fetch("/api/whatsapp/send", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ groupId: openId, text: reply, quotedWaMsgId: replyTo?.waMsgId }),
+        body: JSON.stringify({ groupId: openId, text: outText, quotedWaMsgId: replyTo?.waMsgId, mentions: jids }),
       });
     }
     setBusy(false);
     const data = await res.json().catch(() => ({}));
     if (!res.ok) return flash(data.error || "Send failed");
-    flash("Queued"); setReply(""); setReplyTo(null); setAttachment(null);
+    flash("Queued"); setReply(""); setReplyTo(null); setAttachment(null); setMentions([]);
     if (fileInput.current) fileInput.current.value = "";
     loadMsgs(openId);
   }
@@ -140,12 +165,41 @@ export default function WhatsAppInbox({ gwDryRun, onOpenCase }: { gwDryRun: bool
                   <button onClick={() => { setAttachment(null); if (fileInput.current) fileInput.current.value = ""; }} className="text-zinc-500 hover:text-zinc-300">✕</button>
                 </div>
               )}
+              {mentions.length > 0 && (
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="text-[10px] uppercase tracking-wide text-zinc-500">Tagging</span>
+                  {mentions.map((m) => (
+                    <span key={m.jid} className="inline-flex items-center gap-1 text-[11px] bg-blue-500/15 text-blue-300 border border-blue-500/30 rounded-full px-2 py-0.5">
+                      @{m.name}<button onClick={() => setMentions((x) => x.filter((y) => y.jid !== m.jid))} className="text-blue-300/70 hover:text-blue-200">✕</button>
+                    </span>
+                  ))}
+                </div>
+              )}
               <div className="flex gap-2 items-end">
                 <input ref={fileInput} type="file" className="hidden" accept="image/*,application/pdf" onChange={(e) => setAttachment(e.target.files?.[0] || null)} />
                 <button onClick={() => fileInput.current?.click()} className="shrink-0 h-[42px] w-10 flex items-center justify-center border border-zinc-700 hover:border-blue-500 rounded-lg text-zinc-400">📎</button>
-                <textarea value={reply} onChange={(e) => setReply(e.target.value)} rows={2} placeholder="Message… (replies to the whole group)"
-                  onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) send(); }}
-                  className="flex-1 resize-none bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-100 focus:border-blue-500 outline-none" />
+                <button onClick={() => { if (!participants.length) return flash("No one has spoken in this group yet"); setTagQuery(""); setTagOpen((o) => !o); }} title="Tag someone" className="shrink-0 h-[42px] w-10 flex items-center justify-center border border-zinc-700 hover:border-blue-500 rounded-lg text-zinc-400">@</button>
+                <div className="relative flex-1">
+                  {tagOpen && (
+                    <>
+                      <button className="fixed inset-0 z-40 cursor-default" aria-label="Close" onClick={() => setTagOpen(false)} />
+                      <div className="absolute bottom-full left-0 mb-1 z-50 w-64 max-h-60 overflow-y-auto bg-zinc-900 border border-zinc-700 rounded-lg shadow-xl py-1">
+                        <div className="px-3 py-1.5 text-[10px] uppercase tracking-wide text-zinc-500">Tag someone {tagQuery ? `· “${tagQuery}”` : ""}</div>
+                        {(() => {
+                          const shown = participants.filter((p) => !tagQuery || p.name.toLowerCase().includes(tagQuery.toLowerCase())).slice(0, 8);
+                          if (!participants.length) return <div className="px-3 py-2 text-xs text-zinc-500 italic">No one has spoken here yet.</div>;
+                          if (!shown.length) return <div className="px-3 py-2 text-xs text-zinc-500 italic">No match for “{tagQuery}”.</div>;
+                          return shown.map((p) => (
+                            <button key={p.jid} onClick={() => pickMention(p)} className="w-full text-left px-3 py-1.5 text-sm text-zinc-200 hover:bg-zinc-800 truncate">@{p.name}</button>
+                          ));
+                        })()}
+                      </div>
+                    </>
+                  )}
+                  <textarea value={reply} onChange={(e) => onReplyChange(e.target.value)} rows={2} placeholder="Message… type @ to tag (replies to the whole group)"
+                    onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) send(); }}
+                    className="w-full resize-none bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-100 focus:border-blue-500 outline-none" />
+                </div>
                 <button onClick={send} disabled={busy} className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-semibold text-sm px-4 py-2.5 rounded-lg">Send ▸</button>
               </div>
               {group && !group.sendEnabled && <div className="text-[11px] text-amber-400">Sending is off for this group — enable it in Settings.</div>}

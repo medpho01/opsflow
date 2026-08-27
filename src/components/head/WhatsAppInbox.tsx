@@ -123,7 +123,7 @@ export default function WhatsAppInbox({ gwDryRun, onOpenCase }: { gwDryRun: bool
       </div>
 
       {/* MIDDLE: message stream + composer */}
-      <div className="flex flex-col min-h-0 border-r border-zinc-800">
+      <div className="flex flex-col min-h-0 min-w-0 border-r border-zinc-800">
         {!group ? (
           <div className="flex-1 grid place-items-center text-sm text-zinc-500">Select a chat</div>
         ) : (
@@ -145,7 +145,7 @@ export default function WhatsAppInbox({ gwDryRun, onOpenCase }: { gwDryRun: bool
                     <img src={`/api/whatsapp/media/${m.waMsgId}`} alt="" className="max-h-52 rounded-lg border border-zinc-700/50 object-contain mb-1" />
                   )}
                   {m.mediaType === "document" && <a href={`/api/whatsapp/media/${m.waMsgId}`} target="_blank" rel="noreferrer" className="text-xs text-blue-300 underline">📄 document</a>}
-                  <div className="text-zinc-100 whitespace-pre-wrap">{m.text}</div>
+                  <div className="text-zinc-100 whitespace-pre-wrap break-words">{m.text}</div>
                   <div className="text-[10px] text-zinc-500 mt-1 text-right">{fmtTime(m.ts)}</div>
                 </div>
               ))}
@@ -210,7 +210,7 @@ export default function WhatsAppInbox({ gwDryRun, onOpenCase }: { gwDryRun: bool
       </div>
 
       {/* RIGHT: selected message context */}
-      <div className="flex flex-col min-h-0 overflow-y-auto">
+      <div className="flex flex-col min-h-0 min-w-0 overflow-y-auto">
         {selected ? (
           <div className="p-4 flex flex-col gap-3">
             <div className="text-[11px] uppercase tracking-wide text-zinc-500 font-semibold">Message context</div>

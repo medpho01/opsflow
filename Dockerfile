@@ -25,13 +25,17 @@ WORKDIR /app
 #   openssl + ca-certificates — Prisma's binary engine SSL deps
 #   python3 + build-essential — node-gyp deps for any optional native pkg
 #
-# Debian bullseye LTS went EOL 2026-08-31. deb.debian.org has since dropped
-# the bullseye-security / bullseye-updates package files (they 404), and the
-# base Release is flagged expired. Repoint apt at archive.debian.org (which
-# hosts EOL releases), drop the defunct -security/-updates suites, and skip
-# the freshness check. Staying on bullseye (glibc 2.31 / OpenSSL 1.1) keeps
+# Debian bullseye LTS went EOL 2026-08-31 and deb.debian.org has dropped its
+# package files (404s) with the Release flagged expired. Repoint apt at
+# archive.debian.org, which hosts EOL releases. We KEEP bullseye-security
+# (repointed by the same host rewrite: deb.debian.org/debian-security ->
+# archive.debian.org/debian-security) because the base image already ships the
+# security-patched glibc (libc6 2.31-13+deb11u13) — pulling libc6-dev from the
+# original 'main' pool (u11) would leave held broken packages. We drop only
+# bullseye-updates (not carried on the archive). Check-Valid-Until=false skips
+# the freshness assertion. Staying on bullseye (glibc 2.31 / OpenSSL 1.1) keeps
 # Prisma 4.16's engine happy. Remove this whole block once we move to bookworm.
-RUN sed -i -e '/bullseye-updates/d' -e '/bullseye-security/d' /etc/apt/sources.list && \
+RUN sed -i '/bullseye-updates/d' /etc/apt/sources.list && \
     sed -i 's|http://deb.debian.org/debian|http://archive.debian.org/debian|g' /etc/apt/sources.list && \
     apt-get -o Acquire::Check-Valid-Until=false update && \
     apt-get install -y --no-install-recommends \
@@ -62,7 +66,7 @@ WORKDIR /app
 #   postgresql-client         — pg_isready in entrypoint
 #   tini                      — proper PID-1 signal handling
 # Same bullseye-EOL archive repoint as the builder stage (see note above).
-RUN sed -i -e '/bullseye-updates/d' -e '/bullseye-security/d' /etc/apt/sources.list && \
+RUN sed -i '/bullseye-updates/d' /etc/apt/sources.list && \
     sed -i 's|http://deb.debian.org/debian|http://archive.debian.org/debian|g' /etc/apt/sources.list && \
     apt-get -o Acquire::Check-Valid-Until=false update && \
     apt-get install -y --no-install-recommends \

@@ -1129,6 +1129,11 @@ export async function evaluateAndCreateTasks(
       // newly-added rule placeholder fails loudly instead of leaking
       // `{{patientName}}` into user-visible task titles + alert messages.
       const title = renderTitleTemplate(rule.titleTemplate, {
+        // Source-specific fields first (raw columns for non-Order sources —
+        // e.g. an Appointment's appointmentType / referenceId — carried on
+        // order.metadata), so a rule can template on its own source's fields.
+        // The named fields below win on any key collision.
+        ...(order.metadata && typeof order.metadata === "object" ? (order.metadata as Record<string, unknown>) : {}),
         patientName: order.patientName,
         orderId: order.id,
         storeName: order.storeName,

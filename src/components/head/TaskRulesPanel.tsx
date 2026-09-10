@@ -126,6 +126,50 @@ interface SourceKey {
   observedIn: number;
 }
 
+// Title-template variables the engine always resolves (taskCreator passes these
+// named fields for every source). storeName/labName/phleboName are meaningful
+// only for the Order source, so they're offered only there.
+const UNIVERSAL_TITLE_VARS = ["patientName", "orderId", "appointmentTime"];
+const ORDER_ONLY_TITLE_VARS = ["storeName", "labName", "phleboName"];
+
+/** public."Order" | public.Order | "Order" → Order */
+function bareTableOf(tableReference?: string | null): string | null {
+  if (!tableReference) return null;
+  return tableReference.replace(/^.*\./, "").replace(/^"(.+)"$/, "$1");
+}
+
+/**
+ * The template variables to offer for the selected source. Universal fields
+ * plus (for the Order table) the order-only fields, then the source's own
+ * columns observed via metadata-keys — so the hint matches the data source
+ * instead of always showing Lab-Order fields. taskCreator spreads the entity's
+ * fields into the title context, so these source columns actually resolve.
+ */
+function titleVarsForSource(
+  selectedSource: { tableReference: string } | null,
+  sourceKeys: SourceKey[],
+): string[] {
+  const table = bareTableOf(selectedSource?.tableReference);
+  const isOrder = !table || table === "Order";
+  // The Order path resolves only its named fields (its raw columns aren't
+  // carried into the title context), so show just the curated Order vars.
+  if (isOrder) return [...UNIVERSAL_TITLE_VARS, ...ORDER_ONLY_TITLE_VARS];
+
+  // Non-Order sources: universal fields + the source's own top-level columns.
+  // taskCreator spreads the entity's raw row into the title context, so these
+  // resolve. Simple identifiers only ({{key}} can't address dot-paths); skip
+  // ones already listed and noisy foreign-key columns that never title well.
+  const vars = [...UNIVERSAL_TITLE_VARS];
+  const simpleIdent = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+  for (const k of sourceKeys) {
+    if (!simpleIdent.test(k.path)) continue;
+    if (vars.includes(k.path)) continue;
+    if (/(^|_)id$/i.test(k.path)) continue; // id / user_id / slot_id …
+    vars.push(k.path);
+  }
+  return vars;
+}
+
 function TriggerBuilder({
   value = { ...EMPTY_TRIGGER },
   onChange,
@@ -818,17 +862,20 @@ function RuleDrawer({ rule, allTags, chains, metadataFields, orderStatuses, onCl
                     className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-white placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-blue-500"
                   />
                   <p className="text-[10px] text-zinc-600 mt-1">
-                    Available variables:{" "}
-                    {["{{patientName}}", "{{orderId}}", "{{storeName}}", "{{labName}}", "{{phleboName}}"].map((v) => (
-                      <code
-                        key={v}
-                        onClick={() => setForm({ ...form, titleTemplate: form.titleTemplate + v })}
-                        className="cursor-pointer text-zinc-400 hover:text-blue-400 mr-1 transition-colors"
-                        title="Click to insert"
-                      >
-                        {v}
-                      </code>
-                    ))}
+                    Available variables{selectedSource ? ` (${selectedSource.displayName})` : ""}:{" "}
+                    {titleVarsForSource(selectedSource, sourceKeys).map((name) => {
+                      const v = `{{${name}}}`;
+                      return (
+                        <code
+                          key={name}
+                          onClick={() => setForm({ ...form, titleTemplate: form.titleTemplate + v })}
+                          className="cursor-pointer text-zinc-400 hover:text-blue-400 mr-1 transition-colors"
+                          title="Click to insert"
+                        >
+                          {v}
+                        </code>
+                      );
+                    })}
                   </p>
                 </div>
 

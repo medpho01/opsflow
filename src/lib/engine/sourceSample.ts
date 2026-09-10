@@ -101,6 +101,25 @@ export async function fetchSourceSample(
   const fromMap = (row: Record<string, unknown>, outName: string): unknown =>
     map[outName] != null ? row[map[outName]] : undefined;
 
+  // Resolve patient names via the labstack User table when the source rows
+  // carry a user reference (Order uses userId, Appointment uses user_id). The
+  // name is a join, not a column, so a plain SELECT * can't surface it — this
+  // one extra bulk lookup keeps task titles / the board from showing a blank
+  // patient. Best-effort: absent column or User row leaves patientName empty.
+  const userCol = pick(cols, "userId", "user_id");
+  const userNameById = new Map<number, string>();
+  if (userCol) {
+    const uids = Array.from(
+      new Set(rows.map((r) => Number(r[userCol])).filter((n) => Number.isFinite(n))),
+    );
+    if (uids.length > 0) {
+      const users = await client.$queryRaw<Array<{ id: number; name: string | null }>>(
+        Prisma.sql`SELECT id, name FROM public."User" WHERE id IN (${Prisma.join(uids)})`,
+      );
+      for (const u of users) if (u.name) userNameById.set(Number(u.id), u.name);
+    }
+  }
+
   const createdCol = pick(cols, "createdAt", "created_at");
   const updatedCol = pick(cols, "updatedAt", "updated_at", "statusUpdatedAt");
   const apptCol = (map["appointmentTime"] && cols.has(map["appointmentTime"]))
@@ -129,7 +148,11 @@ export async function fetchSourceSample(
     notes: str(row["notes"]),
     phleboName: str(fromMap(row, "phleboName")),
     phleboNumber: str(fromMap(row, "phleboNumber")),
-    patientName: str(fromMap(row, "patientName") ?? row["patientName"]),
+    patientName: str(
+      fromMap(row, "patientName") ??
+        row["patientName"] ??
+        (userCol ? userNameById.get(Number(row[userCol])) : undefined),
+    ),
     labName: (fromMap(row, "labName") ?? row["labName"] ?? null) as string | null,
     storeName: (fromMap(row, "storeName") ?? row["storeName"] ?? null) as string | null,
     // The evaluator reads metadata conditions by field name; expose the raw row.

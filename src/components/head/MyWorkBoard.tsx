@@ -44,6 +44,10 @@ interface Task {
   status: string;
   priority: string;
   orderType: string;
+  // Source entity kind — "ORDER" (default/legacy), "APPOINTMENT", "PHARMAORDER"…
+  // Gates order-only framing (phlebo prep) so non-Order tasks don't get
+  // mislabelled "no phlebo yet".
+  entityType?: string;
   entityId: number;
   storeId: number | null;
   appointmentTime: string | null;
@@ -88,7 +92,10 @@ const PREP_VISIBILITY_HOUR_IST = 16; // 4 PM IST — when tonight's prep becomes
 const EARLY_MORNING_CUTOFF_HOUR_IST = 10; // appts before 10 AM count as "early"
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
 
-// ─── Order-type pill ───────────────────────────────────────────────────
+// ─── Entity-type pill ──────────────────────────────────────────────────
+// Covers Order types plus the other data sources now surfaced on the board
+// (Appointments: CENTER_VISIT / HOME_VISIT / ONLINE; PharmaOrder: PLACED-side
+// types). Unknown types fall back to a titled label instead of a raw slice.
 const TYPE_STYLES: Record<string, string> = {
   HOME_SAMPLE: "bg-blue-900/60 text-blue-300",
   CONSULTATION: "bg-purple-900/60 text-purple-300",
@@ -98,6 +105,10 @@ const TYPE_STYLES: Record<string, string> = {
   MRI: "bg-violet-900/60 text-violet-300",
   INJECTION: "bg-pink-900/60 text-pink-300",
   MANUAL: "bg-zinc-800 text-zinc-300",
+  // Appointment types
+  CENTER_VISIT: "bg-teal-900/60 text-teal-300",
+  HOME_VISIT: "bg-cyan-900/60 text-cyan-300",
+  ONLINE: "bg-indigo-900/60 text-indigo-300",
 };
 const TYPE_LABEL: Record<string, string> = {
   HOME_SAMPLE: "HSC",
@@ -106,12 +117,19 @@ const TYPE_LABEL: Record<string, string> = {
   RADIOLOGY: "RAD",
   INJECTION: "INJ",
   MANUAL: "MANUAL",
+  // Appointment types
+  CENTER_VISIT: "CENTER",
+  HOME_VISIT: "HOME",
+  ONLINE: "ONLINE",
 };
 function typeStyle(orderType: string) {
   return TYPE_STYLES[orderType] ?? "bg-zinc-800 text-zinc-300";
 }
 function typeLabel(orderType: string) {
-  return TYPE_LABEL[orderType] ?? orderType.slice(0, 6);
+  if (TYPE_LABEL[orderType]) return TYPE_LABEL[orderType];
+  // Unknown/other-source type: show the first token, spaces→nothing, cap at 8
+  // chars so a pill stays compact but readable (e.g. "PARTIAL_DELIVERED"→"PARTIAL").
+  return (orderType.split("_")[0] || orderType).slice(0, 8);
 }
 
 // ─── Time helpers ──────────────────────────────────────────────────────
@@ -139,6 +157,14 @@ function metaStr(t: Task, key: string): string {
 }
 function storeNameOf(t: Task): string {
   return metaStr(t, "storeName") || (t.storeId != null ? `Store #${t.storeId}` : "");
+}
+
+// Phlebo assignment is an Order-collection concept (a phlebotomist visits to
+// collect a sample). Appointment / other-source tasks have no phlebo, so the
+// "no phlebo yet" prep framing must not apply to them. Treat a missing
+// entityType as ORDER for legacy tasks created before entityType was stamped.
+function hasPhleboWorkflow(t: Task): boolean {
+  return (t.entityType ?? "ORDER") === "ORDER";
 }
 
 // ─── CSV export (client-side, mirrors the filtered view) ────────────────
@@ -1003,7 +1029,7 @@ function TomorrowView({ tasks, now, agents, canReassign, onRowClick, onReassign 
     (t) => t.appointmentTime && istHourOfDay(new Date(t.appointmentTime)) < 8
   ).length;
   const noPhlebo = tasks.filter(
-    (t) => t.appointmentTime && !metaStr(t, "phleboName")
+    (t) => hasPhleboWorkflow(t) && t.appointmentTime && !metaStr(t, "phleboName")
   ).length;
 
   const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
@@ -1055,7 +1081,7 @@ function TomorrowView({ tasks, now, agents, canReassign, onRowClick, onReassign 
                       onReassign={onReassign}
                       canReassign={canReassign}
                       rightBadge={
-                        !metaStr(t, "phleboName")
+                        hasPhleboWorkflow(t) && !metaStr(t, "phleboName")
                           ? <span className="px-2 py-0.5 rounded text-[10px] shrink-0 bg-amber-900/30 text-amber-300/80">no phlebo yet</span>
                           : undefined
                       }

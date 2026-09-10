@@ -1911,7 +1911,10 @@ export default function MyWorkBoard({ currentUser }: { currentUser: CurrentUser 
         </div>
 
         {/* ── Tier 2 — filters scoped to the chosen source (type / rule / store) ── */}
-        {(availableTypes.length > 1 || availableRules.length > 1 || availableStores.length > 1) && (
+        {/* Rules render whenever ANY exist (they double as a per-rule count
+            breakdown, valuable even for a single-rule source like Appointments);
+            Type/Store need >1 to be a meaningful choice. */}
+        {(availableTypes.length > 1 || availableRules.length > 0 || availableStores.length > 1) && (
         <div className="flex items-center gap-3 flex-wrap border-t border-zinc-800/70 pt-2.5">
         {/* Entity-type chips */}
         {availableTypes.length > 1 && (
@@ -1952,7 +1955,7 @@ export default function MyWorkBoard({ currentUser }: { currentUser: CurrentUser 
 
         {/* Rule chips — which rule produced the task. Sorted by volume so
             the biggest pile is the first chip; counts are workspace-wide. */}
-        {availableRules.length > 1 && (
+        {availableRules.length > 0 && (
           <div className="flex items-center gap-1.5 flex-wrap">
             <span className="text-[10px] text-zinc-500 uppercase tracking-wider mr-1">Rule</span>
             <button

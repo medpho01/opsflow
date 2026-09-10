@@ -982,7 +982,14 @@ export async function evaluateAndCreateTasks(
     // conditions decide whether they're eligible. Previously a null
     // appointmentTime collapsed to 1970 → "very old" → skipped silently.
     const appointmentTs = asValidDate(order.appointmentTime);
-    if (appointmentTs) {
+    // The age/future window is an ORDER-scheduling concept (don't surface an
+    // order until its collection appointment is near). Non-Order entities carry
+    // their own time semantics — an Appointment's appointmentDate is the event
+    // itself, and a status-triggered "confirm booking" rule must fire at
+    // booking time no matter how far out the appointment is. So gate the window
+    // to ORDER entities and let every other source's rule triggers decide.
+    const isOrderEntity = (order.entityType ?? "ORDER") === "ORDER";
+    if (appointmentTs && isOrderEntity) {
       const ageDays = (now.getTime() - appointmentTs.getTime()) / msPerDay; // +ve = past, -ve = future
 
       // Skip very old orders (appointment 10+ days in the past)
@@ -1056,7 +1063,11 @@ export async function evaluateAndCreateTasks(
       }
 
       // W2.1 — dedup via the pre-loaded Set instead of a per-iteration query.
-      const key = dedupKey("ORDER", rule.id, order.id);
+      // Key on the entity's real type (order.entityType, e.g. "APPOINTMENT"),
+      // NOT a hardcoded "ORDER" — otherwise the pre-loaded keys (built from the
+      // task's stored entityType) never match and every cycle re-creates the
+      // same non-Order task. Defaults to "ORDER" for the legacy Order poller.
+      const key = dedupKey(order.entityType ?? "ORDER", rule.id, order.id);
       if (activeTaskKeys.has(key)) {
         bumpRule(rule.id, "skippedDedup");
         skipped++;

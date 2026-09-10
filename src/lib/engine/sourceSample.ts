@@ -15,7 +15,7 @@
  */
 
 import labstack from "@/lib/db/labstack";
-import { Prisma } from "@prisma/client";
+import { Prisma, type PrismaClient } from "@prisma/client";
 import { bareTableName, isValidTableReference } from "@/lib/validation/data-sources";
 import type { RawOrder } from "@/lib/engine/labstack";
 
@@ -54,11 +54,15 @@ export async function fetchSourceSample(
   source: SampleSourceConfig,
   since: Date,
   cap: number,
+  // Which labstack pool to read from. Defaults to the API pool (used by the
+  // simulator, an API request). The poller passes labstackWorker so its bulk
+  // reads don't contend with live API traffic.
+  client: Pick<PrismaClient, "$queryRaw"> = labstack,
 ): Promise<RawOrder[]> {
   if (!isValidTableReference(source.tableReference)) return [];
   const bareTable = bareTableName(source.tableReference);
 
-  const columns = await labstack.$queryRaw<Array<{ column_name: string }>>(Prisma.sql`
+  const columns = await client.$queryRaw<Array<{ column_name: string }>>(Prisma.sql`
     SELECT column_name FROM information_schema.columns
     WHERE table_schema = 'public' AND table_name = ${bareTable}
   `);
@@ -78,7 +82,7 @@ export async function fetchSourceSample(
     const whereClause = bounded && recencyCol
       ? Prisma.sql`WHERE ${Prisma.raw(`"${recencyCol}"`)} >= ${since}`
       : Prisma.empty;
-    return labstack.$queryRaw<Array<Record<string, unknown>>>(Prisma.sql`
+    return client.$queryRaw<Array<Record<string, unknown>>>(Prisma.sql`
       SELECT * FROM ${Prisma.raw(source.tableReference)}
       ${whereClause}
       ${orderClause}

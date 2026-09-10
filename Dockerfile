@@ -24,7 +24,11 @@ WORKDIR /app
 # Debian system packages:
 #   openssl + ca-certificates — Prisma's binary engine SSL deps
 #   python3 + build-essential — node-gyp deps for any optional native pkg
-RUN apt-get update && \
+# Check-Valid-Until=false: Debian bullseye LTS went EOL 2026-08-31, so its
+# bullseye-security Release file is now "expired" and apt errors out. The
+# packages are still served; we just skip the freshness assertion. Remove
+# once the base image moves to bookworm.
+RUN apt-get -o Acquire::Check-Valid-Until=false update && \
     apt-get install -y --no-install-recommends \
       openssl ca-certificates python3 make g++ && \
     rm -rf /var/lib/apt/lists/*
@@ -52,7 +56,7 @@ WORKDIR /app
 #   openssl + ca-certificates — Prisma engine SSL
 #   postgresql-client         — pg_isready in entrypoint
 #   tini                      — proper PID-1 signal handling
-RUN apt-get update && \
+RUN apt-get -o Acquire::Check-Valid-Until=false update && \
     apt-get install -y --no-install-recommends \
       openssl ca-certificates postgresql-client tini && \
     rm -rf /var/lib/apt/lists/* && \

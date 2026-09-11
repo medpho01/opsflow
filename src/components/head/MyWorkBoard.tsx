@@ -1319,6 +1319,10 @@ export default function MyWorkBoard({ currentUser }: { currentUser: CurrentUser 
   // can render immediately without a re-fetch. Updated optimistically by
   // the panel's actions; refetched via onUpdate to pick up server state.
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
+  // Registered (active) data sources — drives the top-level Source filter so it
+  // lists every source (e.g. Appointments) even when none of its tasks are in
+  // the current view, instead of collapsing when only one source has tasks.
+  const [registeredSources, setRegisteredSources] = useState<{ id: string; displayName: string; sourceId: string }[]>([]);
 
   // ── Filter state (Lead's main tool for slicing the workspace) ───────
   const [filterAssigneeId, setFilterAssigneeId] = useState<"all" | "unassigned" | number>("all");
@@ -1363,6 +1367,21 @@ export default function MyWorkBoard({ currentUser }: { currentUser: CurrentUser 
         );
       })
       .catch((err) => console.error("[MyWork] team fetch failed:", err));
+  }, []);
+
+  // Load registered data sources for the top-level Source filter.
+  useEffect(() => {
+    fetch("/api/data-sources")
+      .then((r) => (r.ok ? r.json() : { dataSources: [] }))
+      .then((d) => {
+        const active = (d.dataSources ?? [])
+          .filter((s: { isActive?: boolean }) => s.isActive !== false)
+          .map((s: { id: string; displayName?: string; sourceId: string }) => ({
+            id: s.id, displayName: s.displayName || s.sourceId, sourceId: s.sourceId,
+          }));
+        setRegisteredSources(active);
+      })
+      .catch((err) => console.error("[MyWork] data-sources fetch failed:", err));
   }, []);
 
   // Reassign handler — used by the AssigneeChip popover on every row.
@@ -1646,16 +1665,38 @@ export default function MyWorkBoard({ currentUser }: { currentUser: CurrentUser 
   // Data sources present in the workspace — the TOP-LEVEL filter. Every
   // second-level option (type/rule/store) scopes to the selected source.
   const availableDataSources = useMemo(() => {
-    const byId = new Map<string, { id: string; label: string; count: number }>();
+    // Count tasks per source in the current view.
+    const counts = new Map<string, number>();
+    for (const t of tasks) {
+      const id = t.dataSource?.id;
+      if (id) counts.set(id, (counts.get(id) ?? 0) + 1);
+    }
+    // Prefer the registered-source list so the Source filter always lists every
+    // active source (Appointments included) even with 0 tasks in view — the
+    // tier no longer collapses when only one source happens to have tasks.
+    if (registeredSources.length > 0) {
+      const byId = new Map(registeredSources.map((s) => [s.id, s]));
+      // Include any source present in tasks but not (yet) in the registered
+      // list, so nothing a task belongs to is ever hidden.
+      for (const t of tasks) {
+        const ds = t.dataSource;
+        if (ds?.id && !byId.has(ds.id)) byId.set(ds.id, { id: ds.id, displayName: ds.displayName || ds.sourceId, sourceId: ds.sourceId });
+      }
+      return Array.from(byId.values())
+        .map((s) => ({ id: s.id, label: s.displayName, count: counts.get(s.id) ?? 0 }))
+        .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
+    }
+    // Fallback (registered list not loaded yet): derive from tasks present.
+    const fromTasks = new Map<string, { id: string; label: string; count: number }>();
     for (const t of tasks) {
       const ds = t.dataSource;
       if (!ds?.id) continue;
-      const existing = byId.get(ds.id);
+      const existing = fromTasks.get(ds.id);
       if (existing) { existing.count++; continue; }
-      byId.set(ds.id, { id: ds.id, label: ds.displayName || ds.sourceId, count: 1 });
+      fromTasks.set(ds.id, { id: ds.id, label: ds.displayName || ds.sourceId, count: 1 });
     }
-    return Array.from(byId.values()).sort((a, b) => b.count - a.count);
-  }, [tasks]);
+    return Array.from(fromTasks.values()).sort((a, b) => b.count - a.count);
+  }, [tasks, registeredSources]);
 
   // Tasks in scope of the top-level Data Source filter. The second-level
   // option lists (type/rule/store) are derived from THIS, so switching source

@@ -1338,8 +1338,29 @@ export default function TaskRulesPanel() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ isActive: !rule.isActive }),
       });
-      if (res.ok) {
-        setRules((prev) => prev.map((r) => r.id === rule.id ? { ...r, isActive: !r.isActive } : r));
+      if (!res.ok) return;
+      setRules((prev) => prev.map((r) => r.id === rule.id ? { ...r, isActive: !r.isActive } : r));
+
+      // Disabling stops NEW task creation but leaves already-open tasks in the
+      // queue. If the rule still owns open tasks, offer to close them so they
+      // leave Smart View immediately (see POST /close-open-tasks).
+      const data = await res.json().catch(() => ({}));
+      const openTaskCount: number = data?.openTaskCount ?? 0;
+      if (!rule.isActive) return; // we just ENABLED it — nothing to close
+      if (openTaskCount > 0 &&
+          window.confirm(
+            `Rule disabled. It still has ${openTaskCount} open task${openTaskCount === 1 ? "" : "s"}.\n\n` +
+            `Close ${openTaskCount === 1 ? "it" : "them"} now? They'll be cancelled and leave Smart View. ` +
+            `(Re-enabling the rule will re-create them if the source still matches.)`,
+          )) {
+        const closeRes = await fetch(`/api/task-rules/${rule.id}/close-open-tasks`, { method: "POST" });
+        const closeData = await closeRes.json().catch(() => ({}));
+        if (closeRes.ok) {
+          fetchAll(); // refresh 24h/total counts on the row
+          window.alert(`Closed ${closeData?.closed ?? 0} open task${closeData?.closed === 1 ? "" : "s"}.`);
+        } else {
+          window.alert("Couldn't close the open tasks — please try again.");
+        }
       }
     } finally {
       setSaving(null);

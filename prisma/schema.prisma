@@ -334,6 +334,10 @@ model TaskType {
 model ChecklistTemplate {
   id         Int      @id @default(autoincrement())
   taskTypeId Int
+  // When set, this row is scoped to ONE rule (overrides the task-type default,
+  // which are the rows with taskRuleId = null). Lets two rules that share a
+  // task type keep separate checklists.
+  taskRuleId String?
   stepOrder  Int
   stepText   String
   isRequired Boolean  @default(true)
@@ -343,8 +347,10 @@ model ChecklistTemplate {
   script     String?
   createdAt  DateTime @default(now())
 
-  taskType TaskType @relation(fields: [taskTypeId], references: [id], onDelete: Cascade)
+  taskType TaskType  @relation(fields: [taskTypeId], references: [id], onDelete: Cascade)
+  taskRule TaskRule? @relation(fields: [taskRuleId], references: [id], onDelete: Cascade)
 
+  @@index([taskRuleId])
   @@map("checklist_templates")
 }
 
@@ -373,6 +379,10 @@ model TaskRule {
   // Allowed values: default | round_robin | store_affinity | skill_based | least_loaded
   assignmentStrategy     String              @default("default")
   escalationChainId      Int?
+  // Rule-scoped "next step" guidance. Overrides the task type's defaults so
+  // two rules that share a task type don't share this guidance.
+  nextStepComplete       String?
+  nextStepIncomplete     String?
   createdAt              DateTime            @default(now())
   updatedAt              DateTime            @updatedAt
 
@@ -382,6 +392,10 @@ model TaskRule {
   requiredSkills  TaskRuleSkill[]
   tasks           Task[]
   sourceScopes    TaskRuleSourceScope[]
+  // Rule-scoped checklist steps. When present, they override the task type's
+  // shared default (ChecklistTemplate rows with taskRuleId = null), so editing
+  // one rule's checklist never mutates another rule's.
+  checklist       ChecklistTemplate[]
 
   @@map("task_rules")
 }

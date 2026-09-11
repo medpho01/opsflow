@@ -1029,12 +1029,11 @@ function RuleDrawer({ rule, allTags, chains, metadataFields, orderStatuses, onCl
                       checklist editor will appear here.
                     </p>
                   </div>
-                ) : rule?.taskType?.id ? (
-                  /* Reuse the same editor used in /head/rules (page-based
-                     RuleForm). It targets ChecklistTemplate rows keyed by
-                     taskTypeId — multiple rules sharing a type share the
-                     same checklist, which the editor surfaces as a pill. */
-                  <ChecklistEditor taskTypeId={rule.taskType.id} />
+                ) : rule?.id && rule?.taskType?.id ? (
+                  /* Checklist is scoped to THIS rule (rows keyed by taskRuleId),
+                     seeded from the task-type default on first edit — so editing
+                     one rule never mutates another that shares the task type. */
+                  <ChecklistEditor ruleId={rule.id} />
                 ) : (
                   <div className="px-3 py-3 bg-zinc-800/40 border border-zinc-700 rounded-lg">
                     <p className="text-[11px] text-zinc-400 leading-relaxed">

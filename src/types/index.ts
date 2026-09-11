@@ -126,7 +126,12 @@ export interface TaskRuleWithRelations {
   triggerCondition: TriggerCondition;
   isActive: boolean;
   escalationChainId: number | null;
+  // Rule-scoped next-step guidance (overrides the task type's default).
+  nextStepComplete?: string | null;
+  nextStepIncomplete?: string | null;
   requiredSkills: { skillTagId: number; skillTag: { name: string } }[];
+  // Rule's OWN checklist (rule-scoped rows); empty ⇒ use the task-type default.
+  checklist: { stepOrder: number; stepText: string; isRequired: boolean; guidance?: string | null; script?: string | null }[];
   taskType: {
     name: string;
     label: string;

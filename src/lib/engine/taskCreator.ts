@@ -391,13 +391,6 @@ async function isDuplicate(
 
 // ── Assignment engine ─────────────────────────────────────────────────────────
 
-async function checkDataSourceCapabilities(dataSourceId: string): Promise<boolean> {
-  const count = await prisma.teamMemberCapability.count({
-    where: { dataSourceId },
-  });
-  return count > 0;
-}
-
 async function applyRoundRobin(
   dataSourceId: string,
   candidates: Array<{ userId: number; teamMemberId: number }>
@@ -474,8 +467,6 @@ async function pickAssignee(
   strategy: AssignmentStrategy = "default"
 ): Promise<PickAssigneeOutcome> {
   try {
-    // Check if this data source has any capability assignments
-    const allocationsExist = await checkDataSourceCapabilities(dataSourceId);
 
     // Compute today's date range using local-date components (matches /api/team's
     // logic exactly so rosterStatus in the UI matches what the engine uses).
@@ -548,17 +539,28 @@ async function pickAssignee(
       return { ok: false, reason: "no_active_roster", detail };
     }
 
-    // Filter by data source capability (if assignments exist for this source)
-    if (allocationsExist) {
-      eligibleEntries = eligibleEntries.filter((m) =>
-        m.capabilities.some((c) => c.dataSourceId === dataSourceId)
-      );
+    // ── Data-source capability scoping ────────────────────────────────────
+    // A member with ANY capability rows is a SPECIALIST: eligible only for the
+    // data sources they're explicitly assigned (Team → Sources). A member with
+    // NO capability rows is a GENERALIST: eligible for any source.
+    //
+    //   • If ≥1 member is explicitly scoped to THIS source, only those members
+    //     handle it (that's the "restrict this source to these people" intent).
+    //   • Otherwise only generalists may take it — a specialist scoped to a
+    //     DIFFERENT source is never pulled in. (Fixes: Aryan, scoped to Lab
+    //     Orders, was receiving Appointments tasks because Appointments had no
+    //     scoped members and the old rule treated it as open-to-all.)
+    const scopedToThis = eligibleEntries.filter((m) =>
+      m.capabilities.some((c) => c.dataSourceId === dataSourceId)
+    );
+    eligibleEntries = scopedToThis.length > 0
+      ? scopedToThis
+      : eligibleEntries.filter((m) => m.capabilities.length === 0);
 
-      if (eligibleEntries.length === 0) {
-        const detail = `No ACTIVE members with dataSourceId=${dataSourceId} capability`;
-        console.warn(`[pickAssignee] ${detail}`, { dataSourceId, requiredSkillIds, storeId });
-        return { ok: false, reason: "no_capability", detail };
-      }
+    if (eligibleEntries.length === 0) {
+      const detail = `No eligible members for dataSourceId=${dataSourceId} — scope a handler in Team → Sources, or leave an agent unscoped as a generalist`;
+      console.warn(`[pickAssignee] ${detail}`, { dataSourceId, requiredSkillIds, storeId });
+      return { ok: false, reason: "no_capability", detail };
     }
 
     // ── Strategy dispatch ─────────────────────────────────────────────────
@@ -1186,14 +1188,19 @@ export async function evaluateAndCreateTasks(
             matchedFacts,
             evaluatedAt: now.toISOString(),
           },
-          // Task-level next-step guidance, snapshotted from the task type so the
-          // drawer can show "what to do next" based on checklist completion.
+          // Task-level next-step guidance — rule's own overrides the task-type
+          // default, snapshotted so the drawer shows "what to do next".
           nextStep: {
-            complete: rule.taskType.nextStepComplete ?? null,
-            incomplete: rule.taskType.nextStepIncomplete ?? null,
+            complete: rule.nextStepComplete ?? rule.taskType.nextStepComplete ?? null,
+            incomplete: rule.nextStepIncomplete ?? rule.taskType.nextStepIncomplete ?? null,
           },
         },
-        checklistSteps: rule.taskType.checklistItems.map((ci) => ({
+        // Prefer the rule's OWN checklist; fall back to the task-type default
+        // when the rule hasn't customised it. (Fixes cross-rule contamination.)
+        checklistSteps: (rule.checklist && rule.checklist.length > 0
+          ? rule.checklist
+          : rule.taskType.checklistItems
+        ).map((ci) => ({
           stepOrder: ci.stepOrder,
           stepText: ci.stepText,
           isRequired: ci.isRequired,
@@ -1241,9 +1248,17 @@ export async function loadActiveRules(): Promise<TaskRuleWithRelations[]> {
       requiredSkills: {
         include: { skillTag: { select: { name: true } } },
       },
+      // The rule's OWN checklist (rule-scoped rows). Preferred over the
+      // task-type default when present.
+      checklist: {
+        orderBy: { stepOrder: "asc" },
+      },
       taskType: {
         include: {
+          // Task-type DEFAULT rows only (taskRuleId = null) — used when a rule
+          // has no rule-scoped checklist of its own yet.
           checklistItems: {
+            where: { taskRuleId: null },
             orderBy: { stepOrder: "asc" },
           },
         },

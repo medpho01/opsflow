@@ -25,13 +25,15 @@ interface ChecklistItem {
 }
 
 interface ChecklistEditorProps {
-  taskTypeId: number | null;
+  // The checklist is scoped to the RULE (not the shared task type), so editing
+  // one rule never changes another. Null for an unsaved rule.
+  ruleId: string | null;
 }
 
-export default function ChecklistEditor({ taskTypeId }: ChecklistEditorProps) {
+export default function ChecklistEditor({ ruleId }: ChecklistEditorProps) {
   const [items, setItems] = useState<ChecklistItem[]>([]);
   const [taskTypeLabel, setTaskTypeLabel] = useState<string>("");
-  const [activeRuleCount, setActiveRuleCount] = useState<number>(0);
+  const [usingDefaults, setUsingDefaults] = useState<boolean>(false);
   const [nextStepComplete, setNextStepComplete] = useState<string>("");
   const [nextStepIncomplete, setNextStepIncomplete] = useState<string>("");
   const [loading, setLoading] = useState(false);
@@ -40,24 +42,24 @@ export default function ChecklistEditor({ taskTypeId }: ChecklistEditorProps) {
   const [savedAt, setSavedAt] = useState<Date | null>(null);
 
   const load = useCallback(async () => {
-    if (!taskTypeId) return;
+    if (!ruleId) return;
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/task-types/${taskTypeId}/checklist`);
+      const res = await fetch(`/api/task-rules/${ruleId}/checklist`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setItems((data.items ?? []) as ChecklistItem[]);
       setTaskTypeLabel(data.taskType?.label ?? data.taskType?.name ?? "");
-      setActiveRuleCount(data.activeRuleCount ?? 0);
-      setNextStepComplete(data.taskType?.nextStepComplete ?? "");
-      setNextStepIncomplete(data.taskType?.nextStepIncomplete ?? "");
+      setUsingDefaults(!!data.usingDefaults);
+      setNextStepComplete(data.nextStepComplete ?? "");
+      setNextStepIncomplete(data.nextStepIncomplete ?? "");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load checklist");
     } finally {
       setLoading(false);
     }
-  }, [taskTypeId]);
+  }, [ruleId]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -79,11 +81,11 @@ export default function ChecklistEditor({ taskTypeId }: ChecklistEditorProps) {
   };
 
   const save = async () => {
-    if (!taskTypeId) return;
+    if (!ruleId) return;
     setSaving(true);
     setError(null);
     try {
-      const res = await fetch(`/api/task-types/${taskTypeId}/checklist`, {
+      const res = await fetch(`/api/task-rules/${ruleId}/checklist`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -104,6 +106,7 @@ export default function ChecklistEditor({ taskTypeId }: ChecklistEditorProps) {
       }
       const data = await res.json();
       setItems(data.items ?? []);
+      setUsingDefaults(!!data.usingDefaults);
       setNextStepComplete(data.nextStepComplete ?? "");
       setNextStepIncomplete(data.nextStepIncomplete ?? "");
       setSavedAt(new Date());
@@ -114,13 +117,13 @@ export default function ChecklistEditor({ taskTypeId }: ChecklistEditorProps) {
     }
   };
 
-  if (!taskTypeId) {
+  if (!ruleId) {
     return (
       <div className="bg-zinc-900 p-4 rounded-lg border border-zinc-800">
         <h3 className="text-sm font-semibold text-zinc-200 mb-2">Checklist</h3>
         <p className="text-xs text-zinc-500">
-          Pick a task type in Basic Settings first — the checklist belongs to
-          the task type, not the rule.
+          Save the rule first — then its checklist can be edited here. This
+          checklist is specific to this rule.
         </p>
       </div>
     );
@@ -135,15 +138,15 @@ export default function ChecklistEditor({ taskTypeId }: ChecklistEditorProps) {
         <div>
           <h3 className="text-sm font-semibold text-zinc-200">Checklist</h3>
           <p className="text-[11px] text-zinc-500 mt-0.5 leading-relaxed">
-            Steps copied to every new task of type{" "}
-            <span className="font-medium text-zinc-300">{taskTypeLabel || "—"}</span>.
+            Specific to <span className="font-medium text-zinc-300">this rule</span>
+            {taskTypeLabel ? <> (task type <span className="text-zinc-400">{taskTypeLabel}</span>)</> : null}.
             Each step can carry guidance + a script the agent sees in the task.
-            Editing here affects new tasks only.
+            Editing here affects only this rule&apos;s new tasks.
           </p>
         </div>
-        {activeRuleCount > 1 && (
-          <span className="px-2 py-1 text-[10px] rounded bg-amber-500/10 text-amber-300 border border-amber-700/30 shrink-0">
-            shared by {activeRuleCount} active rules
+        {usingDefaults && (
+          <span className="px-2 py-1 text-[10px] rounded bg-blue-500/10 text-blue-300 border border-blue-700/30 shrink-0">
+            showing task-type defaults · saving makes a rule copy
           </span>
         )}
       </div>

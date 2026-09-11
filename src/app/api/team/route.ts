@@ -163,7 +163,7 @@ export async function GET(request: NextRequest) {
         primaryStoreId: member.teamMember?.storeAssignments?.[0]?.storeId ?? null,
         // Deprecated: kept until UI consumers migrate to primaryStoreId / storeIds[].
         storeId: member.teamMember?.storeAssignments?.[0]?.storeId ?? 0,
-        maxConcurrentTasks: member.teamMember?.maxConcurrentTasks || 5,
+        maxConcurrentTasks: member.teamMember?.maxConcurrentTasks || 100,
         isActive: member.isActive,
         createdAt: member.createdAt,
         capabilities: (member.teamMember?.capabilities || []).map((c) => ({

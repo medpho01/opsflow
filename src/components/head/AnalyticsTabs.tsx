@@ -29,11 +29,13 @@ import DailySummaryPanel from "./DailySummaryPanel";
 import BreakdownPanel from "./BreakdownPanel";
 import TrendsPanel from "./TrendsPanel";
 import CohortsPanel from "./CohortsPanel";
+import SourceLoadPanel from "./SourceLoadPanel";
 
-type Tab = "agents" | "sources" | "rules" | "stores" | "task-types" | "trends" | "cohorts" | "daily";
+type Tab = "agents" | "sources" | "rules" | "stores" | "task-types" | "trends" | "cohorts" | "daily" | "source-load";
 
 const TABS: Array<{ key: Tab; label: string }> = [
   { key: "agents",     label: "Agents" },
+  { key: "source-load", label: "Source Load" },
   { key: "sources",    label: "Sources" },
   { key: "rules",      label: "Rules" },
   { key: "stores",     label: "Stores" },
@@ -89,16 +91,39 @@ export default function AnalyticsTabs() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-end justify-between gap-4 flex-wrap">
-        <div>
-          <h1 className="text-2xl font-bold text-white">Analytics</h1>
-          <p className="text-sm text-zinc-500 mt-1">Performance breakdowns across the operation.</p>
+      <div>
+        <h1 className="text-2xl font-bold text-white">Analytics</h1>
+        <p className="text-sm text-zinc-500 mt-1">Performance breakdowns across the operation.</p>
+      </div>
+
+      {/* Sticky control deck — tab strip + source slicer pin to the top of
+          the scroll container (panels below run long: leaderboards, trend
+          tables, the load heatmap). The title row scrolls away. Same
+          treatment as Smart View's filter deck: near-opaque bg + blur masks
+          content passing underneath; -mx/px extends the mask across the
+          page's horizontal padding. */}
+      <div className="sticky top-0 z-30 -mx-6 px-6 bg-zinc-950/95 backdrop-blur-sm">
+      <div className="flex items-end justify-between gap-3 border-b border-zinc-800">
+        <div className="flex gap-1 overflow-x-auto">
+          {TABS.map((t) => (
+            <button
+              key={t.key}
+              onClick={() => setTab(t.key)}
+              className={`px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors whitespace-nowrap ${
+                tab === t.key
+                  ? "text-blue-400 border-blue-500"
+                  : "text-zinc-500 border-transparent hover:text-zinc-300"
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
         </div>
 
         {/* W5 — Source slicer scopes every panel below. Custom dark
             popover so the OS's native white <select> menu doesn't
             break the theme. */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 shrink-0 pb-1.5">
           <span className="text-[10px] text-zinc-600 uppercase tracking-wider font-semibold">Source</span>
           <div className="relative" ref={sourceMenuRef}>
             <button
@@ -146,25 +171,15 @@ export default function AnalyticsTabs() {
           </div>
         </div>
       </div>
-
-      <div className="border-b border-zinc-800 flex gap-1 overflow-x-auto">
-        {TABS.map((t) => (
-          <button
-            key={t.key}
-            onClick={() => setTab(t.key)}
-            className={`px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors whitespace-nowrap ${
-              tab === t.key
-                ? "text-blue-400 border-blue-500"
-                : "text-zinc-500 border-transparent hover:text-zinc-300"
-            }`}
-          >
-            {t.label}
-          </button>
-        ))}
+      {/* end sticky control deck */}
       </div>
 
       <div>
         {tab === "agents"     && <AgentPerformancePanel dataSourceId={dataSourceId} />}
+        {/* Order Load measures labstack order volume directly — appointments
+            only exist on the orders source, so the source slicer doesn't
+            apply; the panel slices by orderType instead. */}
+        {tab === "source-load" && <SourceLoadPanel />}
         {tab === "sources"    && <BreakdownPanel dimension="source" dataSourceId={null} />}
         {tab === "rules"      && <BreakdownPanel dimension="rule" dataSourceId={dataSourceId} />}
         {tab === "stores"     && <BreakdownPanel dimension="store" dataSourceId={dataSourceId} />}

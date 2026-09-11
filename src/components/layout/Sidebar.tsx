@@ -145,6 +145,28 @@ const navItems: NavItem[] = [
       </svg>
     ),
   },
+  {
+    label: "WhatsApp",
+    href: "/head/whatsapp",
+    roles: ["OPS_HEAD"],
+    icon: (
+      <svg className="w-4.5 h-4.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.75}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M20 12a8 8 0 01-11.6 7.1L4 20l.9-4.3A8 8 0 1120 12z" />
+      </svg>
+    ),
+  },
+  {
+    // Same shared loop queue for agents — different route per role, matching the
+    // Smart View / All Tasks pattern above.
+    label: "WhatsApp",
+    href: "/agent/whatsapp",
+    roles: ["OPS_AGENT"],
+    icon: (
+      <svg className="w-4.5 h-4.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.75}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M20 12a8 8 0 01-11.6 7.1L4 20l.9-4.3A8 8 0 1120 12z" />
+      </svg>
+    ),
+  },
 ];
 
 export default function Sidebar({ user }: SidebarProps) {
@@ -168,9 +190,12 @@ export default function Sidebar({ user }: SidebarProps) {
 
   const roleLabel: Record<string, string> = {
     OPS_HEAD: "Ops Head",
+    OPS_ADMIN: "Ops Admin",
     OPS_AGENT: "Ops Agent",
     STORE_ADMIN: "Store Admin",
   };
+  // OPS_ADMIN is coerced to OPS_HEAD for permissions; show its true label.
+  const displayRole = user.realRole ?? user.role;
 
   return (
     <aside className="w-56 shrink-0 bg-zinc-900 border-r border-zinc-800 flex flex-col">
@@ -230,7 +255,7 @@ export default function Sidebar({ user }: SidebarProps) {
             <div className="text-xs font-medium text-zinc-200 truncate group-hover:text-white transition-colors">
               {user.name}
             </div>
-            <div className="text-[10px] text-zinc-500">{roleLabel[user.role] ?? user.role}</div>
+            <div className="text-[10px] text-zinc-500">{roleLabel[displayRole] ?? displayRole}</div>
           </div>
           <svg className="w-3 h-3 text-zinc-600 opacity-0 group-hover:opacity-100 transition-opacity shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />

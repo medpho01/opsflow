@@ -52,7 +52,15 @@ import { labstackWorkerQuery as labstackQuery } from "@/lib/db/labstack";
 // taskCreator already ignores orders >10 days past / >3 days future, so a
 // tight window loses no operationally-relevant work — it just keeps the
 // query on the indexed fast path and off the locked rows. Tunable via env.
-const FETCH_LOOKBACK_DAYS = parseInt(process.env.LABSTACK_FETCH_LOOKBACK_DAYS ?? "3", 10);
+// Lookback default raised 3 → 10 days (July 2026): report-delivery
+// follow-ups (R8-class rules) target orders whose appointment is DAYS in
+// the past — a 3-day window structurally excluded them, so an order that
+// regressed after day 3 (e.g. #65167, sample re-collection) became
+// invisible to task creation while the retirer could still close its
+// tasks. 10 days stays on the appointmentTime index (measured 0.26s on
+// the full 3d/10d scan) and every cycle is gated by the pre-flight
+// replica probe anyway.
+const FETCH_LOOKBACK_DAYS = parseInt(process.env.LABSTACK_FETCH_LOOKBACK_DAYS ?? "10", 10);
 const FETCH_LOOKAHEAD_DAYS = parseInt(process.env.LABSTACK_FETCH_LOOKAHEAD_DAYS ?? "10", 10);
 
 // SQL fragment bounding o."appointmentTime" to the window. Day counts come

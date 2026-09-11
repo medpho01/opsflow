@@ -6,6 +6,12 @@
       "runtimeExecutable": "tail",
       "runtimeArgs": ["-f", "/dev/null"],
       "port": 3000
+    },
+    {
+      "name": "opsflow-dev",
+      "runtimeExecutable": "/Users/maverick/.nvm/versions/node/v20.20.2/bin/node",
+      "runtimeArgs": ["node_modules/next/dist/bin/next", "dev"],
+      "autoPort": true
     }
   ]
 }

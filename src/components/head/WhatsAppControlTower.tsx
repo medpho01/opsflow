@@ -1,0 +1,1120 @@
+"use client";
+
+import { useCallback, useEffect, useRef, useState } from "react";
+import WhatsAppInbox from "./WhatsAppInbox";
+import WhatsAppAnalytics from "./WhatsAppAnalytics";
+
+type Conversation = {
+  groupId: string; subject: string; role: string; ticketId: string | null;
+  lastText: string; lastSender: string; lastTs: string; lastFromMe: boolean; lastDir: string;
+  unread: number; openTickets: number; breakdown: Record<string, number>;
+  topIntent: string | null; topOrderId: number | null; answerReady: boolean; escalating: boolean;
+};
+type Case = {
+  ticketId: string; status: string; intent: string | null; origin?: string;
+  orderId: number | null; requestId: number | null; patient: string | null;
+  lastActivityAt: string; snippet: string | null;
+};
+type Detail = {
+  ticket: { id: string; status: string; intent: string | null; orderId: number | null; requestId: number | null; patient: string | null; lastHandledBy: { name: string; ts: string; newSince?: number } | null; liveContext: Record<string, unknown> | null; contextSnapshot: Record<string, unknown> | null; entity?: { kind: string | null; confidence: string; warning: string | null; alt: { kind: string; id: number } | null } };
+  group: { id: string; jid: string; subject: string; role: string; labId: number | null; sendEnabled: boolean } | null;
+  labGroup: { id: string; jid: string; subject: string; labId: number | null } | null;
+  lab?: { id: number; name: string | null; city: string | null } | null;
+  providerGroups?: { id: string; jid: string; subject: string; labId: number | null }[];
+  outbound?: { id: string; text: string; status: string; error: string | null; targetJid: string; createdAt: string; sentAt: string | null }[];
+  labAsk?: { askedAt: string; awaiting: boolean; repliedAt: string | null; status: string; targetJid: string } | null;
+  bulkStatuses?: { orderId: number; status: string | null; appt: string | null; patient: string | null }[];
+  related: { groupId: string; groupSubject: string; groupRole: string; sender: string; text: string; ts: string }[];
+  messages: { id: string; direction: string; fromMe: boolean; sender: string; text: string; ts: string; intent: string | null; ticketId: string | null; isTeam: boolean; teamName: string | null; waMsgId: string; mediaType: string | null; mediaMime: string | null; hasBytes?: boolean; ocrText: string | null; ocrJson: Record<string, unknown> | null; idType: string | null; idVia: string | null }[];
+  timeline?: { id: string; groupId: string; groupSubject: string; groupRole: string; sender: string; text: string; intent: string | null; ts: string; isTeam: boolean; teamName: string | null; isCurrentGroup: boolean }[];
+  mentions?: Record<string, string>;
+  suggestResolve?: { reason: string } | null;
+  brief?: {
+    status: string | null; resolved: boolean; resolvedReason: string | null; waiting: string | null;
+    timeline: { ts: string; actor: string; role: string; event: string }[] | null;
+    suggestions: { store?: string; lab?: string } | null;
+    analyzedAt: string; model: string | null;
+  } | null;
+};
+
+// Replace "@919811111111" mentions with "@Name" using the resolved map.
+function withMentions(text: string, mentions?: Record<string, string>): string {
+  if (!text || !mentions) return text;
+  return text.replace(/@(\d{5,})/g, (m, id: string) => {
+    const name = mentions[id] || mentions[id.slice(-10)];
+    return name ? `@${name}` : m;
+  });
+}
+
+const STATUS_PHRASE: Record<string, string> = {
+  CREATED: "order created, being scheduled", PENDING: "pending scheduling",
+  ORDER_SCHEDULED: "scheduled, awaiting phlebo", PHLEBO_ASSIGNED: "phlebo assigned, out for collection",
+  SAMPLE_COLLECTED: "sample collected, processing at lab", SAMPLE_PROCESSED: "sample processed, report being generated",
+  SAMPLE_DELIVERED: "sample delivered to lab", KIT_DISPATCHED: "kit dispatched",
+  REPORT_DELIVERED: "report delivered ✅", RESCHEDULED: "rescheduled",
+  PATIENT_MISSED: "patient missed / not available", CANCELED: "cancelled", CANCELLED: "cancelled",
+};
+const SHORT_INTENT: Record<string, string> = {
+  STATUS_CHECK: "status", REPORT_REQUEST: "report", RESCHEDULE: "reschedule", CANCEL_REQUEST: "cancel",
+  CANCEL_REASON: "cancel-why", NEW_BOOKING: "booking", CREATE_ACTION: "create", PATIENT_DATA: "patient-data",
+  SERVICEABILITY: "serviceability", SLOT_CHECK: "slot", FEASIBILITY_QUOTE: "quote", ESCALATION: "escalation",
+  TECH_ISSUE: "tech", OUTBOUND_UPDATE: "update", ID_ONLY: "id", OTHER: "other",
+};
+const fmtTime = (s: string) => new Date(s).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
+const clock = (s: string) => new Date(s).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit" });
+const ago = (s: string) => {
+  const m = Math.floor((Date.now() - new Date(s).getTime()) / 60000);
+  if (m < 1) return "just now";
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  return h < 24 ? `${h}h ago` : `${Math.floor(h / 24)}d ago`;
+};
+const short = (s: string) => s.replace(/labstack/ig, "LS");
+
+function intentChip(intent: string | null) {
+  const map: Record<string, string> = {
+    STATUS_CHECK: "bg-blue-500/15 text-blue-400 border-blue-500/30",
+    REPORT_REQUEST: "bg-blue-500/15 text-blue-400 border-blue-500/30",
+    RESCHEDULE: "bg-amber-500/15 text-amber-400 border-amber-500/30",
+    CANCEL_REQUEST: "bg-amber-500/15 text-amber-400 border-amber-500/30",
+    NEW_BOOKING: "bg-violet-500/15 text-violet-400 border-violet-500/30",
+    ESCALATION: "bg-rose-500/15 text-rose-400 border-rose-500/30",
+    SERVICEABILITY: "bg-amber-500/15 text-amber-400 border-amber-500/30",
+  };
+  return map[intent || ""] || "bg-zinc-700/40 text-zinc-400 border-zinc-600/40";
+}
+function statusChip(s: string) {
+  const map: Record<string, string> = {
+    NEW: "bg-blue-500/15 text-blue-300", OPEN: "bg-blue-500/15 text-blue-300",
+    WAITING_LAB: "bg-amber-500/15 text-amber-300", WAITING_INFO: "bg-violet-500/15 text-violet-300",
+    ANSWERED: "bg-emerald-500/15 text-emerald-300", RESOLVED: "bg-zinc-600/30 text-zinc-400",
+  };
+  return map[s] || "bg-zinc-700/40 text-zinc-400";
+}
+function avatarColor(s: string) {
+  const colors = ["bg-emerald-600", "bg-blue-600", "bg-violet-600", "bg-amber-600", "bg-rose-600", "bg-teal-600", "bg-indigo-600"];
+  let h = 0; for (const c of s) h = (h * 31 + c.charCodeAt(0)) % colors.length;
+  return colors[h];
+}
+function draftFor(d: Detail | null): string {
+  if (!d) return "";
+  const ctx = (d.ticket.liveContext || d.ticket.contextSnapshot || {}) as Record<string, unknown>;
+  const st = String((ctx.orderStatus || ctx.status) || "").toUpperCase();
+  if (!st || !d.ticket.orderId) return "";
+  const appt = ctx.appointmentTime ? ` · appt ${fmtTime(String(ctx.appointmentTime))}` : "";
+  const who = d.ticket.patient ? ` (${d.ticket.patient})` : "";
+  return `#${d.ticket.orderId}${who} — ${STATUS_PHRASE[st] || st}${appt}`;
+}
+// The order's LAB reference id (labs identify orders by this, not our order id).
+function labRef(d: Detail | null): string {
+  const ctx = (d?.ticket.liveContext || {}) as Record<string, unknown>;
+  return String(ctx.labOrderId || "").trim();
+}
+// Order tag for lab-facing messages — includes the lab ref so the lab can find it.
+function orderTag(d: Detail): string {
+  const id = d.ticket.orderId || d.ticket.requestId;
+  const who = d.ticket.patient ? ` (${d.ticket.patient})` : "";
+  const ref = labRef(d);
+  return `#${id}${who}${ref ? ` [lab ref ${ref}]` : ""}`;
+}
+// The NEXT action to the LAB (the ask that moves the case forward), not a status
+// restatement. Prefers the analyst's in-context suggestion.
+function labDraft(d: Detail | null): string {
+  if (!d) return "";
+  const ref = labRef(d);
+  if (d.brief?.suggestions?.lab) return d.brief.suggestions.lab + (ref ? ` [lab ref ${ref}]` : "");
+  const it = (d.ticket.intent || "").toUpperCase();
+  const t = orderTag(d);
+  if (it === "REPORT_REQUEST") return `${t} — when will the report be delivered? Please share the ETA 🙏`;
+  if (it === "STATUS_CHECK") return `${t} — any update on the current status? Customer is following up.`;
+  if (it === "CANCEL_REQUEST" || it === "CANCEL_REASON") return `${t} — please confirm cancellation and share the reason.`;
+  if (it === "SERVICEABILITY") return `${t} — please confirm serviceability for this location.`;
+  if (it === "SLOT_CHECK" || it === "FEASIBILITY_QUOTE") return `${t} — please confirm the available slot / feasibility.`;
+  return `${t} — please check and confirm.`;
+}
+// The store-facing note that rides with a forwarded lab reply. Store speaks in
+// order ids (not lab refs), and the message should tell them what to DO next.
+function forwardNote(d: Detail | null, caption?: string): string {
+  if (!d) return caption || "";
+  const who = d.ticket.patient ? ` (${d.ticket.patient})` : "";
+  const head = `#${d.ticket.orderId || d.ticket.requestId}${who} — `;
+  const it = (d.ticket.intent || "").toUpperCase();
+  if (it === "SLOT_CHECK" || it === "RESCHEDULE" || it === "FEASIBILITY_QUOTE")
+    return `${head}available slots shared by the lab 👇 Please confirm the preferred slot and we'll book it.`;
+  if (it === "REPORT_REQUEST") return `${head}report shared by the lab 👇`;
+  if (it === "SERVICEABILITY") return `${head}serviceability confirmed by the lab 👇`;
+  if (it === "STATUS_CHECK") return `${head}update from the lab 👇`;
+  return `${head}${caption?.trim() || "update from the lab"} 👇`;
+}
+// The NEXT reply to the CUSTOMER — analyst suggestion if present, else the status.
+function storeDraft(d: Detail | null): string {
+  if (!d) return "";
+  return d.brief?.suggestions?.store || draftFor(d);
+}
+// Build a multi-line status reply covering every order named in the message.
+function bulkDraft(d: Detail | null): string {
+  if (!d?.bulkStatuses?.length) return "";
+  return d.bulkStatuses
+    .map((b) => {
+      const st = String(b.status || "").toUpperCase();
+      const who = b.patient ? ` (${b.patient})` : "";
+      const appt = b.appt ? ` · appt ${fmtTime(b.appt)}` : "";
+      return `#${b.orderId}${who} — ${st ? (STATUS_PHRASE[st] || st) : "no status found"}${appt}`;
+    })
+    .join("\n");
+}
+// One-tap reschedule: a message to the lab with the order's current appointment.
+function rescheduleDraft(d: Detail | null): string {
+  if (!d) return "";
+  const ctx = (d.ticket.liveContext || d.ticket.contextSnapshot || {}) as Record<string, unknown>;
+  const appt = ctx.appointmentTime ? ` Current appt: ${fmtTime(String(ctx.appointmentTime))}.` : "";
+  return `Reschedule requested for ${orderTag(d)}.${appt} Please confirm the new slot 🙏`;
+}
+const isAnswerable = (intent: string | null, orderId: number | null, requestId: number | null) =>
+  !!(orderId || requestId) && ["STATUS_CHECK", "REPORT_REQUEST", "CANCEL_REASON"].includes(intent || "");
+
+type Mention = { name: string; jid: string; localpart: string };
+// WhatsApp renders a mention only when the text carries "@<localpart>" and the
+// jid is passed alongside. The composer shows "@Name" for readability; on send we
+// swap each still-present "@Name" for "@localpart" and collect the jids to notify.
+function applyMentions(text: string, mentions: Mention[]): { text: string; jids: string[] } {
+  let out = text;
+  const jids: string[] = [];
+  for (const m of mentions) {
+    const token = `@${m.name}`;
+    if (out.includes(token)) {
+      out = out.split(token).join(`@${m.localpart}`);
+      if (!jids.includes(m.jid)) jids.push(m.jid);
+    }
+  }
+  return { text: out, jids };
+}
+
+export function WhatsAppControlTower({ canAdmin = true }: { canAdmin?: boolean } = {}) {
+  const [convos, setConvos] = useState<Conversation[]>([]);
+  const [totalUnread, setTotalUnread] = useState(0);
+  const [filter, setFilter] = useState<"ALL" | "UNREAD" | "ACTION">("ALL");
+  const [q, setQ] = useState("");
+  const [nav, setNav] = useState<"groups" | "cases">("groups");
+  const [openGroup, setOpenGroup] = useState<{ id: string; subject: string } | null>(null);
+  const [cases, setCases] = useState<Case[]>([]);
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [detail, setDetail] = useState<Detail | null>(null);
+  const [target, setTarget] = useState<"store" | "lab" | "other">("store");
+  const [reply, setReply] = useState("");
+  const [toNumber, setToNumber] = useState("");
+  const [labGroupId, setLabGroupId] = useState<string>("");
+  const [replyTo, setReplyTo] = useState<{ waMsgId: string; sender: string; text: string } | null>(null);
+  const [attachment, setAttachment] = useState<File | null>(null);
+  // When set, the composer forwards a lab/provider message (its text + captured
+  // media) to the store group instead of sending a normal reply.
+  const [forward, setForward] = useState<{ sourceWaMsgId: string; storeSubject: string; hasMedia: boolean; storeGroupId?: string } | null>(null);
+  const [mentions, setMentions] = useState<Mention[]>([]);
+  const [participants, setParticipants] = useState<Mention[]>([]);
+  const [tagOpen, setTagOpen] = useState(false);
+  const [tagQuery, setTagQuery] = useState("");
+  const [newChat, setNewChat] = useState(false);
+  const [ncGroups, setNcGroups] = useState<{ id: string; subject: string; sendEnabled: boolean }[]>([]);
+  const [ncGroupId, setNcGroupId] = useState("");
+  const [ncNumber, setNcNumber] = useState("");
+  const [ncText, setNcText] = useState("");
+  const [ncBusy, setNcBusy] = useState(false);
+  const [ncMentions, setNcMentions] = useState<Mention[]>([]);
+  const [ncParticipants, setNcParticipants] = useState<Mention[]>([]);
+  const [ncTagOpen, setNcTagOpen] = useState(false);
+  const [linkId, setLinkId] = useState("");
+  const [linkKind, setLinkKind] = useState<"order" | "request">("order");
+  const fileInput = useRef<HTMLInputElement | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
+  const [gwOnline, setGwOnline] = useState(true);
+  const [gwDryRun, setGwDryRun] = useState(false);
+  const [view, setView] = useState<"crm" | "inbox">("crm");
+  const [livewire, setLivewire] = useState(false);
+  const prefilledId = useRef<string | null>(null);
+  // The last draft we auto-filled. If the composer still holds it (user hasn't
+  // typed over it), switching the SEND TO target re-drafts for that target.
+  const autoDraft = useRef("");
+  const caseAnchor = useRef<HTMLDivElement | null>(null);
+  const activeRef = useRef<string | null>(null); activeRef.current = activeId;
+  const groupRef = useRef<string | null>(null); groupRef.current = openGroup?.id || null;
+
+  // Set the target AND the draft together, remembering it as the auto-draft.
+  const pick = (tg: "store" | "lab" | "other", text: string) => {
+    setTarget(tg); autoDraft.current = text; setReply(text);
+  };
+  // The default draft for a given target: acknowledge to the customer, ask the lab.
+  const targetDraft = (tg: "store" | "lab" | "other", d: Detail | null) =>
+    tg === "lab" ? labDraft(d) : tg === "store" ? storeDraft(d) : "";
+  // Switching SEND TO re-drafts for that target — but never clobbers text the
+  // user typed. Store = acknowledgement, Lab = the next ask (with lab ref id).
+  const switchTarget = (tg: "store" | "lab" | "other") => {
+    setTarget(tg);
+    const untouched = reply.trim() === "" || reply === autoDraft.current;
+    if (untouched && tg !== "other") { const t = targetDraft(tg, detail); autoDraft.current = t; setReply(t); }
+  };
+  // Relay a lab/provider message (text + captured media) back to the store group.
+  const startForward = (m: { waMsgId: string; text: string; mediaType: string | null; hasBytes?: boolean }) => {
+    const store = (detail?.related || []).find((r) => r.groupRole === "SUPPORT");
+    const hasMedia = (m.mediaType === "image" || m.mediaType === "document") && m.hasBytes !== false;
+    setForward({ sourceWaMsgId: m.waMsgId, storeSubject: store ? short(store.groupSubject) : "the store group", hasMedia, storeGroupId: store?.groupId });
+    autoDraft.current = ""; setReplyTo(null);
+    setReply(forwardNote(detail, m.text));
+  };
+
+  const loadConvos = useCallback(async () => {
+    const res = await fetch("/api/whatsapp/conversations");
+    if (!res.ok) return;
+    const data = await res.json();
+    setConvos(data.conversations); setTotalUnread(data.totalUnread);
+  }, []);
+  const loadCases = useCallback(async (groupId: string) => {
+    const res = await fetch(`/api/whatsapp/groups/${groupId}/cases`);
+    if (res.ok) setCases((await res.json()).cases);
+  }, []);
+  const loadDetail = useCallback(async (id: string) => {
+    const res = await fetch(`/api/whatsapp/tickets/${id}`);
+    if (res.ok) setDetail(await res.json());
+  }, []);
+
+  const loadGw = useCallback(() => {
+    fetch("/api/whatsapp/gateway").then((r) => r.json()).then((g) => { setGwOnline(!!g.online); setGwDryRun(g.dryRun === true); }).catch(() => {});
+  }, []);
+  useEffect(() => { loadConvos(); loadGw(); }, [loadConvos, loadGw]);
+  useEffect(() => { if (activeId) loadDetail(activeId); }, [activeId, loadDetail]);
+  useEffect(() => {
+    if (!newChat || ncGroups.length) return;
+    fetch("/api/whatsapp/groups").then((r) => r.json())
+      .then((d) => setNcGroups((d.groups || []).filter((g: { active?: boolean }) => g.active !== false)))
+      .catch(() => {});
+  }, [newChat, ncGroups.length]);
+  // Load taggable people whenever the New-chat group changes (clear when none).
+  useEffect(() => {
+    setNcMentions([]); setNcTagOpen(false);
+    if (!ncGroupId) { setNcParticipants([]); return; }
+    fetch(`/api/whatsapp/groups/${ncGroupId}/participants`).then((r) => r.json())
+      .then((d) => setNcParticipants(Array.isArray(d.participants) ? d.participants : []))
+      .catch(() => setNcParticipants([]));
+  }, [ncGroupId]);
+  // Preload the case composer's taggable people so typing "@" filters instantly.
+  // (store = the case group, lab = the picked lab group.)
+  const tagGroupId = target === "lab" ? (labGroupId || detail?.labGroup?.id || "") : (detail?.group?.id || "");
+  useEffect(() => {
+    if (!tagGroupId) { setParticipants([]); return; }
+    fetch(`/api/whatsapp/groups/${tagGroupId}/participants`).then((r) => r.json())
+      .then((d) => setParticipants(Array.isArray(d.participants) ? d.participants : []))
+      .catch(() => setParticipants([]));
+  }, [tagGroupId]);
+
+  // Auto-interpret images that haven't been read yet (cloud vision). Runs once
+  // per image on case open; on success we reload so the interpretation shows.
+  const interpreting = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!detail) return;
+    const pending = detail.messages.filter((m) => m.mediaType === "image" && !m.ocrText && !interpreting.current.has(m.waMsgId));
+    if (pending.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      let any = false;
+      for (const m of pending) {
+        interpreting.current.add(m.waMsgId);
+        try {
+          const r = await fetch(`/api/whatsapp/media/${m.waMsgId}/interpret`, { method: "POST" });
+          if (r.ok) any = true;
+        } catch { /* ignore */ }
+      }
+      if (any && !cancelled && activeRef.current) loadDetail(activeRef.current);
+    })();
+    return () => { cancelled = true; };
+  }, [detail, loadDetail]);
+
+  useEffect(() => {
+    const es = new EventSource("/api/whatsapp/stream");
+    es.onopen = () => setLivewire(true);
+    es.onmessage = (e) => {
+      try {
+        if (JSON.parse(e.data).changed) {
+          loadConvos();
+          if (groupRef.current) loadCases(groupRef.current);
+          if (activeRef.current) loadDetail(activeRef.current);
+        }
+      } catch { /* keepalive */ }
+    };
+    es.onerror = () => setLivewire(false);
+    const poll = setInterval(() => {
+      loadConvos();
+      if (groupRef.current) loadCases(groupRef.current);
+      if (activeRef.current) loadDetail(activeRef.current);
+      loadGw();
+    }, 15000);
+    return () => { es.close(); clearInterval(poll); };
+  }, [loadConvos, loadCases, loadDetail, loadGw]);
+
+  useEffect(() => {
+    if (!detail) return;
+    if (prefilledId.current === detail.ticket.id) return;
+    prefilledId.current = detail.ticket.id;
+    setLabGroupId(detail.labGroup?.id || "");
+    setAttachment(null);
+    // Thread replies by default: quote the customer's latest message.
+    const lastCustomer = [...detail.messages].reverse().find((m) => !m.isTeam && m.waMsgId);
+    setReplyTo(lastCustomer ? { waMsgId: lastCustomer.waMsgId, sender: lastCustomer.sender, text: lastCustomer.text } : null);
+    // Prefill the NEXT action, not a status restatement — prefer the analyst's
+    // in-context suggestion; else the status answer for answerable cases.
+    if (detail.brief?.suggestions?.store) { pick("store", detail.brief.suggestions.store); return; }
+    if (isAnswerable(detail.ticket.intent, detail.ticket.orderId, detail.ticket.requestId)) {
+      const d = draftFor(detail);
+      if (d) { pick("store", d); return; }
+    }
+    pick("store", "");
+  }, [detail]);
+
+  // Scroll the case's own message into view when a case opens.
+  useEffect(() => {
+    const t = setTimeout(() => caseAnchor.current?.scrollIntoView({ block: "center", behavior: "smooth" }), 60);
+    return () => clearTimeout(t);
+  }, [detail?.ticket.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const flash = (m: string) => { setToast(m); setTimeout(() => setToast(null), 2200); };
+
+  function openConvo(c: Conversation) {
+    setOpenGroup({ id: c.groupId, subject: c.subject }); setNav("cases");
+    setActiveId(null); setDetail(null);
+    loadCases(c.groupId);
+    setConvos((cs) => cs.map((x) => (x.groupId === c.groupId ? { ...x, unread: 0 } : x)));
+  }
+  function backToGroups() { setNav("groups"); setOpenGroup(null); setActiveId(null); setDetail(null); }
+  function openCaseFromInbox(groupId: string, ticketId: string) {
+    const c = convos.find((x) => x.groupId === groupId);
+    setView("crm"); setOpenGroup({ id: groupId, subject: c?.subject || "" }); setNav("cases");
+    loadCases(groupId); setActiveId(ticketId);
+  }
+
+  async function sendReply() {
+    if (!activeId) return;
+    // Forward mode: relay the lab's message (text + captured media) to the store.
+    if (forward) {
+      if (!reply.trim() && !forward.hasMedia) return flash("Add a note or forward the media");
+      setBusy(true);
+      const res = await fetch(`/api/whatsapp/tickets/${activeId}/forward`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sourceWaMsgId: forward.sourceWaMsgId, storeGroupId: forward.storeGroupId, text: reply, quote: true }),
+      });
+      setBusy(false);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) return flash(data.error || "Forward failed");
+      flash(`Forwarded to ${data.queuedTo}${data.hadMedia ? " (with image)" : ""}`);
+      setReply(""); autoDraft.current = ""; setForward(null); loadConvos(); loadDetail(activeId);
+      return;
+    }
+    if (!reply.trim() && !attachment) return flash("Write a message or attach a file");
+    setBusy(true);
+    const quotedWaMsgId = target === "store" && replyTo ? replyTo.waMsgId : undefined;
+    const { text: outText, jids } = applyMentions(reply, mentions);
+    let res: Response;
+    if (attachment) {
+      const fd = new FormData();
+      fd.append("text", outText); fd.append("target", target);
+      if (toNumber) fd.append("toNumber", toNumber);
+      if (labGroupId) fd.append("labGroupId", labGroupId);
+      if (quotedWaMsgId) fd.append("quotedWaMsgId", quotedWaMsgId);
+      if (jids.length) fd.append("mentions", JSON.stringify(jids));
+      fd.append("file", attachment);
+      res = await fetch(`/api/whatsapp/tickets/${activeId}/reply`, { method: "POST", body: fd });
+    } else {
+      res = await fetch(`/api/whatsapp/tickets/${activeId}/reply`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: outText, target, toNumber, labGroupId: labGroupId || undefined, quotedWaMsgId, mentions: jids }),
+      });
+    }
+    setBusy(false);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return flash(data.error || "Send failed");
+    flash(`Queued → ${target === "store" ? "store group" : target === "lab" ? "lab group" : "number"}`);
+    setReply(""); autoDraft.current = ""; setReplyTo(null); setAttachment(null); setMentions([]); loadConvos(); if (openGroup) loadCases(openGroup.id); loadDetail(activeId);
+  }
+  // Typing "@" (or the @ button) opens the picker; the query is whatever follows
+  // the last "@" in the box, so it filters live as you type.
+  function onReplyChange(v: string) {
+    setReply(v);
+    const mt = v.match(/@([^@\n]*)$/);
+    if (mt && participants.length) { setTagQuery(mt[1]); setTagOpen(true); }
+    else setTagOpen(false);
+  }
+  function openTagPicker() {
+    if (!participants.length) return flash("No one has spoken in this group yet");
+    setTagQuery(""); setTagOpen((o) => !o);
+  }
+  function insertMention(p: Mention) {
+    setReply((t) => /@([^@\n]*)$/.test(t) ? t.replace(/@([^@\n]*)$/, `@${p.name} `) : `${t}${t && !t.endsWith(" ") ? " " : ""}@${p.name} `);
+    setMentions((m) => (m.some((x) => x.jid === p.jid) ? m : [...m, p]));
+    setTagOpen(false); setTagQuery("");
+  }
+  function insertNcMention(p: Mention) {
+    setNcText((t) => `${t}${t && !t.endsWith(" ") ? " " : ""}@${p.name} `);
+    setNcMentions((m) => (m.some((x) => x.jid === p.jid) ? m : [...m, p]));
+    setNcTagOpen(false);
+  }
+  // Start a brand-new conversation to a group or a raw number (existing /send API).
+  async function sendNewChat() {
+    const to = ncGroupId ? { groupId: ncGroupId } : ncNumber.trim() ? { toNumber: ncNumber.trim() } : null;
+    if (!to) return flash("Pick a group or enter a number");
+    if (!ncText.trim()) return flash("Write a message");
+    const { text: outText, jids } = applyMentions(ncText.trim(), ncMentions);
+    setNcBusy(true);
+    const res = await fetch("/api/whatsapp/send", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...to, text: outText, mentions: jids }) });
+    setNcBusy(false);
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok) return flash(d.error || "Send failed");
+    flash("New conversation queued");
+    setNewChat(false); setNcText(""); setNcNumber(""); setNcGroupId(""); setNcMentions([]); loadConvos();
+  }
+  async function setStatus(status: string) {
+    if (!activeId) return;
+    await fetch(`/api/whatsapp/tickets/${activeId}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status }) });
+    flash(`Marked ${status.replace("_", " ").toLowerCase()}`);
+    loadConvos(); if (openGroup) loadCases(openGroup.id); loadDetail(activeId);
+  }
+  // Manually bind a case that lost its id to an order OR request — pulls
+  // patient/status/lab context and tags the thread so the conversation carries it.
+  async function linkEntity() {
+    if (!activeId) return;
+    const n = Number(linkId.trim());
+    if (!Number.isInteger(n) || n <= 0) return flash(`Enter a numeric ${linkKind} id`);
+    const res = await fetch(`/api/whatsapp/tickets/${activeId}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(linkKind === "order" ? { orderId: n } : { requestId: n }) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return flash(data.error || "Could not link");
+    flash(`Linked to ${linkKind} #${n}`); setLinkId(""); loadConvos(); if (openGroup) loadCases(openGroup.id); loadDetail(activeId);
+  }
+  // Switch a mis-resolved case to the resolver's runner-up (e.g. a live reschedule
+  // that bound to a year-old delivered order → the actual Request).
+  async function swapEntity(alt: { kind: string; id: number }) {
+    if (!activeId) return;
+    const res = await fetch(`/api/whatsapp/tickets/${activeId}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ swapTo: alt }) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return flash(data.error || "Could not switch");
+    flash(`Switched to ${alt.kind} #${alt.id}`); loadConvos(); if (openGroup) loadCases(openGroup.id); loadDetail(activeId);
+  }
+
+  const shown = convos.filter((c) => {
+    if (q && !c.subject.toLowerCase().includes(q.toLowerCase())) return false;
+    if (filter === "UNREAD") return c.unread > 0;
+    if (filter === "ACTION") return c.openTickets > 0 || c.answerReady || c.escalating;
+    return true;
+  });
+  const ctx = (detail?.ticket.liveContext || detail?.ticket.contextSnapshot || {}) as Record<string, unknown>;
+  const orderStatus = (ctx.orderStatus || ctx.status) as string | undefined;
+  const isProviderCase = detail?.group?.role === "PROVIDER";
+  const providerUpdates = (detail?.related || []).filter((r) => r.groupRole === "PROVIDER");
+  const storeQuery = (detail?.related || []).filter((r) => r.groupRole === "SUPPORT");
+  // The lab message worth relaying to the store: newest non-team message, favouring
+  // one that carries a captured image/document (the payload the store needs).
+  const labReplyToForward = (() => {
+    if (!isProviderCase || !detail) return null;
+    const labMsgs = detail.messages.filter((m) => !m.isTeam && m.waMsgId);
+    return [...labMsgs].reverse().find((m) => (m.mediaType === "image" || m.mediaType === "document") && m.hasBytes !== false)
+      || [...labMsgs].reverse()[0] || null;
+  })();
+
+  return (
+    <div className="flex flex-col h-full">
+      <div className="flex items-center gap-3 px-5 py-3 border-b border-zinc-800">
+        <h1 className="text-lg font-semibold text-zinc-100">WhatsApp Control Tower</h1>
+        <div className="flex rounded-lg border border-zinc-700 overflow-hidden text-xs">
+          {(["inbox", "crm"] as const).map((v) => (
+            <button key={v} onClick={() => setView(v)} className={`px-3 py-1.5 font-semibold ${view === v ? "bg-blue-600 text-white" : "bg-zinc-900 text-zinc-400 hover:text-zinc-200"}`}>
+              {v === "inbox" ? "💬 Inbox" : "◆ CRM"}
+            </button>
+          ))}
+        </div>
+        <span className={`inline-flex items-center gap-1.5 text-xs px-2 py-1 rounded-full border ${gwOnline ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/30" : "bg-rose-500/10 text-rose-400 border-rose-500/30"}`}>
+          <span className={`w-1.5 h-1.5 rounded-full ${gwOnline ? "bg-emerald-400" : "bg-rose-400"}`} />{gwOnline ? "Gateway online" : "Gateway offline"}
+        </span>
+        {livewire && <span className="text-[11px] text-emerald-400/80">● live</span>}
+        {gwDryRun && (
+          <span title="Gateway DRY_RUN is on — set WA_DRY_RUN=false and redeploy the gateway to actually send" className="inline-flex items-center gap-1.5 text-xs px-2 py-1 rounded-full border bg-amber-500/10 text-amber-400 border-amber-500/40 font-semibold">
+            ⚠ Dry-run — sends disabled
+          </span>
+        )}
+        {totalUnread > 0 && <span className="text-xs text-zinc-400">{totalUnread} unread</span>}
+        <button onClick={() => setNewChat(true)} className="ml-auto text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 rounded-lg px-3 py-1.5">＋ New chat</button>
+        <details className="relative">
+          <summary className="list-none cursor-pointer text-xs text-zinc-400 hover:text-zinc-200 border border-zinc-800 rounded-lg px-3 py-1.5">⤓ Export</summary>
+          <div className="absolute right-0 mt-1 z-20 bg-zinc-900 border border-zinc-700 rounded-lg p-1.5 flex flex-col gap-0.5 w-56 shadow-xl">
+            <div className="text-[10px] uppercase tracking-wide text-zinc-500 px-2 pt-1">Queries (pivot by type)</div>
+            <a href="/api/whatsapp/export?type=summary" className="text-xs text-zinc-200 hover:bg-zinc-800 rounded px-2 py-1.5">Query-type summary</a>
+            <a href="/api/whatsapp/export?type=cases&days=30" className="text-xs text-zinc-200 hover:bg-zinc-800 rounded px-2 py-1.5">Queries · last 30 days</a>
+            <a href="/api/whatsapp/export?type=cases&days=90" className="text-xs text-zinc-200 hover:bg-zinc-800 rounded px-2 py-1.5">Queries · last 90 days</a>
+            <div className="text-[10px] uppercase tracking-wide text-zinc-500 px-2 pt-1.5">Chats (raw messages)</div>
+            <a href="/api/whatsapp/export?type=messages&days=7" className="text-xs text-zinc-200 hover:bg-zinc-800 rounded px-2 py-1.5">Chats · last 7 days</a>
+            <a href="/api/whatsapp/export?type=messages&days=30" className="text-xs text-zinc-200 hover:bg-zinc-800 rounded px-2 py-1.5">Chats · last 30 days</a>
+          </div>
+        </details>
+        {canAdmin && <a href="/head/settings/whatsapp" className="text-xs text-zinc-400 hover:text-zinc-200 border border-zinc-800 rounded-lg px-3 py-1.5">⚙ Settings</a>}
+      </div>
+
+      {newChat && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={() => setNewChat(false)}>
+          <div className="w-full max-w-md bg-zinc-900 border border-zinc-700 rounded-2xl shadow-2xl p-5 flex flex-col gap-3" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between">
+              <h2 className="text-base font-semibold text-zinc-100">Start a new conversation</h2>
+              <button onClick={() => setNewChat(false)} className="text-zinc-500 hover:text-zinc-300">✕</button>
+            </div>
+            <label className="text-[11px] uppercase tracking-wide text-zinc-500 font-semibold">Send to a group</label>
+            <select value={ncGroupId} onChange={(e) => { setNcGroupId(e.target.value); if (e.target.value) setNcNumber(""); }} className="bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-100 focus:border-blue-500 outline-none">
+              <option value="">— pick a group —</option>
+              {ncGroups.map((g) => <option key={g.id} value={g.id}>{short(g.subject)}{!g.sendEnabled ? " (sending off)" : ""}</option>)}
+            </select>
+            <div className="text-center text-[11px] text-zinc-600">or</div>
+            <label className="text-[11px] uppercase tracking-wide text-zinc-500 font-semibold">A phone number</label>
+            <input value={ncNumber} onChange={(e) => { setNcNumber(e.target.value.replace(/[^\d+]/g, "")); if (e.target.value) setNcGroupId(""); }} placeholder="With country code, e.g. 9198…" className="bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-100 focus:border-blue-500 outline-none" />
+            {ncMentions.length > 0 && (
+              <div className="flex flex-wrap items-center gap-1.5">
+                {ncMentions.map((m) => (
+                  <span key={m.jid} className="inline-flex items-center gap-1 text-[11px] bg-blue-500/15 text-blue-300 border border-blue-500/30 rounded-full px-2 py-0.5">
+                    @{m.name}
+                    <button onClick={() => setNcMentions((x) => x.filter((y) => y.jid !== m.jid))} className="text-blue-300/70 hover:text-blue-200">✕</button>
+                  </span>
+                ))}
+              </div>
+            )}
+            <div className="relative">
+              <textarea value={ncText} onChange={(e) => setNcText(e.target.value)} rows={3} placeholder="Message…" className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-100 focus:border-blue-500 outline-none resize-none" />
+              {ncGroupId && (
+                <button onClick={() => setNcTagOpen((o) => !o)} title="Tag someone in this group" className="absolute right-2 bottom-2 h-7 w-7 flex items-center justify-center border border-zinc-700 hover:border-blue-500 rounded-lg text-zinc-400 hover:text-zinc-200 bg-zinc-900">@</button>
+              )}
+              {ncTagOpen && (
+                <>
+                  <button className="fixed inset-0 z-40 cursor-default" aria-label="Close" onClick={() => setNcTagOpen(false)} />
+                  <div className="absolute right-2 bottom-11 z-50 w-56 max-h-52 overflow-y-auto bg-zinc-900 border border-zinc-700 rounded-lg shadow-xl py-1">
+                    <div className="px-3 py-1.5 text-[10px] uppercase tracking-wide text-zinc-500">Tag in this group</div>
+                    {ncParticipants.length === 0 && <div className="px-3 py-2 text-xs text-zinc-500 italic">No one has spoken here yet.</div>}
+                    {ncParticipants.map((p) => (
+                      <button key={p.jid} onClick={() => insertNcMention(p)} className="w-full text-left px-3 py-1.5 text-sm text-zinc-200 hover:bg-zinc-800 truncate">@{p.name}</button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+            <div className="flex items-center justify-end gap-2">
+              <button onClick={() => setNewChat(false)} className="text-sm text-zinc-400 hover:text-zinc-200 px-3 py-2">Cancel</button>
+              <button onClick={sendNewChat} disabled={ncBusy} className="text-sm font-semibold text-white bg-blue-600 hover:bg-blue-500 disabled:opacity-50 rounded-lg px-4 py-2">{ncBusy ? "Sending…" : "Send ▸"}</button>
+            </div>
+            <p className="text-[11px] text-zinc-600">Signed automatically as “Sent by Labstack Operations”.</p>
+          </div>
+        </div>
+      )}
+
+      {view === "inbox" && <WhatsAppInbox gwDryRun={gwDryRun} onOpenCase={openCaseFromInbox} />}
+
+      <div className={`${view === "crm" ? "grid" : "hidden"} grid-cols-[340px_1fr_320px] flex-1 min-h-0`}>
+        {/* LEFT: groups → cases drill-down */}
+        <div className="border-r border-zinc-800 flex flex-col min-h-0">
+          {nav === "groups" ? (
+            <>
+              <div className="p-2 border-b border-zinc-800 flex flex-col gap-2">
+                <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search groups…"
+                  className="bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-100 focus:border-blue-500 outline-none" />
+                <div className="flex gap-1.5">
+                  {(["ALL", "UNREAD", "ACTION"] as const).map((f) => (
+                    <button key={f} onClick={() => setFilter(f)} className={`text-xs font-medium px-2.5 py-1 rounded-full border ${filter === f ? "bg-blue-600 border-blue-600 text-white" : "border-zinc-700 text-zinc-400 hover:border-zinc-500"}`}>
+                      {f === "ALL" ? "All" : f === "UNREAD" ? "Unread" : "Needs action"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="overflow-y-auto flex-1">
+                {shown.length === 0 && <div className="p-6 text-sm text-zinc-500 text-center">No conversations.</div>}
+                {shown.map((c) => {
+                  const bd = Object.entries(c.breakdown || {}).sort((a, b) => b[1] - a[1]);
+                  return (
+                    <button key={c.groupId} onClick={() => openConvo(c)} className="w-full text-left px-3 py-2.5 border-b border-zinc-800/60 flex gap-3 hover:bg-zinc-900">
+                      <span className={`w-9 h-9 rounded-full grid place-items-center text-xs font-bold text-white flex-none ${avatarColor(c.subject)}`}>
+                        {short(c.subject).replace(/[^A-Za-z]/g, "").slice(0, 2).toUpperCase() || "LS"}
+                      </span>
+                      <span className="flex-1 min-w-0">
+                        <span className="flex items-center gap-2">
+                          <span className="font-semibold text-sm text-zinc-100 truncate">{short(c.subject)}</span>
+                          <span className="ml-auto text-[11px] text-zinc-500 tabular-nums flex-none">{clock(c.lastTs)}</span>
+                        </span>
+                        <span className="flex items-center gap-2 mt-0.5">
+                          <span className={`text-xs truncate ${c.unread ? "text-zinc-200" : "text-zinc-500"}`}>{c.lastFromMe ? "You: " : ""}{c.lastText}</span>
+                          {c.unread > 0 && <span className="ml-auto flex-none min-w-[18px] h-[18px] px-1 rounded-full bg-emerald-500 text-[11px] font-bold text-zinc-950 grid place-items-center tabular-nums">{c.unread}</span>}
+                        </span>
+                        <span className="flex items-center gap-1.5 mt-1.5 flex-wrap">
+                          {c.openTickets > 0 && <span className="text-[10px] font-semibold text-zinc-300">{c.openTickets} open</span>}
+                          {bd.slice(0, 3).map(([k, n]) => <span key={k} className="text-[10px] text-zinc-500">{n} {SHORT_INTENT[k] || k.toLowerCase()}</span>)}
+                          {c.answerReady && <span className="text-[10px] font-semibold text-emerald-400">● answer ready</span>}
+                          {c.escalating && <span className="text-[10px] font-semibold text-rose-400">▲ escalating</span>}
+                        </span>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="p-2 border-b border-zinc-800 flex items-center gap-2">
+                <button onClick={backToGroups} className="text-xs text-zinc-400 hover:text-zinc-200 border border-zinc-700 rounded-md px-2 py-1">‹ Groups</button>
+                <span className="text-sm font-semibold text-zinc-100 truncate">{short(openGroup?.subject || "")}</span>
+                <span className="ml-auto text-[11px] text-zinc-500">{cases.length} cases</span>
+              </div>
+              <div className="overflow-y-auto flex-1">
+                {cases.length === 0 && <div className="p-6 text-sm text-zinc-500 text-center">All clear — no open cases.</div>}
+                {cases.map((cs) => (
+                  <button key={cs.ticketId} onClick={() => setActiveId(cs.ticketId)}
+                    className={`w-full text-left px-3 py-2.5 border-b border-zinc-800/60 ${activeId === cs.ticketId ? "bg-zinc-800/60" : "hover:bg-zinc-900"}`}>
+                    <div className="flex items-center gap-2">
+                      <span className="font-semibold text-sm text-zinc-100 truncate">{cs.patient || (cs.orderId || cs.requestId ? `#${cs.orderId || cs.requestId}` : "Needs an id")}</span>
+                      {cs.origin === "PROVIDER" && <span className="text-[9px] font-bold uppercase tracking-wide text-amber-400 bg-amber-500/15 px-1.5 rounded">lab request</span>}
+                      <span className={`ml-auto text-[10px] font-semibold px-1.5 py-0.5 rounded ${statusChip(cs.status)}`}>{cs.status.replace("_", " ").toLowerCase()}</span>
+                    </div>
+                    <div className="flex items-center gap-1.5 mt-1">
+                      {(cs.orderId || cs.requestId) && <span className="text-[11px] font-mono text-zinc-500">#{cs.orderId || cs.requestId}</span>}
+                      <span className={`text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded border ${intentChip(cs.intent)}`}>{(cs.intent || "other").replace("_", " ")}</span>
+                      <span className="ml-auto text-[11px] text-zinc-500">{ago(cs.lastActivityAt)}</span>
+                    </div>
+                    {cs.snippet && <div className="text-xs text-zinc-500 truncate mt-1">{cs.snippet}</div>}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* CENTER: case thread */}
+        <div className="flex flex-col min-h-0 min-w-0 border-r border-zinc-800">
+          {!detail ? (
+            nav === "groups"
+              ? <WhatsAppAnalytics />
+              : <div className="flex-1 grid place-items-center text-zinc-600 text-sm">Select a case</div>
+          ) : (
+            <>
+              <div className="px-4 py-3 border-b border-zinc-800 flex items-center gap-2">
+                <span className="font-semibold text-zinc-100">{detail.ticket.patient || short(detail.group?.subject || "")}</span>
+                {(detail.ticket.orderId || detail.ticket.requestId) && <span className="text-xs font-mono text-zinc-500">#{detail.ticket.orderId || detail.ticket.requestId}</span>}
+                <span className={`ml-auto text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded border ${intentChip(detail.ticket.intent)}`}>{(detail.ticket.intent || "other").replace("_", " ")}</span>
+              </div>
+              <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-2">
+                {(() => {
+                  const caseIds = detail.messages.filter((m) => m.ticketId === detail.ticket.id).map((m) => m.id);
+                  const lastCaseId = caseIds[caseIds.length - 1];
+                  return detail.messages.map((m) => {
+                    const isCase = m.ticketId === detail.ticket.id;
+                    // Team replies (our roster / linked number) align right & blue;
+                    // customer/partner messages align left & grey.
+                    const team = m.isTeam;
+                    return (
+                      <div key={m.id} ref={m.id === lastCaseId ? caseAnchor : undefined}
+                        className={`max-w-[80%] px-3 py-2 rounded-xl text-sm ${team ? "self-end bg-blue-500/15 border border-blue-500/25 rounded-tr-sm" : "self-start bg-zinc-800/70 border border-zinc-700/50 rounded-tl-sm"} ${isCase && !team ? "ring-2 ring-amber-500/70 border-amber-500/40" : ""}`}>
+                        <div className="flex items-center gap-2 mb-0.5">
+                          {team
+                            ? <span className="text-[11px] font-semibold text-blue-300">{m.teamName || "Team"} <span className="text-zinc-500 font-normal">· LS team</span></span>
+                            : <span className="text-[11px] font-semibold text-zinc-400">{m.sender}</span>}
+                          {isCase && !team && <span className="text-[9px] font-bold uppercase tracking-wide text-amber-400 bg-amber-500/15 px-1.5 rounded">◆ this case</span>}
+                          {!team && m.waMsgId && !isProviderCase && (
+                            <button
+                              onClick={() => { setReplyTo({ waMsgId: m.waMsgId, sender: m.sender, text: m.text }); setTarget("store"); }}
+                              title="Reply to this message in the group"
+                              className="ml-auto text-[10px] text-zinc-500 hover:text-blue-300"
+                            >↩ Reply</button>
+                          )}
+                          {!team && m.waMsgId && isProviderCase && (
+                            <button
+                              onClick={() => startForward(m)}
+                              title="Forward this lab message (with its image) to the store group"
+                              className="ml-auto text-[10px] text-emerald-400 hover:text-emerald-300 font-medium"
+                            >→ Forward to store{(m.mediaType === "image" || m.mediaType === "document") && m.hasBytes !== false ? " 🖼️" : ""}</button>
+                          )}
+                        </div>
+                        {m.mediaType === "image" && (
+                          m.hasBytes === false ? (
+                            <div className="mb-1 flex items-start gap-2 rounded-lg border border-amber-600/40 bg-amber-500/5 px-3 py-2 text-xs text-amber-300">
+                              🖼️ <span>Image not captured — the gateway couldn&apos;t download it (offline when sent, or WhatsApp no longer serves it). Re-run <b>Backfill</b> on the gateway to try re-fetching recent media.</span>
+                            </div>
+                          ) : (
+                            <a href={`/api/whatsapp/media/${m.waMsgId}`} target="_blank" rel="noreferrer" className="block mb-1">
+                              {/* eslint-disable-next-line @next/next/no-img-element */}
+                              <img src={`/api/whatsapp/media/${m.waMsgId}`} alt="attachment" className="max-h-64 rounded-lg border border-zinc-700/50 object-contain" />
+                            </a>
+                          )
+                        )}
+                        {m.mediaType === "document" && (
+                          m.hasBytes === false ? (
+                            <div className="mb-1 flex items-center gap-2 rounded-lg border border-amber-600/40 bg-amber-500/5 px-3 py-2 text-xs text-amber-300">
+                              📄 <span>Document not captured — re-run Backfill to try re-fetching it.</span>
+                            </div>
+                          ) : (
+                            <a href={`/api/whatsapp/media/${m.waMsgId}`} target="_blank" rel="noreferrer" className="mb-1 flex items-center gap-2 rounded-lg border border-zinc-700/50 bg-zinc-900/50 px-3 py-2 text-xs text-blue-300 hover:border-blue-500/50">
+                              📄 <span className="underline">Open document</span>
+                            </a>
+                          )
+                        )}
+                        <div className="text-zinc-100 whitespace-pre-wrap break-words">{withMentions(m.text, detail.mentions)}</div>
+                        {m.ocrText && (
+                          <div className="mt-1.5 rounded-md border border-zinc-700/50 bg-zinc-900/40 p-2">
+                            <div className="text-[9px] uppercase tracking-wide text-zinc-500 font-semibold mb-0.5">Interpreted from image</div>
+                            <div className="text-[11px] text-zinc-300 whitespace-pre-wrap line-clamp-6">{m.ocrText}</div>
+                          </div>
+                        )}
+                        <div className="text-[10px] text-zinc-500 mt-1 text-right tabular-nums">{fmtTime(m.ts)}</div>
+                      </div>
+                    );
+                  });
+                })()}
+              </div>
+              <div className="border-t border-zinc-800 p-3 flex flex-col gap-2 bg-zinc-900/40">
+                {forward ? (
+                  <div className="flex items-start gap-2 rounded-lg border-l-2 border-emerald-500 bg-emerald-500/5 px-2.5 py-1.5">
+                    <div className="flex-1 min-w-0 text-xs">
+                      <div className="font-semibold text-emerald-300">→ Forwarding to {forward.storeSubject}{forward.hasMedia ? " · with the lab's image" : ""}</div>
+                      <div className="text-zinc-400">Edit the note below and Send — it quotes the store&apos;s question so it lands on their thread.</div>
+                    </div>
+                    <button onClick={() => { setForward(null); setReply(""); autoDraft.current = ""; }} className="text-zinc-500 hover:text-zinc-300 text-sm leading-none">✕</button>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2 text-xs">
+                    <span className="uppercase tracking-wide text-zinc-500 font-semibold">Send to</span>
+                    {(["store", "lab", "other"] as const).map((tg) => (
+                      <button key={tg} onClick={() => switchTarget(tg)} className={`px-2.5 py-1 rounded-full border text-xs font-medium ${target === tg ? "bg-blue-600 border-blue-600 text-white" : "border-zinc-700 text-zinc-400 hover:border-zinc-500"}`}>
+                        {tg === "store" ? "Store group" : tg === "lab" ? `Lab${detail.labGroup ? " · " + short(detail.labGroup.subject).slice(0, 14) : ""}` : "Other number"}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {!forward && (<>
+                {target === "other" && (
+                  <input value={toNumber} onChange={(e) => setToNumber(e.target.value)} placeholder="Number with country code, e.g. 9198…" className="bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-100 focus:border-blue-500 outline-none" />
+                )}
+                {target === "lab" && (
+                  <select value={labGroupId} onChange={(e) => setLabGroupId(e.target.value)} className="bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-100 focus:border-blue-500 outline-none">
+                    {detail.labGroup && <option value={detail.labGroup.id}>{short(detail.labGroup.subject)} · order&apos;s lab</option>}
+                    <option value="">— pick a lab group —</option>
+                    {(detail.providerGroups || []).filter((g) => g.id !== detail.labGroup?.id).map((g) => (
+                      <option key={g.id} value={g.id}>{short(g.subject)}</option>
+                    ))}
+                  </select>
+                )}
+                {target === "store" && replyTo && (
+                  <div className="flex items-start gap-2 rounded-lg border-l-2 border-blue-500 bg-zinc-900/60 px-2.5 py-1.5">
+                    <div className="flex-1 min-w-0">
+                      <div className="text-[10px] font-semibold text-blue-300">↩ Replying to {replyTo.sender}</div>
+                      <div className="text-[11px] text-zinc-400 truncate">{replyTo.text}</div>
+                    </div>
+                    <button onClick={() => setReplyTo(null)} className="text-zinc-500 hover:text-zinc-300 text-sm leading-none">✕</button>
+                  </div>
+                )}
+                </>)}
+                {attachment && (
+                  <div className="flex items-center gap-2 rounded-lg border border-zinc-700 bg-zinc-900/60 px-2.5 py-1.5 text-xs">
+                    <span className="text-zinc-300">{attachment.type.startsWith("image/") ? "🖼️" : "📄"}</span>
+                    <span className="text-zinc-200 truncate flex-1">{attachment.name}</span>
+                    <span className="text-zinc-500">{Math.ceil(attachment.size / 1024)} KB</span>
+                    <button onClick={() => { setAttachment(null); if (fileInput.current) fileInput.current.value = ""; }} className="text-zinc-500 hover:text-zinc-300">✕</button>
+                  </div>
+                )}
+                {mentions.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="text-[10px] uppercase tracking-wide text-zinc-500">Tagging</span>
+                    {mentions.map((m) => (
+                      <span key={m.jid} className="inline-flex items-center gap-1 text-[11px] bg-blue-500/15 text-blue-300 border border-blue-500/30 rounded-full px-2 py-0.5">
+                        @{m.name}
+                        <button onClick={() => setMentions((x) => x.filter((y) => y.jid !== m.jid))} className="text-blue-300/70 hover:text-blue-200">✕</button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+                <div className="flex gap-2 items-end">
+                  <input ref={fileInput} type="file" className="hidden" accept="image/*,application/pdf,.pdf,.jpg,.jpeg,.png,.webp" onChange={(e) => setAttachment(e.target.files?.[0] || null)} />
+                  <button onClick={() => fileInput.current?.click()} title="Attach a file or image" className="shrink-0 h-[42px] w-10 flex items-center justify-center border border-zinc-700 hover:border-blue-500 rounded-lg text-zinc-400 hover:text-zinc-200">📎</button>
+                  <button onClick={openTagPicker} title="Tag someone in this group" className="shrink-0 h-[42px] w-10 flex items-center justify-center border border-zinc-700 hover:border-blue-500 rounded-lg text-zinc-400 hover:text-zinc-200">@</button>
+                  <div className="relative flex-1">
+                    {tagOpen && (
+                      <>
+                        <button className="fixed inset-0 z-40 cursor-default" aria-label="Close" onClick={() => setTagOpen(false)} />
+                        <div className="absolute bottom-full left-0 mb-1 z-50 w-64 max-h-60 overflow-y-auto bg-zinc-900 border border-zinc-700 rounded-lg shadow-xl py-1">
+                          <div className="px-3 py-1.5 text-[10px] uppercase tracking-wide text-zinc-500">Tag someone {tagQuery ? `· “${tagQuery}”` : ""}</div>
+                          {(() => {
+                            const shown = participants.filter((p) => !tagQuery || p.name.toLowerCase().includes(tagQuery.toLowerCase())).slice(0, 8);
+                            if (!participants.length) return <div className="px-3 py-2 text-xs text-zinc-500 italic">No one has spoken here yet.</div>;
+                            if (!shown.length) return <div className="px-3 py-2 text-xs text-zinc-500 italic">No match for “{tagQuery}”.</div>;
+                            return shown.map((p) => (
+                              <button key={p.jid} onClick={() => insertMention(p)} className="w-full text-left px-3 py-1.5 text-sm text-zinc-200 hover:bg-zinc-800 truncate">@{p.name}</button>
+                            ));
+                          })()}
+                        </div>
+                      </>
+                    )}
+                    <textarea value={reply} onChange={(e) => onReplyChange(e.target.value)} rows={2} placeholder={forward ? "Note to the store (sent with the lab's attachment)…" : "Write a reply, type @ to tag, or use a suggested action →"} className="w-full resize-none bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-100 focus:border-blue-500 outline-none" />
+                  </div>
+                  <button onClick={sendReply} disabled={busy} className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-semibold text-sm px-4 py-2.5 rounded-lg">Send ▸</button>
+                </div>
+                {detail.group && !detail.group.sendEnabled && <div className="text-[11px] text-amber-400">Sending is off for this group — enable it in Settings before replies actually send.</div>}
+                {detail.outbound && detail.outbound.length > 0 && (
+                  <div className="flex flex-col gap-1 pt-1">
+                    {detail.outbound.slice(0, 4).map((o) => (
+                      <div key={o.id} className="flex items-center gap-2 text-[11px]">
+                        <span className={`px-1.5 rounded font-semibold ${
+                          o.status === "SENT" ? "bg-emerald-500/15 text-emerald-300"
+                          : o.status === "FAILED" ? "bg-rose-500/15 text-rose-300"
+                          : o.status === "SENDING" ? "bg-blue-500/15 text-blue-300"
+                          : "bg-amber-500/15 text-amber-300"}`}>
+                          {o.status === "QUEUED" ? "QUEUED" : o.status === "SENT" ? "SENT" : o.status === "FAILED" ? "FAILED" : o.status}
+                        </span>
+                        <span className="text-zinc-500 truncate flex-1">{o.error ? o.error : o.text}</span>
+                        <span className="text-zinc-600 tabular-nums shrink-0">{clock(o.sentAt || o.createdAt)}</span>
+                      </div>
+                    ))}
+                    {detail.outbound.some((o) => o.status === "QUEUED") && gwDryRun && (
+                      <div className="text-[10px] text-amber-400">Queued messages won&apos;t send while the gateway is in dry-run.</div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* RIGHT: case context + resolve */}
+        <div className="flex flex-col min-h-0 min-w-0 overflow-y-auto">
+          {detail && (
+            <>
+              {detail.brief && (
+                <div className="p-4 border-b border-zinc-800 flex flex-col gap-2 bg-violet-500/5">
+                  <div className="text-[11px] uppercase tracking-wide text-violet-300 font-semibold flex items-center gap-2">
+                    ✦ AI brief
+                    {detail.brief.resolved && <span className="text-[9px] font-bold uppercase text-emerald-400 bg-emerald-500/15 px-1.5 rounded">resolved</span>}
+                  </div>
+                  {detail.brief.status && <div className="text-sm text-zinc-100">{detail.brief.status}</div>}
+                  {detail.brief.waiting && <div className="text-xs text-amber-300">⏳ {detail.brief.waiting}</div>}
+                  {detail.brief.resolved && detail.brief.resolvedReason && (
+                    <div className="mt-1 rounded-lg border border-emerald-500/40 bg-emerald-500/10 p-2">
+                      <div className="text-[11px] text-emerald-200">{detail.brief.resolvedReason}</div>
+                      {detail.ticket.status !== "RESOLVED" && (
+                        <button onClick={() => setStatus("RESOLVED")} className="mt-1.5 text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white rounded-md px-3 py-1">Mark resolved</button>
+                      )}
+                    </div>
+                  )}
+                  {(detail.brief.suggestions?.store || detail.brief.suggestions?.lab) && (
+                    <div className="flex flex-col gap-1.5 mt-1">
+                      {detail.brief.suggestions?.store && (
+                        <button onClick={() => pick("store", storeDraft(detail))} className="text-left text-xs border border-zinc-700 hover:border-emerald-500 rounded-lg px-2.5 py-1.5 text-zinc-200">↩ To customer <span className="block text-[11px] text-zinc-500 line-clamp-2">{detail.brief.suggestions.store}</span></button>
+                      )}
+                      {detail.brief.suggestions?.lab && (
+                        <button onClick={() => pick("lab", labDraft(detail))} className="text-left text-xs border border-zinc-700 hover:border-blue-500 rounded-lg px-2.5 py-1.5 text-zinc-200">→ To lab <span className="block text-[11px] text-zinc-500 line-clamp-2">{labDraft(detail)}</span></button>
+                      )}
+                    </div>
+                  )}
+                  <div className="text-[10px] text-zinc-600">analyzed {fmtTime(detail.brief.analyzedAt)}{detail.brief.model ? ` · ${detail.brief.model}` : ""}</div>
+                </div>
+              )}
+              <div className="p-4 border-b border-zinc-800 flex flex-col gap-2">
+                {detail.ticket.patient && <Row k="Patient" v={detail.ticket.patient} />}
+                {(() => {
+                  const e = detail.ticket.entity;
+                  const isReq = !!detail.ticket.requestId && !detail.ticket.orderId;
+                  const kindLabel = isReq ? "Request" : "Order";
+                  const idText = detail.ticket.orderId ? `#${detail.ticket.orderId}` : detail.ticket.requestId ? `#${detail.ticket.requestId}` : "— none —";
+                  const low = !!e && e.confidence === "low";
+                  const altLabel = (k: string) => (k === "request" ? "Request" : k === "appt" ? "Appointment" : "Order");
+                  return (
+                    <>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[13px] text-zinc-500 w-[72px] shrink-0">{kindLabel}</span>
+                        <span className="text-sm font-mono text-zinc-100">{idText}</span>
+                        {low && <span className="text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400 border border-amber-500/30">low confidence</span>}
+                      </div>
+                      {e?.warning && (
+                        <div className="flex items-start gap-2 rounded-lg border border-amber-600/40 bg-amber-500/5 px-2.5 py-1.5 text-[11px] text-amber-300 leading-snug">
+                          <span>⚠</span><span>{e.warning}. This thread may be about a newer request, not this {kindLabel.toLowerCase()}.</span>
+                        </div>
+                      )}
+                      {e?.alt && (
+                        <button onClick={() => swapEntity(e.alt!)} className="text-left text-[11px] border border-zinc-700 hover:border-blue-500 rounded-lg px-2.5 py-1.5 text-zinc-300">
+                          ↪ Looks like {altLabel(e.alt.kind)} #{e.alt.id} — <span className="text-blue-300 font-semibold">switch to it</span>
+                        </button>
+                      )}
+                      {!detail.ticket.orderId && !detail.ticket.requestId && (
+                        <div className="flex items-center gap-1.5">
+                          <select value={linkKind} onChange={(ev) => setLinkKind(ev.target.value as "order" | "request")} className="bg-zinc-900 border border-zinc-700 rounded px-1.5 py-1 text-xs text-zinc-300 focus:border-blue-500 outline-none">
+                            <option value="order">Order</option>
+                            <option value="request">Request</option>
+                          </select>
+                          <input value={linkId} onChange={(ev) => setLinkId(ev.target.value.replace(/\D/g, ""))} onKeyDown={(ev) => { if (ev.key === "Enter") linkEntity(); }} placeholder={`link ${linkKind} id…`} className="w-24 bg-zinc-900 border border-zinc-700 rounded px-2 py-1 text-xs text-zinc-100 focus:border-blue-500 outline-none" />
+                          <button onClick={linkEntity} className="text-xs font-semibold border border-zinc-700 hover:border-emerald-500 hover:text-emerald-400 rounded px-2 py-1 text-zinc-300">Link</button>
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
+                <Row k="Store" v={short(detail.group?.subject || "—")} />
+                {(detail.lab || detail.labGroup) && (
+                  <Row
+                    k="Lab"
+                    v={detail.lab?.name
+                      ? `${detail.lab.name}${detail.lab.city ? " · " + detail.lab.city : ""}`
+                      : short(detail.labGroup?.subject || "—")}
+                  />
+                )}
+                <Row k="Intent" v={detail.ticket.intent || "—"} />
+                {detail.ticket.lastHandledBy && <Row k="Last handled" v={`${detail.ticket.lastHandledBy.name} · ${clock(detail.ticket.lastHandledBy.ts)}${detail.ticket.lastHandledBy.newSince ? ` · ⚠ ${detail.ticket.lastHandledBy.newSince} new since` : ""}`} />}
+              </div>
+              <div className="p-4 border-b border-zinc-800 flex flex-col gap-2">
+                {(() => { const isReq = !!detail.ticket.requestId && !detail.ticket.orderId; return (
+                <>
+                <div className="flex items-baseline gap-2">
+                  <div className="text-[11px] uppercase tracking-wide text-zinc-500 font-semibold">{isReq ? "Request" : "Order"} context · live</div>
+                  {ctx.statusUpdatedAt ? <span className="text-[10px] text-zinc-500">source updated {fmtTime(String(ctx.statusUpdatedAt))}</span> : ctx.createdAt ? <span className="text-[10px] text-zinc-500">created {fmtTime(String(ctx.createdAt))}</span> : null}
+                </div>
+                {orderStatus ? (
+                  <>
+                    <Row k="Status" v={String(orderStatus)} />
+                    {ctx.appointmentTime ? <Row k="Appt" v={fmtTime(String(ctx.appointmentTime))} /> : null}
+                    {ctx.phleboName ? <Row k="Phlebo" v={`${ctx.phleboName}${ctx.phleboNumber ? " · " + ctx.phleboNumber : ""}`} /> : null}
+                    {ctx.cancelReason ? <Row k="Reason" v={String(ctx.cancelReason)} /> : null}
+                    {isReq && ctx.isServiceable !== undefined && ctx.isServiceable !== null ? <Row k="Serviceable" v={ctx.isServiceable ? "Yes" : "No"} /> : null}
+                    {ctx.quotedPrice ? <Row k="Quote" v={`₹${ctx.quotedPrice}`} /> : null}
+                  </>
+                ) : <div className="text-sm text-zinc-500">No id on this message — link the order/request id above, or ask the partner for it.</div>}
+                </>
+                ); })()}
+              </div>
+              {detail.bulkStatuses && detail.bulkStatuses.length > 1 && (
+                <div className="p-4 border-b border-zinc-800 flex flex-col gap-2">
+                  <div className="text-[11px] uppercase tracking-wide text-zinc-500 font-semibold flex items-center gap-2">
+                    All orders in this message
+                    <span className="normal-case font-normal text-zinc-600">{detail.bulkStatuses.length}</span>
+                  </div>
+                  <div className="flex flex-col gap-1 max-h-52 overflow-y-auto pr-1">
+                    {detail.bulkStatuses.map((b) => (
+                      <div key={b.orderId} className="flex items-center gap-2 text-xs">
+                        <span className="font-mono text-zinc-500 w-14 shrink-0">#{b.orderId}</span>
+                        <span className="text-zinc-300 truncate flex-1">{b.patient || "—"}</span>
+                        <span className={`px-1.5 rounded text-[10px] font-semibold ${b.status ? "bg-blue-500/15 text-blue-300" : "bg-zinc-700/40 text-zinc-500"}`}>{b.status ? (STATUS_PHRASE[b.status.toUpperCase()] || b.status) : "no status"}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <button onClick={() => pick("store", bulkDraft(detail))} className="mt-1 text-left text-sm border border-zinc-700 hover:border-emerald-500 rounded-lg px-3 py-2 text-zinc-200">↩ Reply with all {detail.bulkStatuses.length} statuses <span className="block text-xs text-zinc-500">one line per order, to the store group</span></button>
+                </div>
+              )}
+              {detail.brief?.timeline && detail.brief.timeline.length > 0 && (
+                <div className="p-4 border-b border-zinc-800 flex flex-col gap-2">
+                  <div className="text-[11px] uppercase tracking-wide text-violet-300 font-semibold flex items-center gap-2">
+                    ✦ Order timeline <span className="normal-case font-normal text-zinc-600">by AI analyst</span>
+                  </div>
+                  <div className="relative pl-4 flex flex-col gap-3 max-h-[340px] overflow-y-auto pr-1">
+                    <div className="absolute left-[3px] top-1.5 bottom-1.5 w-px bg-zinc-700/60" />
+                    {detail.brief.timeline.map((t, i) => (
+                      <div key={i} className="relative">
+                        <span className={`absolute -left-[13px] top-1.5 w-2 h-2 rounded-full ring-2 ring-zinc-900 ${t.role === "Ops" ? "bg-blue-400" : t.role === "Lab" ? "bg-amber-400" : "bg-emerald-400"}`} />
+                        <div className="flex items-center gap-1.5 text-[10px] flex-wrap">
+                          <span className={`px-1 rounded font-semibold ${t.role === "Lab" ? "bg-amber-500/15 text-amber-400" : t.role === "Ops" ? "bg-blue-500/15 text-blue-300" : "bg-emerald-500/15 text-emerald-300"}`}>{t.role}</span>
+                          <span className="font-medium text-zinc-300">{t.actor}</span>
+                          {t.ts && <span className="text-zinc-600 ml-auto tabular-nums">{(() => { try { return fmtTime(t.ts); } catch { return t.ts; } })()}</span>}
+                        </div>
+                        <div className="text-xs text-zinc-300 mt-0.5 whitespace-pre-wrap">{t.event}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {!detail.brief?.timeline?.length && detail.timeline && detail.timeline.length > 1 && (() => {
+                const tl = detail.timeline;
+                const groupCount = new Set(tl.map((t) => t.groupId)).size;
+                return (
+                  <div className="p-4 border-b border-zinc-800 flex flex-col gap-2">
+                    <div className="text-[11px] uppercase tracking-wide text-zinc-500 font-semibold flex items-center gap-2">
+                      Order journey
+                      <span className="normal-case font-normal text-zinc-600">{tl.length} messages · {groupCount} group{groupCount > 1 ? "s" : ""}</span>
+                    </div>
+                    <div className="relative pl-4 flex flex-col gap-3 max-h-[340px] overflow-y-auto pr-1">
+                      <div className="absolute left-[3px] top-1.5 bottom-1.5 w-px bg-zinc-700/60" />
+                      {tl.map((t) => (
+                        <div key={t.id} className="relative">
+                          <span className={`absolute -left-[13px] top-1.5 w-2 h-2 rounded-full ring-2 ring-zinc-900 ${t.isTeam ? "bg-blue-400" : t.groupRole === "PROVIDER" ? "bg-amber-400" : "bg-zinc-400"}`} />
+                          <div className="flex items-center gap-1.5 text-[10px] flex-wrap">
+                            <span className={`px-1 rounded font-semibold ${t.groupRole === "PROVIDER" ? "bg-amber-500/15 text-amber-400" : "bg-blue-500/15 text-blue-300"}`}>{t.groupRole === "PROVIDER" ? "LAB" : "STORE"}</span>
+                            <span className={`font-medium ${t.isCurrentGroup ? "text-zinc-200" : "text-zinc-500"}`}>{short(t.groupSubject)}</span>
+                            {t.isTeam
+                              ? <span className="text-blue-300">· {t.teamName || "LS team"}</span>
+                              : <span className="text-zinc-500">· {t.sender}</span>}
+                            <span className="text-zinc-600 ml-auto tabular-nums">{fmtTime(t.ts)}</span>
+                          </div>
+                          <div className="text-xs text-zinc-300 mt-0.5 whitespace-pre-wrap line-clamp-3">{withMentions(t.text, detail.mentions)}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
+              {(providerUpdates.length > 0 || storeQuery.length > 0) && (
+                <div className="p-4 border-b border-zinc-800 flex flex-col gap-2">
+                  <div className="text-[11px] uppercase tracking-wide font-semibold flex items-center gap-2">
+                    <span className={isProviderCase ? "text-blue-400" : "text-amber-400"}>{isProviderCase ? "Customer query · store side" : "Provider status · lab side"}</span>
+                    <span className="text-zinc-600">for #{detail.ticket.orderId || detail.ticket.requestId}</span>
+                  </div>
+                  {(isProviderCase ? storeQuery : providerUpdates).slice(0, 4).map((r, i) => (
+                    <div key={i} className="rounded-lg border border-zinc-700/60 bg-zinc-900/40 p-2">
+                      <div className="text-[10px] font-semibold text-zinc-400 flex items-center gap-1.5">
+                        <span className={`px-1 rounded ${r.groupRole === "PROVIDER" ? "bg-amber-500/15 text-amber-400" : "bg-blue-500/15 text-blue-400"}`}>{r.groupRole === "PROVIDER" ? "LAB" : "STORE"}</span>
+                        {short(r.groupSubject)} · {clock(r.ts)}
+                      </div>
+                      <div className="text-xs text-zinc-200 mt-1 whitespace-pre-wrap line-clamp-4">{withMentions(r.text, detail.mentions)}</div>
+                      {!isProviderCase && <button onClick={() => pick("store", r.text)} className="mt-1.5 text-[11px] text-emerald-400 hover:text-emerald-300 font-medium">↩ Use this to answer the store</button>}
+                    </div>
+                  ))}
+                  {isProviderCase && labReplyToForward && (
+                    <button onClick={() => startForward(labReplyToForward)} className="text-left text-sm border border-emerald-600/50 bg-emerald-500/5 hover:border-emerald-500 rounded-lg px-3 py-2 text-zinc-200">→ Forward lab&apos;s reply to store{(labReplyToForward.mediaType === "image" || labReplyToForward.mediaType === "document") && labReplyToForward.hasBytes !== false ? " 🖼️" : ""} <span className="block text-xs text-zinc-500">carries the lab&apos;s {labReplyToForward.mediaType === "image" ? "image" : labReplyToForward.mediaType === "document" ? "file" : "message"} to {storeQuery[0] ? short(storeQuery[0].groupSubject) : "the store group"}, quoting their question</span></button>
+                  )}
+                </div>
+              )}
+              <div className="p-4 border-b border-zinc-800 flex flex-col gap-2">
+                <div className="text-[11px] uppercase tracking-wide text-zinc-500 font-semibold">Suggested actions</div>
+                {detail.labAsk?.awaiting && (
+                  <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200 flex items-start gap-2">
+                    <span>⏳</span>
+                    <span>Asked the lab {ago(detail.labAsk.askedAt)} — <b>no reply yet</b>. Give them time before re-asking to avoid spamming the group.</span>
+                  </div>
+                )}
+                {detail.labAsk && !detail.labAsk.awaiting && detail.labAsk.repliedAt && (
+                  <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-200 flex items-start gap-2">
+                    <span>✓</span><span>Lab replied {ago(detail.labAsk.repliedAt)} after our ask.</span>
+                  </div>
+                )}
+                <button onClick={() => pick("store", storeDraft(detail))} className="text-left text-sm border border-zinc-700 hover:border-emerald-500 rounded-lg px-3 py-2 text-zinc-200">↩ Reply to customer <span className="block text-xs text-zinc-500">{detail.brief?.suggestions?.store ? "AI-suggested next reply" : "with current status"}</span></button>
+                <button onClick={() => pick("lab", rescheduleDraft(detail))} className={`text-left text-sm border rounded-lg px-3 py-2 text-zinc-200 ${detail.ticket.intent === "RESCHEDULE" ? "border-amber-500/60 bg-amber-500/5" : "border-zinc-700 hover:border-amber-500"}`}>↻ Reschedule via lab <span className="block text-xs text-zinc-500">current appt + lab ref · moves to Wait · lab on send</span></button>
+                <button onClick={() => pick("lab", labDraft(detail))} className={`text-left text-sm border rounded-lg px-3 py-2 text-zinc-200 ${detail.labAsk?.awaiting ? "border-amber-500/50 bg-amber-500/5" : "border-zinc-700 hover:border-blue-500"}`}>{detail.labAsk?.awaiting ? "→ Re-ask the lab" : "→ Ask the lab"} <span className="block text-xs text-zinc-500">{detail.labAsk?.awaiting ? `already asked ${ago(detail.labAsk.askedAt)} · no reply` : `next action + lab ref${detail.labGroup ? " · " + short(detail.labGroup.subject) : ""}`}</span></button>
+              </div>
+              {detail.suggestResolve && (
+                <div className="mx-4 mt-4 rounded-lg border border-emerald-500/40 bg-emerald-500/10 p-3 flex items-start gap-2">
+                  <span className="text-emerald-400 text-sm">✓</span>
+                  <div className="flex-1">
+                    <div className="text-xs text-emerald-200">{detail.suggestResolve.reason}</div>
+                    <button onClick={() => setStatus("RESOLVED")} className="mt-2 text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white rounded-md px-3 py-1.5">Mark resolved</button>
+                  </div>
+                </div>
+              )}
+              <div className="p-4 flex gap-2">
+                <button onClick={() => setStatus("RESOLVED")} className="flex-1 text-xs font-semibold border border-zinc-700 hover:border-emerald-500 hover:text-emerald-400 rounded-lg py-2 text-zinc-300">Resolve</button>
+                <button onClick={() => setStatus("WAITING_LAB")} className="flex-1 text-xs font-semibold border border-zinc-700 hover:border-amber-500 hover:text-amber-400 rounded-lg py-2 text-zinc-300">Wait · lab</button>
+                <button onClick={() => setStatus("WAITING_INFO")} className="flex-1 text-xs font-semibold border border-zinc-700 hover:border-blue-500 hover:text-blue-400 rounded-lg py-2 text-zinc-300">Wait · info</button>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+
+      {toast && <div className="fixed left-1/2 bottom-6 -translate-x-1/2 bg-zinc-100 text-zinc-900 px-4 py-2 rounded-lg font-medium text-sm shadow-lg z-10">{toast}</div>}
+    </div>
+  );
+}
+
+function Row({ k, v, mono }: { k: string; v: string; mono?: boolean }) {
+  return (
+    <div className="flex justify-between gap-3 text-sm">
+      <span className="text-zinc-500">{k}</span>
+      <span className={`text-zinc-200 text-right ${mono ? "font-mono" : ""}`}>{v}</span>
+    </div>
+  );
+}

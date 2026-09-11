@@ -46,7 +46,8 @@ export interface AuthUser {
   id: number;
   name: string;
   email: string;
-  role: UserRole;
+  role: UserRole; // EFFECTIVE role for authorization — OPS_ADMIN is coerced to OPS_HEAD here
+  realRole?: UserRole; // the actual DB role, for display/labelling (e.g. "Ops Admin")
   teamMemberId?: number;
   storeIds?: number[];
 }

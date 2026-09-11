@@ -162,7 +162,7 @@ function fmtDdMmYyyy(iso: string): string {
   return m ? `${m[3]}/${m[2]}/${m[1]}` : iso;
 }
 
-const roleLabel: Record<string, string> = { OPS_AGENT: "Ops Agent", STORE_ADMIN: "Store Admin" };
+const roleLabel: Record<string, string> = { OPS_AGENT: "Ops Agent", OPS_ADMIN: "Ops Admin", STORE_ADMIN: "Store Admin" };
 const rosterStatusColor: Record<string, string> = {
   ACTIVE: "bg-green-500",
   ON_FIELD: "bg-blue-500",
@@ -191,7 +191,7 @@ function EditDrawer({
     phone: member.phone ?? "",
     role: member.role,
     isActive: member.isActive,
-    maxConcurrentTasks: member.maxConcurrentTasks ?? 5,
+    maxConcurrentTasks: member.maxConcurrentTasks ?? 100,
   });
   const [newPw, setNewPw] = useState("");
   const [saving, setSaving] = useState(false);
@@ -457,6 +457,7 @@ function EditDrawer({
                       className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
                     >
                       <option value="OPS_AGENT">Ops Agent</option>
+                      <option value="OPS_ADMIN">Ops Admin</option>
                       <option value="STORE_ADMIN">Store Admin</option>
                     </select>
                   </div>
@@ -477,7 +478,7 @@ function EditDrawer({
                       min={1}
                       max={20}
                       value={form.maxConcurrentTasks}
-                      onChange={(e) => setForm({ ...form, maxConcurrentTasks: parseInt(e.target.value) || 5 })}
+                      onChange={(e) => setForm({ ...form, maxConcurrentTasks: parseInt(e.target.value) || 100 })}
                       className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
                     />
                   </div>
@@ -919,10 +920,10 @@ export default function TeamPanel() {
           // W3 — team-wide capacity summary so heads can balance load at a glance.
           const activeMembers = members.filter((m) => m.rosterStatus === "ACTIVE");
           const totalLoad = members.reduce((sum, m) => sum + (m.currentLoad ?? 0), 0);
-          const totalCapacity = activeMembers.reduce((sum, m) => sum + (m.maxConcurrentTasks ?? 5), 0);
+          const totalCapacity = activeMembers.reduce((sum, m) => sum + (m.maxConcurrentTasks ?? 100), 0);
           const utilization = totalCapacity > 0 ? Math.round((totalLoad / totalCapacity) * 100) : 0;
           const nearCapacity = members.filter((m) => {
-            const cap = m.maxConcurrentTasks ?? 5;
+            const cap = m.maxConcurrentTasks ?? 100;
             return cap > 0 && (m.currentLoad ?? 0) / cap >= 0.8;
           }).length;
 
@@ -997,6 +998,7 @@ export default function TeamPanel() {
                   className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
                 >
                   <option value="OPS_AGENT">Ops Agent</option>
+                  <option value="OPS_ADMIN">Ops Admin</option>
                   <option value="STORE_ADMIN">Store Admin</option>
                 </select>
               </div>
@@ -1032,7 +1034,7 @@ export default function TeamPanel() {
             {members.map((member) => {
               const rosterStatus = member.rosterStatus ?? "OFF";
               const openTasks = member.currentLoad;
-              const maxTasks = member.maxConcurrentTasks ?? 5;
+              const maxTasks = member.maxConcurrentTasks ?? 100;
               const skills = member.teamMember?.skills ?? [];
               const storeCount = member.storeCount ?? 0;
 

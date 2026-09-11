@@ -595,6 +595,7 @@ function RuleDrawer({ rule, allTags, chains, metadataFields, orderStatuses, onCl
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [deleting, setDeleting] = useState(false);
+  const [purging, setPurging] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [activeTab, setActiveTab] = useState<"source" | "trigger" | "basics" | "assignment" | "checklist">("source");
 
@@ -740,6 +741,39 @@ function RuleDrawer({ rule, allTags, chains, metadataFields, orderStatuses, onCl
       onClose();
     } finally {
       setDeleting(false);
+    }
+  }
+
+  // Remove tasks this rule created by mistake — archives them (recoverable) and
+  // cancels the open ones, so they leave every board and free the dedup slot
+  // for a corrected rule to re-create the right tasks.
+  async function purgeTasks() {
+    if (!rule) return;
+    setPurging(true);
+    setError("");
+    try {
+      const countRes = await fetch(`/api/task-rules/${rule.id}/purge-tasks`);
+      const counts = await countRes.json().catch(() => ({ open: 0, total: 0 }));
+      const open: number = counts.open ?? 0;
+      const total: number = counts.total ?? 0;
+      if (total === 0) { window.alert("This rule has no tasks to remove."); return; }
+      const ok = window.confirm(
+        `Remove all ${total} task${total === 1 ? "" : "s"} created by "${rule.name}"?\n\n` +
+        `${open} open ${open === 1 ? "task" : "tasks"} will be cancelled, and all ${total} archived ` +
+        `(recoverable from the Archived Tasks board). The corrected rule can re-create tasks on the next cycle.`,
+      );
+      if (!ok) return;
+      const res = await fetch(`/api/task-rules/${rule.id}/purge-tasks`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scope: "all" }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { setError(data.error ?? "Failed to remove tasks"); return; }
+      onSaved();
+      window.alert(`Removed ${data.removed ?? 0} task${data.removed === 1 ? "" : "s"}.`);
+    } finally {
+      setPurging(false);
     }
   }
 
@@ -1149,18 +1183,33 @@ function RuleDrawer({ rule, allTags, chains, metadataFields, orderStatuses, onCl
 
         <div className="px-6 py-4 border-t border-zinc-800 flex items-center gap-2">
           {!isCreate && (
-            <div className="mr-auto">
+            <div className="mr-auto flex items-center gap-2">
               {!confirmDelete ? (
-                <button
-                  type="button"
-                  onClick={() => setConfirmDelete(true)}
-                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-zinc-600 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors"
-                >
-                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                  </svg>
-                  Delete Rule
-                </button>
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmDelete(true)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-zinc-600 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors"
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                    </svg>
+                    Delete Rule
+                  </button>
+                  <button
+                    type="button"
+                    onClick={purgeTasks}
+                    disabled={purging}
+                    title="Archive every task this rule created (open ones are cancelled). Recoverable from Archived Tasks."
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-zinc-600 hover:text-amber-400 hover:bg-amber-500/10 rounded-lg transition-colors disabled:opacity-50"
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M20 7L9.5 17.5 4 12" opacity="0" />
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M5 8h14M9 8V6a2 2 0 012-2h2a2 2 0 012 2v2m-7 4l6 6m0-6l-6 6" />
+                    </svg>
+                    {purging ? "Removing…" : "Clear tasks"}
+                  </button>
+                </>
               ) : (
                 <div className="flex items-center gap-2">
                   <button onClick={deleteRule} disabled={deleting} className="px-3 py-1.5 bg-red-600 hover:bg-red-500 text-white text-xs font-medium rounded-lg disabled:opacity-50 transition-colors">

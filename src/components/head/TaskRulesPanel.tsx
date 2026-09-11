@@ -150,10 +150,13 @@ function titleVarsForSource(
   sourceKeys: SourceKey[],
 ): string[] {
   const table = bareTableOf(selectedSource?.tableReference);
-  const isOrder = !table || table === "Order";
-  // The Order path resolves only its named fields (its raw columns aren't
-  // carried into the title context), so show just the curated Order vars.
-  if (isOrder) return [...UNIVERSAL_TITLE_VARS, ...ORDER_ONLY_TITLE_VARS];
+  // Order table: show the curated Order vars (its raw columns aren't carried
+  // into the title context, so only the named fields resolve).
+  if (table === "Order") return [...UNIVERSAL_TITLE_VARS, ...ORDER_ONLY_TITLE_VARS];
+  // Unknown source (still loading, or none picked): the safe cross-source set
+  // only — never assume Lab Orders and show store/lab/phlebo for, say, an
+  // Appointments rule mid-load.
+  if (!table) return [...UNIVERSAL_TITLE_VARS];
 
   // Non-Order sources: universal fields + the source's own top-level columns.
   // taskCreator spreads the entity's raw row into the title context, so these

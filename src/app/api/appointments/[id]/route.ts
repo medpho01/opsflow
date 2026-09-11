@@ -64,19 +64,25 @@ export async function GET(
          u.mobile            AS "patientMobile",
          p.name              AS "doctorName",
          p.mobile            AS "doctorMobile",
-         -- Store for an appointment = the PATIENT's partner store (User.storeId)
-         -- — that's what the LabStack console shows. The provider works across
-         -- many stores, so the provider path is ambiguous; the slot center /
-         -- linked order are fallbacks for the rare case the patient has none.
-         COALESCE(ustore."storeName", ctr."storeName", ostore."storeName") AS "storeName"
+         -- Store = the store that CREATED the appointment. There is no store
+         -- column on Appointment; the creating store is recorded on its audit
+         -- trail (AppointmentAuditEntry, action='Created', actorKind='STORE').
+         -- Take that entry's store_id; fall back to the patient's partner store
+         -- for any appointment that predates the audit trail.
+         COALESCE(cstore."storeName", ustore."storeName") AS "storeName"
        FROM public."Appointment" a
        JOIN public."User" u ON u.id = a.user_id
        LEFT JOIN public."Store" ustore ON ustore.id = u."storeId"
        LEFT JOIN public."SlotConfig" sc ON sc.id = a.slot_id
        LEFT JOIN public."Provider" p ON p.id = sc.provider_id
-       LEFT JOIN public."Store" ctr ON ctr.id = sc.center_id
-       LEFT JOIN public."Order" o ON o.id = a."order_id"
-       LEFT JOIN public."Store" ostore ON ostore.id = o."storeId"
+       LEFT JOIN LATERAL (
+         SELECT ae.store_id
+         FROM public."AppointmentAuditEntry" ae
+         WHERE ae.appointment_id = a.id AND ae.store_id IS NOT NULL
+         ORDER BY (ae.action = 'Created') DESC, ae."createdAt" ASC
+         LIMIT 1
+       ) cae ON true
+       LEFT JOIN public."Store" cstore ON cstore.id = cae.store_id
        WHERE a.id = $1
        LIMIT 1`,
       appointmentId,

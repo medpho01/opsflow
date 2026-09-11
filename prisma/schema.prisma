@@ -1048,3 +1048,75 @@ model WaContact {
   @@index([phone])
   @@map("wa_contacts")
 }
+
+// ─────────────────────────────────────────────
+// PRIORITY SCORING — HNI pincode reference data
+// ─────────────────────────────────────────────
+//
+// The risk score, its band, and the VIP flag are computed live in
+// src/app/api/tasks/route.ts and never persisted — see src/lib/priority/.
+// (The risk band is therefore a plain TS union in types.ts, not a DB enum
+// here — Prisma Client only emits an enum that's actually used by a model
+// field, and this one never is.) The only thing that needs a table is the
+// HNI pincode reference data, an ops-maintained allow-list the VIP
+// classifier reads at request time.
+
+enum HniClassification {
+  HNI
+  NON_HNI
+  MIXED
+  UNKNOWN
+}
+
+enum HniProvenance {
+  REFERENCE
+  PLACEHOLDER_DEV
+}
+
+enum HniTier {
+  A
+  B
+  C
+}
+
+enum HniPinPurity {
+  PURE
+  MIXED
+  UNKNOWN
+}
+
+enum HniConfidence {
+  HIGH
+  MED
+}
+
+/// Operator-maintained HNI pincode reference data. Rows are added/deactivated
+/// by ops directly, or loaded via prisma/seed_hni_pincodes.ts — never written
+/// by the scoring code, which only reads active rows (see hniStore.ts).
+model HniPincode {
+  id             Int               @id @default(autoincrement())
+  /// Normalised at write time: digits only, exactly six.
+  pincode        String            @unique @db.VarChar(6)
+  locality       String?
+  city           String?
+  state          String?
+  classification HniClassification
+  /// Optional confidence/purity from the reference data. Never inferred.
+  purityPct      Int?
+  rationale      String?
+  isActive       Boolean           @default(true)
+  provenance     HniProvenance     @default(REFERENCE)
+  sourceLabel    String?
+  /// The reference data's own vocabulary, preserved verbatim alongside the
+  /// mapped `classification` so the mapping stays reversible.
+  tier           HniTier?
+  pinPurity      HniPinPurity?
+  confidence     HniConfidence?
+  createdAt      DateTime          @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime          @updatedAt @db.Timestamptz(3)
+
+  @@index([classification, isActive])
+  @@index([city])
+  @@index([provenance])
+  @@map("hni_pincodes")
+}

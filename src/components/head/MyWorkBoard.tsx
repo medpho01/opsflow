@@ -21,6 +21,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { formatISTTimestamp } from "@/lib/utils/timezone";
 import TaskDetailPanel from "@/components/agent/TaskDetailPanel";
 import OrderQuickView from "@/components/shared/OrderQuickView";
+import RiskBadge from "@/components/shared/RiskBadge";
+import VipBadge from "@/components/shared/VipBadge";
+import PriorityBadge from "@/components/shared/PriorityBadge";
 
 // ─── Types ─────────────────────────────────────────────────────────────
 interface Agent {
@@ -67,6 +70,16 @@ interface Task {
   urgencyBucket: number;
   slaStatus: "safe" | "warning" | "critical" | "breached";
   minutesRemaining: number;
+  // Pickup-delay risk + VIP — computed live per request in /api/tasks, see
+  // src/lib/priority/. Not a stored value: recomputed on every fetch.
+  riskScore: number;
+  riskBand: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+  riskReasons: { code: string; label: string; points: number; detail: string; sourceField: string }[];
+  riskUnavailable: { signal: string; reason: string }[];
+  vip: boolean;
+  vipReasons: { code: string; label: string; basis: string; detail: string; sourceField: string }[];
+  vipUnavailable: { signal: string; reason: string }[];
+  isPriority: boolean;
 }
 
 // Subset of users a board page passes in — used to gate Lead-only UI
@@ -318,8 +331,34 @@ function AssigneeChip({
   );
 }
 
+// ─── Table columns ─────────────────────────────────────────────────────
+// One shared grid template for the header and every row, everywhere in the
+// board (Focus/Recover/Later/Done/Tomorrow/Stuck) — a CSS-grid row rather
+// than a literal <table>, so it drops into the existing <details>-grouped
+// layouts (piles, hour groups, day-age bands) without restructuring them.
+const ORDER_TABLE_COLS =
+  "grid-cols-[64px_112px_140px_70px_minmax(0,1fr)_84px_60px_104px_92px]";
+
+function TableHeaderRow() {
+  return (
+    <div
+      className={`hidden md:grid ${ORDER_TABLE_COLS} gap-3 items-center px-5 py-2 border-b border-zinc-800 bg-zinc-950/60 text-[10px] font-semibold uppercase tracking-wider text-zinc-500`}
+    >
+      <span>Order</span>
+      <span>Appointment (IST)</span>
+      <span>Patient</span>
+      <span>Type</span>
+      <span>Task / Reason</span>
+      <span>Priority</span>
+      <span>VIP</span>
+      <span>Risk</span>
+      <span className="text-right">Actions</span>
+    </div>
+  );
+}
+
 // ─── Row renderer ──────────────────────────────────────────────────────
-function TaskRow({
+function OrderTableRow({
   task,
   now,
   agents,
@@ -328,6 +367,7 @@ function TaskRow({
   canReassign,
   rightBadge,
   onComplete,
+  extraActions,
 }: {
   task: Task;
   now: Date;
@@ -340,6 +380,9 @@ function TaskRow({
   // Optional inline ✓ Done — passed by the Focus/Recover/Stuck zones where
   // the row is a checklist item to burn down, omitted where it's a preview.
   onComplete?: (taskId: number) => void;
+  // Extra buttons in the Actions column (Stuck → "Older" zone's
+  // Escalate / Close-with-reason), rendered alongside the standard controls.
+  extraActions?: React.ReactNode;
 }) {
   const appt = task.appointmentTime ? new Date(task.appointmentTime) : null;
   const diffMin = appt ? Math.round((appt.getTime() - now.getTime()) / 60_000) : null;
@@ -399,80 +442,64 @@ function TaskRow({
         : formatISTTimestamp(task.appointmentTime as string, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }))
     : "—";
 
+  // Task/Reason secondary line — the real, computed reason this row needs
+  // attention, never an invented category. Elevated risk wins (it's the
+  // most specific "why"); otherwise fall back to whatever context the
+  // calling zone passed (Focus's "scheduled now"/"oldest recovery",
+  // Tomorrow's "no phlebo yet", Stuck's day-age tag).
+  const topRiskReason = task.riskReasons?.[0];
+  const showRiskReason = (task.riskBand === "HIGH" || task.riskBand === "CRITICAL") && topRiskReason;
+
   return (
     <div
-      className="flex items-center gap-3 px-5 py-3 border-b border-zinc-800 cursor-pointer hover:bg-zinc-800/40 transition-colors"
+      className={`grid ${ORDER_TABLE_COLS} gap-3 items-center px-5 py-3 border-b border-zinc-800 cursor-pointer hover:bg-zinc-800/40 transition-colors`}
       onClick={onClick}
       role="button"
       tabIndex={0}
     >
-      <div className="text-center w-16 shrink-0">
-        <div className={`text-base font-semibold ${timeColor}`}>{apptLabel}</div>
+      <div className="text-xs text-zinc-400 tabular-nums truncate">#{task.entityId}</div>
+
+      <div>
+        <div className={`text-sm font-semibold ${timeColor}`}>{apptLabel}</div>
         <div className={`text-[10px] ${deltaColor} uppercase tracking-wider`}>
           {deltaText || (appt ? "appt" : "no appt")}
         </div>
       </div>
 
-      <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider shrink-0 ${typeStyle(task.orderType)}`}>
+      <div className="text-xs text-zinc-300 truncate" title={metaStr(task, "patientName") || undefined}>
+        {metaStr(task, "patientName") || "—"}
+      </div>
+
+      <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider justify-self-start ${typeStyle(task.orderType)}`}>
         {typeLabel(task.orderType)}
       </span>
 
-      <div className="flex-1 min-w-0">
+      <div className="min-w-0">
         <div className="font-medium text-sm text-zinc-100 truncate">{task.title}</div>
-        <div className="text-xs text-zinc-500 mt-0.5">#{task.entityId}</div>
+        <div className="text-[11px] text-zinc-500 mt-0.5 truncate">
+          {showRiskReason ? topRiskReason.detail : rightBadge ?? null}
+        </div>
       </div>
 
-      {onComplete && task.status !== "COMPLETED" && task.status !== "CANCELLED" && (
-        <button
-          onClick={(e) => { e.stopPropagation(); onComplete(task.id); }}
-          className="px-2 py-1 rounded text-[11px] font-medium border border-green-900 text-green-300 hover:bg-green-900/30 transition-colors shrink-0"
-          title="Mark completed"
-        >
-          ✓ Done
-        </button>
-      )}
+      <div className="justify-self-start"><PriorityBadge priority={task.priority} /></div>
 
-      <AssigneeChip task={task} agents={agents} onReassign={onReassign} canReassign={canReassign} />
+      <div className="justify-self-start"><VipBadge vip={task.vip} /></div>
 
-      {rightBadge}
+      <div className="justify-self-start"><RiskBadge band={task.riskBand} score={task.riskScore} /></div>
 
-      {/* SLA / status pill — one urgency channel per row.
-          Rules:
-          - BLOCKED or snoozed → grey "Paused" chip. The breach-as-stick
-            is the wrong signal when an agent is correctly waiting on an
-            external party; rendering a red breach pill drives clear-not-
-            resolve theatre.
-          - Time block already coloured (appt within 90 min) → no SLA pill.
-            The time block IS the urgency signal. A second red badge
-            duplicates and dilutes it.
-          - Otherwise → original SLA pill for breached/critical/warning. */}
-      {(() => {
-        const isSnoozed = task.snoozedUntil ? new Date(task.snoozedUntil) > now : false;
-        const isPaused = task.status === "BLOCKED" || isSnoozed;
-        if (isPaused) {
-          return (
-            <span className="px-2 py-0.5 rounded text-[11px] bg-zinc-800 text-zinc-400 shrink-0">
-              {isSnoozed ? "Snoozed" : "Paused"}
-            </span>
-          );
-        }
-        // Suppress SLA pill when the time block is already telegraphing urgency
-        // (red/orange/yellow time means the appointment is within 90 min).
-        const timeBlockIsUrgent = appt && diffMin !== null && diffMin >= -15 && diffMin <= 90;
-        if (timeBlockIsUrgent && task.slaStatus !== "breached") return null;
-        if (task.slaStatus === "breached") {
-          return <span className="px-2 py-0.5 rounded text-[11px] bg-red-900/60 text-red-300 shrink-0">SLA breached</span>;
-        }
-        if (task.slaStatus === "critical") {
-          return <span className="px-2 py-0.5 rounded text-[11px] bg-orange-900/60 text-orange-300 shrink-0">SLA critical</span>;
-        }
-        if (task.slaStatus === "warning") {
-          return <span className="px-2 py-0.5 rounded text-[11px] bg-yellow-900/40 text-yellow-300 shrink-0">SLA warning</span>;
-        }
-        return null;
-      })()}
-
-      <span className="text-zinc-600 text-xl shrink-0">›</span>
+      <div className="flex items-center justify-end gap-1.5" onClick={(e) => e.stopPropagation()}>
+        {extraActions}
+        {onComplete && task.status !== "COMPLETED" && task.status !== "CANCELLED" && (
+          <button
+            onClick={() => onComplete(task.id)}
+            className="px-1.5 py-1 rounded text-[11px] font-medium border border-green-900 text-green-300 hover:bg-green-900/30 transition-colors"
+            title="Mark completed"
+          >
+            ✓
+          </button>
+        )}
+        <AssigneeChip task={task} agents={agents} onReassign={onReassign} canReassign={canReassign} />
+      </div>
     </div>
   );
 }
@@ -659,10 +686,17 @@ function TodayView({ tasks, tomorrowTasks, now, agents, canReassign, onRowClick,
 
   // Sort each bucket by appt time, falling back to slaDeadline when an appt
   // is missing (so no-appt tasks interleave by urgency rather than all
-  // landing at the bottom).
+  // landing at the bottom). CRITICAL-risk and VIP tasks (task.isPriority)
+  // float to the top of their zone first — appointment-time order is only
+  // the tiebreaker among equally-flagged tasks. Zone membership itself
+  // (which of Overdue/Now/Later a task lands in) is untouched.
   const sortAnchor = (t: Task) =>
     t.appointmentTime ? new Date(t.appointmentTime).getTime() : new Date(t.slaDeadline).getTime();
-  const byTime = (a: Task, b: Task) => sortAnchor(a) - sortAnchor(b);
+  const byTime = (a: Task, b: Task) => {
+    const priorityDelta = (a.isPriority ? 0 : 1) - (b.isPriority ? 0 : 1);
+    if (priorityDelta !== 0) return priorityDelta;
+    return sortAnchor(a) - sortAnchor(b);
+  };
   overdueTasks.sort(byTime);
   nowTasks.sort(byTime);
   laterTasks.sort(byTime);
@@ -747,6 +781,7 @@ function TodayView({ tasks, tomorrowTasks, now, agents, canReassign, onRowClick,
 
   return (
     <div className="space-y-4">
+      <TableHeaderRow />
 
       {/* Day progress line — replaces the misleading total badge. Open work
           vs team completions vs engine auto-closes at a glance; fills as
@@ -793,7 +828,7 @@ function TodayView({ tasks, tomorrowTasks, now, agents, canReassign, onRowClick,
           </div>
         ) : (
           focusEntries.map(({ task: t, why }) => (
-            <TaskRow
+            <OrderTableRow
               key={t.id}
               task={t}
               now={now}
@@ -851,7 +886,7 @@ function TodayView({ tasks, tomorrowTasks, now, agents, canReassign, onRowClick,
               </summary>
               <div className="border-t border-zinc-800/60">
                 {g.items.map((t) => (
-                  <TaskRow key={t.id} task={t} now={now} agents={agents} onClick={() => onRowClick(t)} onReassign={onReassign} canReassign={canReassign} onComplete={onComplete} />
+                  <OrderTableRow key={t.id} task={t} now={now} agents={agents} onClick={() => onRowClick(t)} onReassign={onReassign} canReassign={canReassign} onComplete={onComplete} />
                 ))}
               </div>
             </details>
@@ -877,7 +912,7 @@ function TodayView({ tasks, tomorrowTasks, now, agents, canReassign, onRowClick,
               </span>
             </summary>
             <div className="border-t border-amber-900/30">
-              {prepTasks.map(t => <TaskRow key={t.id} task={t} now={now} agents={agents} onClick={() => onRowClick(t)} onReassign={onReassign} canReassign={canReassign} />)}
+              {prepTasks.map(t => <OrderTableRow key={t.id} task={t} now={now} agents={agents} onClick={() => onRowClick(t)} onReassign={onReassign} canReassign={canReassign} />)}
             </div>
           </details>
         </div>
@@ -917,7 +952,7 @@ function TodayView({ tasks, tomorrowTasks, now, agents, canReassign, onRowClick,
               <div className="px-5 py-2 bg-zinc-950/40 border-b border-zinc-800 text-[11px] text-zinc-500 uppercase tracking-wider font-semibold">
                 ── {fmtHourHeader(h)} · {laterByHour.get(h)!.length} task{laterByHour.get(h)!.length > 1 ? "s" : ""} ──
               </div>
-              {laterByHour.get(h)!.map(t => <TaskRow key={t.id} task={t} now={now} agents={agents} onClick={() => onRowClick(t)} onReassign={onReassign} canReassign={canReassign} />)}
+              {laterByHour.get(h)!.map(t => <OrderTableRow key={t.id} task={t} now={now} agents={agents} onClick={() => onRowClick(t)} onReassign={onReassign} canReassign={canReassign} />)}
             </div>
           ))}
         </Zone>
@@ -940,7 +975,7 @@ function TodayView({ tasks, tomorrowTasks, now, agents, canReassign, onRowClick,
           {doneByTeam.length === 0 ? (
             <div className="px-5 py-3 text-center text-xs text-zinc-500">Nothing completed yet today.</div>
           ) : (
-            doneByTeam.slice(0, 20).map(t => <TaskRow key={t.id} task={t} now={now} agents={agents} onClick={() => onRowClick(t)} onReassign={onReassign} canReassign={canReassign} />)
+            doneByTeam.slice(0, 20).map(t => <OrderTableRow key={t.id} task={t} now={now} agents={agents} onClick={() => onRowClick(t)} onReassign={onReassign} canReassign={canReassign} />)
           )}
         </div>
       </details>
@@ -965,7 +1000,7 @@ function TodayView({ tasks, tomorrowTasks, now, agents, canReassign, onRowClick,
             </span>
           </summary>
           <div className="border-t border-zinc-800">
-            {doneByEngine.slice(0, 20).map(t => <TaskRow key={t.id} task={t} now={now} agents={agents} onClick={() => onRowClick(t)} onReassign={onReassign} canReassign={canReassign} />)}
+            {doneByEngine.slice(0, 20).map(t => <OrderTableRow key={t.id} task={t} now={now} agents={agents} onClick={() => onRowClick(t)} onReassign={onReassign} canReassign={canReassign} />)}
           </div>
         </details>
       )}
@@ -994,8 +1029,13 @@ function TomorrowView({ tasks, now, agents, canReassign, onRowClick, onReassign 
     if (!byHour.has(h)) byHour.set(h, []);
     byHour.get(h)!.push(t);
   }
-  const byTime = (a: Task, b: Task) =>
-    new Date(a.appointmentTime!).getTime() - new Date(b.appointmentTime!).getTime();
+  // CRITICAL-risk and VIP tasks float to the top of their hour group first —
+  // same rule as TodayView, appointment time is only the tiebreaker.
+  const byTime = (a: Task, b: Task) => {
+    const priorityDelta = (a.isPriority ? 0 : 1) - (b.isPriority ? 0 : 1);
+    if (priorityDelta !== 0) return priorityDelta;
+    return new Date(a.appointmentTime!).getTime() - new Date(b.appointmentTime!).getTime();
+  };
   const hours = Array.from(byHour.keys()).sort((a, b) => a - b);
   hours.forEach((h) => byHour.get(h)!.sort(byTime));
 
@@ -1036,6 +1076,7 @@ function TomorrowView({ tasks, now, agents, canReassign, onRowClick, onReassign 
           <div className="px-5 py-8 text-center text-sm text-zinc-500">Nothing scheduled for tomorrow yet.</div>
         ) : (
           <>
+            <TableHeaderRow />
             {hours.map((h) => {
               const items = byHour.get(h)!;
               return (
@@ -1046,7 +1087,7 @@ function TomorrowView({ tasks, now, agents, canReassign, onRowClick, onReassign 
                     {items.length > COLLAPSE_THRESHOLD && <span className="text-[10px] text-zinc-600">(click to expand)</span>}
                   </summary>
                   {items.map((t) => (
-                    <TaskRow
+                    <OrderTableRow
                       key={t.id}
                       task={t}
                       now={now}
@@ -1070,7 +1111,7 @@ function TomorrowView({ tasks, now, agents, canReassign, onRowClick, onReassign 
                   No appointment time · {noTime.length}
                 </div>
                 {noTime.map((t) => (
-                  <TaskRow key={t.id} task={t} now={now} agents={agents} onClick={() => onRowClick(t)} onReassign={onReassign} canReassign={canReassign} />
+                  <OrderTableRow key={t.id} task={t} now={now} agents={agents} onClick={() => onRowClick(t)} onReassign={onReassign} canReassign={canReassign} />
                 ))}
               </div>
             )}
@@ -1116,7 +1157,14 @@ function StuckView({ tasks, now, agents, canReassign, onRowClick, onReassign, on
 
   const anchorMs = (t: Task) =>
     t.appointmentTime ? new Date(t.appointmentTime).getTime() : new Date(t.createdAt).getTime();
-  const sorted = [...tasks].sort((a, b) => anchorMs(a) - anchorMs(b)); // oldest first
+  // Oldest first, but CRITICAL-risk/VIP tasks float to the top within
+  // whichever day-age band they land in — band membership itself (computed
+  // from dayAge, a filter over `sorted`, not this order) is untouched.
+  const sorted = [...tasks].sort((a, b) => {
+    const priorityDelta = (a.isPriority ? 0 : 1) - (b.isPriority ? 0 : 1);
+    if (priorityDelta !== 0) return priorityDelta;
+    return anchorMs(a) - anchorMs(b);
+  });
 
   const bandYesterday = sorted.filter((t) => dayAge(t) === 1);
   const bandMid = sorted.filter((t) => { const d = dayAge(t); return d >= 2 && d <= 3; });
@@ -1143,6 +1191,7 @@ function StuckView({ tasks, now, agents, canReassign, onRowClick, onReassign, on
 
   return (
     <div className="space-y-4">
+      <TableHeaderRow />
       {/* Age composition bar — Stuck's scoreboard. A healthy operation's
           bar shrinks from the right; a growing dark tail is the warning. */}
       {total > 0 ? (
@@ -1188,7 +1237,7 @@ function StuckView({ tasks, now, agents, canReassign, onRowClick, onReassign, on
           ) : undefined}
         >
           {bandYesterday.map((t) => (
-            <TaskRow key={t.id} task={t} now={now} agents={agents} onClick={() => onRowClick(t)} onReassign={onReassign} canReassign={canReassign} onComplete={onComplete}
+            <OrderTableRow key={t.id} task={t} now={now} agents={agents} onClick={() => onRowClick(t)} onReassign={onReassign} canReassign={canReassign} onComplete={onComplete}
               rightBadge={<span className="px-2 py-0.5 rounded text-[11px] shrink-0 bg-amber-900/40 text-amber-300 tabular-nums">{fmtDayAge(t)}</span>}
             />
           ))}
@@ -1208,7 +1257,7 @@ function StuckView({ tasks, now, agents, canReassign, onRowClick, onReassign, on
           ) : undefined}
         >
           {bandMid.map((t) => (
-            <TaskRow key={t.id} task={t} now={now} agents={agents} onClick={() => onRowClick(t)} onReassign={onReassign} canReassign={canReassign} onComplete={onComplete}
+            <OrderTableRow key={t.id} task={t} now={now} agents={agents} onClick={() => onRowClick(t)} onReassign={onReassign} canReassign={canReassign} onComplete={onComplete}
               rightBadge={<span className="px-2 py-0.5 rounded text-[11px] shrink-0 bg-red-900/40 text-red-300 tabular-nums">{fmtDayAge(t)}</span>}
             />
           ))}
@@ -1227,40 +1276,193 @@ function StuckView({ tasks, now, agents, canReassign, onRowClick, onReassign, on
           countClass="bg-red-950 text-red-400"
         >
           {bandOld.map((t) => (
-            <div key={t.id} className="flex items-center gap-3 px-5 py-3 border-b border-zinc-800 last:border-b-0 hover:bg-zinc-800/40 transition-colors">
-              <div className="text-center w-16 shrink-0">
-                <div className="text-base font-bold text-red-400 tabular-nums">{fmtDayAge(t)}</div>
-                <div className="text-[10px] text-zinc-600 uppercase tracking-wider">stuck</div>
-              </div>
-              <div className="flex-1 min-w-0 cursor-pointer" onClick={() => onRowClick(t)} role="button" tabIndex={0}>
-                <div className="font-medium text-sm text-zinc-100 truncate">{t.title}</div>
-                <div className="text-xs text-zinc-500 mt-0.5">
-                  #{t.entityId}{storeNameOf(t) ? ` · ${storeNameOf(t)}` : ""}
-                </div>
-              </div>
-              <AssigneeChip task={t} agents={agents} onReassign={onReassign} canReassign={canReassign} />
-              <button
-                onClick={() => onRowClick(t)}
-                className="px-2 py-1 rounded text-[11px] font-medium border border-red-900 text-red-300 hover:bg-red-900/30 transition-colors shrink-0"
-                title="Open order context to raise an escalation"
-              >
-                Escalate ↗
-              </button>
-              <button
-                onClick={() => {
-                  const reason = window.prompt(
-                    `Close "${t.title}"?\n\nRecord the reason (required) — this is a decision to stop chasing, kept in the task history:`
-                  );
-                  if (reason && reason.trim()) onCloseWithReason(t.id, reason.trim());
-                }}
-                className="px-2 py-1 rounded text-[11px] border border-zinc-700 text-zinc-400 hover:bg-zinc-800 transition-colors shrink-0"
-              >
-                Close w/ reason
-              </button>
-            </div>
+            <OrderTableRow
+              key={t.id}
+              task={t}
+              now={now}
+              agents={agents}
+              onClick={() => onRowClick(t)}
+              onReassign={onReassign}
+              canReassign={canReassign}
+              rightBadge={`stuck ${fmtDayAge(t)}${storeNameOf(t) ? ` · ${storeNameOf(t)}` : ""}`}
+              extraActions={
+                <>
+                  <button
+                    onClick={() => onRowClick(t)}
+                    className="px-1.5 py-1 rounded text-[11px] font-medium border border-red-900 text-red-300 hover:bg-red-900/30 transition-colors"
+                    title="Open order context to raise an escalation"
+                  >
+                    Escalate ↗
+                  </button>
+                  <button
+                    onClick={() => {
+                      const reason = window.prompt(
+                        `Close "${t.title}"?\n\nRecord the reason (required) — this is a decision to stop chasing, kept in the task history:`
+                      );
+                      if (reason && reason.trim()) onCloseWithReason(t.id, reason.trim());
+                    }}
+                    className="px-1.5 py-1 rounded text-[11px] border border-zinc-700 text-zinc-400 hover:bg-zinc-800 transition-colors"
+                  >
+                    Close w/ reason
+                  </button>
+                </>
+              }
+            />
           ))}
         </Zone>
       )}
+    </div>
+  );
+}
+
+// ─── Risk-distribution donut ───────────────────────────────────────────
+// Hand-rolled SVG (no charting library in this repo — see SourceLoadPanel.tsx
+// for the same convention elsewhere). Status colors reused verbatim from
+// RiskBadge.tsx so the donut and every row badge agree on what each color
+// means; a fixed LOW→CRITICAL order, never re-derived per render.
+const RISK_BAND_COLOR: Record<"LOW" | "MEDIUM" | "HIGH" | "CRITICAL", string> = {
+  LOW: "#71717a", MEDIUM: "#eab308", HIGH: "#f97316", CRITICAL: "#ef4444",
+};
+function RiskDonut({ counts }: { counts: Record<"LOW" | "MEDIUM" | "HIGH" | "CRITICAL", number> }) {
+  const order = ["LOW", "MEDIUM", "HIGH", "CRITICAL"] as const;
+  const total = order.reduce((sum, k) => sum + counts[k], 0);
+  const R = 38, STROKE = 13;
+  const C = 2 * Math.PI * R;
+  let offset = 0;
+  const segments = order
+    .map((k) => {
+      const frac = total > 0 ? counts[k] / total : 0;
+      const len = frac * C;
+      const seg = { key: k, len, offset };
+      offset += len;
+      return seg;
+    })
+    .filter((s) => s.len > 0);
+
+  return (
+    <div className="flex items-center gap-4">
+      <svg width="96" height="96" viewBox="0 0 96 96" className="shrink-0" role="img" aria-label={`Risk distribution: ${order.map((k) => `${k.toLowerCase()} ${counts[k]}`).join(", ")}`}>
+        <circle cx="48" cy="48" r={R} fill="none" stroke="#27272a" strokeWidth={STROKE} />
+        {/* Rotate only the segment group so 0% starts at 12 o'clock; the
+            total-count text stays upright, unrotated. */}
+        <g transform="rotate(-90 48 48)">
+          {segments.map((s) => (
+            <circle
+              key={s.key}
+              cx="48" cy="48" r={R} fill="none"
+              stroke={RISK_BAND_COLOR[s.key]}
+              strokeWidth={STROKE}
+              strokeLinecap="round"
+              strokeDasharray={`${Math.max(0, s.len - 2)} ${C - Math.max(0, s.len - 2)}`}
+              strokeDashoffset={-s.offset}
+            />
+          ))}
+        </g>
+        <text x="48" y="54" textAnchor="middle" className="fill-zinc-100 text-xl font-bold">
+          {total}
+        </text>
+      </svg>
+      <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
+        {(["CRITICAL", "HIGH", "MEDIUM", "LOW"] as const).map((k) => (
+          <div key={k} className="flex items-center gap-1.5 text-xs whitespace-nowrap">
+            <span className="inline-block w-2.5 h-2.5 rounded-sm shrink-0" style={{ backgroundColor: RISK_BAND_COLOR[k] }} />
+            <span className="text-zinc-400">{k.charAt(0) + k.slice(1).toLowerCase()}</span>
+            <span className="text-zinc-200 font-medium tabular-nums">{counts[k]}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// A single filter as a bordered dropdown card — label on top, full-width
+// select below. Uniform look for Assignee/Type/Rule/Store/Task Priority so
+// they read as one row of equal controls rather than mixed label+select
+// pairs and chip clusters.
+function FilterCard({
+  label, value, onChange, options,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  options: Array<{ value: string; label: string }>;
+}) {
+  return (
+    <div className="flex-1 min-w-[150px] rounded-lg border border-zinc-700 bg-zinc-800/60 px-3 py-2">
+      <div className="text-[10px] text-zinc-500 uppercase tracking-wider mb-1">{label}</div>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="w-full bg-transparent text-sm text-zinc-100 focus:outline-none cursor-pointer"
+      >
+        {options.map((o) => (
+          <option key={o.value} value={o.value} className="bg-zinc-800">{o.label}</option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
+// ─── Summary — stat tiles + risk distribution ──────────────────────────
+// Computed from the SAME task list the table below renders (the active
+// tab's filtered set), so the numbers here and the rows below never
+// disagree. Tile markup mirrors HeadCommandCenter.tsx's stats bar.
+// Small icon glyphs for the stat tiles — plain inline SVG (no icon library
+// in this repo), matched one-for-one to what each tile counts.
+const TILE_ICONS: Record<string, React.ReactNode> = {
+  total: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="w-5 h-5">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 7h6m-6 4h6" />
+    </svg>
+  ),
+  priority: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="w-5 h-5">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
+    </svg>
+  ),
+  vip: (
+    <svg viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5">
+      <path d="M5 16L3 6l5.5 4L12 4l3.5 6L21 6l-2 10H5zm0 2h14v2H5v-2z" />
+    </svg>
+  ),
+  risk: (
+    <svg viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5">
+      <path d="M12 2l2.9 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l7.1-1.01L12 2z" />
+    </svg>
+  ),
+};
+
+function SmartViewSummary({ tasks }: { tasks: Task[] }) {
+  const total = tasks.length;
+  const priorityCount = tasks.filter((t) => t.isPriority).length;
+  const vipCount = tasks.filter((t) => t.vip).length;
+  const riskCounts: Record<"LOW" | "MEDIUM" | "HIGH" | "CRITICAL", number> = { LOW: 0, MEDIUM: 0, HIGH: 0, CRITICAL: 0 };
+  for (const t of tasks) riskCounts[t.riskBand]++;
+  const highCritical = riskCounts.HIGH + riskCounts.CRITICAL;
+
+  const tiles: Array<{ key: string; label: string; value: number; iconCls: string; ringCls: string }> = [
+    { key: "total", label: "Total Orders", value: total, iconCls: "text-blue-400 bg-blue-500/15", ringCls: "text-white" },
+    { key: "priority", label: "Priority Orders", value: priorityCount, iconCls: "text-red-400 bg-red-500/15", ringCls: priorityCount > 0 ? "text-blue-400" : "text-white" },
+    { key: "vip", label: "VIP Orders", value: vipCount, iconCls: "text-amber-400 bg-amber-500/15", ringCls: vipCount > 0 ? "text-amber-400" : "text-white" },
+    { key: "risk", label: "High / Critical Risk", value: highCritical, iconCls: "text-purple-400 bg-purple-500/15", ringCls: highCritical > 0 ? "text-red-400" : "text-white" },
+  ];
+
+  return (
+    <div className="grid grid-cols-2 lg:grid-cols-6 gap-3 mb-4">
+      {tiles.map((t) => (
+        <div key={t.label} className="bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3 flex items-center gap-3">
+          <span className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${t.iconCls}`}>
+            {TILE_ICONS[t.key]}
+          </span>
+          <div className="min-w-0">
+            <div className="text-xs text-zinc-500 mb-0.5 truncate">{t.label}</div>
+            <div className={`text-2xl font-bold ${t.ringCls}`}>{t.value}</div>
+          </div>
+        </div>
+      ))}
+      <div className="col-span-2 bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3 flex items-center justify-center">
+        <RiskDonut counts={riskCounts} />
+      </div>
     </div>
   );
 }
@@ -1297,12 +1499,18 @@ export default function MyWorkBoard({ currentUser }: { currentUser: CurrentUser 
   // taskRuleId). Lets the lead answer "which rule is generating the pile"
   // (e.g. select Sample Handover → Stuck tab = where handovers are stuck).
   const [filterRules, setFilterRules] = useState<Set<string>>(new Set()); // empty = all
-  // Store / priority / SLA filters — combined with the above so any
-  // permutation of (assignee × type × rule × store × priority × SLA) can
-  // be sliced. All client-side over the already-fetched workspace.
+  // Store / priority filters — combined with the above so any permutation of
+  // (assignee × type × rule × store × priority × risk × VIP) can be sliced.
+  // All client-side over the already-fetched workspace.
   const [filterStore, setFilterStore] = useState<string>("all");
   const [filterPriorities, setFilterPriorities] = useState<Set<string>>(new Set()); // empty = all
-  const [filterSla, setFilterSla] = useState<Set<string>>(new Set()); // empty = all
+  // Risk / VIP / Priority-order filters — same client-side slicing over the
+  // riskBand/vip/isPriority fields computed live by /api/tasks (see
+  // src/lib/priority/).
+  const [filterRiskBands, setFilterRiskBands] = useState<Set<string>>(new Set()); // empty = all
+  const [filterVip, setFilterVip] = useState<"all" | "vip" | "non-vip">("all");
+  const [filterPriorityOrders, setFilterPriorityOrders] = useState<"all" | "priority" | "non-priority">("all");
+  const [filterSearch, setFilterSearch] = useState("");
 
   // Keep "now" fresh so the sliding NOW window slides on its own.
   useEffect(() => {
@@ -1571,11 +1779,23 @@ export default function MyWorkBoard({ currentUser }: { currentUser: CurrentUser 
       if (filterStore !== "all" && storeNameOf(t) !== filterStore) return false;
       // Priority filter (empty set = all)
       if (filterPriorities.size > 0 && !filterPriorities.has(t.priority)) return false;
-      // SLA filter (empty set = all)
-      if (filterSla.size > 0 && !filterSla.has(t.slaStatus)) return false;
+      // Risk band filter (empty set = all)
+      if (filterRiskBands.size > 0 && !filterRiskBands.has(t.riskBand)) return false;
+      // VIP filter
+      if (filterVip === "vip" && !t.vip) return false;
+      if (filterVip === "non-vip" && t.vip) return false;
+      // Priority-order filter (isPriority = vip || risk HIGH/CRITICAL)
+      if (filterPriorityOrders === "priority" && !t.isPriority) return false;
+      if (filterPriorityOrders === "non-priority" && t.isPriority) return false;
+      // Order-ID search (trimmed; empty = no filtering)
+      const search = filterSearch.trim();
+      if (search && !String(t.entityId).includes(search) && !t.title.toLowerCase().includes(search.toLowerCase())) return false;
       return true;
     });
-  }, [tasks, filterAssigneeId, filterTypes, filterRules, filterStore, filterPriorities, filterSla]);
+  }, [
+    tasks, filterAssigneeId, filterTypes, filterRules, filterStore, filterPriorities,
+    filterRiskBands, filterVip, filterPriorityOrders, filterSearch,
+  ]);
 
   const byBucket = useMemo(() => {
     const t = { today: [] as Task[], tomorrow: [] as Task[], stuck: [] as Task[] };
@@ -1656,20 +1876,26 @@ export default function MyWorkBoard({ currentUser }: { currentUser: CurrentUser 
     return Array.from(s).sort((a, b) => ORDER.indexOf(a) - ORDER.indexOf(b));
   }, [tasks]);
 
-  const SLA_OPTIONS: Array<{ key: string; label: string }> = [
-    { key: "breached", label: "Breached" },
-    { key: "critical", label: "Critical" },
-    { key: "warning", label: "Warning" },
-    { key: "safe", label: "In SLA" },
+  // Fixed severity order (not insertion order) — matches RiskBadge's own
+  // LOW→CRITICAL sequence.
+  const RISK_OPTIONS: Array<{ key: string; label: string; activeCls: string }> = [
+    { key: "LOW", label: "Low", activeCls: "bg-zinc-600 border-zinc-600 text-white" },
+    { key: "MEDIUM", label: "Medium", activeCls: "bg-yellow-600 border-yellow-600 text-white" },
+    { key: "HIGH", label: "High", activeCls: "bg-orange-600 border-orange-600 text-white" },
+    { key: "CRITICAL", label: "Critical", activeCls: "bg-red-600 border-red-600 text-white" },
   ];
 
   const anyFilterActive =
     filterAssigneeId !== "all" || filterTypes.size > 0 || filterRules.size > 0 ||
-    filterStore !== "all" || filterPriorities.size > 0 || filterSla.size > 0;
+    filterStore !== "all" || filterPriorities.size > 0 ||
+    filterRiskBands.size > 0 || filterVip !== "all" || filterPriorityOrders !== "all" ||
+    filterSearch.trim() !== "";
 
   const clearAllFilters = () => {
     setFilterAssigneeId("all"); setFilterTypes(new Set()); setFilterRules(new Set());
-    setFilterStore("all"); setFilterPriorities(new Set()); setFilterSla(new Set());
+    setFilterStore("all"); setFilterPriorities(new Set());
+    setFilterRiskBands(new Set()); setFilterVip("all"); setFilterPriorityOrders("all");
+    setFilterSearch("");
   };
 
   // Unassigned count for the chip badge (always reflects the unfiltered
@@ -1680,8 +1906,8 @@ export default function MyWorkBoard({ currentUser }: { currentUser: CurrentUser 
   );
 
   // Export the CURRENT view (all active filters already applied) to CSV. Scope
-  // "all" = every open task across Today+Tomorrow+Stuck (so a Breached/Critical
-  // SLA filter captures ALL breaching orders regardless of which tab is open);
+  // "all" = every open task across Today+Tomorrow+Stuck (so a High/Critical
+  // risk filter captures ALL at-risk orders regardless of which tab is open);
   // a tab scope exports just that tab. Done tasks are excluded from "all".
   const openFiltered = useMemo(() => filteredTasks.filter((t) => t.viewBucket !== "done"), [filteredTasks]);
   const doExport = useCallback((scope: "all" | Tab) => {
@@ -1700,11 +1926,16 @@ export default function MyWorkBoard({ currentUser }: { currentUser: CurrentUser 
   }, [now, lastUpdated]);
 
   return (
-    <div className="px-8 py-6 max-w-6xl mx-auto">
+    <div className="px-8 py-6 max-w-[1700px] mx-auto">
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-2xl font-bold text-zinc-100">Smart View</h1>
+          {!isAgent && (
+            <p className="text-sm text-zinc-500 mt-0.5">
+              Your prioritized workday with risk, VIP and operational context — all in one place.
+            </p>
+          )}
           <div className="text-sm text-zinc-500 mt-1">
             {now.toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "long", timeZone: "Asia/Kolkata" })}
             <span className="mx-2">·</span>
@@ -1742,7 +1973,7 @@ export default function MyWorkBoard({ currentUser }: { currentUser: CurrentUser 
                       <span className="text-zinc-500 tabular-nums">{byBucket[tab].length}</span>
                     </button>
                     <div className="px-3 py-1.5 text-[11px] text-zinc-600 leading-snug border-t border-zinc-800 mt-1">
-                      Tip: filter <b className="text-zinc-400">SLA → Breached / Critical / Warning</b> first to export exactly the breaching orders.
+                      Tip: filter <b className="text-zinc-400">Risk → High / Critical</b> first to export exactly the at-risk orders.
                     </div>
                   </div>
                 </>
@@ -1771,166 +2002,126 @@ export default function MyWorkBoard({ currentUser }: { currentUser: CurrentUser 
           Hidden for agents (their queue is small enough that filters add
           noise rather than value). */}
       {!isAgent && (
-      <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-3 mb-4 flex items-center gap-3 flex-wrap">
-        {/* Assignee selector */}
-        <div className="flex items-center gap-2">
-          <span className="text-[10px] text-zinc-500 uppercase tracking-wider">Assignee</span>
-          <select
+      <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-3 mb-4">
+        {/* Assignee / Type / Rule / Store / Task Priority — one row of
+            uniform dropdown cards. Each still drives the same Set/string
+            filter state the board's filteredTasks predicate already reads;
+            only the control surface changed from mixed chips+selects. */}
+        <div className="flex items-stretch gap-3 flex-wrap">
+          <FilterCard
+            label="Assignee"
             value={typeof filterAssigneeId === "number" ? String(filterAssigneeId) : filterAssigneeId}
-            onChange={(e) => {
-              const v = e.target.value;
+            onChange={(v) => {
               if (v === "all" || v === "unassigned") setFilterAssigneeId(v);
               else setFilterAssigneeId(parseInt(v, 10));
             }}
-            className="bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-sm text-zinc-100 focus:outline-none focus:ring-1 focus:ring-blue-500"
-          >
-            <option value="all">All team ({tasks.length})</option>
-            <option value="unassigned">⚠ Unassigned ({unassignedCount})</option>
-            <optgroup label="Team members">
-              {agents.map((a) => (
-                <option key={a.id} value={a.id}>{a.name}</option>
-              ))}
-            </optgroup>
-          </select>
+            options={[
+              { value: "all", label: `All team (${tasks.length})` },
+              { value: "unassigned", label: `⚠ Unassigned (${unassignedCount})` },
+              ...agents.map((a) => ({ value: String(a.id), label: a.name })),
+            ]}
+          />
+
+          {availableTypes.length > 1 && (
+            <FilterCard
+              label="Type"
+              value={filterTypes.size === 1 ? Array.from(filterTypes)[0] : "all"}
+              onChange={(v) => setFilterTypes(v === "all" ? new Set() : new Set([v]))}
+              options={[
+                { value: "all", label: "All types" },
+                ...availableTypes.map((t) => ({ value: t, label: typeLabel(t) })),
+              ]}
+            />
+          )}
+
+          {availableRules.length > 1 && (
+            <FilterCard
+              label="Rule"
+              value={filterRules.size === 1 ? Array.from(filterRules)[0] : "all"}
+              onChange={(v) => setFilterRules(v === "all" ? new Set() : new Set([v]))}
+              options={[
+                { value: "all", label: "All rules" },
+                ...availableRules.map((r) => ({ value: r.id, label: `${r.label} (${r.count})` })),
+              ]}
+            />
+          )}
+
+          {availableStores.length > 1 && (
+            <FilterCard
+              label="Store"
+              value={filterStore}
+              onChange={setFilterStore}
+              options={[
+                { value: "all", label: "All stores" },
+                ...availableStores.map((s) => ({ value: s.name, label: `${s.name} (${s.count})` })),
+              ]}
+            />
+          )}
+
+          {availablePriorities.length > 1 && (
+            <FilterCard
+              label="Task Priority"
+              value={filterPriorities.size === 1 ? Array.from(filterPriorities)[0] : "all"}
+              onChange={(v) => setFilterPriorities(v === "all" ? new Set() : new Set([v]))}
+              options={[
+                { value: "all", label: "All priorities" },
+                ...availablePriorities.map((p) => ({ value: p, label: p.charAt(0) + p.slice(1).toLowerCase() })),
+              ]}
+            />
+          )}
+        </div>
+      </div>
+      )}
+
+      {/* Priority workspace bar — Risk/VIP/Priority slicing, kept visually
+          distinct from the operational filters above (blue ring matches the
+          Focus zone's own accent) since this is the lens this whole board
+          was built around. */}
+      {!isAgent && (
+      <div className="bg-zinc-900 border border-blue-900/40 ring-1 ring-blue-900/20 rounded-lg p-3 mb-4 flex items-center gap-4 flex-wrap">
+        {/* Priority-orders tri-state (isPriority = vip || risk HIGH/CRITICAL) */}
+        <div className="flex items-center gap-1.5">
+          <span className="text-[10px] text-zinc-500 uppercase tracking-wider mr-1">Priority Orders</span>
+          {(["all", "priority", "non-priority"] as const).map((v) => (
+            <button
+              key={v}
+              onClick={() => setFilterPriorityOrders(v)}
+              className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
+                filterPriorityOrders === v
+                  ? "bg-blue-600 border-blue-600 text-white"
+                  : "bg-zinc-900 border-zinc-700 text-zinc-400 hover:text-zinc-200"
+              }`}
+            >
+              {v === "all" ? "All" : v === "priority" ? "Priority only" : "Non-priority"}
+            </button>
+          ))}
         </div>
 
-        {/* Order-type chips */}
-        {availableTypes.length > 1 && (
-          <div className="flex items-center gap-1.5 flex-wrap">
-            <span className="text-[10px] text-zinc-500 uppercase tracking-wider mr-1">Type</span>
-            <button
-              onClick={() => setFilterTypes(new Set())}
-              className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
-                filterTypes.size === 0
-                  ? "bg-blue-600 border-blue-600 text-white"
-                  : "bg-zinc-900 border-zinc-700 text-zinc-400 hover:text-zinc-200"
-              }`}
-            >
-              All
-            </button>
-            {availableTypes.map((t) => {
-              const active = filterTypes.has(t);
-              return (
-                <button
-                  key={t}
-                  onClick={() => {
-                    const next = new Set(filterTypes);
-                    if (active) next.delete(t); else next.add(t);
-                    setFilterTypes(next);
-                  }}
-                  className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
-                    active
-                      ? "bg-blue-600 border-blue-600 text-white"
-                      : "bg-zinc-900 border-zinc-700 text-zinc-400 hover:text-zinc-200"
-                  }`}
-                >
-                  {typeLabel(t)}
-                </button>
-              );
-            })}
-          </div>
-        )}
+        <div className="w-px h-5 bg-zinc-800" />
 
-        {/* Rule chips — which rule produced the task. Sorted by volume so
-            the biggest pile is the first chip; counts are workspace-wide. */}
-        {availableRules.length > 1 && (
-          <div className="flex items-center gap-1.5 flex-wrap">
-            <span className="text-[10px] text-zinc-500 uppercase tracking-wider mr-1">Rule</span>
-            <button
-              onClick={() => setFilterRules(new Set())}
-              className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
-                filterRules.size === 0
-                  ? "bg-blue-600 border-blue-600 text-white"
-                  : "bg-zinc-900 border-zinc-700 text-zinc-400 hover:text-zinc-200"
-              }`}
-            >
-              All
-            </button>
-            {availableRules.map((r) => {
-              const active = filterRules.has(r.id);
-              return (
-                <button
-                  key={r.id}
-                  onClick={() => {
-                    const next = new Set(filterRules);
-                    if (active) next.delete(r.id); else next.add(r.id);
-                    setFilterRules(next);
-                  }}
-                  title={r.id}
-                  className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
-                    active
-                      ? "bg-blue-600 border-blue-600 text-white"
-                      : "bg-zinc-900 border-zinc-700 text-zinc-400 hover:text-zinc-200"
-                  }`}
-                >
-                  {r.label} <span className={active ? "text-blue-200" : "text-zinc-500"}>{r.count}</span>
-                </button>
-              );
-            })}
-          </div>
-        )}
-
-        {/* Store selector — dropdown (store lists run long); sorted by volume */}
-        {availableStores.length > 1 && (
-          <div className="flex items-center gap-2">
-            <span className="text-[10px] text-zinc-500 uppercase tracking-wider">Store</span>
-            <select
-              value={filterStore}
-              onChange={(e) => setFilterStore(e.target.value)}
-              className="bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-sm text-zinc-100 max-w-[220px] focus:outline-none focus:ring-1 focus:ring-blue-500"
-            >
-              <option value="all">All stores</option>
-              {availableStores.map((s) => (
-                <option key={s.name} value={s.name}>{s.name} ({s.count})</option>
-              ))}
-            </select>
-          </div>
-        )}
-
-        {/* Priority chips */}
-        {availablePriorities.length > 1 && (
-          <div className="flex items-center gap-1.5 flex-wrap">
-            <span className="text-[10px] text-zinc-500 uppercase tracking-wider mr-1">Priority</span>
-            {availablePriorities.map((p) => {
-              const active = filterPriorities.has(p);
-              return (
-                <button
-                  key={p}
-                  onClick={() => {
-                    const next = new Set(filterPriorities);
-                    if (active) next.delete(p); else next.add(p);
-                    setFilterPriorities(next);
-                  }}
-                  className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
-                    active
-                      ? "bg-blue-600 border-blue-600 text-white"
-                      : "bg-zinc-900 border-zinc-700 text-zinc-400 hover:text-zinc-200"
-                  }`}
-                >
-                  {p.charAt(0) + p.slice(1).toLowerCase()}
-                </button>
-              );
-            })}
-          </div>
-        )}
-
-        {/* SLA-state chips */}
+        {/* Risk-band chips — tri-state-style single-select, same pattern as
+            the VIP chips below: exactly one of All/Low/Medium/High/Critical
+            is active at a time, not an accumulating multi-select. */}
         <div className="flex items-center gap-1.5 flex-wrap">
-          <span className="text-[10px] text-zinc-500 uppercase tracking-wider mr-1">SLA</span>
-          {SLA_OPTIONS.map(({ key, label }) => {
-            const active = filterSla.has(key);
+          <span className="text-[10px] text-zinc-500 uppercase tracking-wider mr-1">Risk</span>
+          <button
+            onClick={() => setFilterRiskBands(new Set())}
+            className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
+              filterRiskBands.size === 0
+                ? "bg-blue-600 border-blue-600 text-white"
+                : "bg-zinc-900 border-zinc-700 text-zinc-400 hover:text-zinc-200"
+            }`}
+          >
+            All
+          </button>
+          {RISK_OPTIONS.map(({ key, label, activeCls }) => {
+            const active = filterRiskBands.has(key);
             return (
               <button
                 key={key}
-                onClick={() => {
-                  const next = new Set(filterSla);
-                  if (active) next.delete(key); else next.add(key);
-                  setFilterSla(next);
-                }}
+                onClick={() => setFilterRiskBands(new Set([key]))}
                 className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
-                  active
-                    ? "bg-blue-600 border-blue-600 text-white"
-                    : "bg-zinc-900 border-zinc-700 text-zinc-400 hover:text-zinc-200"
+                  active ? activeCls : "bg-zinc-900 border-zinc-700 text-zinc-400 hover:text-zinc-200"
                 }`}
               >
                 {label}
@@ -1939,17 +2130,46 @@ export default function MyWorkBoard({ currentUser }: { currentUser: CurrentUser 
           })}
         </div>
 
-        {/* Reset (only shows when something is filtered) */}
+        <div className="w-px h-5 bg-zinc-800" />
+
+        {/* VIP tri-state */}
+        <div className="flex items-center gap-1.5">
+          <span className="text-[10px] text-zinc-500 uppercase tracking-wider mr-1">VIP</span>
+          {(["all", "vip", "non-vip"] as const).map((v) => (
+            <button
+              key={v}
+              onClick={() => setFilterVip(v)}
+              className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
+                filterVip === v
+                  ? "bg-amber-600 border-amber-600 text-white"
+                  : "bg-zinc-900 border-zinc-700 text-zinc-400 hover:text-zinc-200"
+              }`}
+            >
+              {v === "all" ? "All" : v === "vip" ? "VIP" : "Non-VIP"}
+            </button>
+          ))}
+        </div>
+
+        <div className="flex-1" />
+
+        {/* Order-ID search — narrows the current tab's list client-side */}
+        <input
+          type="text"
+          value={filterSearch}
+          onChange={(e) => setFilterSearch(e.target.value)}
+          placeholder="Search order ID…"
+          className="bg-zinc-800 border border-zinc-700 rounded px-3 py-1.5 text-sm text-zinc-100 w-48 focus:outline-none focus:ring-1 focus:ring-blue-500"
+        />
+
         {anyFilterActive && (
-          <button
-            onClick={clearAllFilters}
-            className="text-xs text-zinc-500 hover:text-zinc-200 ml-auto"
-          >
+          <button onClick={clearAllFilters} className="text-xs text-zinc-500 hover:text-zinc-200">
             Clear filters
           </button>
         )}
       </div>
       )}
+
+      {!isAgent && <SmartViewSummary tasks={byBucket[tab]} />}
 
       {/* Tab strip */}
       <div className="flex items-center gap-1 border-b border-zinc-800 mb-6">
@@ -2073,6 +2293,17 @@ export default function MyWorkBoard({ currentUser }: { currentUser: CurrentUser 
         <OrderQuickView
           orderId={selectedTask.entityId}
           onClose={() => setSelectedTask(null)}
+          priority={{
+            riskScore: selectedTask.riskScore,
+            riskBand: selectedTask.riskBand,
+            riskReasons: selectedTask.riskReasons,
+            riskUnavailable: selectedTask.riskUnavailable,
+            vip: selectedTask.vip,
+            vipReasons: selectedTask.vipReasons,
+            vipUnavailable: selectedTask.vipUnavailable,
+            isPriority: selectedTask.isPriority,
+          }}
+          taskPriority={selectedTask.priority}
         />
       )}
     </div>

@@ -1157,6 +1157,13 @@ export async function evaluateAndCreateTasks(
           storeName: order.storeName,
           phleboName: order.phleboName,
           phleboNumber: order.phleboNumber,
+          // Read from the raw-row jsonb blob already fetched above
+          // (to_jsonb(o.*)) rather than added as its own column — the
+          // source doesn't have one on every deployment yet. Absent ->
+          // undefined, never a manufactured value; the VIP/HNI resolver
+          // in src/lib/priority/ treats a missing pincode as NO_PINCODE,
+          // not as "not affluent".
+          pincode: order.metadata?.pincode,
           // W3 — "Why this task?" payload. Read verbatim by the agent
           // panel; do not embed ids the agent shouldn't see.
           whyThisTask: {

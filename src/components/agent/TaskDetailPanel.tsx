@@ -58,7 +58,7 @@ interface AppointmentContext {
   patientMobile: string | null;
   doctorName: string | null;
   doctorMobile: string | null;
-  centerName: string | null;
+  storeName: string | null;
 }
 
 interface TaskDetailPanelProps {
@@ -516,6 +516,7 @@ export default function TaskDetailPanel({ task, onUpdate }: TaskDetailPanelProps
               { label: "Status", value: apptContext?.appointmentStatus || (meta.orderStatus as string) || "—" },
               { label: "Doctor", value: apptContext?.doctorName || "—" },
               { label: "Doctor Contact", value: apptContext?.doctorMobile || "—" },
+              { label: "Store", value: apptContext?.storeName || "—" },
               { label: "Reference", value: apptContext?.referenceId || "—" },
               { label: "Patient Contact", value: apptContext?.patientMobile || "—" },
             ].map(({ label, value }) => (

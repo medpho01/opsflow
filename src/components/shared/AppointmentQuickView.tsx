@@ -25,7 +25,7 @@ interface AppointmentDetail {
   patientMobile: string | null;
   doctorName: string | null;
   doctorMobile: string | null;
-  centerName: string | null;
+  storeName: string | null;
 }
 
 interface ApptTask {
@@ -169,7 +169,7 @@ export default function AppointmentQuickView({ appointmentId, onClose }: Appoint
                   } />
                   <InfoRow label="Doctor" value={appt.doctorName} />
                   <InfoRow label="Doctor Contact" value={appt.doctorMobile} />
-                  {appt.centerName && <InfoRow label="Center" value={appt.centerName} />}
+                  <InfoRow label="Store" value={appt.storeName} />
                   <InfoRow label="Reference" value={appt.referenceId} />
                   {appt.appointmentUrl && (
                     <InfoRow label="Meeting" value={

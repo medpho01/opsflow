@@ -29,7 +29,7 @@ interface RawAppointmentDetail {
   patientMobile: string | null;
   doctorName: string | null;
   doctorMobile: string | null;
-  centerName: string | null;
+  storeName: string | null;
 }
 
 export async function GET(
@@ -64,12 +64,18 @@ export async function GET(
          u.mobile            AS "patientMobile",
          p.name              AS "doctorName",
          p.mobile            AS "doctorMobile",
-         st."storeName"      AS "centerName"
+         -- Store for an appointment: the slot's physical center if set, else
+         -- the doctor's main store, else the linked order's store. (ONLINE
+         -- appointments have no center, so the provider store is the useful one.)
+         COALESCE(ctr."storeName", pstore."storeName", ostore."storeName") AS "storeName"
        FROM public."Appointment" a
        JOIN public."User" u ON u.id = a.user_id
        LEFT JOIN public."SlotConfig" sc ON sc.id = a.slot_id
        LEFT JOIN public."Provider" p ON p.id = sc.provider_id
-       LEFT JOIN public."Store" st ON st.id = sc.center_id
+       LEFT JOIN public."Store" ctr ON ctr.id = sc.center_id
+       LEFT JOIN public."Store" pstore ON pstore.id = p.main_store_id
+       LEFT JOIN public."Order" o ON o.id = a."order_id"
+       LEFT JOIN public."Store" ostore ON ostore.id = o."storeId"
        WHERE a.id = $1
        LIMIT 1`,
       appointmentId,

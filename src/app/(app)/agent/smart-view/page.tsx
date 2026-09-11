@@ -18,8 +18,9 @@ export const metadata = { title: "Smart View — OpsFlow" };
 export default async function AgentSmartViewPage() {
   const user = await getSession();
   if (!user) redirect("/login");
-  if (user.role === "OPS_HEAD") redirect("/head/my-work");
+  if (user.role === "OPS_HEAD") redirect("/head/my-work"); // OPS_ADMIN coerces to OPS_HEAD → also redirected
   if (user.role === "STORE_ADMIN") redirect("/store");
+  if (user.role !== "OPS_AGENT") redirect("/");
 
   return <MyWorkBoard currentUser={{ id: user.id, name: user.name, role: user.role }} />;
 }

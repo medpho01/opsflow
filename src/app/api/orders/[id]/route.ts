@@ -24,6 +24,10 @@ interface RawOrderDetail {
   patientName: string;
   labName: string | null;
   storeName: string | null;
+  city: string | null;
+  pincode: string | null;
+  sampleCollectedTime: Date | null;
+  reportDeliveredTime: Date | null;
 }
 
 export async function GET(
@@ -62,6 +66,10 @@ export async function GET(
       o.notes,
       o."phleboName",
       o."phleboNumber",
+      o.city,
+      o.pincode,
+      o."sampleCollectedTime",
+      o."reportDeliveredTime",
       u.name               AS "patientName",
       l."labName"          AS "labName",
       s."storeName"        AS "storeName"

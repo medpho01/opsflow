@@ -24,6 +24,12 @@ import { getSessionFromRequest } from "@/lib/auth/session";
 import prisma from "@/lib/db/client";
 import labstack, { labstackOr } from "@/lib/db/labstack";
 import { TaskStatus, TaskPriority, UserRole } from "@prisma/client";
+import { scoreRisk } from "@/lib/priority/riskScorer";
+import { DEFAULT_RISK_CONFIG } from "@/lib/priority/riskConfig";
+import { resolveVip } from "@/lib/priority/vipResolver";
+import { DEFAULT_VIP_CONFIG } from "@/lib/priority/vipConfig";
+import { loadHniLookup } from "@/lib/priority/hniStore";
+import { buildOrderSignalsFromTask, buildVipSignalsFromTask } from "@/lib/priority/taskSignals";
 
 // Whitelist of valid sort fields (Phase 1 MVP)
 const VALID_SORT_FIELDS = ["createdAt", "appointmentTime", "slaDeadline", "status", "priority", "urgency"] as const;
@@ -489,6 +495,10 @@ export async function GET(request: NextRequest) {
     taskType: { select: { name: true, label: true } },
     taskRule: {
       select: {
+        // name powers the Smart View "Rule" filter chips — the client
+        // groups tasks by taskRuleId and needs a human-readable label
+        // without a second fetch.
+        name: true,
         dataSourceId: true,
         dataSource: { select: { id: true, sourceId: true, displayName: true } },
       },
@@ -590,11 +600,15 @@ export async function GET(request: NextRequest) {
   // SQL-side, so it paginates normally.
   const isFullFetch = isUrgencySort;
 
-  const [tasks, total] = await Promise.all([
+  const [tasks, total, hniLookup] = await Promise.all([
     isFullFetch
       ? prisma.task.findMany({ where, include, orderBy: [{ appointmentTime: "asc" }] })
       : prisma.task.findMany({ where, include, orderBy, skip: (page - 1) * limit, take: limit }),
     prisma.task.count({ where }),
+    // Loaded once per request, not per task — the reference table is small
+    // (a few thousand rows at most) and scoring must stay free of per-row
+    // I/O. See hniStore.ts.
+    loadHniLookup(),
   ]);
 
   // ── Store name join (against labstack public.Store) ───────────────
@@ -721,6 +735,15 @@ export async function GET(request: NextRequest) {
     // "#{storeId}" or "—" accordingly).
     const store = task.storeId != null ? storeMap.get(task.storeId) ?? null : null;
 
+    // Pickup-delay risk + VIP — computed live from this same task row, not
+    // read from a second pipeline or a stored snapshot. See
+    // src/lib/priority/taskSignals.ts for exactly which fields feed this.
+    const riskSignals = buildOrderSignalsFromTask(task, now);
+    const risk = scoreRisk(riskSignals, DEFAULT_RISK_CONFIG);
+    const vipSignals = buildVipSignalsFromTask(task, store?.city ?? null, hniLookup);
+    const vip = resolveVip(vipSignals, DEFAULT_VIP_CONFIG);
+    const isPriority = vip.vip || risk.band === "HIGH" || risk.band === "CRITICAL";
+
     return {
       ...task,
       // sourceEntityId is a BigInt in the DB — convert to string so JSON.stringify doesn't throw
@@ -739,6 +762,14 @@ export async function GET(request: NextRequest) {
       urgencyBucket,
       urgencyLabel,
       viewBucket,
+      riskScore: risk.score,
+      riskBand: risk.band,
+      riskReasons: risk.reasons,
+      riskUnavailable: risk.unavailable,
+      vip: vip.vip,
+      vipReasons: vip.reasons,
+      vipUnavailable: vip.unavailable,
+      isPriority,
     };
   });
 

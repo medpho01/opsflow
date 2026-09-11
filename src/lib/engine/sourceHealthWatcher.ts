@@ -56,12 +56,6 @@ interface SourceForHealthCheck {
   isActive: boolean;
 }
 
-interface PollSummary {
-  startedAt: Date;
-  status: string;
-  ordersFound: number;
-}
-
 // ── Public entry point ───────────────────────────────────────────────────────
 
 export async function runSourceHealthWatcher(): Promise<{ openedAlerts: number; resolvedAlerts: number }> {
@@ -100,22 +94,32 @@ export async function runSourceHealthWatcher(): Promise<{ openedAlerts: number; 
 // ── Per-source evaluation ────────────────────────────────────────────────────
 
 async function evaluateSourceHealth(source: SourceForHealthCheck): Promise<ConditionResult[]> {
-  // The legacy poller writes to taskos.polling_logs without a sourceId, so we
-  // can't cleanly attribute polls to a specific source. To keep this watcher
-  // useful even with the legacy poller, we treat the *global* polling_logs
-  // as a proxy when the per-source table has no rows for this source.
+  // Per-source attribution ONLY (July 2026 fix). The previous version used
+  // the GLOBAL legacy polling_logs as a proxy for every source, which
+  // produced provably false alerts the moment more than one source was
+  // registered: "Requests: zero rows across 10 successful polls" quoted the
+  // ORDERS poller's history against a source nothing had ever polled —
+  // right next to a "No polls yet" header. A health check that can't
+  // attribute its evidence must stay silent, not guess.
   //
-  // When the multi-source poller comes online, this query gets swapped to
-  // data_source_polling_logs scoped by sourceId.
-  const recentPolls: PollSummary[] = await prisma.pollingLog.findMany({
+  // data_source_polling_logs is written by the legacy poller's mirror (for
+  // sourceId="orders") and by any future per-source poller. A source with
+  // NO rows here has no poller wired up — that is a configuration state,
+  // not a health incident; the UI already shows "No polls yet" for it.
+  const recentPolls = await prisma.dataSourcePollingLog.findMany({
+    where: { dataSourceId: source.id },
     take: ERROR_RATE_WINDOW,
-    orderBy: { startedAt: "desc" },
+    orderBy: { pollStartedAt: "desc" },
     select: {
-      startedAt: true,
+      pollStartedAt: true,
       status: true,
-      ordersFound: true,
+      entitiesFound: true,
     },
   });
+
+  if (recentPolls.length === 0) {
+    return []; // never polled → nothing to alert on
+  }
 
   const failing: ConditionResult[] = [];
   const now = new Date();
@@ -124,7 +128,7 @@ async function evaluateSourceHealth(source: SourceForHealthCheck): Promise<Condi
   const staleAfterMinutes = STALE_MULTIPLIER * source.pollingIntervalMinutes;
   const lastSuccess = recentPolls.find((p) => p.status === "SUCCESS");
   const minutesSinceSuccess = lastSuccess
-    ? Math.floor((now.getTime() - lastSuccess.startedAt.getTime()) / 60_000)
+    ? Math.floor((now.getTime() - lastSuccess.pollStartedAt.getTime()) / 60_000)
     : Number.POSITIVE_INFINITY;
 
   if (minutesSinceSuccess > staleAfterMinutes) {
@@ -142,19 +146,30 @@ async function evaluateSourceHealth(source: SourceForHealthCheck): Promise<Condi
   }
 
   // ── 2. NO_ROWS ──────────────────────────────────────────────────────────
-  // "Source is producing zero rows" — only meaningful if at least one
-  // SUCCESS poll has run in the window; otherwise STALE_POLLS already covers it.
+  // Honest window: query the FULL noRowsHours window (the old version
+  // sampled only the last 10 polls — ~20 minutes at a 2-min cadence —
+  // while the message claimed 24h, so a quiet stretch false-alarmed on a
+  // healthy source). Require a minimum number of successful polls so a
+  // source that just came online doesn't trip it instantly.
   const windowStart = new Date(now.getTime() - NO_ROWS_HOURS * 60 * 60_000);
-  const successInWindow = recentPolls.filter(
-    (p) => p.status === "SUCCESS" && p.startedAt >= windowStart
-  );
-  if (successInWindow.length > 0 && successInWindow.every((p) => p.ordersFound === 0)) {
+  const windowAgg = await prisma.dataSourcePollingLog.aggregate({
+    where: {
+      dataSourceId: source.id,
+      status: "SUCCESS",
+      pollStartedAt: { gte: windowStart },
+    },
+    _count: { _all: true },
+    _sum: { entitiesFound: true },
+  });
+  const successCount = windowAgg._count._all;
+  const rowsInWindow = windowAgg._sum.entitiesFound ?? 0;
+  if (successCount >= 3 && rowsInWindow === 0) {
     failing.push({
       condition: "NO_ROWS",
       severity: "MEDIUM",
       threshold: `0 rows for ${NO_ROWS_HOURS}h`,
-      observed: `${successInWindow.length} successful polls returned 0 rows`,
-      message: `${source.displayName}: zero rows fetched in last ${NO_ROWS_HOURS}h across ${successInWindow.length} successful polls`,
+      observed: `${successCount} successful polls returned 0 rows`,
+      message: `${source.displayName}: zero rows fetched in last ${NO_ROWS_HOURS}h across ${successCount} successful polls`,
     });
   }
 

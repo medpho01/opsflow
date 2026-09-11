@@ -57,6 +57,12 @@ const DEFAULT_QUERY_TIMEOUT_MS = parseInt(process.env.LABSTACK_QUERY_TIMEOUT_MS 
 // answers the poller's bounded queries in well under a second.
 const STATEMENT_TIMEOUT_MS = parseInt(process.env.LABSTACK_STATEMENT_TIMEOUT_MS ?? "15000", 10);
 
+// ── Pre-flight replica-health probe (Track B) ─────────────────────────────
+// Hard app-side deadline for the probe read, and the row cap that bounds how
+// much visibility-check work it does. See probeLabstackHealthy() for why.
+const PROBE_DEADLINE_MS = parseInt(process.env.LABSTACK_PROBE_DEADLINE_MS ?? "3000", 10);
+const PROBE_ROW_CAP = parseInt(process.env.LABSTACK_PROBE_ROW_CAP ?? "20", 10);
+
 function resolveLabstackBaseUrl(): string {
   const explicit = process.env.SOURCE_DATABASE_URL;
   if (explicit && explicit.length > 0) return explicit;
@@ -322,6 +328,62 @@ export async function labstackOr<T>(
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+
+/**
+ * Pre-flight replica-health probe (Track B mitigation for the MultiXact
+ * SLRU incident).
+ *
+ * The failure mode we're defending against: a wedged labstack replica still
+ * answers point lookups instantly, but any query that scans multixact-locked
+ * Order rows in bulk hangs *forever* — and because the hang is an LWLock
+ * wait (MultiXactOffsetSLRU), it is UNINTERRUPTIBLE. statement_timeout,
+ * pg_cancel_backend, and pg_terminate_backend all no-op until the lock frees,
+ * so the wide poller scans can't be rescued reactively. The only defense is
+ * to NOT issue them when the replica is contended.
+ *
+ * This probe issues a tiny, bounded Order read — at most PROBE_ROW_CAP rows
+ * through the appointmentTime index — raced against a hard app-side deadline.
+ * It touches the same *class* of rows the real scan does (so it actually
+ * detects Order-table SLRU contention, unlike a `SELECT 1`), but the LIMIT
+ * caps the visibility-check work so, worst case, a wedge here is one small
+ * backend instead of a full-scan one.
+ *
+ * The circuit breaker gates it: if the "worker" breaker is already open we
+ * return false WITHOUT issuing any query, so a sick replica stops
+ * accumulating even probe zombies. A probe timeout/failure feeds the same
+ * breaker (via labstackOr), so ~5 consecutive bad probes trip it and the
+ * next cycles short-circuit for the open window.
+ *
+ * Returns true only if the replica answered the bounded read within the
+ * deadline; false means "skip this cycle."
+ */
+export async function probeLabstackHealthy(
+  deadlineMs: number = PROBE_DEADLINE_MS,
+): Promise<boolean> {
+  // Breaker open → replica presumed sick; issue NOTHING (no new zombie).
+  // Checked here, before the query is created, because labstackOr can only
+  // stop *waiting* on an already-issued promise — it can't un-issue it.
+  if (isBreakerOpen("worker")) return false;
+
+  // Bounded probe: up to PROBE_ROW_CAP recent Order rows via the
+  // appointmentTime index. PROBE_ROW_CAP is an int parsed from env (never
+  // user input), so inlining it into the LIMIT is injection-safe.
+  const probe = labstackWorker.$queryRawUnsafe<Array<{ ok: number }>>(
+    `SELECT count(*)::int AS ok FROM (
+       SELECT 1 FROM public."Order"
+       WHERE "appointmentTime" >= NOW() - INTERVAL '30 minutes'
+         AND "appointmentTime" <  NOW() + INTERVAL '30 minutes'
+       LIMIT ${PROBE_ROW_CAP}
+     ) t`,
+  );
+  const result = await labstackOr<Array<{ ok: number }> | null>(
+    probe,
+    null,
+    deadlineMs,
+    { breakerKey: "worker" },
+  );
+  return result !== null;
 }
 
 export default labstack;

@@ -133,7 +133,7 @@ export async function GET(request: NextRequest) {
       ? computeRosterStatus(schedule, exception, now)
       : "OFF";
 
-    const maxConcurrent = agent.teamMember?.maxConcurrentTasks ?? 5;
+    const maxConcurrent = agent.teamMember?.maxConcurrentTasks ?? 100;
 
     return {
       userId: agent.id,

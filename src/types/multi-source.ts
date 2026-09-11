@@ -192,6 +192,15 @@ export interface RegisterDataSourceRequest {
   statusFieldName: string;
   queryTemplate: string;
   metadataFieldMapping?: Record<string, string>;
+  // Analytics contract for the Source Load panel (all optional).
+  analyticsConfig?: {
+    eventTimeField?: string;
+    createdField?: string;
+    eventTimeLabel?: string;
+    lookaheadDays?: number;
+    statusFulfilled?: string[];
+    statusFailed?: string[];
+  };
   pollingIntervalMinutes?: number;
   backfillEnabled?: boolean;
   backfillDays?: number;

@@ -201,7 +201,12 @@ export async function runTaskRetirer(): Promise<RetirementResult> {
         taskId: t.id,
         status: TaskStatus.CANCELLED,
         changedById: null, // engine, not a user
-        note: `Auto-closed by engine — source order advanced to ${t.oldStatus} (out of rule's statusIn)`,
+        // "moved", not "advanced" — orders can also REGRESS out of a rule's
+        // statusIn (e.g. SAMPLE_DELIVERED → SAMPLE_COLLECTED on a sample
+        // re-collection). The close is correct either way; if the order
+        // re-enters the rule's statusIn later, the creator re-fires the rule
+        // (engine-retired tasks no longer occupy the dedup slot).
+        note: `Auto-closed by engine — source order moved to ${t.oldStatus} (out of rule's statusIn)`,
       })),
     });
   });

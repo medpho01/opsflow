@@ -9,6 +9,7 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { getSessionFromRequest } from "@/lib/auth/session";
+import prisma from "@/lib/db/client";
 import labstack, { labstackOr } from "@/lib/db/labstack";
 
 interface RawAppointmentDetail {
@@ -84,11 +85,33 @@ export async function GET(
   }
 
   const a = rows[0];
+
+  // The appointment's own OpsFlow tasks. Filter by entityType so an ORDER that
+  // shares this numeric id doesn't leak its tasks into the appointment drawer
+  // (the boards pass entityId straight through, and ids collide across tables).
+  const tasks = await prisma.task.findMany({
+    where: { entityId: appointmentId, entityType: "APPOINTMENT" },
+    select: {
+      id: true,
+      title: true,
+      entityType: true,
+      status: true,
+      priority: true,
+      slaDeadline: true,
+      completedAt: true,
+      createdAt: true,
+      assignedTo: { select: { id: true, name: true } },
+      taskType: { select: { label: true } },
+    },
+    orderBy: { createdAt: "desc" },
+  });
+
   return NextResponse.json({
     appointment: {
       ...a,
       // Trim the provider name (source data has trailing spaces).
       doctorName: a.doctorName ? a.doctorName.trim() : null,
     },
+    tasks,
   });
 }

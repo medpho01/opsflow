@@ -21,6 +21,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { formatISTTimestamp } from "@/lib/utils/timezone";
 import TaskDetailPanel from "@/components/agent/TaskDetailPanel";
 import OrderQuickView from "@/components/shared/OrderQuickView";
+import AppointmentQuickView from "@/components/shared/AppointmentQuickView";
 
 // ─── Types ─────────────────────────────────────────────────────────────
 interface Agent {
@@ -2187,10 +2188,18 @@ export default function MyWorkBoard({ currentUser }: { currentUser: CurrentUser 
         </>
       )}
       {selectedTask && !isAgent && (
-        <OrderQuickView
-          orderId={selectedTask.entityId}
-          onClose={() => setSelectedTask(null)}
-        />
+        (selectedTask.entityType ?? "").toUpperCase() === "APPOINTMENT" ||
+        selectedTask.dataSource?.sourceId === "Appointments" ? (
+          <AppointmentQuickView
+            appointmentId={selectedTask.entityId}
+            onClose={() => setSelectedTask(null)}
+          />
+        ) : (
+          <OrderQuickView
+            orderId={selectedTask.entityId}
+            onClose={() => setSelectedTask(null)}
+          />
+        )
       )}
     </div>
   );

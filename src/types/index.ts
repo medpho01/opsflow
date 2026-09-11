@@ -127,7 +127,13 @@ export interface TaskRuleWithRelations {
   isActive: boolean;
   escalationChainId: number | null;
   requiredSkills: { skillTagId: number; skillTag: { name: string } }[];
-  taskType: { name: string; label: string; checklistItems: { stepOrder: number; stepText: string; isRequired: boolean }[] };
+  taskType: {
+    name: string;
+    label: string;
+    nextStepComplete?: string | null;
+    nextStepIncomplete?: string | null;
+    checklistItems: { stepOrder: number; stepText: string; isRequired: boolean; guidance?: string | null; script?: string | null }[];
+  };
 }
 
 export interface CreateTaskPayload {
@@ -150,7 +156,7 @@ export interface CreateTaskPayload {
   // (e.g. walk-in orders, some pharmacy deliveries).
   appointmentTime: Date | null;
   metadata: Record<string, unknown>;
-  checklistSteps: { stepOrder: number; stepText: string; isRequired: boolean }[];
+  checklistSteps: { stepOrder: number; stepText: string; isRequired: boolean; guidance?: string | null; script?: string | null }[];
 }
 
 // ── Dashboard types ───────────────────────────────────────────────

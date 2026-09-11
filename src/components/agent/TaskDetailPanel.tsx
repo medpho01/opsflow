@@ -16,6 +16,8 @@ interface ChecklistItem {
   isRequired: boolean;
   isDone: boolean;
   doneAt: string | null;
+  guidance?: string | null;
+  script?: string | null;
 }
 
 interface Task {
@@ -699,36 +701,75 @@ export default function TaskDetailPanel({ task, onUpdate }: TaskDetailPanelProps
               />
             </div>
 
-            <div className="space-y-2">
+            <div className="space-y-3">
               {displayedTask.checklistItems.map((item) => (
-                <label
-                  key={item.id}
-                  className={`flex items-start gap-3 cursor-pointer group ${
-                    isTerminal ? "cursor-default" : ""
-                  }`}
-                >
-                  <div className="mt-0.5 shrink-0">
-                    <input
-                      type="checkbox"
-                      checked={item.isDone}
-                      disabled={isTerminal || loading === `check-${item.id}`}
-                      onChange={(e) => toggleChecklist(item.id, e.target.checked)}
-                      className="w-4 h-4 rounded border-zinc-600 bg-zinc-800 text-green-500 focus:ring-green-500 focus:ring-offset-zinc-900 cursor-pointer"
-                    />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <span className={`text-sm leading-snug ${
-                      item.isDone ? "text-zinc-500 line-through" : "text-zinc-200"
-                    }`}>
-                      {item.stepText}
-                    </span>
-                    {item.isRequired && !item.isDone && (
-                      <span className="ml-1.5 text-[10px] text-red-400 font-medium">required</span>
-                    )}
-                  </div>
-                </label>
+                <div key={item.id}>
+                  <label
+                    className={`flex items-start gap-3 cursor-pointer group ${
+                      isTerminal ? "cursor-default" : ""
+                    }`}
+                  >
+                    <div className="mt-0.5 shrink-0">
+                      <input
+                        type="checkbox"
+                        checked={item.isDone}
+                        disabled={isTerminal || loading === `check-${item.id}`}
+                        onChange={(e) => toggleChecklist(item.id, e.target.checked)}
+                        className="w-4 h-4 rounded border-zinc-600 bg-zinc-800 text-green-500 focus:ring-green-500 focus:ring-offset-zinc-900 cursor-pointer"
+                      />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <span className={`text-sm leading-snug ${
+                        item.isDone ? "text-zinc-500 line-through" : "text-zinc-200"
+                      }`}>
+                        {item.stepText}
+                      </span>
+                      {item.isRequired && !item.isDone && (
+                        <span className="ml-1.5 text-[10px] text-red-400 font-medium">required</span>
+                      )}
+                    </div>
+                  </label>
+                  {/* Per-step guidance + script (agent how-to). Rendered outside
+                      the label so reading them doesn't toggle the checkbox. */}
+                  {(item.guidance || item.script) && (
+                    <div className="ml-7 mt-1 space-y-1.5">
+                      {item.guidance && (
+                        <div className="text-[11px] leading-relaxed text-zinc-400">
+                          <span className="text-zinc-600">Guidance: </span>
+                          <span className="whitespace-pre-wrap">{item.guidance}</span>
+                        </div>
+                      )}
+                      {item.script && (
+                        <div className="text-[11px] leading-relaxed text-zinc-300 bg-zinc-800/60 border-l-2 border-blue-700/50 rounded-r px-2 py-1.5">
+                          <span className="text-zinc-500 block text-[10px] uppercase tracking-wider mb-0.5">Script</span>
+                          <span className="whitespace-pre-wrap italic">{item.script}</span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
               ))}
             </div>
+
+            {/* Next step — from the task's snapshotted guidance, chosen by
+                whether the required items are all done. */}
+            {(() => {
+              const ns = (displayedTask.metadata?.nextStep ?? null) as { complete?: string | null; incomplete?: string | null } | null;
+              if (!ns) return null;
+              const requiredDone = displayedTask.checklistItems.every((i) => !i.isRequired || i.isDone);
+              const text = requiredDone ? ns.complete : ns.incomplete;
+              if (!text) return null;
+              return (
+                <div className={`mt-4 rounded-lg border px-3 py-2.5 ${
+                  requiredDone ? "border-emerald-700/40 bg-emerald-500/5" : "border-amber-700/40 bg-amber-500/5"
+                }`}>
+                  <div className={`text-[10px] uppercase tracking-wider mb-1 ${requiredDone ? "text-emerald-400" : "text-amber-400"}`}>
+                    Next step {requiredDone ? "· checklist complete" : "· checklist incomplete"}
+                  </div>
+                  <div className="text-xs text-zinc-200 leading-relaxed whitespace-pre-wrap">{text}</div>
+                </div>
+              );
+            })()}
           </div>
         )}
 

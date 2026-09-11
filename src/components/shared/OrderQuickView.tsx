@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import StatusBadge from "@/components/shared/StatusBadge";
 import PriorityBadge from "@/components/shared/PriorityBadge";
 import SlaCountdown from "@/components/shared/SlaCountdown";
+import TaskChecklistView, { type ChecklistViewItem } from "@/components/shared/TaskChecklistView";
 import { formatISTTimestamp, formatISTDate } from "@/lib/utils/timezone";
 
 interface OrderDetail {
@@ -37,6 +38,8 @@ interface OrderTask {
   createdAt: string;
   assignedTo: { id: number; name: string } | null;
   taskType: { label: string } | null;
+  metadata?: Record<string, unknown> | null;
+  checklistItems?: ChecklistViewItem[];
 }
 
 interface OrderQuickViewProps {
@@ -231,6 +234,7 @@ export default function OrderQuickView({ orderId, onClose }: OrderQuickViewProps
                             </span>
                           )}
                         </div>
+                        <TaskChecklistView items={task.checklistItems ?? []} metadata={task.metadata} />
                       </div>
                     ))}
                   </div>

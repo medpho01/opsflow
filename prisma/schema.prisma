@@ -317,6 +317,10 @@ model TaskType {
   normalAgingMinutes   Int      @default(30)
   warningAgingMinutes  Int      @default(45)
   criticalAgingMinutes Int      @default(60)
+  // Task-level "next step" guidance, shown in the drawer once the agent knows
+  // whether the checklist is complete. Copied onto each task at creation.
+  nextStepComplete     String?
+  nextStepIncomplete   String?
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
 
@@ -333,6 +337,10 @@ model ChecklistTemplate {
   stepOrder  Int
   stepText   String
   isRequired Boolean  @default(true)
+  // Per-step agent guidance, copied onto each task's checklist item at
+  // creation: `guidance` = what to do for this step; `script` = words to say.
+  guidance   String?
+  script     String?
   createdAt  DateTime @default(now())
 
   taskType TaskType @relation(fields: [taskTypeId], references: [id], onDelete: Cascade)
@@ -514,6 +522,9 @@ model TaskChecklistItem {
   stepOrder  Int
   stepText   String
   isRequired Boolean   @default(true)
+  // Snapshotted from the template at creation (see ChecklistTemplate).
+  guidance   String?
+  script     String?
   isDone     Boolean   @default(false)
   doneAt     DateTime?
   createdAt  DateTime  @default(now())

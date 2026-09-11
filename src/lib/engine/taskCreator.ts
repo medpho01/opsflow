@@ -798,6 +798,8 @@ async function createTask(
               stepOrder: s.stepOrder,
               stepText: s.stepText,
               isRequired: s.isRequired,
+              guidance: s.guidance ?? null,
+              script: s.script ?? null,
               isDone: false,
             })),
           },
@@ -828,6 +830,8 @@ async function createTask(
             stepOrder: s.stepOrder,
             stepText: s.stepText,
             isRequired: s.isRequired,
+            guidance: s.guidance ?? null,
+            script: s.script ?? null,
             isDone: false,
           })),
         },
@@ -1182,11 +1186,19 @@ export async function evaluateAndCreateTasks(
             matchedFacts,
             evaluatedAt: now.toISOString(),
           },
+          // Task-level next-step guidance, snapshotted from the task type so the
+          // drawer can show "what to do next" based on checklist completion.
+          nextStep: {
+            complete: rule.taskType.nextStepComplete ?? null,
+            incomplete: rule.taskType.nextStepIncomplete ?? null,
+          },
         },
         checklistSteps: rule.taskType.checklistItems.map((ci) => ({
           stepOrder: ci.stepOrder,
           stepText: ci.stepText,
           isRequired: ci.isRequired,
+          guidance: ci.guidance ?? null,
+          script: ci.script ?? null,
         })),
       };
 

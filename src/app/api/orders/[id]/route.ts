@@ -107,9 +107,15 @@ export async function GET(
       status: true,
       priority: true,
       slaDeadline: true,
+      completedAt: true,
       createdAt: true,
+      metadata: true,
       assignedTo: { select: { id: true, name: true } },
       taskType: { select: { label: true } },
+      checklistItems: {
+        orderBy: { stepOrder: "asc" },
+        select: { id: true, stepOrder: true, stepText: true, isRequired: true, isDone: true, guidance: true, script: true },
+      },
     },
     orderBy: [
       // ORDER tasks first (the drawer's primary subject), then anything else.

@@ -10,7 +10,7 @@ Stack: **Next.js 15** (App Router) · **React 19** · **Prisma 4.16** ·
 
 ## Getting started
 
-👉 **[docs/LOCAL_SETUP.md](docs/LOCAL_SETUP.md)** — clone-to-running guide with a
+👉 **[DOCS/LOCAL_SETUP.md](DOCS/LOCAL_SETUP.md)** — clone-to-running guide with a
 seeded database (Docker or native).
 
 Fastest path (Docker):
@@ -24,7 +24,7 @@ open http://localhost:3000               # login: admin@opsflow.local / changeme
 
 ## Documentation
 
-- **[docs/LOCAL_SETUP.md](docs/LOCAL_SETUP.md)** — local setup, seeding, and the
+- **[DOCS/LOCAL_SETUP.md](DOCS/LOCAL_SETUP.md)** — local setup, seeding, and the
   two-database (taskos vs source) model.
 - **[DOCKER.md](DOCKER.md)** — Docker deep-dive: external/managed databases,
   admin password reset, data persistence, troubleshooting.

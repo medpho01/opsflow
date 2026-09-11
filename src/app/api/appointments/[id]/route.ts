@@ -64,16 +64,17 @@ export async function GET(
          u.mobile            AS "patientMobile",
          p.name              AS "doctorName",
          p.mobile            AS "doctorMobile",
-         -- Store for an appointment: the slot's physical center if set, else
-         -- the doctor's main store, else the linked order's store. (ONLINE
-         -- appointments have no center, so the provider store is the useful one.)
-         COALESCE(ctr."storeName", pstore."storeName", ostore."storeName") AS "storeName"
+         -- Store for an appointment = the PATIENT's partner store (User.storeId)
+         -- — that's what the LabStack console shows. The provider works across
+         -- many stores, so the provider path is ambiguous; the slot center /
+         -- linked order are fallbacks for the rare case the patient has none.
+         COALESCE(ustore."storeName", ctr."storeName", ostore."storeName") AS "storeName"
        FROM public."Appointment" a
        JOIN public."User" u ON u.id = a.user_id
+       LEFT JOIN public."Store" ustore ON ustore.id = u."storeId"
        LEFT JOIN public."SlotConfig" sc ON sc.id = a.slot_id
        LEFT JOIN public."Provider" p ON p.id = sc.provider_id
        LEFT JOIN public."Store" ctr ON ctr.id = sc.center_id
-       LEFT JOIN public."Store" pstore ON pstore.id = p.main_store_id
        LEFT JOIN public."Order" o ON o.id = a."order_id"
        LEFT JOIN public."Store" ostore ON ostore.id = o."storeId"
        WHERE a.id = $1

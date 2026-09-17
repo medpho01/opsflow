@@ -1538,7 +1538,11 @@ export default function MyWorkBoard({ currentUser }: { currentUser: CurrentUser 
   const handleRowHover = useCallback((t: Task) => {
     if (typeof window !== "undefined" && window.matchMedia && !window.matchMedia("(min-width: 1024px)").matches) return;
     if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
-    hoverTimerRef.current = setTimeout(() => setSelectedTask(t), 180);
+    // Hover only PREVIEWS into an already-open panel — it never opens the panel
+    // from closed. Opening is click-driven (onRowClick), so the panel stays
+    // hidden until the lead actually selects a task and the list keeps full
+    // width until then.
+    hoverTimerRef.current = setTimeout(() => setSelectedTask((prev) => (prev ? t : prev)), 180);
   }, []);
   const handleRowHoverEnd = useCallback(() => {
     if (hoverTimerRef.current) { clearTimeout(hoverTimerRef.current); hoverTimerRef.current = null; }
@@ -2449,9 +2453,11 @@ export default function MyWorkBoard({ currentUser }: { currentUser: CurrentUser 
             tasks, history. Heads oversee; they shouldn't be marking tasks
             complete from a monitoring view. They have the Reassign
             popover on the row for the one intervention they need here. */}
-    <div className="hidden lg:block w-[440px] shrink-0 h-full border-l border-zinc-800 overflow-y-auto bg-zinc-950">
-      {selectedTask ? (
-        isAgent ? (
+    {/* Only mounted once a task is selected — until then the left list fills
+        the full width (no empty "select a task" placeholder column). */}
+    {selectedTask && (
+      <div className="hidden lg:block w-[440px] shrink-0 h-full border-l border-zinc-800 overflow-y-auto bg-zinc-950">
+        {isAgent ? (
           <TaskDetailPanel
             key={selectedTask.id}
             task={selectedTask}
@@ -2472,17 +2478,9 @@ export default function MyWorkBoard({ currentUser }: { currentUser: CurrentUser 
             orderId={selectedTask.entityId}
             onClose={() => setSelectedTask(null)}
           />
-        )
-      ) : (
-        <div className="flex flex-col items-center justify-center h-full text-center px-6">
-          <svg className="w-12 h-12 text-zinc-800 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
-          </svg>
-          <p className="text-sm text-zinc-600 font-medium">Select a task to view details</p>
-          <p className="text-xs text-zinc-700 mt-1">Pick any task from the list to see its checklist and context here</p>
-        </div>
-      )}
-    </div>
+        )}
+      </div>
+    )}
 
     {/* Narrow-screen fallback — same drawers, but as an on-top modal since
         there's no room for a persistent side-by-side panel below lg. */}

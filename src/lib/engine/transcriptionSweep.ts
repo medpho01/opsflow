@@ -12,10 +12,20 @@
  */
 import prisma from "@/lib/db/client";
 import { CallStatus } from "@prisma/client";
+import { fetchExternalResource } from "@/lib/utils/safeFetch";
 
 const MAX_ATTEMPTS = 3;
 const BATCH_SIZE = 2;
 const REQUEST_TIMEOUT_MS = 90_000;
+const DOWNLOAD_TIMEOUT_MS = 30_000;
+const MAX_RECORDING_BYTES = 25 * 1024 * 1024;
+// Optional exact-host allowlist for recording downloads (comma-separated). When
+// unset, https + private/reserved-IP denial + no-redirects still apply — set it
+// (e.g. to your Exotel recording host) to also reject arbitrary public hosts.
+const RECORDING_ALLOWED_HOSTS = (process.env.RECORDING_ALLOWED_HOSTS ?? "")
+  .split(",")
+  .map((h) => h.trim().toLowerCase())
+  .filter(Boolean);
 
 export async function runTranscriptionSweep(): Promise<{ processed: number; succeeded: number }> {
   const whisperUrl = process.env.WHISPER_SERVICE_URL;
@@ -37,9 +47,15 @@ export async function runTranscriptionSweep(): Promise<{ processed: number; succ
   for (const log of candidates) {
     processed++;
     try {
-      const audioRes = await fetch(log.recordingUrl!);
-      if (!audioRes.ok) throw new Error(`recording fetch failed: ${audioRes.status}`);
-      const audioBuffer = await audioRes.arrayBuffer();
+      // recordingUrl can originate from the UNAUTHENTICATED Exotel webhook, so
+      // it is untrusted: fetch it through the SSRF-guarded helper (https-only,
+      // private/metadata IPs blocked, no redirects, timeout + size cap) rather
+      // than a raw fetch that could be pointed at internal services.
+      const audioBuffer = await fetchExternalResource(log.recordingUrl!, {
+        timeoutMs: DOWNLOAD_TIMEOUT_MS,
+        maxBytes: MAX_RECORDING_BYTES,
+        allowedHosts: RECORDING_ALLOWED_HOSTS,
+      });
 
       const form = new FormData();
       form.append("file", new Blob([audioBuffer]), "call.audio");

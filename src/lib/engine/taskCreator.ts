@@ -484,41 +484,58 @@ async function pickAssignee(
     // weekly schedule for today's day-of-week and any roster exception for today.
     // Availability is then derived in JS via computeRosterStatus() — same logic
     // used by GET /api/team for displaying rosterStatus.
-    const candidateMembers = await prisma.teamMember.findMany({
-      where: {
-        isActive: true,
-        user: { isActive: true, role: "OPS_AGENT" },
-        ...(storeId !== null
-          ? { storeAssignments: { some: { storeId } } }
-          : {}),
-        ...(requiredSkillIds.length > 0
-          ? { skills: { some: { skillTagId: { in: requiredSkillIds } } } }
-          : {}),
-      },
-      include: {
-        user: { select: { id: true } },
-        capabilities: { select: { dataSourceId: true } },
-        // Loaded for strategies that look beyond load (skill_based,
-        // store_affinity). The base query already filters by required skills
-        // when present, but strategies that PREFER more matches still need
-        // the full skill set.
-        skills: { select: { skillTagId: true } },
-        storeAssignments: { select: { storeId: true } },
-        weeklySchedules: { where: { dayOfWeek: todayDayOfWeek } },
-        rosterExceptions: {
-          where: { date: { gte: todayUTC, lt: tomorrowUTC } },
-          take: 1,
+    // Store scoping is a SOFT constraint for the candidate pool: prefer agents
+    // assigned to the entity's store, but if NO agent covers that store, fall
+    // back to the full eligible pool rather than leaving the task unassigned.
+    // (Resolving a storeId for Appointments made the store filter fire for a
+    // source that previously passed storeId=null; without this fallback that
+    // silently stranded tasks in any store lacking a store→agent assignment.)
+    // The store_affinity strategy below still applies store preference.
+    const loadCandidates = (withStoreFilter: boolean) =>
+      prisma.teamMember.findMany({
+        where: {
+          isActive: true,
+          user: { isActive: true, role: "OPS_AGENT" },
+          ...(withStoreFilter && storeId !== null
+            ? { storeAssignments: { some: { storeId } } }
+            : {}),
+          ...(requiredSkillIds.length > 0
+            ? { skills: { some: { skillTagId: { in: requiredSkillIds } } } }
+            : {}),
         },
-        _count: {
-          select: {
-            assignedTasks: {
-              where: { status: { notIn: [TaskStatus.COMPLETED, TaskStatus.CANCELLED] } },
+        include: {
+          user: { select: { id: true } },
+          capabilities: { select: { dataSourceId: true } },
+          // Loaded for strategies that look beyond load (skill_based,
+          // store_affinity). The base query already filters by required skills
+          // when present, but strategies that PREFER more matches still need
+          // the full skill set.
+          skills: { select: { skillTagId: true } },
+          storeAssignments: { select: { storeId: true } },
+          weeklySchedules: { where: { dayOfWeek: todayDayOfWeek } },
+          rosterExceptions: {
+            where: { date: { gte: todayUTC, lt: tomorrowUTC } },
+            take: 1,
+          },
+          _count: {
+            select: {
+              assignedTasks: {
+                where: { status: { notIn: [TaskStatus.COMPLETED, TaskStatus.CANCELLED] } },
+              },
             },
           },
         },
-      },
-      orderBy: { user: { id: "asc" } },
-    });
+        orderBy: { user: { id: "asc" } },
+      });
+
+    let candidateMembers = await loadCandidates(true);
+    if (candidateMembers.length === 0 && storeId !== null) {
+      console.warn(
+        `[pickAssignee] no active OPS_AGENT is assigned to store ${storeId}; ` +
+        `falling back to the all-store candidate pool (dataSourceId=${dataSourceId})`,
+      );
+      candidateMembers = await loadCandidates(false);
+    }
 
     if (candidateMembers.length === 0) {
       const detail = `No team members match filters (dataSourceId=${dataSourceId}, storeId=${storeId}, skills=${requiredSkillIds.join(",")})`;

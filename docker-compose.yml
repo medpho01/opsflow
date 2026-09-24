@@ -76,6 +76,17 @@ services:
     restart: unless-stopped
     environment:
       WHISPER_MODEL_SIZE: ${WHISPER_MODEL_SIZE:-base}
+      WHISPER_MAX_UPLOAD_BYTES: ${WHISPER_MAX_UPLOAD_BYTES:-31457280}  # 30 MiB
+    # Cap resources so a large/slow transcribe can't OOM the host it shares.
+    # "base" int8 + a decoded buffer sits well under this; raise for bigger models.
+    mem_limit: ${WHISPER_MEM_LIMIT:-2g}
+    cpus: ${WHISPER_CPUS:-1.5}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=3).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 90s   # model loads on boot; don't report unhealthy meanwhile
 
   # ── The OpsFlow app ─────────────────────────────────────────────────
   app:
@@ -86,8 +97,8 @@ services:
         condition: service_healthy
         required: false   # Allow `docker compose up app` (no db service)
       whisper:
-        condition: service_started
-        required: false   # Allow running without transcription
+        condition: service_healthy
+        required: false   # Allow running without transcription (skipped if absent)
     environment:
       # Where OpsFlow OWNS and WRITES its data — the `taskos` schema.
       # Defaults to the bundled `db` container above. Override in `.env`

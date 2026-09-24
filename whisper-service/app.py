@@ -16,6 +16,9 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from faster_whisper import WhisperModel
 
 MODEL_SIZE = os.environ.get("WHISPER_MODEL_SIZE", "base")
+# Reject oversized uploads before buffering them into memory (defense-in-depth;
+# the caller also caps the download). Default 30 MiB.
+MAX_UPLOAD_BYTES = int(os.environ.get("WHISPER_MAX_UPLOAD_BYTES", str(30 * 1024 * 1024)))
 
 app = FastAPI()
 model = WhisperModel(MODEL_SIZE, device="cpu", compute_type="int8")
@@ -31,6 +34,8 @@ async def transcribe(file: UploadFile = File(...)):
     contents = await file.read()
     if not contents:
         raise HTTPException(status_code=400, detail="Empty file")
+    if len(contents) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="File too large")
 
     with tempfile.NamedTemporaryFile(suffix=".audio") as tmp:
         tmp.write(contents)

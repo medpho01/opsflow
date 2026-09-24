@@ -29,7 +29,12 @@ export function labstackConsoleUrl(entityType: string, entityId: number): string
   // NEXT_PUBLIC_EXOTEL_API_BASE_URL) — so .env alone never reaches a Docker
   // build. Falling back to the real default keeps the link working out of
   // the box; the env var still wins if a future build pipeline wires it up.
-  const base = process.env.NEXT_PUBLIC_LABSTACK_CONSOLE_URL || "https://console.labstack.in";
+  // `??` (not `||`): an UNSET var falls back to the prod console so the link
+  // works out of the box; an explicitly EMPTY value ("") is honored and hides
+  // the link (the null-return below). NEXT_PUBLIC_ vars are inlined at build
+  // time and this repo's Dockerfile doesn't pass them as build args, so in the
+  // packaged image the default is what ships — see .env.example.
+  const base = process.env.NEXT_PUBLIC_LABSTACK_CONSOLE_URL ?? "https://console.labstack.in";
   if (!base) return null;
 
   const segment = ENTITY_PATH[entityType.toUpperCase()];

@@ -78,6 +78,7 @@ export async function PATCH(
   if (parsed.dataSourceId !== undefined) updates.dataSourceId = parsed.dataSourceId;
   if (parsed.allowedTypes !== undefined) updates.allowedTypes = parsed.allowedTypes;
   if (parsed.allowedStatuses !== undefined) updates.allowedStatuses = parsed.allowedStatuses;
+  if (parsed.allowedStores !== undefined) updates.allowedStores = parsed.allowedStores;
   if (parsed.pollingIntervalMinutes !== undefined) updates.pollingIntervalMinutes = parsed.pollingIntervalMinutes;
   if (parsed.slaMinutes !== undefined) updates.slaMinutes = parsed.slaMinutes;
   if (parsed.priority !== undefined) updates.priority = parsed.priority;

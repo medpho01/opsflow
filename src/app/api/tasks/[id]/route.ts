@@ -6,41 +6,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { getSessionFromRequest } from "@/lib/auth/session";
 import prisma from "@/lib/db/client";
 import { TaskStatus, UserRole } from "@prisma/client";
+import { canAccessTask } from "@/lib/auth/taskAccess";
 // Labstack is treated as a strictly read-only source — no writebacks.
 // (Previously this route called appendOrderNote() on task completion; that
 // path has been removed. Task completion is recorded in taskos.task_history
 // only; the labstack Order row is left untouched.)
-
-/**
- * Resolve store IDs a STORE_ADMIN is permitted to act on. Empty array means
- * the admin has no store assignments — they should be forbidden from acting
- * on any task.
- */
-async function getAdminStoreIds(userId: number): Promise<number[]> {
-  const member = await prisma.teamMember.findFirst({
-    where: { userId },
-    include: { storeAssignments: { select: { storeId: true } } },
-  });
-  return member?.storeAssignments.map((a) => a.storeId) ?? [];
-}
-
-/**
- * Returns true iff the user is allowed to read/write this task. Centralises
- * the role-based scoping rule so GET and PATCH agree (audit P0 #4 — PATCH
- * previously only checked OPS_AGENT-not-own and let STORE_ADMINs touch any
- * task).
- */
-async function canAccessTask(
-  user: { id: number; role: UserRole },
-  task: { assignedToId: number | null; storeId: number | null }
-): Promise<boolean> {
-  if (user.role === UserRole.OPS_HEAD) return true;
-  if (user.role === UserRole.OPS_AGENT) return task.assignedToId === user.id;
-  // STORE_ADMIN: must own the task's store
-  if (task.storeId == null) return false;
-  const storeIds = await getAdminStoreIds(user.id);
-  return storeIds.includes(task.storeId);
-}
 
 export async function GET(
   request: NextRequest,

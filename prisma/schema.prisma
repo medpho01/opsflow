@@ -154,6 +154,15 @@ model CallLog {
   recordingUrl   String?
   durationSec    Int?
   errorMessage   String?
+  // How many times the recording sweep has polled Exotel for a recording
+  // that wasn't ready yet on the status webhook (recording URLs generate
+  // 45s-few min after the call ends). Capped in callRecordingSweep.ts.
+  recordingCheckAttempts Int @default(0)
+  // Self-hosted Whisper transcript of recordingUrl, filled in by
+  // transcriptionSweep.ts once a recording exists. Null while pending/
+  // unavailable (Exotel has no transcription of its own — see that file).
+  transcript         String? @db.Text
+  transcriptAttempts Int     @default(0)
   createdAt      DateTime   @default(now())
   updatedAt      DateTime   @updatedAt
 
@@ -410,6 +419,13 @@ model TaskRule {
   dataSourceId           String
   allowedTypes           Json                @default("[]")
   allowedStatuses        Json                @default("[]")
+  // Store filter — same shape/semantics as allowedTypes: empty = match any
+  // store, non-empty = only entities whose storeId is in this list. Values
+  // are labstack Store ids (numbers), stored as JSON like the other filters
+  // since a rule can span zero or more stores. See sourceSample.ts for how
+  // storeId gets resolved per data source (direct column vs. Appointment's
+  // audit-trail derivation).
+  allowedStores          Json                @default("[]")
   pollingIntervalMinutes Int                 @default(15)
   taskTypeId             Int
   titleTemplate          String

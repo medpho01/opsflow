@@ -72,6 +72,7 @@ const inlineRuleSchema = z.object({
   dataSourceId: z.string().min(1),
   allowedTypes: z.array(z.string().min(1)).default([]),
   allowedStatuses: z.array(z.string().min(1)).default([]),
+  allowedStores: z.array(z.coerce.number().int().positive()).default([]),
   triggerType: z.enum(["TIME", "STATUS"]).default("TIME"),
   triggerCondition: triggerConditionSchema,
   titleTemplate: z.string().min(1).default("(no title template)"),
@@ -110,6 +111,7 @@ export async function POST(request: NextRequest) {
     let ruleId: string | null;
     let dataSourceId: string;
     let allowedTypes: string[];
+    let allowedStores: number[];
     let triggerType: "TIME" | "STATUS";
     let triggerCondition: TriggerCondition;
     let titleTemplate: string;
@@ -119,7 +121,7 @@ export async function POST(request: NextRequest) {
         where: { id: parsed.ruleId },
         select: {
           id: true, name: true, dataSourceId: true,
-          allowedTypes: true, triggerType: true,
+          allowedTypes: true, allowedStores: true, triggerType: true,
           triggerCondition: true, titleTemplate: true,
         },
       });
@@ -130,6 +132,7 @@ export async function POST(request: NextRequest) {
       ruleName = stored.name;
       dataSourceId = stored.dataSourceId;
       allowedTypes = Array.isArray(stored.allowedTypes) ? (stored.allowedTypes as string[]) : [];
+      allowedStores = Array.isArray(stored.allowedStores) ? (stored.allowedStores as number[]) : [];
       triggerType = stored.triggerType;
       triggerCondition = stored.triggerCondition as unknown as TriggerCondition;
       titleTemplate = stored.titleTemplate;
@@ -139,6 +142,7 @@ export async function POST(request: NextRequest) {
       ruleName = "(unsaved rule)";
       dataSourceId = inline.dataSourceId;
       allowedTypes = inline.allowedTypes;
+      allowedStores = inline.allowedStores;
       triggerType = inline.triggerType;
       triggerCondition = inline.triggerCondition as unknown as TriggerCondition;
       titleTemplate = inline.titleTemplate;
@@ -222,7 +226,7 @@ export async function POST(request: NextRequest) {
     const now = new Date();
     let wouldFire = 0;
     let wouldDedup = 0;
-    const failedChecks: Record<TriggerCheck | "allowedTypes", number> = {
+    const failedChecks: Record<TriggerCheck | "allowedTypes" | "allowedStores", number> = {
       statusIn: 0,
       minutesSinceCreated: 0,
       minutesSinceStatusUpdated: 0,
@@ -230,6 +234,7 @@ export async function POST(request: NextRequest) {
       minutesAfterAppointment: 0,
       metadataConditions: 0,
       allowedTypes: 0,
+      allowedStores: 0,
     };
 
     interface SimResult {
@@ -243,7 +248,7 @@ export async function POST(request: NextRequest) {
       wouldDedup: boolean;
       renderedTitle?: string;
       reason?: string;
-      failedCheck?: TriggerCheck | "allowedTypes";
+      failedCheck?: TriggerCheck | "allowedTypes" | "allowedStores";
     }
 
     const results: SimResult[] = sample.map((order) => {
@@ -261,6 +266,25 @@ export async function POST(request: NextRequest) {
           wouldDedup: false,
           failedCheck: "allowedTypes",
           reason: `orderType="${order.orderType}" not in [${allowedTypes.join(", ")}]`,
+        };
+      }
+
+      // Step 1b — allowedStores gate (mirrors the engine's evaluateAndCreateTasks)
+      if (allowedStores.length > 0 && (order.storeId == null || !allowedStores.includes(order.storeId))) {
+        failedChecks.allowedStores++;
+        return {
+          entityId: order.id,
+          orderType: order.orderType,
+          orderStatus: order.orderStatus,
+          appointmentTime: order.appointmentTime,
+          patientName: order.patientName ?? null,
+          storeName: order.storeName ?? null,
+          wouldFire: false,
+          wouldDedup: false,
+          failedCheck: "allowedStores",
+          reason: order.storeId == null
+            ? "no store could be resolved for this entity"
+            : `storeId=${order.storeId} not in [${allowedStores.join(", ")}]`,
         };
       }
 

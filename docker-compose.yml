@@ -66,6 +66,17 @@ services:
       timeout: 3s
       retries: 30
 
+  # ── Call-recording transcription (self-hosted Whisper) ──────────────
+  # Internal only — no host port published, reached over the compose
+  # network at http://whisper:8000. Optional: if this service isn't
+  # running (or `docker compose up app` is used without it), the app's
+  # transcriptionSweep.ts just no-ops — nothing else depends on it.
+  whisper:
+    build: ./whisper-service
+    restart: unless-stopped
+    environment:
+      WHISPER_MODEL_SIZE: ${WHISPER_MODEL_SIZE:-base}
+
   # ── The OpsFlow app ─────────────────────────────────────────────────
   app:
     build: .
@@ -74,6 +85,9 @@ services:
       db:
         condition: service_healthy
         required: false   # Allow `docker compose up app` (no db service)
+      whisper:
+        condition: service_started
+        required: false   # Allow running without transcription
     environment:
       # Where OpsFlow OWNS and WRITES its data — the `taskos` schema.
       # Defaults to the bundled `db` container above. Override in `.env`
@@ -114,6 +128,9 @@ services:
       EXOTEL_PASSWORD: ${EXOTEL_PASSWORD:-}
       EXOTEL_CALLER_ID: ${EXOTEL_CALLER_ID:-}
       NEXT_PUBLIC_EXOTEL_API_BASE_URL: ${NEXT_PUBLIC_EXOTEL_API_BASE_URL:-https://twilix.exotel.in}
+      # Self-hosted transcription (see whisper-service/). Blank ⇒
+      # transcriptionSweep.ts no-ops — no transcript is ever generated.
+      WHISPER_SERVICE_URL: ${WHISPER_SERVICE_URL:-http://whisper:8000}
     ports:
       - "${APP_PORT:-3000}:3000"
     # Required for host.docker.internal to resolve on Linux (no-op on

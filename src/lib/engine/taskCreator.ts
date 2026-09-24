@@ -903,6 +903,7 @@ export interface RuleCycleStats {
   skippedDedup: number;      // matched trigger but already had an open task
   skippedTrigger: number;    // status / timing / metadata didn't pass
   skippedTypeFilter: number; // allowedTypes filtered the order out
+  skippedStoreFilter: number; // allowedStores filtered the order out
   failedAssignment: number;  // task created but pickAssignee couldn't pick anyone
   failedCreate: number;      // insert/reopen threw (e.g. constraint race) — cycle continued
 }
@@ -922,7 +923,7 @@ export async function evaluateAndCreateTasks(
     perRule.set(r.id, {
       ruleId: r.id, ruleName: r.name,
       fired: 0, skippedDedup: 0, skippedTrigger: 0,
-      skippedTypeFilter: 0, failedAssignment: 0, failedCreate: 0,
+      skippedTypeFilter: 0, skippedStoreFilter: 0, failedAssignment: 0, failedCreate: 0,
     });
   }
   const bumpRule = (ruleId: string, key: keyof Omit<RuleCycleStats, "ruleId" | "ruleName">) => {
@@ -1017,6 +1018,17 @@ export async function evaluateAndCreateTasks(
       if (Array.isArray(rule.allowedTypes) && rule.allowedTypes.length > 0) {
         if (!rule.allowedTypes.includes(order.orderType)) {
           bumpRule(rule.id, "skippedTypeFilter");
+          continue;
+        }
+      }
+
+      // Filter by allowed stores (if any are specified). order.storeId is
+      // null for a source/row combo we can't resolve a store for (see
+      // sourceSample.ts) — those rows never match a store-scoped rule rather
+      // than ambiguously passing it.
+      if (Array.isArray(rule.allowedStores) && rule.allowedStores.length > 0) {
+        if (order.storeId == null || !rule.allowedStores.includes(order.storeId)) {
+          bumpRule(rule.id, "skippedStoreFilter");
           continue;
         }
       }

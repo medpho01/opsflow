@@ -135,3 +135,49 @@ export async function initiateExotelCall(params: InitiateCallParams): Promise<In
     return { success: false, callLogId: callLog.id, error: "Could not reach the calling provider." };
   }
 }
+
+export interface ExotelCallDetails {
+  recordingUrl: string | null;
+  durationSec: number | null;
+}
+
+/**
+ * GET a single call's current state from Exotel. Used by callRecordingSweep
+ * to pick up the recording URL once it exists — Exotel doesn't include it on
+ * the initial status webhook; it generates 45s to a few minutes after the
+ * call ends. Field names are parsed permissively (same approach as the
+ * status webhook's own `get()` helper) since we haven't yet confirmed the
+ * exact response shape against a real account — adjust the candidate keys
+ * here if a real response uses different casing.
+ */
+export async function fetchExotelCallDetails(sid: string): Promise<ExotelCallDetails | null> {
+  const EXOTEL_SID = process.env.EXOTEL_SESSION_ID;
+  const EXOTEL_USERNAME = process.env.EXOTEL_USERNAME;
+  const EXOTEL_PASSWORD = process.env.EXOTEL_PASSWORD;
+  const EXOTEL_API_BASE_URL = process.env.NEXT_PUBLIC_EXOTEL_API_BASE_URL || "https://twilix.exotel.in";
+  if (!EXOTEL_SID || !EXOTEL_USERNAME || !EXOTEL_PASSWORD) return null;
+
+  const authHeader = Buffer.from(`${EXOTEL_USERNAME}:${EXOTEL_PASSWORD}`).toString("base64");
+  const url = `${EXOTEL_API_BASE_URL}/v1/Accounts/${EXOTEL_SID}/Calls/${sid}.json`;
+
+  let res: Response;
+  try {
+    res = await fetch(url, { headers: { Authorization: `Basic ${authHeader}` } });
+  } catch {
+    return null;
+  }
+  if (!res.ok) return null;
+
+  const json = await res.json().catch(() => null);
+  const call = json?.Call ?? json;
+  if (!call) return null;
+
+  const recordingUrl = call.RecordingUrl ?? call.recording_url ?? null;
+  const durationRaw = call.Duration ?? call.duration ?? call.ConversationDuration ?? null;
+  const durationSec = durationRaw != null ? parseInt(String(durationRaw), 10) : null;
+
+  return {
+    recordingUrl: recordingUrl || null,
+    durationSec: durationSec != null && !isNaN(durationSec) ? durationSec : null,
+  };
+}

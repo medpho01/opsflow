@@ -100,23 +100,68 @@ export async function fetchSourceSample(
   const map = source.metadataFieldMapping ?? {};
   const fromMap = (row: Record<string, unknown>, outName: string): unknown =>
     map[outName] != null ? row[map[outName]] : undefined;
+  const idNum = (v: unknown): number => {
+    const n = typeof v === "bigint" ? Number(v) : Number(v);
+    return Number.isFinite(n) ? n : 0;
+  };
+  const str = (v: unknown): string => (v == null ? "" : String(v));
 
-  // Resolve patient names via the labstack User table when the source rows
-  // carry a user reference (Order uses userId, Appointment uses user_id). The
-  // name is a join, not a column, so a plain SELECT * can't surface it — this
-  // one extra bulk lookup keeps task titles / the board from showing a blank
-  // patient. Best-effort: absent column or User row leaves patientName empty.
+  // Resolve patient names (+ each patient's home store, used below) via the
+  // labstack User table when the source rows carry a user reference (Order
+  // uses userId, Appointment uses user_id). The name is a join, not a
+  // column, so a plain SELECT * can't surface it — this one extra bulk
+  // lookup keeps task titles / the board from showing a blank patient.
+  // Best-effort: absent column or User row leaves patientName empty.
   const userCol = pick(cols, "userId", "user_id");
   const userNameById = new Map<number, string>();
+  const userStoreById = new Map<number, number>();
   if (userCol) {
     const uids = Array.from(
       new Set(rows.map((r) => Number(r[userCol])).filter((n) => Number.isFinite(n))),
     );
     if (uids.length > 0) {
-      const users = await client.$queryRaw<Array<{ id: number; name: string | null }>>(
-        Prisma.sql`SELECT id, name FROM public."User" WHERE id IN (${Prisma.join(uids)})`,
+      const users = await client.$queryRaw<Array<{ id: number; name: string | null; storeId: number | null }>>(
+        Prisma.sql`SELECT id, name, "storeId" FROM public."User" WHERE id IN (${Prisma.join(uids)})`,
       );
-      for (const u of users) if (u.name) userNameById.set(Number(u.id), u.name);
+      for (const u of users) {
+        if (u.name) userNameById.set(Number(u.id), u.name);
+        if (u.storeId != null) userStoreById.set(Number(u.id), Number(u.storeId));
+      }
+    }
+  }
+
+  // Store resolution — a direct storeId/store_id column covers Order-like
+  // sources (and any future source shaped the same way) for free. Appointment
+  // has no such column: its "creating store" only exists on the audit trail
+  // (see /api/appointments/[id] for the single-row version of this same
+  // lookup), so for that one table specifically we batch-fetch it the same
+  // way patient names are batched above — never a per-row query, to avoid
+  // repeating the wide-scan lock contention this poller has been burned by
+  // before (see labstack.ts's MultiXact incident notes).
+  const storeCol = pick(cols, "storeId", "store_id");
+  const apptAuditStoreById = new Map<number, number>();
+  if (!storeCol && bareTable === "Appointment") {
+    const apptIds = Array.from(
+      new Set(rows.map((r) => idNum(r[source.primaryKeyField])).filter((n) => n > 0)),
+    );
+    // AppointmentAuditEntry is optional across source snapshots (see the
+    // matching guard in /api/appointments/[id]) — check with to_regclass
+    // (never throws) before querying it, so a snapshot that lacks the table
+    // degrades to "no audit store data" (falls through to the patient's home
+    // store below) instead of throwing and skipping this entire poll source.
+    if (apptIds.length > 0) {
+      const [{ present }] = await client.$queryRaw<Array<{ present: boolean }>>(
+        Prisma.sql`SELECT to_regclass('public."AppointmentAuditEntry"') IS NOT NULL AS present`,
+      );
+      if (present) {
+        const entries = await client.$queryRaw<Array<{ appointment_id: number; store_id: number }>>(Prisma.sql`
+          SELECT DISTINCT ON (appointment_id) appointment_id, store_id
+          FROM public."AppointmentAuditEntry"
+          WHERE appointment_id IN (${Prisma.join(apptIds)}) AND store_id IS NOT NULL
+          ORDER BY appointment_id, (action = 'Created') DESC, "createdAt" ASC
+        `);
+        for (const e of entries) apptAuditStoreById.set(Number(e.appointment_id), Number(e.store_id));
+      }
     }
   }
 
@@ -125,38 +170,43 @@ export async function fetchSourceSample(
   const apptCol = (map["appointmentTime"] && cols.has(map["appointmentTime"]))
     ? map["appointmentTime"]
     : pick(cols, "appointmentTime", "appointmentDate", "scheduledAt", "slotTime");
-  const idNum = (v: unknown): number => {
-    const n = typeof v === "bigint" ? Number(v) : Number(v);
-    return Number.isFinite(n) ? n : 0;
-  };
-  const str = (v: unknown): string => (v == null ? "" : String(v));
 
   const entityType = bareTable.toUpperCase();
 
-  return rows.map((row): RawOrder => ({
-    id: idNum(row[source.primaryKeyField]),
-    orderType: str(row[source.typeFieldName] ?? "UNKNOWN"),
-    orderStatus: str(row[source.statusFieldName] ?? "UNKNOWN"),
-    appointmentTime: apptCol ? asDate(row[apptCol]) : new Date(NaN),
-    storeId: null,
-    labId: null,
-    userId: 0,
-    createdAt: createdCol ? asDate(row[createdCol]) : new Date(NaN),
-    updatedAt: updatedCol ? asDate(row[updatedCol]) : new Date(NaN),
-    statusUpdatedAt: updatedCol ? asDate(row[updatedCol]) : new Date(NaN),
-    internalNotes: str(row["internalNotes"]),
-    notes: str(row["notes"]),
-    phleboName: str(fromMap(row, "phleboName")),
-    phleboNumber: str(fromMap(row, "phleboNumber")),
-    patientName: str(
-      fromMap(row, "patientName") ??
-        row["patientName"] ??
-        (userCol ? userNameById.get(Number(row[userCol])) : undefined),
-    ),
-    labName: (fromMap(row, "labName") ?? row["labName"] ?? null) as string | null,
-    storeName: (fromMap(row, "storeName") ?? row["storeName"] ?? null) as string | null,
-    // The evaluator reads metadata conditions by field name; expose the raw row.
-    metadata: row,
-    entityType,
-  }));
+  return rows.map((row): RawOrder => {
+    const rowId = idNum(row[source.primaryKeyField]);
+    const rowUserId = userCol ? idNum(row[userCol]) : 0;
+    // Precedence: a direct column on the row itself, then the Appointment
+    // audit-trail lookup, then the patient's own home store — same fallback
+    // order as the single-row appointment drawer's COALESCE.
+    const resolvedStoreId = storeCol
+      ? (row[storeCol] != null ? idNum(row[storeCol]) : null)
+      : apptAuditStoreById.get(rowId) ?? userStoreById.get(rowUserId) ?? null;
+    return {
+      id: rowId,
+      orderType: str(row[source.typeFieldName] ?? "UNKNOWN"),
+      orderStatus: str(row[source.statusFieldName] ?? "UNKNOWN"),
+      appointmentTime: apptCol ? asDate(row[apptCol]) : new Date(NaN),
+      storeId: resolvedStoreId,
+      labId: null,
+      userId: rowUserId,
+      createdAt: createdCol ? asDate(row[createdCol]) : new Date(NaN),
+      updatedAt: updatedCol ? asDate(row[updatedCol]) : new Date(NaN),
+      statusUpdatedAt: updatedCol ? asDate(row[updatedCol]) : new Date(NaN),
+      internalNotes: str(row["internalNotes"]),
+      notes: str(row["notes"]),
+      phleboName: str(fromMap(row, "phleboName")),
+      phleboNumber: str(fromMap(row, "phleboNumber")),
+      patientName: str(
+        fromMap(row, "patientName") ??
+          row["patientName"] ??
+          (userCol ? userNameById.get(Number(row[userCol])) : undefined),
+      ),
+      labName: (fromMap(row, "labName") ?? row["labName"] ?? null) as string | null,
+      storeName: (fromMap(row, "storeName") ?? row["storeName"] ?? null) as string | null,
+      // The evaluator reads metadata conditions by field name; expose the raw row.
+      metadata: row,
+      entityType,
+    };
+  });
 }

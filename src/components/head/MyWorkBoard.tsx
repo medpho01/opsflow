@@ -24,6 +24,7 @@ import TaskDetailPanel from "@/components/agent/TaskDetailPanel";
 import OrderQuickView from "@/components/shared/OrderQuickView";
 import AppointmentQuickView from "@/components/shared/AppointmentQuickView";
 import StatusBadge from "@/components/shared/StatusBadge";
+import { labstackConsoleUrl } from "@/lib/utils/labstackConsole";
 
 // ─── Types ─────────────────────────────────────────────────────────────
 interface Agent {
@@ -581,7 +582,26 @@ function TaskRow({
 
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="font-semibold text-sm text-zinc-100">#{task.entityId}</span>
+            {(() => {
+              const consoleUrl = labstackConsoleUrl(task.entityType || "ORDER", task.entityId);
+              // The id itself IS the shortcut — no separate "open in console"
+              // button, no copy-pasting the number elsewhere. Falls back to
+              // plain text if the entity type has no known console section.
+              return consoleUrl ? (
+                <a
+                  href={consoleUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={(e) => e.stopPropagation()}
+                  title="Open in LabStack Console"
+                  className="font-semibold text-sm text-blue-400 hover:text-blue-300 hover:underline"
+                >
+                  #{task.entityId}
+                </a>
+              ) : (
+                <span className="font-semibold text-sm text-zinc-100">#{task.entityId}</span>
+              );
+            })()}
             <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider shrink-0 ${typeStyle(task.orderType)}`}>
               {typeLabel(task.orderType)}
             </span>
@@ -2476,6 +2496,7 @@ export default function MyWorkBoard({ currentUser }: { currentUser: CurrentUser 
             key={selectedTask.id}
             variant="inline"
             orderId={selectedTask.entityId}
+            entityType={selectedTask.entityType || "ORDER"}
             onClose={() => setSelectedTask(null)}
           />
         )}
@@ -2523,6 +2544,7 @@ export default function MyWorkBoard({ currentUser }: { currentUser: CurrentUser 
         ) : (
           <OrderQuickView
             orderId={selectedTask.entityId}
+            entityType={selectedTask.entityType || "ORDER"}
             onClose={() => setSelectedTask(null)}
           />
         )

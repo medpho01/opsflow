@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import CallButton from "@/components/shared/CallButton";
 import TaskActionCard, { type ActionableTask } from "@/components/shared/TaskActionCard";
 import { formatISTTimestamp, formatISTDate } from "@/lib/utils/timezone";
+import { labstackConsoleUrl } from "@/lib/utils/labstackConsole";
 
 interface OrderDetail {
   id: number;
@@ -36,6 +37,12 @@ interface OrderQuickViewProps {
   // positioning, for a persistent split-view panel that sits next to a
   // task list (the caller controls width/border).
   variant?: "modal" | "inline";
+  // The task's actual entityType (e.g. "REQUEST"), when the caller has it —
+  // drives the "Open in Console" link so it points at the right console
+  // section instead of always assuming plain orders. Callers that don't
+  // track entityType (this component predates most non-Order sources) fall
+  // back to "ORDER", which is correct for them today.
+  entityType?: string;
 }
 
 const ORDER_STATUS_COLOR: Record<string, string> = {
@@ -94,7 +101,7 @@ const STORE_ICON = (
   <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M3 9.5L12 3l9 6.5V21a1 1 0 01-1 1h-5v-6H9v6H4a1 1 0 01-1-1V9.5z" /></svg>
 );
 
-export default function OrderQuickView({ orderId, onClose, variant = "modal" }: OrderQuickViewProps) {
+export default function OrderQuickView({ orderId, onClose, variant = "modal", entityType = "ORDER" }: OrderQuickViewProps) {
   const [order, setOrder] = useState<OrderDetail | null>(null);
   const [tasks, setTasks] = useState<OrderTask[]>([]);
   const [loading, setLoading] = useState(true);
@@ -156,7 +163,24 @@ export default function OrderQuickView({ orderId, onClose, variant = "modal" }: 
         <div className="flex items-center justify-between px-5 py-4 border-b border-zinc-800 shrink-0">
           <div>
             <div className="flex items-center gap-2">
-              <h2 className="text-sm font-semibold text-white">Order #{orderId}</h2>
+              {/* The order # itself is the shortcut into the console — no
+                  copy-pasting the number elsewhere, no separate button. */}
+              {labstackConsoleUrl(entityType, orderId) ? (
+                <a
+                  href={labstackConsoleUrl(entityType, orderId)!}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title="Open in LabStack Console"
+                  className="text-sm font-semibold text-white hover:text-blue-300 hover:underline inline-flex items-center gap-1"
+                >
+                  Order #{orderId}
+                  <svg className="w-3 h-3 opacity-70" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                  </svg>
+                </a>
+              ) : (
+                <h2 className="text-sm font-semibold text-white">Order #{orderId}</h2>
+              )}
               {order && (
                 <span className={`text-[10px] font-semibold ${ORDER_STATUS_COLOR[order.orderStatus] ?? "text-zinc-400"}`}>
                   {order.orderStatus}

@@ -9,6 +9,7 @@ import OrderQuickView from "@/components/shared/OrderQuickView";
 import AssignmentAuditTrail from "@/components/shared/AssignmentAuditTrail";
 import { formatISTTimestamp, titleToIST } from "@/lib/utils/timezone";
 import CallButton from "@/components/shared/CallButton";
+import CallActivity from "@/components/shared/CallActivity";
 
 interface ChecklistItem {
   id: number;
@@ -583,6 +584,8 @@ export default function TaskDetailPanel({ task, onUpdate }: TaskDetailPanelProps
         </div>
         )}
 
+        <CallActivity taskId={displayedTask.id} />
+
         {/* Order context from labstack — patient/phlebo + internal notes.
             Agents need this to know what's already been tried (e.g. "Tried
             calling patient 3x, voicemail"). Heads see the same on
@@ -866,6 +869,7 @@ export default function TaskDetailPanel({ task, onUpdate }: TaskDetailPanelProps
       {showOrderView && (
         <OrderQuickView
           orderId={displayedTask.entityId}
+          entityType={displayedTask.entityType || "ORDER"}
           onClose={() => setShowOrderView(false)}
         />
       )}

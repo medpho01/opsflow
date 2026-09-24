@@ -52,10 +52,11 @@ export async function GET(request: NextRequest) {
     name: r.name,
     dataSourceId: r.dataSourceId,
     dataSource: r.dataSource,
-    // Defensive: allowedTypes/allowedStatuses are JSONB; coerce malformed
-    // legacy rows to [] so the UI never crashes on a non-array.
+    // Defensive: allowedTypes/allowedStatuses/allowedStores are JSONB; coerce
+    // malformed legacy rows to [] so the UI never crashes on a non-array.
     allowedTypes: Array.isArray(r.allowedTypes) ? r.allowedTypes as string[] : [],
     allowedStatuses: Array.isArray(r.allowedStatuses) ? r.allowedStatuses as string[] : [],
+    allowedStores: Array.isArray(r.allowedStores) ? r.allowedStores as number[] : [],
     pollingIntervalMinutes: r.pollingIntervalMinutes,
     priority: r.priority,
     slaMinutes: r.slaMinutes,
@@ -133,6 +134,7 @@ export async function POST(request: NextRequest) {
         dataSourceId: parsed.dataSourceId,
         allowedTypes: parsed.allowedTypes,
         allowedStatuses: parsed.allowedStatuses,
+        allowedStores: parsed.allowedStores,
         pollingIntervalMinutes: parsed.pollingIntervalMinutes,
         taskTypeId: resolvedTaskTypeId,
         titleTemplate: parsed.titleTemplate,
@@ -166,6 +168,7 @@ export async function POST(request: NextRequest) {
         priority: rule.priority,
         allowedTypes: parsed.allowedTypes,
         allowedStatuses: parsed.allowedStatuses,
+        allowedStores: parsed.allowedStores,
         isDraft: parsed.isDraft,
       },
     });

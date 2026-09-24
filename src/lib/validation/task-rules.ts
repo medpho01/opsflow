@@ -84,6 +84,8 @@ export const createRuleSchema = z.object({
   taskTypeId: z.coerce.number().int().positive().optional(),
   allowedTypes: z.array(z.string().min(1)).default([]),
   allowedStatuses: z.array(z.string().min(1)).default([]),
+  // Store filter — labstack Store ids. Empty = match any store.
+  allowedStores: z.array(z.coerce.number().int().positive()).default([]),
   pollingIntervalMinutes: z.coerce.number().int().min(POLLING_INTERVAL_MIN).max(POLLING_INTERVAL_MAX).default(15),
   escalationChainId: z.coerce.number().int().nullable().optional(),
   skillTagIds: z.array(z.coerce.number().int().positive()).default([]),

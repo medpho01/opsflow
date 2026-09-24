@@ -117,6 +117,7 @@ export interface TaskRuleWithRelations {
   dataSourceId: string;
   allowedTypes: string[];
   allowedStatuses: string[];
+  allowedStores: number[];
   pollingIntervalMinutes: number;
   taskTypeId: number;
   titleTemplate: string;

@@ -23,6 +23,8 @@ import { runSourceHealthWatcher } from "./sourceHealthWatcher";
 import { runSlaWatcher } from "./slaWatcher";
 import { sendDailySummary } from "./dailySummary";
 import { runTaskRetirer, RetirementStats } from "./taskRetirer";
+import { runCallRecordingSweep } from "./callRecordingSweep";
+import { runTranscriptionSweep } from "./transcriptionSweep";
 
 const POLLING_INTERVAL_MS = parseInt(process.env.POLLING_INTERVAL_MS ?? "300000", 10);
 const CRON_EXPRESSION = intervalToCron(POLLING_INTERVAL_MS);
@@ -454,6 +456,22 @@ export async function runPollCycle(): Promise<void> {
       await runSourceHealthWatcher();
     } catch (healthErr) {
       console.error("[Poller] Source-health watcher failed (non-fatal):", healthErr);
+    }
+
+    // 5b. Call recording sweep — pick up Exotel recording URLs that weren't
+    // ready yet when the status webhook fired. See callRecordingSweep.ts.
+    try {
+      await runCallRecordingSweep();
+    } catch (recErr) {
+      console.error("[Poller] Call recording sweep failed (non-fatal):", recErr);
+    }
+
+    // 5c. Transcription sweep — self-hosted Whisper, once a recording
+    // exists. See transcriptionSweep.ts.
+    try {
+      await runTranscriptionSweep();
+    } catch (transcriptErr) {
+      console.error("[Poller] Transcription sweep failed (non-fatal):", transcriptErr);
     }
 
     // 6. Persist the checkpoint so the NEXT cycle can fetch incrementally.

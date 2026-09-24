@@ -32,6 +32,12 @@ interface EscalationChain {
   name: string;
 }
 
+interface Store {
+  id: number;
+  storeName: string;
+  city?: string | null;
+}
+
 interface DataSource {
   id: string;
   sourceId: string;
@@ -59,6 +65,7 @@ interface TaskRule {
   dataSource: { id: string; sourceId: string; displayName: string } | null;
   allowedTypes: string[];
   allowedStatuses: string[];
+  allowedStores: number[];
   pollingIntervalMinutes: number;
   priority: string;
   slaMinutes: number;
@@ -591,6 +598,13 @@ function RuleDrawer({ rule, allTags, chains, metadataFields, orderStatuses, onCl
   const [allowedTypes, setAllowedTypes] = useState<string[]>(rule?.allowedTypes ?? []);
   const [allowedStatuses, setAllowedStatuses] = useState<string[]>(rule?.allowedStatuses ?? []);
   const [assignmentStrategy, setAssignmentStrategy] = useState<string>(rule?.assignmentStrategy ?? "default");
+  // Store filter — unlike types/statuses this isn't scoped to the selected
+  // data source's schema (stores are the same physical list across every
+  // source), so it's loaded once from /api/stores rather than re-fetched
+  // per source change, and it's deliberately NOT reset in handleSourceSelect.
+  const [availableStores, setAvailableStores] = useState<Store[]>([]);
+  const [loadingStores, setLoadingStores] = useState(false);
+  const [allowedStores, setAllowedStores] = useState<number[]>(rule?.allowedStores ?? []);
 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -615,6 +629,16 @@ function RuleDrawer({ rule, allTags, chains, metadataFields, orderStatuses, onCl
       })
       .finally(() => setLoadingSources(false));
   // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Load the store list once — global, not per-source (see the state
+  // comment above for why this doesn't live in the source-change effect).
+  useEffect(() => {
+    setLoadingStores(true);
+    fetch("/api/stores")
+      .then((r) => r.ok ? r.json() : { stores: [] })
+      .then((d) => setAvailableStores(d.stores ?? []))
+      .finally(() => setLoadingStores(false));
   }, []);
 
   // Load entity types & statuses when source is selected
@@ -653,6 +677,10 @@ function RuleDrawer({ rule, allTags, chains, metadataFields, orderStatuses, onCl
 
   function toggleStatus(status: string) {
     setAllowedStatuses((prev) => prev.includes(status) ? prev.filter((s) => s !== status) : [...prev, status]);
+  }
+
+  function toggleStore(id: number) {
+    setAllowedStores((prev) => prev.includes(id) ? prev.filter((s) => s !== id) : [...prev, id]);
   }
 
   function handleSourceSelect(id: string) {
@@ -704,6 +732,7 @@ function RuleDrawer({ rule, allTags, chains, metadataFields, orderStatuses, onCl
         dataSourceId: dataSourceId || null,
         allowedTypes,
         allowedStatuses,
+        allowedStores,
         assignmentStrategy,
         isDraft,
       };
@@ -1161,6 +1190,42 @@ function RuleDrawer({ rule, allTags, chains, metadataFields, orderStatuses, onCl
                       )}
                     </div>
 
+                    {/* Store filter — same pill pattern as entity type, but the
+                        list is the global store table, not scoped to this
+                        source's schema (see the allowedStores state comment). */}
+                    <div>
+                      <label className="block text-xs font-semibold text-zinc-400 mb-1 uppercase tracking-wider">
+                        Filter by Store
+                      </label>
+                      <p className="text-[10px] text-zinc-600 mb-2">Only process entities from these stores. Leave empty to match all.</p>
+                      {loadingStores ? (
+                        <div className="text-zinc-500 text-xs">Loading…</div>
+                      ) : availableStores.length === 0 ? (
+                        <div className="text-zinc-600 text-xs italic">No stores found — all stores will match</div>
+                      ) : (
+                        <div className="flex flex-wrap gap-2">
+                          {availableStores.map((store) => (
+                            <button
+                              key={store.id}
+                              type="button"
+                              onClick={() => toggleStore(store.id)}
+                              className={`text-xs px-3 py-1.5 rounded-full border transition-colors font-medium ${
+                                allowedStores.includes(store.id)
+                                  ? "bg-blue-600/25 border-blue-500/50 text-blue-300"
+                                  : "bg-zinc-800 border-zinc-700 text-zinc-500 hover:border-blue-500/40 hover:text-zinc-300"
+                              }`}
+                            >
+                              {allowedStores.includes(store.id) && <span className="mr-1">✓</span>}
+                              {store.storeName}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                      {allowedStores.length === 0 && availableStores.length > 0 && (
+                        <p className="text-[10px] text-zinc-500 mt-1.5">All stores will be evaluated</p>
+                      )}
+                    </div>
+
                     {/* Next step nudge */}
                     <div className="pt-2 flex justify-end">
                       <button
@@ -1252,6 +1317,7 @@ function RuleDrawer({ rule, allTags, chains, metadataFields, orderStatuses, onCl
                     dataSourceId,
                     allowedTypes,
                     allowedStatuses,
+                    allowedStores,
                     triggerType: "TIME",
                     triggerCondition: trigger,
                     titleTemplate: form.titleTemplate || "{{patientName}} — {{orderId}}",
@@ -1919,6 +1985,7 @@ type SimRequest =
       dataSourceId: string;
       allowedTypes: string[];
       allowedStatuses: string[];
+      allowedStores: number[];
       triggerType: "TIME" | "STATUS";
       triggerCondition: TriggerCondition;
       titleTemplate: string;

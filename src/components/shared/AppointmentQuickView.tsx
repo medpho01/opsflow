@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import CallButton from "@/components/shared/CallButton";
 import TaskActionCard, { type ActionableTask } from "@/components/shared/TaskActionCard";
 import { formatISTTimestamp } from "@/lib/utils/timezone";
+import { labstackConsoleUrl } from "@/lib/utils/labstackConsole";
 
 // The Appointments-source analogue of OrderQuickView. Heads open this for an
 // appointment task so the drawer shows appointment context (date/time, doctor +
@@ -153,7 +154,24 @@ export default function AppointmentQuickView({ appointmentId, onClose, variant =
         <div className="flex items-center justify-between px-5 py-4 border-b border-zinc-800 shrink-0">
           <div>
             <div className="flex items-center gap-2">
-              <h2 className="text-sm font-semibold text-white">Appointment #{appointmentId}</h2>
+              {/* The appointment # itself is the shortcut into the console —
+                  no copy-pasting the number elsewhere, no separate button. */}
+              {labstackConsoleUrl("APPOINTMENT", appointmentId) ? (
+                <a
+                  href={labstackConsoleUrl("APPOINTMENT", appointmentId)!}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title="Open in LabStack Console"
+                  className="text-sm font-semibold text-white hover:text-blue-300 hover:underline inline-flex items-center gap-1"
+                >
+                  Appointment #{appointmentId}
+                  <svg className="w-3 h-3 opacity-70" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                  </svg>
+                </a>
+              ) : (
+                <h2 className="text-sm font-semibold text-white">Appointment #{appointmentId}</h2>
+              )}
               {appt?.appointmentStatus && (
                 <span className={`text-[10px] font-semibold ${APPT_STATUS_COLOR[appt.appointmentStatus] ?? "text-zinc-400"}`}>
                   {appt.appointmentStatus}

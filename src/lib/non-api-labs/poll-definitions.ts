@@ -28,7 +28,15 @@ export type PollOption = {
   action: "ACCEPT" | "RESCHEDULE" | "REJECT" | null;
   /** Reply sent when this option is chosen. Supports the usual {{variables}}. */
   ack: string;
+  /**
+   * For breach polls: what the answer means for the breach. Optional — older
+   * or hand-edited options fall back to breachOutcomeOf()'s label matching.
+   */
+  outcome?: BreachOutcome | null;
 };
+
+export type BreachOutcome = "DONE" | "ON_THE_WAY" | "DELAYED" | "CANNOT_FULFIL";
+const BREACH_OUTCOMES: readonly BreachOutcome[] = ["DONE", "ON_THE_WAY", "DELAYED", "CANNOT_FULFIL"];
 
 export type ResolvedPoll = { question: string; options: PollOption[] };
 
@@ -78,6 +86,7 @@ Please reply to this message with the reason, so we can reassign it quickly.`,
     options: [
       {
         label: "On the way",
+        outcome: "ON_THE_WAY",
         action: null,
         ack: `Thanks — noted that someone is on the way for order {{order_id}} ({{patient_name}}).
 
@@ -85,6 +94,7 @@ If it slips again, please reply here so we can tell the patient.`,
       },
       {
         label: "Already done",
+        outcome: "DONE",
         action: null,
         ack: `Thanks — you have marked order {{order_id}} as already done.
 
@@ -92,6 +102,7 @@ If the status in LabStack still looks wrong, reply here and we will correct it.`
       },
       {
         label: "Delayed",
+        outcome: "DELAYED",
         action: null,
         ack: `Noted — order {{order_id}} ({{patient_name}}) is delayed.
 
@@ -99,6 +110,7 @@ Please reply with a realistic time so we can set the patient's expectation.`,
       },
       {
         label: "Cannot fulfil",
+        outcome: "CANNOT_FULFIL",
         action: "REJECT",
         ack: `Noted — order {{order_id}} cannot be fulfilled.
 
@@ -131,7 +143,26 @@ export function parsePollOptions(raw: unknown): PollOption[] {
     // An option with no reply is silent, which is a valid choice and the only
     // honest reading of a poll sent before replies existed.
     ack: option.ack ?? "",
+    outcome: BREACH_OUTCOMES.includes((option as { outcome?: unknown }).outcome as BreachOutcome)
+      ? ((option as { outcome?: BreachOutcome }).outcome as BreachOutcome)
+      : null,
   }));
+}
+
+/**
+ * The breach outcome a tapped option stands for. Explicit `outcome` wins; a
+ * poll sent before outcomes existed (or an option Ops relabelled without one)
+ * falls back to the seeded labels, then to REJECT meaning "cannot fulfil".
+ */
+export function breachOutcomeOf(option: Pick<PollOption, "label" | "action" | "outcome"> | null | undefined): BreachOutcome | null {
+  if (!option) return null;
+  if (option.outcome) return option.outcome;
+  const label = option.label.trim().toLowerCase();
+  if (label === "already done") return "DONE";
+  if (label === "on the way") return "ON_THE_WAY";
+  if (label === "delayed") return "DELAYED";
+  if (label === "cannot fulfil" || option.action === "REJECT") return "CANNOT_FULFIL";
+  return null;
 }
 
 export async function ensurePollDefinition(key: string) {

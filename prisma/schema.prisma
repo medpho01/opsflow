@@ -1603,6 +1603,13 @@ model SlaBreachEvent {
   resolvedAt       DateTime?       @db.Timestamptz(3)
   /// MILESTONE_COMPLETED | ORDER_CANCELLED | RESCHEDULED | MAX_ATTEMPTS | MANUAL_STOP
   resolutionReason String?
+  /// What the lab answered on the breach poll: DONE | ON_THE_WAY | DELAYED |
+  /// CANNOT_FULFIL. Recorded, not trusted as completion — LabStack stays the
+  /// source of truth for "done"; the answer pauses chasing and informs Ops.
+  providerOutcome    String?
+  providerReportedAt DateTime? @db.Timestamptz(3)
+  /// The lab's follow-up text after DELAYED / CANNOT_FULFIL.
+  providerReason     String?
   createdAt        DateTime        @default(now()) @db.Timestamptz(3)
 
   sends SlaBreachSend[]

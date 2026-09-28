@@ -701,7 +701,21 @@ export async function recordPollVote(waMsgId, action, voterJid, label = null) {
   // Anything that is not a plain acceptance invites a written follow-up: a
   // reschedule needs a time, a rejection needs a reason, and an informational
   // answer ("Delayed") is only useful with the detail behind it.
-  const needsReason = action !== "ACCEPT";
+  //
+  // Only options that genuinely need detail wait for it: RESCHEDULE (a time),
+  // REJECT / "Cannot fulfil" (a reason) and a breach "Delayed" (a realistic
+  // time). "Already done" / "On the way" must NOT — waiting there captured the
+  // lab's next, unrelated group message as a "reason", and could steal text
+  // meant for a different poll still waiting in the same chat.
+  let outcome = null;
+  try {
+    const row = (await taskosQuery(`SELECT options FROM wa_polls WHERE "waMsgId" = $1 LIMIT 1`, [waMsgId])).rows[0];
+    const options = Array.isArray(row?.options) ? row.options : JSON.parse(row?.options || "[]");
+    const chosen = options.find((o) => o?.label === label);
+    outcome = chosen?.outcome ?? null;
+    if (!outcome && typeof label === "string" && label.trim().toLowerCase() === "delayed") outcome = "DELAYED";
+  } catch { outcome = null; }
+  const needsReason = action === "RESCHEDULE" || action === "REJECT" || outcome === "DELAYED";
   const r = await taskosQuery(
     `UPDATE wa_polls
         SET status='VOTED', "votedAction"=$2, "votedLabel"=$5, "voterJid"=$3, "votedAt"=now(),

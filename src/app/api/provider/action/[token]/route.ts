@@ -44,16 +44,24 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const now = new Date();
     const result = resultFor(action);
     await prisma.$transaction(async (tx) => {
-      const actionToken = await tx.labProviderActionToken.findUnique({
-        where: { tokenHash },
-        include: { workflow: true },
+      // Burn the token with a single conditional write, not a read-then-write:
+      // two concurrent requests for the same token (a double-tap, a client
+      // retry) must not both observe `usedAt: null` before either commits.
+      // `updateMany`'s WHERE is evaluated atomically against the row, so at
+      // most one of two racing calls can ever match and flip usedAt.
+      const claim = await tx.labProviderActionToken.updateMany({
+        where: { tokenHash, action, usedAt: null, expiresAt: { gt: now } },
+        data: { usedAt: now },
       });
-      if (!actionToken || actionToken.action !== action) throw new Error("INVALID_ACTION_LINK");
-      if (actionToken.usedAt || actionToken.expiresAt <= now) throw new Error("EXPIRED_ACTION_LINK");
+      if (claim.count !== 1) {
+        // The claim above already decided the outcome; this read is only to
+        // pick the right error message for it.
+        const existing = await tx.labProviderActionToken.findUnique({ where: { tokenHash } });
+        if (!existing || existing.action !== action) throw new Error("INVALID_ACTION_LINK");
+        throw new Error("EXPIRED_ACTION_LINK");
+      }
 
-      // Burning the token and recording the answer must be one transaction, so
-      // the shared writer is handed this tx rather than opening its own.
-      await tx.labProviderActionToken.update({ where: { id: actionToken.id }, data: { usedAt: now } });
+      const actionToken = await tx.labProviderActionToken.findUniqueOrThrow({ where: { tokenHash } });
       await applyProviderAction(
         {
           workflowId: actionToken.workflowId,

@@ -13,6 +13,7 @@
 // node-cron imported dynamically below — webpackIgnore prevents webpack
 // from bundling its ESM files which use node:crypto/path/url.
 import prisma from "@/lib/db/client";
+import type { Prisma } from "@prisma/client";
 import { probeLabstackHealthy, labstackWorker } from "@/lib/db/labstack";
 import { fetchAllActiveOrders, fetchActiveOrdersByStatus } from "./labstack";
 import type { TaskRuleWithRelations } from "@/types";
@@ -326,12 +327,12 @@ export async function runPollCycle(): Promise<void> {
       const stalenessStatuses = new Set<string>();
       for (const r of orderRules) {
         if (r.triggerType !== "TIME") continue;
-        const c = (r.triggerCondition ?? {}) as Record<string, unknown>;
+        const c = r.triggerCondition;
         const hasStaleness =
-          typeof c.minutesSinceStatusUpdated === "number" ||
-          typeof c.minutesSinceCreated === "number";
+          typeof c?.minutesSinceStatusUpdated === "number" ||
+          typeof c?.minutesSinceCreated === "number";
         if (!hasStaleness) continue;
-        if (Array.isArray(c.statusIn)) {
+        if (Array.isArray(c?.statusIn)) {
           for (const s of c.statusIn) {
             if (typeof s === "string") stalenessStatuses.add(s);
           }
@@ -455,7 +456,7 @@ export async function runPollCycle(): Promise<void> {
           // dashboard's "last cycle" widget.
           metadata:
             perRule.length > 0 || tasksRetired > 0 || skippedPreflight
-              ? { perRule, tasksRetired, retirementPerRule, skippedPreflight }
+              ? ({ perRule, tasksRetired, retirementPerRule, skippedPreflight } as unknown as Prisma.InputJsonValue)
               : undefined,
         },
       });

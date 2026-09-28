@@ -44,6 +44,7 @@ import prisma from "@/lib/db/client";
 import labstack from "@/lib/db/labstack";
 import { TaskStatus, UserRole } from "@prisma/client";
 import { computeRosterStatus, getUTCDayOfWeek } from "@/lib/roster/availability";
+import type { NonApiWorkflowStats } from "@/components/head/HeadCommandCenter";
 
 /**
  * Anchor "today" to midnight in IST. Returns the corresponding UTC instant

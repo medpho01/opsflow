@@ -200,6 +200,55 @@ async function releaseForRetry(actions: DueAction[], reason: string, result: Non
   }
 }
 
+/** How long a RUNNING claim can go unfinished before it's assumed abandoned. */
+const STALE_CLAIM_MINUTES = 5;
+
+/**
+ * Recover actions a crashed process left claimed.
+ *
+ * Every path that clears RUNNING elsewhere in this file does so from within
+ * the same run that claimed the row (releaseForRetry, deferAction, and the
+ * various completion writes below). If that process dies between the claim
+ * at `processDueNonApiLabScheduledActions` and any of those writes — OOM, a
+ * deploy, a crash — the row is left at RUNNING with a stale lockedAt forever:
+ * the main query only ever selects PENDING rows, so nothing picks it up
+ * again. Mirrors `reclaimStalledSends` in whatsapp-bot/lib/controltower.mjs,
+ * added in this same PR to fix the identical class of bug for wa_outbound.
+ */
+async function reclaimStalledActions(): Promise<void> {
+  const stale = await prisma.labScheduledAction.findMany({
+    where: {
+      status: "RUNNING",
+      lockedAt: { lt: new Date(Date.now() - STALE_CLAIM_MINUTES * 60_000) },
+    },
+    select: { id: true, workflowId: true, rungKey: true, attempts: true },
+    take: BATCH_SIZE,
+  });
+  if (stale.length === 0) return;
+
+  const reason = `Reclaimed after being stuck RUNNING for over ${STALE_CLAIM_MINUTES} minutes (likely a crashed process)`;
+  for (const action of stale) {
+    const attempts = action.attempts + 1;
+    const giveUp = attempts >= MAX_ATTEMPTS;
+    const updated = await prisma.labScheduledAction
+      .updateMany({
+        where: { id: action.id, status: "RUNNING" },
+        data: giveUp
+          ? { status: "FAILED", attempts, lastError: reason, lockedAt: null, lockedBy: null, completedAt: new Date() }
+          : { status: "PENDING", attempts, lastError: reason, lockedAt: null, lockedBy: null },
+      })
+      .catch(() => ({ count: 0 }));
+    if (updated.count === 0) continue;
+    if (giveUp) {
+      await raiseOpsAlert(
+        `Lab reminder gave up after ${attempts} attempts: ${reason}`,
+        null,
+        { scheduledActionId: action.id, workflowId: action.workflowId, rungKey: action.rungKey },
+      );
+    }
+  }
+}
+
 /**
  * Hand an action back to a later tick. The claim is released so the next tick
  * can take it, and `runAt` moves to the moment it becomes sendable — a
@@ -369,6 +418,9 @@ export async function processDueNonApiLabScheduledActions(): Promise<NonApiSched
     processed: 0, suppressed: 0, deferred: 0, rescheduled: 0, closed: 0, retried: 0, failed: 0,
   };
   const now = new Date();
+
+  // Before taking new work, pick up anything a previous run dropped.
+  try { await reclaimStalledActions(); } catch (error) { console.error("[NonApiScheduler] reclaim:", error); }
 
   const due = await prisma.labScheduledAction.findMany({
     where: { status: "PENDING", runAt: { lte: now } },
@@ -698,11 +750,23 @@ async function sendForAction(
         where: { id: workflow.id },
         data: { status: "ESCALATED" },
       });
+      // `level` distinguishes escalation tiers within one workflow (the
+      // @@unique([workflowId, level]) constraint). The built-in ladder only
+      // ever schedules one ESCALATE rung, so a hardcoded 1 was harmless — but
+      // the rules engine now lets Ops author several active ESCALATE rules
+      // per scope (e.g. "notify manager at T+4h", "notify regional lead at
+      // T+8h"), and hardcoding 1 for all of them meant a second escalation
+      // silently overwrote the first's recorded recipient/reason/notifiedAt
+      // in this table, even though the order-event timeline still showed
+      // both. action.priority is the same P0..P4 concept Ops already
+      // configures per rule (P0 most urgent), so distinct rules land as
+      // distinct rows; the built-in ladder's single ESCALATE rung keeps its
+      // one fixed priority, so this is a no-op for that path.
       await tx.labCommunicationEscalation.upsert({
-        where: { workflowId_level: { workflowId: workflow.id, level: 1 } },
+        where: { workflowId_level: { workflowId: workflow.id, level: action.priority } },
         create: {
           workflowId: workflow.id,
-          level: 1,
+          level: action.priority,
           status: "NOTIFIED",
           recipient,
           reason: rule

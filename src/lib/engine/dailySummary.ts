@@ -10,6 +10,17 @@ import { sendWhatsAppMessage } from "@/lib/alerts/whatsapp";
 
 const DAILY_SUMMARY_TEMPLATE = "opsflow_daily_summary";
 
+/**
+ * Meta rejects a WhatsApp Cloud API template parameter containing a literal
+ * newline, tab, or 4+ consecutive spaces. U+2028 (LINE SEPARATOR) is not any
+ * of those, so it passes validation while still rendering as a line break in
+ * the WhatsApp client — swapping it in is the standard workaround for
+ * multi-line text in a single template placeholder.
+ */
+function toTemplateSafeParam(text: string): string {
+  return text.replace(/\n/g, " ").replace(/\t/g, "  ").replace(/ {4,}/g, "   ");
+}
+
 export async function sendDailySummary(): Promise<void> {
   console.log("[DailySummary] Generating daily summary…");
 
@@ -79,6 +90,14 @@ export async function sendDailySummary(): Promise<void> {
   // {{1}} of opsflow_daily_summary — Meta places no limit on what text one
   // placeholder carries, only on the template having a fixed slot count, so
   // the whole digest goes in as a single parameter.
+  //
+  // What Meta DOES reject in a template parameter's text: newline, tab, and
+  // runs of 4+ spaces. Sent as-is, this multi-line digest would fail that
+  // validation on every send. toTemplateSafeParam (below) swaps `\n` for the
+  // Unicode LINE SEPARATOR (U+2028) right before the API call only — it still
+  // renders as a line break in the WhatsApp client, but is not the literal
+  // character Meta's parameter validation is checking for. waMessage itself
+  // stays untouched so the error log above still prints something readable.
   const waMessage =
     `📊 *OpsFlow Daily Summary — ${dateLabel}*\n\n` +
     `Tasks Created: ${createdToday}\n` +
@@ -96,7 +115,7 @@ export async function sendDailySummary(): Promise<void> {
 
   for (const head of opsHeads) {
     if (head.phone) {
-      await sendWhatsAppMessage({ to: head.phone, template: DAILY_SUMMARY_TEMPLATE, params: [waMessage] }).catch((e) =>
+      await sendWhatsAppMessage({ to: head.phone, template: DAILY_SUMMARY_TEMPLATE, params: [toTemplateSafeParam(waMessage)] }).catch((e) =>
         console.error("[DailySummary] WhatsApp send failed:", e)
       );
     }

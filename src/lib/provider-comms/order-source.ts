@@ -15,6 +15,7 @@
  * accessor, and never writes to it.
  */
 import { labstackWorkerQuery } from "@/lib/db/labstack";
+import prisma from "@/lib/db/client";
 import type { MilestoneOrder } from "./milestones";
 
 /** Everything the engine needs about one order, plus what the message renders. */
@@ -64,7 +65,7 @@ const JOINS = `
     LEFT JOIN public."Lab" l ON l.id = o."labId"
     LEFT JOIN public."Store" s ON s.id = o."storeId"`;
 
-function toBreachOrder(row: OrderRow): BreachOrder {
+function toBreachOrder(row: OrderRow, workflowAcceptedAt: Date | null): BreachOrder {
   return {
     id: Number(row.id),
     labId: Number(row.labId),
@@ -79,7 +80,28 @@ function toBreachOrder(row: OrderRow): BreachOrder {
     labName: row.labName,
     storeName: row.storeName,
     packageName: row.packageName,
+    workflowAcceptedAt,
   };
+}
+
+/**
+ * `LabCommunicationWorkflow.acceptedAt` — the provider tapping Accept — lives
+ * in OpsFlow's own taskos database, not the LabStack replica this file reads.
+ * The two `labstackWorkerQuery` calls above can't join across that boundary,
+ * so it's fetched here as a second, separate query and merged in below.
+ *
+ * Without this, `resolveMilestoneState`'s ORDER_CONFIRMED check (milestones.ts)
+ * can only ever fall back to LabStack's own status reaching PHLEBO_ASSIGNED —
+ * so a NON_API lab that already tapped Accept keeps getting chased for a
+ * milestone it has, in fact, already confirmed.
+ */
+async function loadWorkflowAcceptedAt(orderIds: number[]): Promise<Map<number, Date>> {
+  if (orderIds.length === 0) return new Map();
+  const rows = await prisma.labCommunicationWorkflow.findMany({
+    where: { orderId: { in: orderIds }, acceptedAt: { not: null } },
+    select: { orderId: true, acceptedAt: true },
+  });
+  return new Map(rows.map((row) => [row.orderId, row.acceptedAt as Date]));
 }
 
 /**
@@ -110,7 +132,10 @@ export async function loadCandidateOrders(
     ORDER BY o."createdAt" ASC`,
     [labIds],
   );
-  return rows.map(toBreachOrder).filter((order) => Number.isInteger(order.labId));
+  const accepted = await loadWorkflowAcceptedAt(rows.map((row) => Number(row.id)));
+  return rows
+    .map((row) => toBreachOrder(row, accepted.get(Number(row.id)) ?? null))
+    .filter((order) => Number.isInteger(order.labId));
 }
 
 /**
@@ -126,5 +151,11 @@ export async function loadOrdersByIds(orderIds: number[]): Promise<Map<number, B
     `SELECT ${SELECT_COLUMNS} ${JOINS} WHERE o.id = ANY($1::int[])`,
     [unique],
   );
-  return new Map(rows.map(toBreachOrder).filter((o) => Number.isInteger(o.labId)).map((o) => [o.id, o]));
+  const accepted = await loadWorkflowAcceptedAt(rows.map((row) => Number(row.id)));
+  return new Map(
+    rows
+      .map((row) => toBreachOrder(row, accepted.get(Number(row.id)) ?? null))
+      .filter((o) => Number.isInteger(o.labId))
+      .map((o) => [o.id, o]),
+  );
 }

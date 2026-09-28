@@ -21,3 +21,19 @@ README*.md
 docker-compose*.yml
 Dockerfile
 .dockerignore
+
+# Dev / test scripts — kept in the repo for local use, never shipped in the
+# production image (which copies all of prisma/ and docker/). Several send
+# REAL WhatsApp messages or write fixture data.
+prisma/test_*.ts
+prisma/smoke_*.ts
+prisma/trigger_*.ts
+prisma/verify_*.ts
+prisma/seed_dummy_*.ts
+prisma/seed_poll_demo.ts
+prisma/audit_features.ts
+prisma/check_poll_readiness.ts
+prisma/migrate_templates_to_poll.ts
+docker/labstack-dummy
+.scratch
+.scratch-*.ts

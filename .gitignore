@@ -40,3 +40,7 @@ tsconfig.tsbuildinfo
 # documents the expected CSV shape.
 docker/labstack-dummy/data/
 docker/labstack-dummy/02-seed.sql
+
+# Local scratch/debug files — never commit.
+.scratch/
+.scratch-*.ts

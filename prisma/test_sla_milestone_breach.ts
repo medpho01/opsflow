@@ -164,7 +164,11 @@ async function setOrderStatus(orderId: number, status: string) {
 }
 
 async function eventFor(orderId: number, milestone: SlaMilestone = "ORDER_CONFIRMED") {
-  return prisma.slaBreachEvent.findUnique({ where: { orderId_milestone: { orderId, milestone } } });
+  // Not findUnique: (orderId, milestone) is only unique while ACTIVE (a
+  // partial index — see the SlaBreachEvent doc comment in schema.prisma), so
+  // more than one row can exist for a pair once one has closed. Most recent
+  // first is what every scenario here actually wants.
+  return prisma.slaBreachEvent.findFirst({ where: { orderId, milestone }, orderBy: { createdAt: "desc" } });
 }
 
 async function main() {

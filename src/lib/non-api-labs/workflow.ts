@@ -168,28 +168,32 @@ export async function startNonApiLabWorkflow(order: RawOrder): Promise<WorkflowS
     tests: testsFor(order),
     sla_deadline: `${formatDate(confirmationDeadline)} ${formatTime(confirmationDeadline)}`,
   };
-  // Resolved before the transaction below: for a group target this may
-  // register the wa_groups row, and that lookup does not belong inside the
-  // workflow's write transaction.
-  const target = await resolveLabTarget(config);
-  // The poll the provider answers by tapping. Resolved here, outside the
-  // transaction, for the same reason as the target: it only reads.
-  //
-  // This message is the FIRST thing a provider sees about an order, and it has
-  // always ended with "Tap an option in the poll below to respond" — but the
-  // poll was only ever attached by scheduler.ts, so until a reminder fired
-  // there was nothing to tap. The provider was told to use a control that did
-  // not exist yet.
-  const confirmationPoll = await resolvePoll(ORDER_CONFIRMATION_POLL);
-
-  const rendered = renderLabTemplate(template.body, {
-    ...safeVariables,
-    accept_url: actionUrl(acceptToken),
-    reschedule_url: actionUrl(rescheduleToken),
-    reject_url: actionUrl(rejectToken),
-  } satisfies TemplateVariables);
-
   try {
+    // Resolved before the transaction below: for a group target this may
+    // register the wa_groups row, and that lookup does not belong inside the
+    // workflow's write transaction. It is inside this try (not above it, as
+    // it used to be) because it now does a DB write of its own and can throw
+    // — and this function's contract is to never throw, only ever return a
+    // WorkflowStartResult, so its caller's batch loop can process every
+    // order in a poll cycle even when one lookup fails.
+    const target = await resolveLabTarget(config);
+    // The poll the provider answers by tapping. Resolved here, outside the
+    // transaction, for the same reason as the target: it only reads.
+    //
+    // This message is the FIRST thing a provider sees about an order, and it has
+    // always ended with "Tap an option in the poll below to respond" — but the
+    // poll was only ever attached by scheduler.ts, so until a reminder fired
+    // there was nothing to tap. The provider was told to use a control that did
+    // not exist yet.
+    const confirmationPoll = await resolvePoll(ORDER_CONFIRMATION_POLL);
+
+    const rendered = renderLabTemplate(template.body, {
+      ...safeVariables,
+      accept_url: actionUrl(acceptToken),
+      reschedule_url: actionUrl(rescheduleToken),
+      reject_url: actionUrl(rejectToken),
+    } satisfies TemplateVariables);
+
     await prisma.$transaction(async (tx) => {
       const workflow = await tx.labCommunicationWorkflow.create({
         data: {
@@ -314,6 +318,19 @@ export async function startDetectedNonApiLabWorkflows(orders: RawOrder[]) {
   const result = { started: 0, existing: 0, skipped: 0, failed: 0 };
   // Serial execution keeps a large first poll from taking a burst of database
   // connections while preserving each workflow's transaction boundary.
-  for (const order of orders) result[await startNonApiLabWorkflow(order)] += 1;
+  //
+  // Per-order try/catch is a deliberate second layer, not trust that
+  // startNonApiLabWorkflow never throws: its contract is to always resolve to
+  // a WorkflowStartResult, but this loop must still survive a future change
+  // that breaks that contract for one order without silently dropping every
+  // order after it in the same poll cycle.
+  for (const order of orders) {
+    try {
+      result[await startNonApiLabWorkflow(order)] += 1;
+    } catch (error) {
+      console.error(`[NonApiWorkflow] Unexpected error starting workflow for order ${order.id}:`, error);
+      result.failed += 1;
+    }
+  }
   return result;
 }

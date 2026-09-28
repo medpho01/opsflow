@@ -101,13 +101,13 @@ export async function GET(request: NextRequest) {
   };
 
   const agents = team.map((u) => {
-    const schedulesByDow = new Map<number, typeof u.teamMember.weeklySchedules[0]>();
+    const schedulesByDow = new Map<number, NonNullable<typeof u.teamMember>["weeklySchedules"][number]>();
     if (u.teamMember) {
       for (const ws of u.teamMember.weeklySchedules) {
         schedulesByDow.set(ws.dayOfWeek, ws);
       }
     }
-    const exceptionsByDate = new Map<string, typeof u.teamMember.rosterExceptions[0]>();
+    const exceptionsByDate = new Map<string, NonNullable<typeof u.teamMember>["rosterExceptions"][number]>();
     if (u.teamMember) {
       for (const ex of u.teamMember.rosterExceptions) {
         const key = (ex.date instanceof Date ? ex.date : new Date(ex.date)).toISOString().slice(0, 10);

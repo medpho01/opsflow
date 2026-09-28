@@ -124,6 +124,11 @@ export interface TaskRuleWithRelations {
   priority: TaskPriority;
   triggerType: "STATUS" | "TIME";
   triggerCondition: TriggerCondition;
+  // Plain string at the DB/Prisma level (schema.prisma: @default("default"));
+  // narrowed to CreateTaskPayload's literal union at the one call site that
+  // passes it through (taskCreator.ts), same as the DB itself doesn't enforce
+  // the literal set beyond what the create/update Zod schemas validate.
+  assignmentStrategy: string;
   isActive: boolean;
   escalationChainId: number | null;
   // Rule-scoped next-step guidance (overrides the task type's default).

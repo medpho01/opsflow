@@ -45,15 +45,27 @@ export async function PATCH(
     }
     throw err;
   }
+  // PATCH means "change only what was sent", and `parsed` does not mean that.
+  // `updateRuleSchema` is `createRuleSchema.partial()`, which makes every field
+  // optional but does NOT remove the `.default()` on allowedTypes/
+  // allowedStatuses/pollingIntervalMinutes/skillTagIds/assignmentStrategy — so
+  // Zod injects those defaults for keys the caller never touched. Every
+  // `parsed.X !== undefined` check below is therefore true even when X was
+  // never sent, and a PATCH of `{ name }` alone would silently reset
+  // pollingIntervalMinutes to 15 and wipe allowedTypes/allowedStatuses/
+  // skillTagIds. Gating on the raw body's own keys, not on `parsed`, is what
+  // actually implements "only the fields sent" — same fix this PR already
+  // applied to provider-communication-rules/[id]/route.ts.
+  const sentKeys = new Set(Object.keys((body ?? {}) as Record<string, unknown>));
 
   // Validate dataSourceId resolves
-  if (parsed.dataSourceId !== undefined) {
+  if (sentKeys.has("dataSourceId") && parsed.dataSourceId !== undefined) {
     const ds = await prisma.dataSource.findUnique({ where: { id: parsed.dataSourceId } });
     if (!ds) return NextResponse.json({ error: "Data source not found", requestId }, { status: 404 });
   }
 
   // Validate triggerCondition statuses against the (effective) source.
-  if (parsed.triggerCondition !== undefined) {
+  if (sentKeys.has("triggerCondition") && parsed.triggerCondition !== undefined) {
     const effectiveDataSourceId = parsed.dataSourceId ?? rule.dataSourceId;
     const statusValidation = await validateStatusesAgainstSource(
       effectiveDataSourceId,
@@ -72,21 +84,21 @@ export async function PATCH(
 
   // Map parsed fields → Prisma update payload, omitting fields the caller didn't send.
   const updates: Record<string, unknown> = {};
-  if (parsed.isActive !== undefined) updates.isActive = parsed.isActive;
-  if (parsed.name !== undefined) updates.name = parsed.name;
-  if (parsed.titleTemplate !== undefined) updates.titleTemplate = parsed.titleTemplate;
-  if (parsed.dataSourceId !== undefined) updates.dataSourceId = parsed.dataSourceId;
-  if (parsed.allowedTypes !== undefined) updates.allowedTypes = parsed.allowedTypes;
-  if (parsed.allowedStatuses !== undefined) updates.allowedStatuses = parsed.allowedStatuses;
-  if (parsed.pollingIntervalMinutes !== undefined) updates.pollingIntervalMinutes = parsed.pollingIntervalMinutes;
-  if (parsed.slaMinutes !== undefined) updates.slaMinutes = parsed.slaMinutes;
-  if (parsed.priority !== undefined) updates.priority = parsed.priority;
-  if (parsed.triggerCondition !== undefined) updates.triggerCondition = parsed.triggerCondition;
-  if (parsed.assignmentStrategy !== undefined) updates.assignmentStrategy = parsed.assignmentStrategy;
+  if (sentKeys.has("isActive")) updates.isActive = parsed.isActive;
+  if (sentKeys.has("name")) updates.name = parsed.name;
+  if (sentKeys.has("titleTemplate")) updates.titleTemplate = parsed.titleTemplate;
+  if (sentKeys.has("dataSourceId")) updates.dataSourceId = parsed.dataSourceId;
+  if (sentKeys.has("allowedTypes")) updates.allowedTypes = parsed.allowedTypes;
+  if (sentKeys.has("allowedStatuses")) updates.allowedStatuses = parsed.allowedStatuses;
+  if (sentKeys.has("pollingIntervalMinutes")) updates.pollingIntervalMinutes = parsed.pollingIntervalMinutes;
+  if (sentKeys.has("slaMinutes")) updates.slaMinutes = parsed.slaMinutes;
+  if (sentKeys.has("priority")) updates.priority = parsed.priority;
+  if (sentKeys.has("triggerCondition")) updates.triggerCondition = parsed.triggerCondition;
+  if (sentKeys.has("assignmentStrategy")) updates.assignmentStrategy = parsed.assignmentStrategy;
   // escalationChainId is allowed to be null (clear) or a number (set).
-  if ("escalationChainId" in parsed) updates.escalationChainId = parsed.escalationChainId ?? null;
+  if (sentKeys.has("escalationChainId")) updates.escalationChainId = parsed.escalationChainId ?? null;
 
-  const hasSkillUpdate = Array.isArray(parsed.skillTagIds);
+  const hasSkillUpdate = sentKeys.has("skillTagIds");
   if (Object.keys(updates).length === 0 && !hasSkillUpdate) {
     return NextResponse.json({ error: "Nothing to update", requestId }, { status: 400 });
   }

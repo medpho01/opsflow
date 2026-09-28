@@ -62,7 +62,7 @@ interface Task {
   startedAt: string | null;
   snoozedUntil: string | null;
   metadata: Record<string, unknown>;
-  assignedTo?: { id: number; name: string } | null;
+  assignedTo: { id: number; name: string } | null;
   checklistItems: ChecklistItem[];
   taskType: { name: string; label: string };
   // Rule provenance — powers the workspace "Rule" filter. MANUAL tasks

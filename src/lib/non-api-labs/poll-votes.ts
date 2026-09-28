@@ -60,12 +60,11 @@ async function currentAckFor(label: string, action: LabProviderActionType | null
  */
 async function acknowledge(poll: {
   workflowId: string | null;
+  outboundId: string | null;
   votedAction: LabProviderActionType | null;
   votedLabel: string | null;
   options: unknown;
 }) {
-  if (!poll.workflowId) return;
-
   // The reply belongs to the OPTION the provider tapped, read from the copy
   // stored on this poll — not from a template chosen by action. That is what
   // lets two polls share an action and still say different things, and what
@@ -91,26 +90,52 @@ async function acknowledge(poll: {
     if (!ack) return; // genuinely nothing to say
   }
 
-  const workflow = await prisma.labCommunicationWorkflow.findUnique({
-    where: { id: poll.workflowId },
-    select: { orderId: true, labId: true, appointmentTime: true, orderSnapshot: true },
-  });
-  if (!workflow) return;
+  let labId: number;
+  let variables: Record<string, string>;
+  if (poll.workflowId) {
+    const workflow = await prisma.labCommunicationWorkflow.findUnique({
+      where: { id: poll.workflowId },
+      select: { orderId: true, labId: true, appointmentTime: true, orderSnapshot: true },
+    });
+    if (!workflow) return;
+    labId = workflow.labId;
+    const snapshot = (workflow.orderSnapshot ?? {}) as { patientName?: string; location?: string; tests?: string };
+    variables = {
+      order_id: String(workflow.orderId),
+      patient_name: snapshot.patientName || "Patient",
+      appointment_date: workflow.appointmentTime ? formatDate(workflow.appointmentTime) : "Scheduled appointment",
+      appointment_time: workflow.appointmentTime ? formatTime(workflow.appointmentTime) : "scheduled time",
+      location: snapshot.location || "Location shared in LabStack",
+      tests: snapshot.tests || "Order details available in LabStack",
+    };
+  } else {
+    // Informational polls (an SLA breach answer, say) carry no workflow — an
+    // API lab has none, and a breach is about a milestone, not a confirmation.
+    // Trace through the outbound row that sent this poll to the
+    // LabCommunication mirror, which still has orderId/labId/templateVariables
+    // denormalized onto it for exactly this reason.
+    if (!poll.outboundId) return;
+    const communication = await prisma.labCommunication.findUnique({
+      where: { waOutboundId: poll.outboundId },
+      select: { orderId: true, labId: true, templateVariables: true },
+    });
+    if (!communication || !communication.labId) return;
+    labId = communication.labId;
+    const vars = (communication.templateVariables ?? {}) as Record<string, string>;
+    variables = {
+      order_id: String(communication.orderId ?? vars.order_id ?? ""),
+      patient_name: vars.patient_name || "Patient",
+      appointment_date: vars.appointment_date || "Scheduled appointment",
+      appointment_time: vars.appointment_time || "scheduled time",
+      location: vars.location || "Location shared in LabStack",
+      tests: vars.tests || "Order details available in LabStack",
+    };
+  }
 
-  const config = await prisma.nonApiLabConfig.findUnique({ where: { labId: workflow.labId } });
+  const config = await prisma.nonApiLabConfig.findUnique({ where: { labId } });
   if (!config || !config.isActive) return;
 
-  const snapshot = (workflow.orderSnapshot ?? {}) as { patientName?: string; location?: string; tests?: string };
-  const text = renderLabTemplate(ack, {
-    order_id: String(workflow.orderId),
-    lab_name: config.labName,
-    patient_name: snapshot.patientName || "Patient",
-    appointment_date: workflow.appointmentTime ? formatDate(workflow.appointmentTime) : "Scheduled appointment",
-    appointment_time: workflow.appointmentTime ? formatTime(workflow.appointmentTime) : "scheduled time",
-    location: snapshot.location || "Location shared in LabStack",
-    tests: snapshot.tests || "Order details available in LabStack",
-  });
-
+  const text = renderLabTemplate(ack, { ...variables, lab_name: config.labName });
   const target = await resolveLabTarget(config);
   await prisma.waOutbound.create({
     data: { targetJid: target.targetJid, text, groupId: target.groupId },
@@ -130,19 +155,21 @@ export async function processPollVotes(): Promise<PollVoteResult> {
   const result: PollVoteResult = { applied: 0, reasonsAttached: 0, skipped: 0, failed: 0 };
 
   // ── 1. Votes waiting to be applied ──────────────────────────────────────
-  // No votedAction filter: an informational option (an SLA breach answer, say)
-  // has none, and it still deserves its reply. Such a vote moves no workflow.
+  // No workflowId filter: an informational poll (an SLA breach answer, say)
+  // has none — an API lab has no confirmation workflow, and a breach is about
+  // a milestone, not a confirmation — and it still deserves its reply. Such a
+  // vote moves no workflow, only acknowledge() below runs for it.
   const votes = await prisma.waPoll.findMany({
-    where: { status: "VOTED", workflowId: { not: null } },
+    where: { status: "VOTED" },
     orderBy: { votedAt: "asc" },
     take: BATCH,
   });
 
   for (const poll of votes) {
     try {
-      if (poll.votedAction) {
+      if (poll.votedAction && poll.workflowId) {
         await applyProviderAction({
-          workflowId: poll.workflowId!,
+          workflowId: poll.workflowId,
           action: poll.votedAction,
           // Usually null at this point; present only if the provider typed their
           // reason before the tick ran.
@@ -183,6 +210,11 @@ export async function processPollVotes(): Promise<PollVoteResult> {
   }
 
   // ── 2. Reasons that arrived after the vote was applied ──────────────────
+  // Still scoped to workflow-backed polls: attachProviderReason writes onto
+  // LabCommunicationWorkflow, which an informational (SLA-breach) poll has
+  // none of. A reason typed after tapping a breach poll option is recorded on
+  // the poll row itself (reason/reasonAt) but has nowhere further to attach —
+  // a known, narrower gap than the one this pass exists to close.
   const lateReasons = await prisma.waPoll.findMany({
     where: {
       status: "APPLIED",

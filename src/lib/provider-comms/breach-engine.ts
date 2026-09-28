@@ -245,6 +245,20 @@ export async function runSlaBreachTick(now: Date = new Date()): Promise<BreachTi
 
   // ── B. Detect ────────────────────────────────────────────────────────
   const candidates = await loadCandidateOrders(participating);
+
+  // Pairs that already have an ACTIVE breach. Skipping them up front (a) stops a
+  // second ACTIVE event appearing when the appointment moves to an earlier,
+  // still-past time — the new deadlineAt would otherwise pass the unique key —
+  // and (b) avoids a failing INSERT per overdue order-milestone every tick.
+  // Read-then-create is safe here: the whole tick runs under the non-API lab
+  // lock, and the unique key below still backstops any race.
+  const activePairs = new Set(
+    (await prisma.slaBreachEvent.findMany({
+      where: { status: "ACTIVE", orderId: { in: candidates.map((o) => o.id) } },
+      select: { orderId: true, milestone: true },
+    })).map((e) => `${e.orderId}:${e.milestone}`),
+  );
+
   for (const order of candidates) {
     const labConfigs = configsByLab.get(order.labId);
     if (!labConfigs) continue;
@@ -259,13 +273,14 @@ export async function runSlaBreachTick(now: Date = new Date()): Promise<BreachTi
 
       const state = resolveMilestoneState(order, config.milestone);
       if (state.complete) continue;
+      if (activePairs.has(`${order.id}:${config.milestone}`)) continue;
 
-      // Idempotency comes from the unique (orderId, milestone) constraint,
-      // never from a prior read — two runners racing here both call create and
-      // exactly one wins. A plain `create` is used rather than an upsert so
-      // that "already existed" is the P2002 branch: an upsert returns the
-      // existing row indistinguishably from a new one, and dating them apart
-      // by createdAt is wrong whenever two ticks run inside the same second.
+      // Idempotency comes from the unique (orderId, milestone, deadlineAt) key
+      // declared in schema.prisma. A plain `create` is used rather than an
+      // upsert so that "already tracked for this deadline" is the P2002 branch
+      // — including a breach that was CAPPED or manually stopped, which must
+      // stay closed. A reschedule yields a new deadlineAt, so a fresh breach
+      // for the new deadline is allowed.
       try {
         await prisma.slaBreachEvent.create({
           data: {

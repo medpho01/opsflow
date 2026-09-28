@@ -1569,25 +1569,22 @@ model SlaMilestoneConfig {
 /// ticks and concurrent runners cannot produce a second ACTIVE event for the
 /// same pair.
 ///
-/// That guarantee is deliberately scoped to ACTIVE only, and is NOT the
-/// `@@unique` Prisma would generate from `[orderId, milestone]` — a plain
-/// unique index covering every status would mean the FIRST event for a pair
-/// (however it ended: MILESTONE_COMPLETED, ORDER_CANCELLED, RESCHEDULED,
-/// MAX_ATTEMPTS) permanently blocks every future one, because it never gets
-/// deleted. Concretely: an order reschedules past a breached deadline (the
-/// event is closed CANCELLED/RESCHEDULED, not removed) and the new, later
-/// deadline later passes with the milestone still incomplete — detection's
-/// `create` would P2002 forever against that CANCELLED row, and the code
-/// already treats P2002 as "steady state, not a failure" (see breach-engine.ts),
-/// so the milestone could never be reported breached again.
+/// Uniqueness is on (orderId, milestone, deadlineAt), declared below so that
+/// `prisma db push` — which is how production applies this schema at every
+/// boot — actually creates it. (An earlier partial index `WHERE status =
+/// 'ACTIVE'` lived only in a migration .sql that production never runs, which
+/// left NO uniqueness in prod: detection relies on P2002 to mean "already
+/// tracked", so every tick inserted and sent a fresh event.)
 ///
-/// The real constraint is therefore a PARTIAL unique index —
-/// `UNIQUE (orderId, milestone) WHERE status = 'ACTIVE'` — created by raw SQL
-/// in migration 20260928_sla_breach_event_active_unique, because Prisma's
-/// schema DSL has no `@@unique(..., where: ...)`. Prisma does not know this
-/// index exists; `prisma migrate diff`/`db push` will not try to "correct"
-/// it away, and no `@@unique` appears below on purpose. A lookup that needs
-/// "the" event for a pair should use `findFirst`, not `findUnique`.
+/// Why deadlineAt is part of the key:
+///   • A reschedule moves the deadline, so a NEW breach for the new deadline
+///     is allowed — the case a plain (orderId, milestone) key blocked forever.
+///   • A breach that is CAPPED, manually stopped or resolved keeps its row for
+///     the SAME deadline, so detection hits P2002 and it stays closed. (With an
+///     ACTIVE-only index, a capped/stopped breach was recreated one tick later,
+///     which silently defeated maxAttempts and the Stop button.)
+/// computeDeadline() is deterministic for a given order state, so the same
+/// deadline always produces the same key.
 model SlaBreachEvent {
   id               String          @id @default(cuid())
   /// LabStack public."Order".id — deliberately not a foreign key, same as
@@ -1610,8 +1607,10 @@ model SlaBreachEvent {
 
   sends SlaBreachSend[]
 
+  @@unique([orderId, milestone, deadlineAt])
   @@index([status, nextAttemptAt])
   @@index([labId, status])
+  @@index([orderId, milestone, status])
   @@map("sla_breach_events")
 }
 

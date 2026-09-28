@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { parsePollOptions } from "../poll-definitions";
+import { parsePollOptions, breachOutcomeOf } from "../poll-definitions";
 
 // These options are read back off a wa_polls row when a vote arrives, and the
 // reply is chosen from them. Anything this parser drops becomes an option the
@@ -48,5 +48,39 @@ describe("parsePollOptions", () => {
 
   it("trims labels, because the vote is matched on exact text", () => {
     assert.equal(parsePollOptions([{ label: "  Accept  ", ack: "" }])[0].label, "Accept");
+  });
+});
+
+// Breach polls: the tapped option's outcome decides whether chasing pauses,
+// stops (Cannot fulfil -> Ops alert) or carries on. Losing it silently turns a
+// lab's answer back into "acknowledged and ignored".
+describe("breach poll outcomes", () => {
+  it("keeps an explicit outcome through parsing", () => {
+    const [option] = parsePollOptions([{ label: "Already done", action: null, ack: "ok", outcome: "DONE" }]);
+    assert.equal(option.outcome, "DONE");
+  });
+
+  it("drops an unknown outcome instead of carrying junk", () => {
+    const [option] = parsePollOptions([{ label: "Maybe", action: null, ack: "", outcome: "SOMETIMES" }]);
+    assert.equal("outcome" in option, false);
+  });
+
+  it("uses the explicit outcome first", () => {
+    assert.equal(breachOutcomeOf({ label: "Relabelled", action: null, outcome: "ON_THE_WAY" }), "ON_THE_WAY");
+  });
+
+  it("falls back to the seeded labels for polls sent before outcomes existed", () => {
+    assert.equal(breachOutcomeOf({ label: "Already done", action: null }), "DONE");
+    assert.equal(breachOutcomeOf({ label: "on the way", action: null }), "ON_THE_WAY");
+    assert.equal(breachOutcomeOf({ label: "Delayed", action: null }), "DELAYED");
+  });
+
+  it("treats a REJECT option as cannot-fulfil even when relabelled", () => {
+    assert.equal(breachOutcomeOf({ label: "Can't do it", action: "REJECT" }), "CANNOT_FULFIL");
+  });
+
+  it("returns null for an unknown informational option", () => {
+    assert.equal(breachOutcomeOf({ label: "Something else", action: null }), null);
+    assert.equal(breachOutcomeOf(null), null);
   });
 });

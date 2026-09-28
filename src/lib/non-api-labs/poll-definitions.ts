@@ -143,9 +143,10 @@ export function parsePollOptions(raw: unknown): PollOption[] {
     // An option with no reply is silent, which is a valid choice and the only
     // honest reading of a poll sent before replies existed.
     ack: option.ack ?? "",
-    outcome: BREACH_OUTCOMES.includes((option as { outcome?: unknown }).outcome as BreachOutcome)
-      ? ((option as { outcome?: BreachOutcome }).outcome as BreachOutcome)
-      : null,
+    // Only carried when set, so non-breach options keep exactly their old shape.
+    ...(BREACH_OUTCOMES.includes((option as { outcome?: unknown }).outcome as BreachOutcome)
+      ? { outcome: (option as { outcome: BreachOutcome }).outcome }
+      : {}),
   }));
 }
 

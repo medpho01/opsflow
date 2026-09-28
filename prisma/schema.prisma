@@ -1564,9 +1564,30 @@ model SlaMilestoneConfig {
   @@map("sla_milestone_configs")
 }
 
-/// The ledger. `(orderId, milestone)` is the idempotency guarantee: detection
-/// upserts on it and never reads first, so repeated ticks and concurrent
-/// runners cannot produce a second event.
+/// The ledger. `(orderId, milestone)` is the idempotency guarantee while an
+/// event is ACTIVE: detection creates and never reads first, so repeated
+/// ticks and concurrent runners cannot produce a second ACTIVE event for the
+/// same pair.
+///
+/// That guarantee is deliberately scoped to ACTIVE only, and is NOT the
+/// `@@unique` Prisma would generate from `[orderId, milestone]` — a plain
+/// unique index covering every status would mean the FIRST event for a pair
+/// (however it ended: MILESTONE_COMPLETED, ORDER_CANCELLED, RESCHEDULED,
+/// MAX_ATTEMPTS) permanently blocks every future one, because it never gets
+/// deleted. Concretely: an order reschedules past a breached deadline (the
+/// event is closed CANCELLED/RESCHEDULED, not removed) and the new, later
+/// deadline later passes with the milestone still incomplete — detection's
+/// `create` would P2002 forever against that CANCELLED row, and the code
+/// already treats P2002 as "steady state, not a failure" (see breach-engine.ts),
+/// so the milestone could never be reported breached again.
+///
+/// The real constraint is therefore a PARTIAL unique index —
+/// `UNIQUE (orderId, milestone) WHERE status = 'ACTIVE'` — created by raw SQL
+/// in migration 20260928_sla_breach_event_active_unique, because Prisma's
+/// schema DSL has no `@@unique(..., where: ...)`. Prisma does not know this
+/// index exists; `prisma migrate diff`/`db push` will not try to "correct"
+/// it away, and no `@@unique` appears below on purpose. A lookup that needs
+/// "the" event for a pair should use `findFirst`, not `findUnique`.
 model SlaBreachEvent {
   id               String          @id @default(cuid())
   /// LabStack public."Order".id — deliberately not a foreign key, same as
@@ -1589,7 +1610,6 @@ model SlaBreachEvent {
 
   sends SlaBreachSend[]
 
-  @@unique([orderId, milestone])
   @@index([status, nextAttemptAt])
   @@index([labId, status])
   @@map("sla_breach_events")

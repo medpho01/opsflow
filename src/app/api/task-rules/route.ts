@@ -10,7 +10,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { ZodError } from "zod";
 import { getSessionFromRequest } from "@/lib/auth/session";
 import prisma from "@/lib/db/client";
-import { UserRole } from "@prisma/client";
+import { UserRole, Prisma } from "@prisma/client";
 import { logRuleAudit } from "@/lib/engine/ruleAudit";
 import {
   createRuleSchema,
@@ -140,7 +140,7 @@ export async function POST(request: NextRequest) {
         titleTemplate: parsed.titleTemplate,
         slaMinutes: parsed.slaMinutes,
         priority: parsed.priority as never,
-        triggerCondition: parsed.triggerCondition,
+        triggerCondition: parsed.triggerCondition as Prisma.InputJsonValue,
         assignmentStrategy: parsed.assignmentStrategy,
         // Drafts land inactive — they pass validation but won't fire until
         // the author flips the toggle. See W3.2 in the audit roadmap.

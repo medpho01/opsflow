@@ -77,7 +77,7 @@ interface SourceStat {
   openTasks: number;
 }
 
-interface NonApiWorkflowStats {
+export interface NonApiWorkflowStats {
   waitingForLabConfirmation: number;
   accepted: number;
   rescheduleRequested: number;

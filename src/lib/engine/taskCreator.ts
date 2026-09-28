@@ -1132,13 +1132,13 @@ export async function evaluateAndCreateTasks(
       //
       // Safety floor: the resulting deadline is clamped to at least
       // now + 1 minute so a late poll cycle doesn't BREACH-at-birth.
-      const triggerCond = (rule.triggerCondition ?? {}) as Record<string, unknown>;
+      const triggerCond = rule.triggerCondition;
       const minutesAfterAppt =
-        typeof triggerCond.minutesAfterAppointment === "number"
+        typeof triggerCond?.minutesAfterAppointment === "number"
           ? triggerCond.minutesAfterAppointment
           : null;
       const minutesBeforeAppt =
-        typeof triggerCond.minutesBeforeAppointment === "number"
+        typeof triggerCond?.minutesBeforeAppointment === "number"
           ? triggerCond.minutesBeforeAppointment
           : null;
 

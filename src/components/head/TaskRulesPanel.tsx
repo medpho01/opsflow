@@ -1979,6 +1979,19 @@ type SimResult = {
   failedCheck?: string;
 };
 
+type SimulateResponse = {
+  ruleName: string;
+  summary: {
+    sampled: number;
+    availableOrders: number;
+    wouldFire: number;
+    wouldDedup: number;
+    wouldNotFire: number;
+    failedChecks: Record<string, number>;
+  };
+  results: SimResult[];
+};
+
 type SimRequest =
   | { ruleId: string; limit: number }
   | { rule: {
@@ -1998,18 +2011,7 @@ function SimulatorModal({
   request: SimRequest;
   onClose: () => void;
 }) {
-  const [data, setData] = useState<{
-    ruleName: string;
-    summary: {
-      sampled: number;
-      availableOrders: number;
-      wouldFire: number;
-      wouldDedup: number;
-      wouldNotFire: number;
-      failedChecks: Record<string, number>;
-    };
-    results: SimResult[];
-  } | null>(null);
+  const [data, setData] = useState<SimulateResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<"all" | "fire" | "skip" | "dedup">("all");
@@ -2042,7 +2044,11 @@ function SimulatorModal({
           throw new Error(msg);
         }
         if (!body) throw new Error("Simulator returned a non-JSON response");
-        return body;
+        // `body`'s declared type is deliberately the narrow error shape above
+        // (for building msg from a possible {error, details} response) — by
+        // this point r.ok and body have both been checked, so this is the
+        // simulator's actual success payload.
+        return body as unknown as SimulateResponse;
       })
       .then((d) => { if (!cancelled) setData(d); })
       .catch((e) => { if (!cancelled) setError(e instanceof Error ? e.message : String(e)); })

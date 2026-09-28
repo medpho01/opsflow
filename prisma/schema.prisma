@@ -1447,7 +1447,7 @@ model NonApiLabConfig {
   quietWindowMinutes          Int                @default(10)
   // Message this lab when an OpsFlow task for one of its orders breaches SLA.
   // Applies to API and NON_API labs alike; off by lab, not by integration type.
-  slaBreachAlertsEnabled      Boolean            @default(true)
+  slaBreachAlertsEnabled      Boolean            @default(false)
   slaBreachTemplateKey        String             @default("PROVIDER_SLA_BREACH")
   // Breach alerts are per task, but one order can breach several task rules in
   // a row. This caps how many reach the provider for a single order; further

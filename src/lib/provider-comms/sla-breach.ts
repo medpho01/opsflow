@@ -43,7 +43,8 @@
  * gateway's per-group sendEnabled guard still applies; see target.ts.
  */
 import prisma from "@/lib/db/client";
-import { loadEffectiveConfigsForLab } from "./sla-config";
+import { loadEffectiveConfigsForLab, loadProviderCommsSettings } from "./sla-config";
+import { inQuietHours } from "./breach-engine";
 import { resolveLabTarget, hasWhatsAppTarget } from "@/lib/non-api-labs/target";
 import {
   PROVIDER_SLA_BREACH_TEMPLATE,
@@ -75,6 +76,9 @@ export type BreachNotifyOutcome =
   | "no-target"
   | "order-capped"
   | "duplicate"
+  | "kill-switch"
+  | "dry-run"
+  | "quiet-hours"
   | "failed";
 
 const TZ = process.env.TIMEZONE || "Asia/Kolkata";
@@ -109,6 +113,26 @@ function appointmentFrom(metadata: Record<string, unknown> | null | undefined): 
  * rest of the breaches.
  */
 export async function notifyProviderOfBreach(input: BreachedTaskInput): Promise<BreachNotifyOutcome> {
+  // The SLA watcher calls this once per breached task, unguarded, in the same
+  // loop that fires escalations. Any throw here (a config lookup, a missing
+  // table on a partial deploy) must cost this one alert — never the rest of the
+  // watcher's batch or this task's escalation.
+  try {
+    return await notifyProviderOfBreachInner(input);
+  } catch (error) {
+    console.error(`[ProviderBreach] Alert for order ${input.orderId} failed:`, error);
+    return "failed";
+  }
+}
+
+async function notifyProviderOfBreachInner(input: BreachedTaskInput): Promise<BreachNotifyOutcome> {
+  // Same global controls as the milestone breach engine. This path previously
+  // ignored them, so it sent live — to API labs too — the moment a lab config
+  // existed, even with provider breach messaging switched off and in dry run.
+  const settings = await loadProviderCommsSettings();
+  if (!settings.slaBreachEnabled) return "kill-switch";
+  if (inQuietHours(input.breachedAt, settings.quietHoursStart, settings.quietHoursEnd)) return "quiet-hours";
+
   const config = await prisma.nonApiLabConfig.findUnique({ where: { labId: input.labId } });
   // Note the absence of an integrationType check. That is the whole point of
   // this module: an API lab with a config is a lab that wants to hear about
@@ -175,6 +199,11 @@ export async function notifyProviderOfBreach(input: BreachedTaskInput): Promise<
     // row, and that write does not belong inside the message transaction.
     const target = await resolveLabTarget(config);
     const text = renderLabTemplate(template.body, variables);
+
+    if (settings.slaBreachDryRun) {
+      console.info(`[ProviderBreach] DRY RUN — would alert lab ${input.labId} about order ${input.orderId}: ${text.slice(0, 120)}`);
+      return "dry-run";
+    }
 
     await prisma.$transaction(async (tx) => {
       const communication = await tx.labCommunication.create({

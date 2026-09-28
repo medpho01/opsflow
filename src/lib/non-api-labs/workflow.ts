@@ -83,6 +83,13 @@ export async function startNonApiLabWorkflow(order: RawOrder): Promise<WorkflowS
   const config = await prisma.nonApiLabConfig.findUnique({ where: { labId: order.labId } });
   if (!config || !config.isActive || config.integrationType !== "NON_API" || !hasWhatsAppTarget(config)) return "skipped";
 
+  // Only orders that arrived AFTER this lab was onboarded. Without this, adding
+  // a lab's config (or a poller checkpoint reset) sent "new order — please
+  // confirm" plus a poll for every order the lab already had open.
+  if (order.createdAt && config.createdAt && new Date(order.createdAt).getTime() < config.createdAt.getTime()) {
+    return "skipped";
+  }
+
   const templateKey = isNonApiTemplateKey(config.initialTemplateKey) ? config.initialTemplateKey : NON_API_NEW_ORDER_TEMPLATE;
   const template = templateKey === NON_API_NEW_ORDER_TEMPLATE ? await getActiveNewOrderTemplate() : await ensureTemplate(templateKey);
   if (!template.isActive) {

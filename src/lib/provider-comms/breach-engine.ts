@@ -20,10 +20,10 @@
  * timer fired.
  *
  * ── Crash safety ────────────────────────────────────────────────────────
- * The SlaBreachSend row is written BEFORE the enqueue, so a crash between the
- * two loses a message rather than duplicating one. Losing one is recoverable
- * (the next attempt still fires); duplicating one is a message a provider
- * actually received twice.
+ * Each attempt (SlaBreachSend + wa_outbound + lab_communications mirror + the
+ * event's advance) commits in one transaction, so a crash leaves either the
+ * whole attempt or none of it — never a recorded attempt whose event did not
+ * advance (which used to wedge the breach on a P2002 every tick).
  *
  * All scheduling state lives in `sla_breach_events.nextAttemptAt`. There are
  * no in-memory timers, so a restart mid-cycle resumes exactly where it was.
@@ -381,76 +381,93 @@ export async function runSlaBreachTick(now: Date = new Date()): Promise<BreachTi
       const target = await resolveLabTarget(lab);
       const isDryRun = settings.slaBreachDryRun;
 
-      // 2. Record the attempt BEFORE enqueueing — see the header.
-      const send = await prisma.slaBreachSend.create({
-        data: {
-          breachEventId: event.id,
-          attemptNo,
-          ruleId: step.id,
-          destination: target.targetJid,
-          renderedBody: body,
-          sentAt: now,
-          dryRun: isDryRun,
-        },
+      // 2–3. The attempt record, the outbound (+ poll), the timeline mirror and
+      //      the event's advance commit TOGETHER. They used to be separate
+      //      writes: a failure after the attempt row left attemptsSent behind,
+      //      so every later tick retried the same attemptNo, hit P2002 on
+      //      (breachEventId, attemptNo) and failed — wedging the breach for good.
+      //      Attempt state advances identically in dry run and live, so a dry
+      //      run rehearses the real cadence.
+      const capped = attemptNo >= maxAttempts;
+      const advance = {
+        attemptsSent: attemptNo,
+        lastSentAt: now,
+        nextAttemptAt: capped ? null : new Date(now.getTime() + repeatMinutes * 60_000),
+        status: capped ? ("CAPPED" as const) : ("ACTIVE" as const),
+        resolvedAt: capped ? now : null,
+        resolutionReason: capped ? "MAX_ATTEMPTS" : null,
+      };
+
+      // Recovery for a breach wedged by the old non-atomic path: this attempt
+      // was recorded but the event never advanced. Advance without re-sending.
+      const alreadyRecorded = await prisma.slaBreachSend.findUnique({
+        where: { breachEventId_attemptNo: { breachEventId: event.id, attemptNo } },
         select: { id: true },
       });
+      if (alreadyRecorded) {
+        await prisma.slaBreachEvent.update({ where: { id: event.id }, data: advance });
+        console.warn(`[SlaBreach] Recovered breach ${event.id}: attempt ${attemptNo} was recorded but never advanced`);
+        result.skipped += 1;
+        continue;
+      }
 
-      if (!isDryRun) {
-        // The one send path: a row on wa_outbound, drained by the gateway.
-        // groupId is what arms the per-group sendEnabled guard; a bare jid
-        // with a null groupId would slip straight past it.
-        // A breach asks the provider what is going on, so it carries a poll
-        // too. Its options are informational — there is no confirmation
-        // workflow to move — and, like the ladder's, they are snapshotted onto
-        // the row so editing the definition cannot change an answered poll.
-        const breachPoll = await resolvePoll(SLA_BREACH_POLL);
-        const outbound = await prisma.waOutbound.create({
+      // A breach asks the provider what is going on, so it carries a poll. Its
+      // options are snapshotted onto the row so editing the definition cannot
+      // change an answered poll. Resolved outside the transaction (it may seed).
+      const breachPoll = isDryRun ? null : await resolvePoll(SLA_BREACH_POLL);
+
+      await prisma.$transaction(async (tx) => {
+        const send = await tx.slaBreachSend.create({
           data: {
-            targetJid: target.targetJid,
-            text: body,
-            groupId: target.groupId,
-            ...(breachPoll ? { pollName: breachPoll.question, pollOptions: breachPoll.options } : {}),
+            breachEventId: event.id,
+            attemptNo,
+            ruleId: step.id,
+            destination: target.targetJid,
+            renderedBody: body,
+            sentAt: now,
+            dryRun: isDryRun,
           },
           select: { id: true },
         });
-        await prisma.slaBreachSend.update({ where: { id: send.id }, data: { waOutboundId: outbound.id } });
 
-        // Mirrored into the shared communication history so one order still
-        // reads as one timeline alongside its sequence-step sends.
-        await prisma.labCommunication.create({
-          data: {
-            workflowId: null,
-            orderId: order.id,
-            labId: event.labId,
-            type: "SLA_BREACH",
-            recipient: target.targetJid,
-            templateKey: step.templateKey,
-            templateVariables: variables as Prisma.InputJsonValue,
-            ruleId: step.id,
-            waOutboundId: outbound.id,
-            status: "QUEUED",
-            idempotencyKey: `sla-milestone:${event.id}:${attemptNo}`,
-          },
-        });
-        result.sent += 1;
-      } else {
-        result.dryRun += 1;
-      }
+        if (!isDryRun) {
+          // The one send path: a row on wa_outbound, drained by the gateway.
+          // groupId is what arms the per-group sendEnabled guard; a bare jid
+          // with a null groupId would slip straight past it.
+          const outbound = await tx.waOutbound.create({
+            data: {
+              targetJid: target.targetJid,
+              text: body,
+              groupId: target.groupId,
+              ...(breachPoll ? { pollName: breachPoll.question, pollOptions: breachPoll.options } : {}),
+            },
+            select: { id: true },
+          });
+          await tx.slaBreachSend.update({ where: { id: send.id }, data: { waOutboundId: outbound.id } });
 
-      // 3. Advance attempt state identically in dry run and live, so a dry
-      //    run rehearses the real cadence rather than a different one.
-      const capped = attemptNo >= maxAttempts;
-      await prisma.slaBreachEvent.update({
-        where: { id: event.id },
-        data: {
-          attemptsSent: attemptNo,
-          lastSentAt: now,
-          nextAttemptAt: capped ? null : new Date(now.getTime() + repeatMinutes * 60_000),
-          status: capped ? "CAPPED" : "ACTIVE",
-          resolvedAt: capped ? now : null,
-          resolutionReason: capped ? "MAX_ATTEMPTS" : null,
-        },
+          // Mirrored into the shared communication history so one order still
+          // reads as one timeline alongside its sequence-step sends.
+          await tx.labCommunication.create({
+            data: {
+              workflowId: null,
+              orderId: order.id,
+              labId: event.labId,
+              type: "SLA_BREACH",
+              recipient: target.targetJid,
+              templateKey: step.templateKey,
+              templateVariables: variables as Prisma.InputJsonValue,
+              ruleId: step.id,
+              waOutboundId: outbound.id,
+              status: "QUEUED",
+              idempotencyKey: `sla-milestone:${event.id}:${attemptNo}`,
+            },
+          });
+        }
+
+        await tx.slaBreachEvent.update({ where: { id: event.id }, data: advance });
       });
+      if (isDryRun) result.dryRun += 1;
+      else result.sent += 1;
       if (capped) result.capped += 1;
       sentThisTickByLab.set(event.labId, alreadySent + 1);
     } catch (error) {

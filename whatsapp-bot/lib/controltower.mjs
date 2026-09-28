@@ -796,6 +796,18 @@ export async function reclaimStalledSends({ olderThanMinutes = 5, maxAttempts = 
   return r.rows.length;
 }
 
+/** Mirror a failed outbound onto its lab_communications row, which otherwise
+ *  stays QUEUED forever and makes the order timeline read "queued". */
+async function markCommunicationFailed(outboundId) {
+  try {
+    await taskosQuery(
+      `UPDATE lab_communications SET status='FAILED', "failedAt"=now(), "updatedAt"=now()
+        WHERE "waOutboundId"=$1 AND status='QUEUED'`,
+      [outboundId]
+    );
+  } catch (e) { console.error("mirror failure:", e.message); }
+}
+
 export async function drainOutbound(send, { limit = 5, sendPoll = null } = {}) {
   // Before taking new work, pick up anything a previous run dropped.
   try { await reclaimStalledSends(); } catch (e) { console.error("reclaim:", e.message); }
@@ -836,8 +848,9 @@ export async function drainOutbound(send, { limit = 5, sendPoll = null } = {}) {
     // a group target must be send-enabled; non-group (raw number) sends are allowed
     // attempts was already incremented by the claim above.
     if (row.groupId && !row.sendEnabled) {
-      await taskosQuery(`UPDATE wa_outbound SET status='FAILED', error=$2 WHERE id=$1`,
-        [row.id, `sending disabled for group "${row.subject}"`]);
+      const reason = `sending disabled for group "${row.subject}"`;
+      await taskosQuery(`UPDATE wa_outbound SET status='FAILED', error=$2 WHERE id=$1`, [row.id, reason]);
+      await markCommunicationFailed(row.id);
       continue;
     }
     try {
@@ -878,7 +891,22 @@ export async function drainOutbound(send, { limit = 5, sendPoll = null } = {}) {
       }
       sent++;
     } catch (e) {
-      await taskosQuery(`UPDATE wa_outbound SET status='FAILED', error=$2 WHERE id=$1`, [row.id, (e?.message || String(e)).slice(0, 300)]);
+      const message = (e?.message || String(e)).slice(0, 300);
+      // Not connected (logout, reconnect, QR pending) is not this message's
+      // fault: put it and the rest of the claimed batch back, without spending
+      // an attempt, and stop. Marking them FAILED here used to burn the whole
+      // queue — ~75 messages a minute — for as long as the gateway was down.
+      if (/not connected/i.test(message)) {
+        const pending = rows.slice(rows.indexOf(row)).map((r) => r.id);
+        await taskosQuery(
+          `UPDATE wa_outbound SET status='QUEUED', "sendingAt"=NULL, attempts=GREATEST(attempts - 1, 0)
+            WHERE id = ANY($1::text[]) AND status='SENDING'`,
+          [pending]
+        );
+        break;
+      }
+      await taskosQuery(`UPDATE wa_outbound SET status='FAILED', error=$2 WHERE id=$1`, [row.id, message]);
+      await markCommunicationFailed(row.id);
     }
   }
   return { drained: rows.length, sent };

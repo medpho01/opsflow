@@ -2345,6 +2345,7 @@ export default function MyWorkBoard({ currentUser }: { currentUser: CurrentUser 
           </button>
         )}
       </div>
+      )}
 
       {/* Tab strip */}
       <div className="flex items-center gap-1 border-b border-zinc-800 mb-6">

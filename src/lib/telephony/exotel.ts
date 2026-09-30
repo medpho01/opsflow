@@ -35,6 +35,11 @@ export interface InitiateCallParams {
   userId?: number | null;
   storeId?: number | null;
   taskId?: number | null;
+  // The order/appointment this call is about — set independently of taskId
+  // so calls placed from the head's order/appointment drawer (which has no
+  // single "current task") are still attributable to that entity.
+  entityType?: string | null;
+  entityId?: number | null;
   triggeredFrom?: string | null;
 }
 
@@ -77,6 +82,8 @@ export async function initiateExotelCall(params: InitiateCallParams): Promise<In
       userId: params.userId ?? null,
       storeId: params.storeId ?? null,
       taskId: params.taskId ?? null,
+      entityType: params.entityType ?? null,
+      entityId: params.entityId ?? null,
       triggeredFrom: params.triggeredFrom ?? null,
     },
   });

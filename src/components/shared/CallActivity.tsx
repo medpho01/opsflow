@@ -44,7 +44,14 @@ function formatDuration(sec: number | null): string | null {
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
-export default function CallActivity({ taskId }: { taskId: number }) {
+/**
+ * `endpoint` picks the scope: `/api/tasks/:id/calls` (one task, the agent
+ * drawer) or `/api/orders/:id/calls` / `/api/appointments/:id/calls` (every
+ * call tied to that entity across all its tasks, the head's read-only
+ * drawer — an order/appointment can have zero, one, or several tasks over
+ * its life, so there's no single task to scope to there).
+ */
+export default function CallActivity({ endpoint }: { endpoint: string }) {
   const [calls, setCalls] = useState<CallLogEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [playingId, setPlayingId] = useState<number | null>(null);
@@ -52,12 +59,13 @@ export default function CallActivity({ taskId }: { taskId: number }) {
 
   useEffect(() => {
     let cancelled = false;
-    fetch(`/api/tasks/${taskId}/calls`)
+    setCalls(null);
+    fetch(endpoint)
       .then((res) => (res.ok ? res.json() : Promise.reject(res)))
       .then((data) => { if (!cancelled) setCalls(data.calls ?? []); })
       .catch(() => { if (!cancelled) setError("Couldn't load call history."); });
     return () => { cancelled = true; };
-  }, [taskId]);
+  }, [endpoint]);
 
   if (error) return null; // non-critical — don't clutter the drawer over this
   if (calls === null) return null; // loading — appears once ready, no skeleton flash

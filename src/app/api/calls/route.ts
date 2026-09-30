@@ -5,7 +5,7 @@
  * to `to`. So the caller must have a phone number on their profile.
  *
  * body: { to: string, toName?: string, taskId?: number, storeId?: number,
- *         triggeredFrom?: string }
+ *         entityType?: string, entityId?: number, triggeredFrom?: string }
  */
 import { NextRequest, NextResponse } from "next/server";
 import { getSessionFromRequest } from "@/lib/auth/session";
@@ -40,6 +40,8 @@ export async function POST(request: NextRequest) {
     userId: user.id,
     storeId: typeof body?.storeId === "number" ? body.storeId : null,
     taskId: typeof body?.taskId === "number" ? body.taskId : null,
+    entityType: typeof body?.entityType === "string" ? body.entityType : null,
+    entityId: typeof body?.entityId === "number" ? body.entityId : null,
     triggeredFrom: body?.triggeredFrom ?? null,
   });
 

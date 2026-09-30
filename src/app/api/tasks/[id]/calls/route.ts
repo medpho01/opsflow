@@ -6,6 +6,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getSessionFromRequest } from "@/lib/auth/session";
 import prisma from "@/lib/db/client";
 import { canAccessTask } from "@/lib/auth/taskAccess";
+import { fetchCallsForTask } from "@/lib/calls/callHistory";
 
 export async function GET(
   request: NextRequest,
@@ -29,22 +30,7 @@ export async function GET(
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
-  const calls = await prisma.callLog.findMany({
-    where: { taskId },
-    orderBy: { createdAt: "desc" },
-    select: {
-      id: true,
-      status: true,
-      targetMobile: true,
-      targetUserName: true,
-      triggeredFrom: true,
-      recordingUrl: true,
-      durationSec: true,
-      transcript: true,
-      createdAt: true,
-      user: { select: { id: true, name: true } },
-    },
-  });
+  const calls = await fetchCallsForTask(taskId);
 
   return NextResponse.json({ calls });
 }

@@ -149,6 +149,14 @@ model CallLog {
   userId         Int? // the OpsFlow user who placed the call
   storeId        Int?
   taskId         Int?
+  // The order/appointment this call is about, independent of taskId — an
+  // order can have zero, one, or several OpsFlow tasks against it over its
+  // life, so "the task" isn't always a meaningful owner for a call placed
+  // from the head's order/appointment drawer. taskId is still set when the
+  // call was placed from a specific task's own drawer (see CallButton call
+  // sites) so a call can be found either way.
+  entityType     String?
+  entityId       Int?
   triggeredFrom  String? // where in the UI the call was started
   sid            String? // Exotel CallSid
   recordingUrl   String?
@@ -171,6 +179,7 @@ model CallLog {
   @@index([userId])
   @@index([taskId])
   @@index([sid])
+  @@index([entityType, entityId])
   @@map("call_logs")
 }
 

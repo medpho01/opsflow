@@ -9,7 +9,7 @@
  *
  * ── Status is a RANK, not a value ────────────────────────────────────────
  * `public."Order"."orderStatus"` is a progressive enum. An order that moves
- * from SAMPLE_COLLECTED to REPORT_READY between two ticks has plainly passed
+ * from SAMPLE_COLLECTED to REPORT_DELIVERED between two ticks has plainly passed
  * SAMPLE_DELIVERED, even though it never equalled it. Comparing for equality
  * would report that milestone incomplete and breach an order that is running
  * *ahead* of schedule — so completion is always "at or beyond this rank".
@@ -51,18 +51,24 @@ export interface MilestoneState {
  * outcomes, not progress, and are handled by `isTerminalStatus`.
  */
 const STATUS_RANK: readonly string[] = [
+  // Real LabStack "OrderStatus" values, in progress order. (This list was first
+  // written against a dummy schema with invented statuses — PHLEBO_DISPATCHED,
+  // PHLEBO_STARTED, SAMPLE_IN_TRANSIT, PARTIAL_DELIVERED, REPORT_READY — and
+  // lacked PENDING, CREATED and KIT_DISPATCHED, so real orders in those states
+  // read as "unknown" and could never complete a milestone.)
+  "PENDING",
+  "CREATED",
   "ORDER_SCHEDULED",
   "RESCHEDULED",
   "PHLEBO_ASSIGNED",
-  "PHLEBO_DISPATCHED",
-  "PHLEBO_STARTED",
+  // Kit-based orders: the lab has acted (kit sent) — same stage as a phlebo
+  // being assigned for a home collection.
+  "KIT_DISPATCHED",
+  // Centre visits: the patient has arrived; collection happens at the visit.
   "PATIENT_VISITED",
   "SAMPLE_COLLECTED",
-  "SAMPLE_IN_TRANSIT",
   "SAMPLE_DELIVERED",
   "SAMPLE_PROCESSED",
-  "PARTIAL_DELIVERED",
-  "REPORT_READY",
   "REPORT_DELIVERED",
 ];
 
@@ -89,8 +95,10 @@ const MILESTONE_MIN_STATUS: Record<SlaMilestone, string> = {
   PHLEBO_ASSIGNED: "PHLEBO_ASSIGNED",
   SAMPLE_COLLECTED: "SAMPLE_COLLECTED",
   SAMPLE_DELIVERED: "SAMPLE_DELIVERED",
-  // "Uploaded" is REPORT_READY — REPORT_DELIVERED is a later, separate step.
-  REPORT_UPLOADED: "REPORT_READY",
+  // Real LabStack has no REPORT_READY: REPORT_DELIVERED is the first status a
+  // report reaches. OrderMetrics.reportDeliveredTime, when present, is checked
+  // first (see resolveMilestoneState) and is the precise instant.
+  REPORT_UPLOADED: "REPORT_DELIVERED",
 };
 
 /** Chronological order, for the PREV_MILESTONE_COMPLETED anchor. */

@@ -44,13 +44,16 @@ export async function GET(request: NextRequest) {
         SELECT l.id,
                l."labName",
                l.city,
-               l."isActive",
+               -- Real LabStack names this column "active" (the dummy schema this
+               -- was first written against invented "isActive", so on the real
+               -- replica the query failed and the screen listed no labs).
+               l.active AS "isActive",
                COUNT(o.id) FILTER (
                  WHERE o."orderStatus" NOT IN ('CANCELED', 'REPORT_DELIVERED', 'PATIENT_MISSED')
                )::int AS "openOrders"
           FROM public."Lab" l
           LEFT JOIN public."Order" o ON o."labId" = l.id
-         GROUP BY l.id, l."labName", l.city, l."isActive"
+         GROUP BY l.id, l."labName", l.city, l.active
          ORDER BY l."labName" ASC
       `),
       prisma.nonApiLabConfig.findMany(),

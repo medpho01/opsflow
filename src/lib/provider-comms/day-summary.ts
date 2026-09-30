@@ -18,7 +18,8 @@ import { labstackWorkerQuery } from "@/lib/db/labstack";
 
 /** Statuses that mean the order will never be fulfilled, or is already done. */
 export const DEAD_STATUSES = ["CANCELED", "PATIENT_MISSED"];
-export const DONE_STATUSES = ["REPORT_DELIVERED", "PARTIAL_DELIVERED"];
+// Real LabStack statuses only (the dummy schema also had PARTIAL_DELIVERED).
+export const DONE_STATUSES = ["REPORT_DELIVERED"];
 
 export const TIME_ZONE = () => process.env.TIMEZONE || "Asia/Kolkata";
 
@@ -87,12 +88,12 @@ export async function loadDaySummaries(labIds: number[], zone: string): Promise<
            COUNT(*) FILTER (WHERE "orderType" = 'CENTER_VISIT')::int AS "centreVisits",
            -- Not yet collected and still live: the work the provider owes us.
            COUNT(*) FILTER (
-             WHERE "orderStatus" IN ('ORDER_SCHEDULED','RESCHEDULED','PHLEBO_ASSIGNED','PHLEBO_STARTED')
+             WHERE "orderStatus" IN ('PENDING','CREATED','ORDER_SCHEDULED','RESCHEDULED','PHLEBO_ASSIGNED','KIT_DISPATCHED')
            )::int AS "awaitingCollection",
-           COUNT(*) FILTER (WHERE "orderStatus" IN ('SAMPLE_COLLECTED','SAMPLE_DELIVERED'))::int AS collected,
+           COUNT(*) FILTER (WHERE "orderStatus" IN ('PATIENT_VISITED','SAMPLE_COLLECTED','SAMPLE_DELIVERED'))::int AS collected,
            -- Collected or processed but no report yet — the TAT clock is running.
            COUNT(*) FILTER (
-             WHERE "orderStatus" IN ('SAMPLE_COLLECTED','SAMPLE_DELIVERED','SAMPLE_PROCESSED')
+             WHERE "orderStatus" IN ('PATIENT_VISITED','SAMPLE_COLLECTED','SAMPLE_DELIVERED','SAMPLE_PROCESSED')
            )::int AS "reportPending",
            -- ::text on the COLUMN, not just the parameter: orderStatus is a
            -- Postgres enum ("OrderStatus"), and enum = text has no operator.
@@ -191,8 +192,10 @@ export async function loadDaySchedule(
            o."orderType"::text   AS "orderType",
            o."orderStatus"::text AS "orderStatus",
            u.name AS "patientName",
-           o.city, o.pincode,
-           u.city AS "userCity",
+           -- Real LabStack has no city/pincode on Order or User (the dummy schema
+           -- did); the store's city is the only location available.
+           NULL::text AS city, NULL::text AS pincode,
+           NULL::text AS "userCity",
            s."storeName", s.city AS "storeCity"
       FROM public."Order" o
       LEFT JOIN public."User"  u ON u.id = o."userId"

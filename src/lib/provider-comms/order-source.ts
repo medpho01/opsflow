@@ -52,18 +52,26 @@ const SELECT_COLUMNS = `
       o."appointmentTime",
       o."createdAt",
       o."statusUpdatedAt",
-      o."sampleCollectedAt",
-      o."reportDeliveredAt",
+      -- Real LabStack keeps these on OrderMetrics, not on Order (the dummy
+      -- schema this was first written against put them on Order, so on the
+      -- real replica the query failed and the breach engine never ran).
+      om."sampleCollectedTime"   AS "sampleCollectedAt",
+      om."reportDeliveredTime"   AS "reportDeliveredAt",
       u.name                     AS "patientName",
       l."labName"                AS "labName",
       s."storeName"              AS "storeName",
-      o."packageName"            AS "packageName"`;
+      -- Tests live on the Order<->Package join, not in an Order column.
+      (SELECT string_agg(p."packageName", ', ' ORDER BY p."packageName")
+         FROM public."_OrderToPackage" op
+         JOIN public."Package" p ON p.id = op."B"
+        WHERE op."A" = o.id)     AS "packageName"`;
 
 const JOINS = `
     FROM public."Order" o
     JOIN public."User" u ON u.id = o."userId"
     LEFT JOIN public."Lab" l ON l.id = o."labId"
-    LEFT JOIN public."Store" s ON s.id = o."storeId"`;
+    LEFT JOIN public."Store" s ON s.id = o."storeId"
+    LEFT JOIN public."OrderMetrics" om ON om.order_id = o.id`;
 
 function toBreachOrder(row: OrderRow, workflowAcceptedAt: Date | null): BreachOrder {
   return {

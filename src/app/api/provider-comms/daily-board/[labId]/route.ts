@@ -58,7 +58,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       WITH local AS (
         SELECT o.id, o."labOrderId", o."orderType"::text AS "orderType",
                o."orderStatus"::text AS "orderStatus", o."appointmentTime",
-               u.name AS "patientName", u.city,
+               -- Real LabStack has no User.city; the store's city is the location.
+               u.name AS "patientName", s.city AS city,
                s."storeName",
                ("appointmentTime" AT TIME ZONE 'UTC' AT TIME ZONE $2)::date AS local_day
           FROM public."Order" o

@@ -686,8 +686,8 @@ export async function processDueNonApiLabScheduledActions(): Promise<NonApiSched
   return result;
 }
 
-type WorkflowRow = Awaited<ReturnType<typeof prisma.labCommunicationWorkflow.findMany>>[number];
-type ConfigRow = Awaited<ReturnType<typeof prisma.nonApiLabConfig.findMany>>[number];
+export type WorkflowRow = Awaited<ReturnType<typeof prisma.labCommunicationWorkflow.findMany>>[number];
+export type ConfigRow = Awaited<ReturnType<typeof prisma.nonApiLabConfig.findMany>>[number];
 
 /**
  * Returns a suppression reason instead of sending, when the step's message
@@ -711,15 +711,8 @@ async function sendForAction(
 
   // Who hears about it. A rule states this outright; the built-in ladder
   // infers it from the action type, where an escalation exists to reach
-  // someone *above* the inbox that has been ignoring us. Either way, falling
-  // back to the lab number when no manager is on file keeps the message
-  // moving, and the gap is surfaced to Ops rather than silently swallowed.
+  // someone *above* the inbox that has been ignoring us.
   const wantsManager = rule ? rule.recipient === "MANAGER" : isEscalation;
-  const managerMissing = wantsManager && !config.managerWhatsapp;
-  // A manager is a person, so that override addresses a handset; everything
-  // else goes to the lab's own target, which is its group when one is set.
-  const target = await resolveLabTarget(config, wantsManager ? config.managerWhatsapp : null);
-  const recipient = target.targetJid;
 
   const isStatusCheck = isStatusCheckRung(action.rungKey);
   // The 3-hour chaser gets its own, firmer wording — unless this lab was given
@@ -742,6 +735,70 @@ async function sendForAction(
         ? "NON_API_APPOINTMENT_REMINDER"
         : "NON_API_REMINDER";
   const templateKey = isNonApiTemplateKey(selectedTemplateKey) ? selectedTemplateKey : fallbackTemplateKey;
+
+  const outcome = await deliverWorkflowMessage({
+    workflow,
+    config,
+    now,
+    templateKey,
+    isEscalation,
+    wantsManager,
+    pollKey: isStatusCheck ? ORDER_STATUS_CHECK_POLL : null,
+    ruleId: action.ruleId,
+    ruleName: rule?.name ?? null,
+    escalationLevel: action.priority,
+    idempotencyKey: `non-api:${workflow.orderId}:${action.ruleId ?? action.rungKey ?? action.type.toLowerCase()}:${action.runAt.toISOString()}`,
+    eventPayload: { scheduledActionId: action.id, rungKey: action.rungKey, anchor: action.anchor, priority: action.priority },
+    inTransaction: async (tx) => {
+      await tx.labScheduledAction.update({
+        where: { id: action.id },
+        data: { status: "COMPLETED", completedAt: now, attempts: action.attempts + 1, lockedAt: null, lockedBy: null },
+      });
+    },
+  });
+  return "suppressed" in outcome ? outcome : null;
+}
+
+export type DeliverInput = {
+  workflow: WorkflowRow;
+  config: ConfigRow;
+  now: Date;
+  /** Already resolved to a valid template key. */
+  templateKey: string;
+  isEscalation: boolean;
+  /** Address the lab manager's handset (falls back to the lab when none is on file). */
+  wantsManager: boolean;
+  /** Poll definition sent right after the text, or null. */
+  pollKey: string | null;
+  /** Stamped on the communication for attribution (legacy rule or message rule id). */
+  ruleId: string | null;
+  ruleName: string | null;
+  /** Escalation tier (the rule's priority) — distinct tiers keep distinct rows. */
+  escalationLevel: number;
+  idempotencyKey: string;
+  /** Merged into the timeline event and audit entry. */
+  eventPayload: Record<string, unknown>;
+  /** Extra writes that must commit with the message (or not at all). */
+  inTransaction?: (tx: Prisma.TransactionClient, communicationId: string) => Promise<void>;
+};
+
+/**
+ * Render and queue one message about an order's conversation — the single
+ * send path for the legacy scheduler and the message-rules engine, so both
+ * produce the same message, tokens, poll, timeline event and escalation row.
+ *
+ * Returns a suppression reason instead of sending when the template is
+ * paused: pausing is an intent, not an error.
+ */
+export async function deliverWorkflowMessage(input: DeliverInput): Promise<{ suppressed: string } | { communicationId: string }> {
+  const { workflow, config, now, templateKey, isEscalation, wantsManager, ruleId, ruleName } = input;
+
+  const managerMissing = wantsManager && !config.managerWhatsapp;
+  // A manager is a person, so that override addresses a handset; everything
+  // else goes to the lab's own target, which is its group when one is set.
+  const target = await resolveLabTarget(config, wantsManager ? config.managerWhatsapp : null);
+  const recipient = target.targetJid;
+
   const template = await ensureTemplate(templateKey);
   if (!template.isActive) return { suppressed: `Message "${template.name}" is paused` };
 
@@ -782,11 +839,10 @@ async function sendForAction(
   };
   // Rendered with the link but stored without it (it is a fresh token per message).
   const message = renderLabTemplate(template.body, { ...variables, confirm_url: await confirmationUrl(workflow.orderId) });
-  // Confirmation chasers carry the link and nothing to tap; only the status
-  // check asks a question. Read outside the transaction: a slow read should not
-  // hold the write open.
-  const poll = isStatusCheck ? await resolvePoll(ORDER_STATUS_CHECK_POLL) : null;
+  // Read outside the transaction: a slow read should not hold the write open.
+  const poll = input.pollKey ? await resolvePoll(input.pollKey) : null;
 
+  let communicationId = "";
   await prisma.$transaction(async (tx) => {
     await tx.labProviderActionToken.createMany({
       data: rawTokens.map((entry) => ({
@@ -800,39 +856,29 @@ async function sendForAction(
     const communication = await tx.labCommunication.create({
       data: {
         workflowId: workflow.id,
-        // Denormalized from the workflow so this row can be found the way
-        // every caller actually looks: by lab and by order. Without them a
-        // reminder was reachable only via workflowId, so per-lab history and
-        // anything counting messages for an order silently skipped the whole
-        // ladder — INITIAL_NOTIFICATION set them, REMINDER/ESCALATION did not.
+        // Denormalized so per-lab history and per-order counts can find it.
         labId: workflow.labId,
         orderId: workflow.orderId,
         type: isEscalation ? "ESCALATION" : "REMINDER",
         recipient,
         templateKey,
         templateVariables: variables,
-        // Attribution, so "what has this rule actually sent?" is a query
-        // rather than a reconstruction from idempotency keys.
-        ruleId: action.ruleId,
-        idempotencyKey: `non-api:${workflow.orderId}:${action.ruleId ?? action.rungKey ?? action.type.toLowerCase()}:${action.runAt.toISOString()}`,
+        // Attribution, so "what has this rule actually sent?" is a query.
+        ruleId,
+        idempotencyKey: input.idempotencyKey,
       },
     });
+    communicationId = communication.id;
 
     const outbound = await tx.waOutbound.create({
       // groupId is what arms the gateway's sendEnabled guard for group
       // targets; a bare jid with no groupId would bypass it entirely.
-      //
-      // The status check's poll rides along so the provider answers by
-      // tapping. The gateway sends the text and the poll as two messages,
-      // records the poll on a WaPoll row, and a vote comes back through the
-      // every-minute tick.
       data: {
         targetJid: target.targetJid,
         text: message,
         groupId: target.groupId,
-        // Resolved from the editable definition, and SNAPSHOTTED onto the row:
-        // editing the poll later must not change what an already-sent poll
-        // means when its vote comes back.
+        // SNAPSHOTTED onto the row: editing the poll later must not change
+        // what an already-sent poll means when its vote comes back.
         ...(poll ? { pollName: poll.question, pollOptions: poll.options } : {}),
       },
     });
@@ -847,27 +893,17 @@ async function sendForAction(
         where: { id: workflow.id },
         data: { status: "ESCALATED" },
       });
-      // `level` distinguishes escalation tiers within one workflow (the
-      // @@unique([workflowId, level]) constraint). The built-in ladder only
-      // ever schedules one ESCALATE rung, so a hardcoded 1 was harmless — but
-      // the rules engine now lets Ops author several active ESCALATE rules
-      // per scope (e.g. "notify manager at T+4h", "notify regional lead at
-      // T+8h"), and hardcoding 1 for all of them meant a second escalation
-      // silently overwrote the first's recorded recipient/reason/notifiedAt
-      // in this table, even though the order-event timeline still showed
-      // both. action.priority is the same P0..P4 concept Ops already
-      // configures per rule (P0 most urgent), so distinct rules land as
-      // distinct rows; the built-in ladder's single ESCALATE rung keeps its
-      // one fixed priority, so this is a no-op for that path.
+      // `level` keeps distinct escalation tiers in distinct rows
+      // (@@unique([workflowId, level])); the tier is the rule's priority.
       await tx.labCommunicationEscalation.upsert({
-        where: { workflowId_level: { workflowId: workflow.id, level: action.priority } },
+        where: { workflowId_level: { workflowId: workflow.id, level: input.escalationLevel } },
         create: {
           workflowId: workflow.id,
-          level: action.priority,
+          level: input.escalationLevel,
           status: "NOTIFIED",
           recipient,
-          reason: rule
-            ? `Rule "${rule.name}" escalated; ${managerMissing ? "no manager on file, notified the lab" : "notified the lab manager"}`
+          reason: ruleName
+            ? `Rule "${ruleName}" escalated; ${managerMissing ? "no manager on file, notified the lab" : "notified the lab manager"}`
             : managerMissing
               ? "Lab confirmation SLA expired; no manager on file, notified the lab"
               : "Lab confirmation SLA expired; notified the lab manager",
@@ -877,10 +913,7 @@ async function sendForAction(
       });
     }
 
-    await tx.labScheduledAction.update({
-      where: { id: action.id },
-      data: { status: "COMPLETED", completedAt: now, attempts: action.attempts + 1, lockedAt: null, lockedBy: null },
-    });
+    if (input.inTransaction) await input.inTransaction(tx, communication.id);
 
     await tx.labCommunicationOrderEvent.create({
       data: {
@@ -888,16 +921,13 @@ async function sendForAction(
         type: isEscalation ? "ESCALATION_TRIGGERED" : "REMINDER_SENT",
         actorType: "SYSTEM",
         payload: {
-          scheduledActionId: action.id,
+          ...input.eventPayload,
           communicationId: communication.id,
           outboundId: outbound.id,
-          rungKey: action.rungKey,
-          ruleId: action.ruleId,
-          ruleName: rule?.name ?? null,
-          anchor: action.anchor,
-          priority: action.priority,
+          ruleId,
+          ruleName,
           recipient,
-        },
+        } as Prisma.InputJsonValue,
       },
     });
 
@@ -906,18 +936,18 @@ async function sendForAction(
         workflowId: workflow.id,
         action: isEscalation ? "ESCALATION_TRIGGERED" : "REMINDER_SENT",
         actorType: "SYSTEM",
-        metadata: { scheduledActionId: action.id, communicationId: communication.id, rungKey: action.rungKey, ruleId: action.ruleId, ruleName: rule?.name ?? null, recipient },
+        metadata: { ...input.eventPayload, communicationId: communication.id, ruleId, ruleName, recipient } as Prisma.InputJsonValue,
       },
     });
   });
 
   if (managerMissing) {
     await raiseOpsAlert(
-      `${config.labName} has no manager WhatsApp configured — ${rule ? `rule "${rule.name}"` : "the escalation"} for order #${workflow.orderId} fell back to the lab's own number.`,
+      `${config.labName} has no manager WhatsApp configured — ${ruleName ? `rule "${ruleName}"` : "the escalation"} for order #${workflow.orderId} fell back to the lab's own number.`,
       config.labId,
-      { workflowId: workflow.id, orderId: workflow.orderId, rungKey: action.rungKey, ruleId: action.ruleId },
+      { workflowId: workflow.id, orderId: workflow.orderId, ruleId, ...input.eventPayload },
     );
   }
 
-  return null;
+  return { communicationId };
 }

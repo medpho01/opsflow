@@ -15,6 +15,7 @@ import { confirmationUrl } from "./confirmation-link";
 import { contactVariables, fetchOrderContactDetails } from "./order-details";
 import { loadActiveCommunicationRules } from "./rule-store";
 import { planRuleActions, selectRulesFor } from "./rules";
+import { loadMessageRulesMode } from "@/lib/provider-rules/engine";
 
 type WorkflowStartResult = "started" | "existing" | "skipped" | "failed";
 
@@ -78,7 +79,14 @@ function isUniqueViolation(error: unknown) {
  * every poll: the unique workflow.orderId boundary turns duplicate source
  * events, retries, and concurrent pollers into harmless "existing" results.
  */
-export async function startNonApiLabWorkflow(order: RawOrder): Promise<WorkflowStartResult> {
+/**
+ * `planTimedSteps: false` when the message-rules engine is LIVE: it decides
+ * every timed message itself, from the order's current state, so the legacy
+ * plan (ladder rungs, status check, authored sequence rules) must not also be
+ * written — that is how one reminder would go out twice.
+ */
+export async function startNonApiLabWorkflow(order: RawOrder, options: { planTimedSteps?: boolean } = {}): Promise<WorkflowStartResult> {
+  const planTimedSteps = options.planTimedSteps ?? true;
   if (!order.labId) return "skipped";
 
   const config = await prisma.nonApiLabConfig.findUnique({ where: { labId: order.labId } });
@@ -286,7 +294,7 @@ export async function startNonApiLabWorkflow(order: RawOrder): Promise<WorkflowS
       });
       await tx.labCommunication.update({ where: { id: communication.id }, data: { waOutboundId: outbound.id } });
 
-      await tx.labScheduledAction.createMany({
+      if (planTimedSteps) await tx.labScheduledAction.createMany({
         data: ladder.map((rung) => ({
           workflowId: workflow.id,
           type: rung.type,
@@ -316,7 +324,7 @@ export async function startNonApiLabWorkflow(order: RawOrder): Promise<WorkflowS
               // Which policy produced this plan, so the timeline can say
               // "these four messages came from your rules" rather than
               // leaving Ops to infer it from the offsets.
-              plannedBy: scopedRules.length > 0 ? "RULES" : "DEFAULT_LADDER",
+              plannedBy: !planTimedSteps ? "MESSAGE_RULES" : scopedRules.length > 0 ? "RULES" : "DEFAULT_LADDER",
               ladder: ladder.map((rung) => ({
                 rungKey: rung.rungKey,
                 ruleId: rung.ruleId,
@@ -344,6 +352,7 @@ export async function startNonApiLabWorkflow(order: RawOrder): Promise<WorkflowS
 
 export async function startDetectedNonApiLabWorkflows(orders: RawOrder[]) {
   const result = { started: 0, existing: 0, skipped: 0, failed: 0 };
+  const planTimedSteps = (await loadMessageRulesMode().catch(() => "SHADOW")) !== "LIVE";
   // Serial execution keeps a large first poll from taking a burst of database
   // connections while preserving each workflow's transaction boundary.
   //
@@ -354,7 +363,7 @@ export async function startDetectedNonApiLabWorkflows(orders: RawOrder[]) {
   // order after it in the same poll cycle.
   for (const order of orders) {
     try {
-      result[await startNonApiLabWorkflow(order)] += 1;
+      result[await startNonApiLabWorkflow(order, { planTimedSteps })] += 1;
     } catch (error) {
       console.error(`[NonApiWorkflow] Unexpected error starting workflow for order ${order.id}:`, error);
       result.failed += 1;

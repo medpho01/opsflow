@@ -1692,6 +1692,10 @@ model ProviderCommsSettings {
   quietHoursEnd      Int?
   /// Max breach messages per lab per tick. Excess rolls to the next tick.
   perLabPerTickLimit Int      @default(2)
+  /// The message-rules engine (lib/provider-rules): OFF, SHADOW (evaluate and
+  /// record what it would send, send nothing — the legacy scheduler keeps
+  /// sending) or LIVE (rules send; the legacy timed steps retire).
+  messageRulesMode   String   @default("SHADOW")
   updatedAt          DateTime @updatedAt @db.Timestamptz(3)
 
   @@map("provider_comms_settings")
@@ -1891,4 +1895,97 @@ model LabCommunicationAuditLog {
   @@index([workflowId, createdAt])
   @@index([requestId])
   @@map("lab_communication_audit_logs")
+}
+
+// ── Message rules ─────────────────────────────────────────────────────────
+// A provider message rule is a Task Rule whose action is "message the
+// provider" instead of "create a task": same trigger conditions (TriggerCondition,
+// evaluated by engine/taskCreator.evaluateTrigger), re-evaluated against the
+// current state of every open order every minute. Nothing is planned ahead,
+// so an edit, pause or delete applies to every open order on the next tick.
+// See DOCS/features/provider-communication/DESIGN.md and lib/provider-rules.
+model ProviderMessageRule {
+  id                   String   @id @default(cuid())
+  /// Set on the rules seeded from the built-in steps (REMINDER_1H, …), so
+  /// seeding is idempotent and they can be told apart from authored rules.
+  builtInKey           String?  @unique
+  name                 String
+  description          String?
+  isActive             Boolean  @default(true)
+  /// Bumped whenever timing, condition or content changes. Recorded on each
+  /// send for the audit trail; never used to re-send.
+  version              Int      @default(1)
+  /// Data source. "orders" (LabStack Lab Orders) is the only one wired today.
+  sourceKey            String   @default("orders")
+  /// Empty = every configured lab.
+  allowedLabIds        Json     @default("[]")
+  /// Labs this rule must skip (e.g. labs covered by a converted legacy rule).
+  excludedLabIds       Json     @default("[]")
+  /// Empty = every order type.
+  allowedOrderTypes    Json     @default("[]")
+  /// The Task Rule TriggerCondition (statusIn, minutesSince…, metadataConditions).
+  triggerCondition     Json
+  /// Conversation states this rule may send in. Empty = any.
+  conversationStatusIn Json     @default("[]")
+  /// Only orders the lab was told about (the new-order message went out).
+  onlyIfIntroduced     Boolean  @default(true)
+  /// Never send once the appointment has passed (orders without one pass).
+  notAfterAppointment  Boolean  @default(false)
+  /// A NonApiLabConfig boolean that must be on for the lab, e.g.
+  /// "appointmentRemindersEnabled" or "postAppointmentCheckEnabled".
+  requiresLabSetting   String?
+  /// SEND or ESCALATE (escalate also marks the conversation ESCALATED).
+  action               String   @default("SEND")
+  /// LAB (the lab's group) or MANAGER (the lab manager's number, else the lab).
+  recipient            String   @default("LAB")
+  templateKey          String
+  /// When the lab has its own template for this slot (initial / reminder /
+  /// escalation / appointment) in Lab Config, that one is used instead.
+  templateSlot         String?
+  /// Poll definition key sent with the message, e.g. ORDER_STATUS_CHECK.
+  pollKey              String?
+  /// P0..P4, P0 most urgent: one message per order per tick, lowest wins.
+  priority             Int      @default(4)
+  /// Null = send once. Otherwise repeat while the condition still holds.
+  repeatEveryMinutes   Int?
+  maxSends             Int      @default(1)
+  /// How late a first send may still go out (see DESIGN.md §5).
+  catchUpMinutes       Int      @default(30)
+  /// Local-hour send window; outside it the send waits for the next opening.
+  sendWindowStartHour  Int?
+  sendWindowEndHour    Int?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  ledger ProviderMessageLedger[]
+
+  @@index([isActive])
+  @@map("provider_message_rules")
+}
+
+/// What the message rules engine did, per (rule, order, occurrence). This —
+/// not a schedule of future messages — is what stops a message going twice.
+model ProviderMessageLedger {
+  id              String   @id @default(cuid())
+  ruleId          String
+  ruleVersion     Int
+  entityType      String   @default("ORDER")
+  entityId        Int
+  labId           Int
+  occurrence      Int
+  /// SENT, MISSED (moment older than the catch-up window), SHADOW (would
+  /// have sent, in shadow mode) or IMPORTED (sent by the legacy scheduler).
+  outcome         String
+  /// Shadow rows never block a live send.
+  shadow          Boolean  @default(false)
+  communicationId String?
+  detail          String?
+  createdAt       DateTime @default(now())
+
+  rule ProviderMessageRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+
+  @@unique([ruleId, entityType, entityId, occurrence, shadow])
+  @@index([entityType, entityId])
+  @@index([ruleId, outcome])
+  @@map("provider_message_ledger")
 }

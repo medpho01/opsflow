@@ -28,6 +28,7 @@ import { processPollVotes } from "./poll-votes";
 import { runSlaBreachTick } from "@/lib/provider-comms/breach-engine";
 import { runDailyDigestTick } from "@/lib/provider-comms/daily-digest";
 import { runStatusCheckSweep } from "./status-check-sweep";
+import { loadMessageRulesMode, runMessageRulesPass } from "@/lib/provider-rules/engine";
 
 const TICK_CRON = process.env.NON_API_LAB_TICK_CRON ?? "* * * * *";
 // Short TTL: a tick is seconds of work, and a dead process should not hold the
@@ -54,18 +55,39 @@ export async function runNonApiLabTick(): Promise<void> {
       console.error("[PollVotes] Cycle error:", error);
     }
 
-    // Before the scheduler, so a check planned this tick can go out this tick.
-    // Self-throttled to every 10 minutes; see status-check-sweep.ts.
+    // Message rules (lib/provider-rules). SHADOW: evaluates and records what
+    // it would send while the legacy scheduler below keeps sending. LIVE: it
+    // sends, and the legacy timed steps stand down.
+    let rulesMode: string = "SHADOW";
     try {
-      const sweep = await runStatusCheckSweep();
-      if (sweep.added || sweep.shells) {
-        console.log(`[StatusCheckSweep] added=${sweep.added} newWorkflows=${sweep.shells}`);
+      rulesMode = await loadMessageRulesMode();
+      const pass = await runMessageRulesPass();
+      if (pass.sent || pass.shadow || pass.missed || pass.failed || pass.confirmed) {
+        console.log(
+          `[MessageRules] mode=${pass.mode} orders=${pass.orders} sent=${pass.sent} shadow=${pass.shadow} ` +
+          `missed=${pass.missed} skipped=${pass.skipped} confirmed=${pass.confirmed} failed=${pass.failed}`,
+        );
       }
     } catch (error) {
-      console.error("[StatusCheckSweep] Cycle error:", error);
+      console.error("[MessageRules] Cycle error:", error);
     }
 
-    const stats = await processDueNonApiLabScheduledActions();
+    if (rulesMode !== "LIVE") {
+      // Before the scheduler, so a check planned this tick can go out this tick.
+      // Self-throttled to every 10 minutes; see status-check-sweep.ts.
+      try {
+        const sweep = await runStatusCheckSweep();
+        if (sweep.added || sweep.shells) {
+          console.log(`[StatusCheckSweep] added=${sweep.added} newWorkflows=${sweep.shells}`);
+        }
+      } catch (error) {
+        console.error("[StatusCheckSweep] Cycle error:", error);
+      }
+    }
+
+    const stats = rulesMode === "LIVE"
+      ? { processed: 0, suppressed: 0, deferred: 0, rescheduled: 0, closed: 0, retried: 0, failed: 0 }
+      : await processDueNonApiLabScheduledActions();
     const touched =
       stats.processed || stats.suppressed || stats.deferred || stats.rescheduled ||
       stats.closed || stats.retried || stats.failed;

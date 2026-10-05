@@ -1,7 +1,6 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useState } from "react";
-import { SlaDeadlinesPanel } from "./SlaDeadlinesPanel";
 
 type LabConfig = {
   labId: number;
@@ -36,6 +35,8 @@ type Draft = {
   integrationType: "API" | "NON_API";
   waGroupJid: string;
   whatsappNumber: string;
+  managerName: string;
+  managerWhatsapp: string;
   isActive: boolean;
   confirmationSlaMinutes: string;
   reminderSlaMinutes: string;
@@ -56,7 +57,7 @@ type Draft = {
 };
 
 const EMPTY_DRAFT: Draft = {
-  labId: "", labName: "", integrationType: "NON_API", waGroupJid: "", whatsappNumber: "", isActive: true,
+  labId: "", labName: "", integrationType: "NON_API", waGroupJid: "", whatsappNumber: "", managerName: "", managerWhatsapp: "", isActive: true,
   confirmationSlaMinutes: "60", reminderSlaMinutes: "180", escalationSlaMinutes: "300",
   initialTemplateKey: "NON_API_NEW_ORDER", reminderTemplateKey: "NON_API_REMINDER", escalationTemplateKey: "NON_API_ESCALATION",
   appointmentTemplateKey: "NON_API_APPOINTMENT_REMINDER", appointmentRemindersEnabled: false, postAppointmentCheckEnabled: true, quietWindowMinutes: "10",
@@ -76,6 +77,7 @@ function toDraft(lab: LabConfig): Draft {
     labId: String(lab.labId), labName: lab.labName, integrationType: lab.integrationType ?? "NON_API",
     waGroupJid: lab.waGroupJid ?? "",
     whatsappNumber: lab.whatsappNumber ?? "", isActive: lab.isActive,
+    managerName: lab.managerName ?? "", managerWhatsapp: lab.managerWhatsapp ?? "",
     confirmationSlaMinutes: String(lab.confirmationSlaMinutes), reminderSlaMinutes: String(lab.reminderSlaMinutes), escalationSlaMinutes: String(lab.escalationSlaMinutes),
     initialTemplateKey: lab.initialTemplateKey, reminderTemplateKey: lab.reminderTemplateKey, escalationTemplateKey: lab.escalationTemplateKey,
     appointmentTemplateKey: lab.appointmentTemplateKey ?? "NON_API_APPOINTMENT_REMINDER",
@@ -285,6 +287,7 @@ export function NonApiLabConfigPanel() {
     const payload = {
       labId: Number(draft.labId), labName: draft.labName, integrationType: draft.integrationType,
       waGroupJid: draft.waGroupJid || null, whatsappNumber: draft.whatsappNumber || null,
+      managerName: draft.managerName || null, managerWhatsapp: draft.managerWhatsapp || null,
       isActive: draft.isActive,
       confirmationSlaMinutes: Number(draft.confirmationSlaMinutes), reminderSlaMinutes: Number(draft.reminderSlaMinutes), escalationSlaMinutes: Number(draft.escalationSlaMinutes),
       initialTemplateKey: draft.initialTemplateKey, reminderTemplateKey: draft.reminderTemplateKey, escalationTemplateKey: draft.escalationTemplateKey,
@@ -484,7 +487,6 @@ export function NonApiLabConfigPanel() {
             <th className="px-3 py-2.5">Status</th>
             <th className="px-3 py-2.5">Receives orders</th>
             <th className="px-3 py-2.5">WhatsApp group</th>
-            <th className="px-3 py-2.5">Messages</th>
             <th className="px-3 py-2.5">Active</th>
             <th className="px-4 py-2.5 text-right">Config</th>
           </tr></thead>
@@ -522,14 +524,6 @@ export function NonApiLabConfigPanel() {
                   : cfg?.whatsappNumber ? <div className="font-mono text-[11px] text-zinc-400">DM {cfg.whatsappNumber}</div>
                   : row.suggestedGroup ? <div className="text-[11px] text-zinc-500 truncate" title={row.suggestedGroup.subject}>Suggested: {row.suggestedGroup.subject}</div>
                   : <span className="text-xs text-zinc-600">—</span>}
-              </td>
-              <td className="px-3 py-3 text-[11px] text-zinc-400">
-                {!cfg ? <span className="text-zinc-600">—</span> : isApi ? "Breach alerts" : (
-                  <div className="flex flex-col gap-0.5">
-                    <span>New order · reminders {cfg.confirmationSlaMinutes / 60 >= 1 && Number.isInteger(cfg.confirmationSlaMinutes / 60) ? `${cfg.confirmationSlaMinutes / 60}h` : `${cfg.confirmationSlaMinutes}m`}/{Number.isInteger(cfg.reminderSlaMinutes / 60) ? `${cfg.reminderSlaMinutes / 60}h` : `${cfg.reminderSlaMinutes}m`}/{Number.isInteger(cfg.escalationSlaMinutes / 60) ? `${cfg.escalationSlaMinutes / 60}h` : `${cfg.escalationSlaMinutes}m`}</span>
-                    <span>{[cfg.postAppointmentCheckEnabled && "status check", cfg.dailyDigestEnabled && `list ${String(cfg.dailyDigestHour).padStart(2, "0")}:${String(cfg.dailyDigestMinute).padStart(2, "0")}`].filter(Boolean).join(" · ") || "No status check or list"}</span>
-                  </div>
-                )}
               </td>
               <td className="px-3 py-3"><Toggle on={isLive(row)} disabled={!row.configured} onClick={() => toggleActive(row)} label={row.labName} /></td>
               <td className="px-4 py-3 text-right">
@@ -585,42 +579,7 @@ export function NonApiLabConfigPanel() {
                     {g.subject || g.jid}{g.sendEnabled ? "" : " — sending off"}
                   </option>
                 ))}
-              </select></Field><p className="text-[11px] text-zinc-500 -mt-2">Picked from the {groups.length} groups the gateway can actually see, so the id is never typed. A group still needs sending switched on under Settings &rarr; WhatsApp before anything leaves.</p><p className="text-[11px] text-zinc-500 -mt-2">The provider&apos;s ops group, so a reply is visible to their whole desk. Required for API labs too — that is where breach alerts go. Sending stays off until the group is enabled under Settings → WhatsApp.</p><Field label="Lab WhatsApp number (fallback, used only without a group)"><input value={draft.whatsappNumber} onChange={(e) => update("whatsappNumber", e.target.value)} placeholder="+9198…" className={inputClass} /></Field><div className={draft.integrationType === "API" ? "opacity-40" : undefined}><div className="text-xs font-medium text-zinc-300 mb-2">Confirmation workflow {draft.integrationType === "API" && <span className="font-normal text-zinc-500">— not used: this lab receives orders through the API</span>}</div><div className="text-[11px] text-zinc-500 mb-2">SLA (minutes)</div><div className="grid grid-cols-3 gap-3"><Field label="Confirm"><input required type="number" min="1" value={draft.confirmationSlaMinutes} onChange={(e) => update("confirmationSlaMinutes", e.target.value)} className={inputClass} /></Field><Field label="Reminder"><input required type="number" min="1" value={draft.reminderSlaMinutes} onChange={(e) => update("reminderSlaMinutes", e.target.value)} className={inputClass} /></Field><Field label="Escalate"><input required type="number" min="1" value={draft.escalationSlaMinutes} onChange={(e) => update("escalationSlaMinutes", e.target.value)} className={inputClass} /></Field></div><p className="text-[11px] text-zinc-500 mt-1.5">Must progress from confirmation → reminder → escalation. No reminder is ever scheduled after the appointment.</p></div><div className={draft.integrationType === "API" ? "opacity-40" : undefined}><div className="text-xs font-medium text-zinc-300 mb-2">Appointment clock</div><label className="flex items-center gap-2 text-sm text-zinc-300"><input type="checkbox" checked={draft.appointmentRemindersEnabled} onChange={(e) => update("appointmentRemindersEnabled", e.target.checked)} className="accent-blue-500" /> Chase unconfirmed orders as the appointment approaches (T‑24h, T‑2h, T‑30m, T‑10m)</label><label className="mt-2 flex items-center gap-2 text-sm text-zinc-300"><input type="checkbox" checked={draft.postAppointmentCheckEnabled} onChange={(e) => update("postAppointmentCheckEnabled", e.target.checked)} className="accent-blue-500" /> Ask for the order status 30 minutes after the appointment (one-tap poll)</label><div className="mt-3 max-w-[12rem]"><Field label="Quiet window (minutes)"><input required type="number" min="0" max="240" value={draft.quietWindowMinutes} onChange={(e) => update("quietWindowMinutes", e.target.value)} className={inputClass} /></Field></div><p className="text-[11px] text-zinc-500 mt-1.5">Minimum gap between two confirmation messages about one order, across both clocks. Only a T‑10m reminder may break it. Breach alerts use the per-order cap below instead.</p></div><div className="rounded-lg border border-zinc-800 bg-zinc-900/40 p-3">
-                <div className="text-xs font-medium text-zinc-300 mb-2">SLA breach alerts <span className="font-normal text-emerald-400/80">— applies to every lab</span></div>
-                <label className="flex items-center gap-2 text-sm text-zinc-300">
-                  <input type="checkbox" checked={draft.slaBreachAlertsEnabled} onChange={(e) => update("slaBreachAlertsEnabled", e.target.checked)} className="accent-blue-500" />
-                  Message this lab when one of its orders breaches an OpsFlow SLA
-                </label>
-                <div className="mt-3 max-w-[12rem]">
-                  <Field label="Max alerts per order"><input required type="number" min="1" max="20" value={draft.slaBreachMaxPerOrder} onChange={(e) => update("slaBreachMaxPerOrder", e.target.value)} className={inputClass} /></Field>
-                </div>
-                <p className="text-[11px] text-zinc-500 mt-1.5">One order can breach several task rules in a row. Further breaches are still recorded — this only caps how many reach the provider.</p>
-              </div>
-              <div className="rounded-lg border border-zinc-800 bg-zinc-900/40 p-3">
-                <div className="text-xs font-medium text-zinc-300 mb-2">Daily summary <span className="font-normal text-zinc-500">— one message a day</span></div>
-                <label className="flex items-center gap-2 text-sm text-zinc-300">
-                  <input type="checkbox" checked={draft.dailyDigestEnabled} onChange={(e) => update("dailyDigestEnabled", e.target.checked)} className="accent-blue-500" />
-                  Send this lab tomorrow&apos;s orders every evening
-                </label>
-                <div className="mt-3 max-w-[10rem]">
-                  <Field label="Send at (local time)">
-                    <input required type="time" value={draft.dailyDigestAt} onChange={(e) => update("dailyDigestAt", e.target.value)} className={inputClass} />
-                  </Field>
-                </div>
-                <label className="mt-3 flex items-center gap-2 text-sm text-zinc-300">
-                  <input type="checkbox" checked={draft.dailyDigestSkipWhenEmpty} onChange={(e) => update("dailyDigestSkipWhenEmpty", e.target.checked)} className="accent-blue-500" />
-                  Stay quiet on days with no orders
-                </label>
-                <p className="text-[11px] text-zinc-500 mt-1.5">
-                  A numbered list of tomorrow&apos;s appointments — time, patient, area and tests — with a confirmation link beside every order the lab has not confirmed yet. Preview or send it now from the lab&apos;s page on the board. Wording lives in the <span className="text-zinc-400">tomorrow&apos;s orders</span> template.
-                </p>
-              </div><label className="flex items-center gap-2 text-sm text-zinc-300"><input type="checkbox" checked={draft.isActive} onChange={(e) => update("isActive", e.target.checked)} className="accent-blue-500" /> Enable automation for this lab</label>{error && <div className="rounded-md bg-rose-500/10 text-rose-300 text-sm px-3 py-2">{error}</div>}</div><div className="px-5 py-4 border-t border-zinc-800 flex justify-end gap-2"><button type="button" onClick={() => setOpen(false)} className="px-3 py-2 text-sm text-zinc-400 hover:text-zinc-200">Cancel</button><button disabled={saving} className="rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-60 text-white font-semibold text-sm px-4 py-2">{saving ? "Saving…" : "Save configuration"}</button></div></form>{editingLabId && (
-        <details className="mx-5 mb-5 rounded-lg border border-zinc-800 bg-zinc-900/40 p-3">
-          <summary className="cursor-pointer text-xs font-medium text-zinc-300">Delivery deadlines <span className="font-normal text-zinc-500">— advanced · saved separately from the form above</span></summary>
-          <p className="mt-2 text-[11px] text-zinc-500">Alert the lab when sample collection or the report runs late.</p>
-          <div className="mt-3"><SlaDeadlinesPanel labId={editingLabId} labName={draft.labName} /></div>
-        </details>
-      )}</div></div>}
+              </select></Field><p className="text-[11px] text-zinc-500 -mt-2">Picked from the {groups.length} groups the gateway can actually see, so the id is never typed. A group still needs sending switched on under Settings &rarr; WhatsApp before anything leaves.</p><p className="text-[11px] text-zinc-500 -mt-2">The provider&apos;s ops group, so a reply is visible to their whole desk. Required for API labs too — that is where breach alerts go. Sending stays off until the group is enabled under Settings → WhatsApp.</p><Field label="Lab WhatsApp number (fallback, used only without a group)"><input value={draft.whatsappNumber} onChange={(e) => update("whatsappNumber", e.target.value)} placeholder="+9198…" className={inputClass} /></Field><div className="grid grid-cols-2 gap-3"><Field label="Lab manager (name)"><input value={draft.managerName} onChange={(e) => update("managerName", e.target.value)} placeholder="Optional" className={inputClass} /></Field><Field label="Lab manager WhatsApp"><input value={draft.managerWhatsapp} onChange={(e) => update("managerWhatsapp", e.target.value)} placeholder="+9198…" className={inputClass} /></Field></div><p className="text-[11px] text-zinc-500 -mt-2">Rules set to “send to the lab manager” (the final reminder) go here; without a number they go to the group.</p><div className="max-w-[14rem]"><Field label="Quiet window (minutes)"><input required type="number" min="0" max="240" value={draft.quietWindowMinutes} onChange={(e) => update("quietWindowMinutes", e.target.value)} className={inputClass} /></Field></div><p className="text-[11px] text-zinc-500 -mt-2">Minimum gap between two messages about the same order. What is sent, and when, is set on the Message Rules page.</p><label className="flex items-center gap-2 text-sm text-zinc-300"><input type="checkbox" checked={draft.isActive} onChange={(e) => update("isActive", e.target.checked)} className="accent-blue-500" /> Enable automation for this lab</label>{error && <div className="rounded-md bg-rose-500/10 text-rose-300 text-sm px-3 py-2">{error}</div>}</div><div className="px-5 py-4 border-t border-zinc-800 flex justify-end gap-2"><button type="button" onClick={() => setOpen(false)} className="px-3 py-2 text-sm text-zinc-400 hover:text-zinc-200">Cancel</button><button disabled={saving} className="rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-60 text-white font-semibold text-sm px-4 py-2">{saving ? "Saving…" : "Save configuration"}</button></div></form></div></div>}
       {toast && <div className="fixed z-[60] left-1/2 bottom-6 -translate-x-1/2 rounded-lg bg-zinc-100 text-zinc-950 px-4 py-2 text-sm font-medium shadow-lg">{toast}</div>}
     </div>
   );

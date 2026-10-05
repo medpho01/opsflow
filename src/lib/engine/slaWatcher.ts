@@ -9,8 +9,6 @@ import { sendWhatsAppMessage, slaBreachTemplateParams } from "@/lib/alerts/whats
 
 const SLA_BREACH_TEMPLATE = "opsflow_sla_breach";
 const ESCALATION_TEMPLATE = "opsflow_escalation";
-import { notifyProviderOfBreach, type BreachNotifyOutcome } from "@/lib/provider-comms/sla-breach";
-import { resolveLabIdsForOrders } from "@/lib/provider-comms/order-lab";
 
 const WARNING_MINUTES = 10; // warn when ≤10 min remain
 
@@ -33,14 +31,6 @@ export async function runSlaWatcher(): Promise<void> {
       metadata: true,
     },
   });
-
-  // One batched source lookup for the whole run: tasks store the order id but
-  // not the lab id, and provider configs are keyed by lab. Empty when the
-  // source is unreachable, which simply means no provider alerts this cycle.
-  const labIdByOrder = breached.length > 0
-    ? await resolveLabIdsForOrders(breached.map((task) => task.entityId))
-    : new Map<number, number>();
-  const providerOutcomes: Record<string, number> = {};
 
   for (const task of breached) {
     await prisma.task.update({
@@ -110,40 +100,13 @@ export async function runSlaWatcher(): Promise<void> {
       }
     }
 
-    // ── Tell the provider ──────────────────────────────────────────
-    // The alert above goes inward, to the ops head. This one goes outward, to
-    // the lab that owes us the order — and unlike the confirmation ladder it
-    // is not restricted to NON_API labs, because a missed deadline is worth
-    // reporting however the order reached them.
-    const labId = labIdByOrder.get(task.entityId);
-    if (labId !== undefined) {
-      const outcome: BreachNotifyOutcome = await notifyProviderOfBreach({
-        taskId: task.id,
-        orderId: task.entityId,
-        labId,
-        taskTitle: task.title,
-        slaDeadline: task.slaDeadline ?? now,
-        breachedAt: now,
-        breachMinutes,
-        metadata: taskMetadata,
-      });
-      providerOutcomes[outcome] = (providerOutcomes[outcome] ?? 0) + 1;
-    } else {
-      providerOutcomes["no-lab"] = (providerOutcomes["no-lab"] ?? 0) + 1;
-    }
+    // Labs are no longer messaged from here: lab communications are message
+    // rules (lib/provider-rules), which chase the order itself.
 
     // Kick off escalation chain (level 1)
     if (task.escalationChainId) {
       await triggerEscalationChain(task.id, task.escalationChainId, now);
     }
-  }
-
-  // Counted rather than logged per task: "37 breaches, 4 queued, 30 no-config"
-  // is the line that tells you whether provider alerts are actually reaching
-  // anyone, and it is unreadable one line at a time on a busy run.
-  if (breached.length > 0) {
-    const summary = Object.entries(providerOutcomes).map(([k, v]) => `${k}=${v}`).join(" ");
-    console.info(`[SlaWatcher] ${breached.length} breach(es); provider alerts: ${summary}`);
   }
 
   // ── 2. Create SLA_WARNING alerts for tasks nearing deadline ───────

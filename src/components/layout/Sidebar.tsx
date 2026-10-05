@@ -153,9 +153,7 @@ const navItems: NavItem[] = [
       { label: "Today & Tomorrow", href: "/head/non-api-labs/board" },
       { label: "Lab Config", href: "/head/non-api-labs/lab-config" },
       { label: "Message Rules", href: "/head/non-api-labs/message-rules" },
-      { label: "Task Rules", href: "/head/non-api-labs/task-rules" },
       { label: "Templates", href: "/head/non-api-labs/templates" },
-      { label: "SLA Breaches", href: "/head/non-api-labs/breaches" },
     ],
     icon: (
       <svg className="w-4.5 h-4.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.75}>

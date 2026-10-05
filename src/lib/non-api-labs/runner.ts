@@ -1,139 +1,59 @@
 /**
- * Non-API lab communication tick.
+ * The provider-communication tick — every minute, independent of the 5-minute
+ * LabStack poll cycle (whose replica probe must not silence lab messages).
  *
- * Runs every minute, independently of the 5-minute LabStack poll cycle.
- *
- * It used to be a step inside `runPollCycle`, which made the communication
- * clock a hostage of that cycle's pre-flight replica probe: the probe exists to
- * stop bulk `Order` scans wedging on an uninterruptible LWLock, and it aborts
- * the whole cycle when the replica is contended. That meant a sick replica
- * silenced every reminder and escalation — even though this runner only ever
- * issues primary-key lookups, which the probe's own notes record as staying
- * fast on exactly that kind of contended replica.
- *
- * The minute cadence also matters now that appointment-anchored rungs exist:
- * a T-10m reminder scheduled on a 5-minute grid can land up to five minutes
- * late, which is most of its usefulness gone.
- *
- * Three jobs share the tick: poll votes, the confirmation ladder, and — once
- * a day per lab — the provider digest. One loop and one lock rather than three
- * schedulers racing each other for the same provider's attention.
+ * Three steps, in this order, under one lock:
+ *   1. poll answers   — a tap is applied before anything else is decided;
+ *   2. lab replies    — what labs wrote, read as facts on their orders, so a
+ *                       reply that answers a question stops it repeating;
+ *   3. message rules  — every lab communication: new orders, reminders,
+ *                       checks, chasers and the daily summaries
+ *                       (lib/provider-rules).
  *
  * Lock key 1001 is separate from the poller's 1000, so the two loops never
  * block each other.
  */
 import { acquireLock, releaseLock, NON_API_LAB_LOCK_KEY } from "@/lib/engine/pollingLock";
-import { processDueNonApiLabScheduledActions } from "./scheduler";
 import { processPollVotes } from "./poll-votes";
-import { runSlaBreachTick } from "@/lib/provider-comms/breach-engine";
-import { runDailyDigestTick } from "@/lib/provider-comms/daily-digest";
-import { runStatusCheckSweep } from "./status-check-sweep";
-import { loadMessageRulesMode, runMessageRulesPass } from "@/lib/provider-rules/engine";
+import { runMessageRulesPass } from "@/lib/provider-rules/engine";
+import { runReplyPass } from "@/lib/provider-rules/replies";
 
 const TICK_CRON = process.env.NON_API_LAB_TICK_CRON ?? "* * * * *";
 // Short TTL: a tick is seconds of work, and a dead process should not hold the
 // lock for long. Still comfortably longer than a slow batch.
 const TICK_LOCK_TTL_MS = parseInt(process.env.NON_API_LAB_LOCK_TTL_MS ?? "120000", 10);
 
-export async function runNonApiLabTick(): Promise<void> {
+export async function runNonApiLabTick(now = new Date()): Promise<void> {
   const acquired = await acquireLock(NON_API_LAB_LOCK_KEY, TICK_LOCK_TTL_MS, "NonApiLabTick");
   if (!acquired) return;
-
   try {
-    // Answers first. A provider who has already replied by poll should not be
-    // chased by a reminder this same tick, and applying the vote closes the
-    // workflow that the scheduler is about to look at.
     try {
       const votes = await processPollVotes();
       if (votes.applied || votes.reasonsAttached || votes.skipped || votes.failed) {
-        console.log(
-          `[PollVotes] applied=${votes.applied} reasons=${votes.reasonsAttached} ` +
-          `skipped=${votes.skipped} failed=${votes.failed}`,
-        );
+        console.log(`[PollVotes] applied=${votes.applied} reasons=${votes.reasonsAttached} skipped=${votes.skipped} failed=${votes.failed}`);
       }
     } catch (error) {
       console.error("[PollVotes] Cycle error:", error);
     }
 
-    // Message rules (lib/provider-rules). SHADOW: evaluates and records what
-    // it would send while the legacy scheduler below keeps sending. LIVE: it
-    // sends, and the legacy timed steps stand down.
-    let rulesMode: string = "SHADOW";
     try {
-      rulesMode = await loadMessageRulesMode();
-      const pass = await runMessageRulesPass();
-      if (pass.sent || pass.shadow || pass.missed || pass.failed || pass.confirmed) {
+      const replies = await runReplyPass(now);
+      if (replies.read) console.log(`[Replies] read=${replies.read} attributed=${replies.attributed} facts=${replies.facts}`);
+    } catch (error) {
+      console.error("[Replies] Cycle error:", error);
+    }
+
+    try {
+      const pass = await runMessageRulesPass(now);
+      if (pass.sent || pass.summaries || pass.missed || pass.failed || pass.confirmed || pass.skipped) {
         console.log(
-          `[MessageRules] mode=${pass.mode} orders=${pass.orders} sent=${pass.sent} shadow=${pass.shadow} ` +
-          `missed=${pass.missed} skipped=${pass.skipped} confirmed=${pass.confirmed} failed=${pass.failed}`,
+          `[MessageRules] orders=${pass.orders} sent=${pass.sent} summaries=${pass.summaries} missed=${pass.missed} ` +
+          `skipped=${pass.skipped} confirmed=${pass.confirmed} failed=${pass.failed}`,
         );
       }
     } catch (error) {
       console.error("[MessageRules] Cycle error:", error);
     }
-
-    if (rulesMode !== "LIVE") {
-      // Before the scheduler, so a check planned this tick can go out this tick.
-      // Self-throttled to every 10 minutes; see status-check-sweep.ts.
-      try {
-        const sweep = await runStatusCheckSweep();
-        if (sweep.added || sweep.shells) {
-          console.log(`[StatusCheckSweep] added=${sweep.added} newWorkflows=${sweep.shells}`);
-        }
-      } catch (error) {
-        console.error("[StatusCheckSweep] Cycle error:", error);
-      }
-    }
-
-    const stats = rulesMode === "LIVE"
-      ? { processed: 0, suppressed: 0, deferred: 0, rescheduled: 0, closed: 0, retried: 0, failed: 0 }
-      : await processDueNonApiLabScheduledActions();
-    const touched =
-      stats.processed || stats.suppressed || stats.deferred || stats.rescheduled ||
-      stats.closed || stats.retried || stats.failed;
-    if (touched) {
-      console.log(
-        `[NonApiLabTick] sent=${stats.processed} suppressed=${stats.suppressed} deferred=${stats.deferred} ` +
-        `rescheduled=${stats.rescheduled} closed=${stats.closed} retried=${stats.retried} failed=${stats.failed}`,
-      );
-    }
-
-    // SLA milestone breaches share this tick and its lock rather than adding a
-    // second scheduler. Its own try/catch: a breach failure must not stop the
-    // sequence steps above from being reported, and vice versa.
-    try {
-      const breach = await runSlaBreachTick();
-      const breachTouched =
-        breach.detected || breach.sent || breach.dryRun || breach.resolved ||
-        breach.cancelled || breach.capped || breach.deferred || breach.failed;
-      if (breachTouched) {
-        console.log(
-          `[SlaBreachTick] detected=${breach.detected} sent=${breach.sent} dryRun=${breach.dryRun} ` +
-          `resolved=${breach.resolved} cancelled=${breach.cancelled} capped=${breach.capped} ` +
-          `deferred=${breach.deferred} skipped=${breach.skipped} failed=${breach.failed}`,
-        );
-      }
-    } catch (error) {
-      console.error("[SlaBreachTick] Cycle error:", error);
-    }
-    // The daily digest shares this tick for the same reason the breach engine
-    // does — one lock, one loop — but for a second reason of its own: a cron
-    // pinned to 19:00 loses the whole digest if the process happens to be
-    // restarting that minute, silently and until tomorrow. Asking "is the slot
-    // open and unsent?" every minute simply catches up instead.
-    try {
-      const digest = await runDailyDigestTick();
-      if (digest.queued || digest.failed) {
-        console.log(
-          `[ProviderDigest] queued=${digest.queued} empty=${digest.empty} ` +
-          `skipped=${digest.skipped} failed=${digest.failed}`,
-        );
-      }
-    } catch (error) {
-      console.error("[ProviderDigest] Cycle error:", error);
-    }
-  } catch (error) {
-    console.error("[NonApiLabTick] Cycle error:", error);
   } finally {
     await releaseLock(NON_API_LAB_LOCK_KEY, "NonApiLabTick");
   }

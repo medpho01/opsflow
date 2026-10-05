@@ -120,6 +120,14 @@ export const SAMPLE_VALUES: Record<string, string> = {
   tomorrow_confirmed: "2",
   tomorrow_unconfirmed: "1",
   tomorrow_schedule: "*1. 7:30 am* – R. Sharma (sample)\n   📍 Indiranagar\n   🧪 CBC, Lipid Profile",
+  phlebo_name: "Ramesh (sample)",
+  phlebo_phone: "98xxxxxx21",
+  since_appointment: "14 h",
+  summary_date: "Wed, 7 Oct",
+  order_count: "3",
+  order_list: "*1. 7:30 am* – R. Sharma (sample) · #73142\n   📍 Indiranagar\n   📦 *Packages*\n   • Full Body Check\n     CBC, HbA1c, Lipid Profile",
+  confirmed_count: "2",
+  pending_count: "1",
   // Milestone breach. `sla_deadline` is already defined above and serves both
   // the confirmation templates and this one. The overdue value is deliberately
   // non-zero — a preview showing "0m overdue" would not tell an author whether

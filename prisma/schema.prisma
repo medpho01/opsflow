@@ -1696,6 +1696,11 @@ model ProviderCommsSettings {
   /// record what it would send, send nothing — the legacy scheduler keeps
   /// sending) or LIVE (rules send; the legacy timed steps retire).
   messageRulesMode   String   @default("SHADOW")
+  /// When the one-time move to message rules ran (built-ins seeded, per-lab
+  /// digest settings and deadline watchers converted, past sends imported).
+  rulesMigratedAt    DateTime?
+  /// How far inbound lab messages have been read for reply understanding.
+  replyWatermark     DateTime?
   updatedAt          DateTime @updatedAt @db.Timestamptz(3)
 
   @@map("provider_comms_settings")
@@ -1917,6 +1922,29 @@ model ProviderMessageRule {
   version              Int      @default(1)
   /// Data source. "orders" (LabStack Lab Orders) is the only one wired today.
   sourceKey            String   @default("orders")
+  /// ORDER — one message about one order. SUMMARY — one message per lab at a
+  /// time of day, listing the orders that match.
+  kind                 String   @default("ORDER")
+  /// Sending this opens the conversation with the lab (the new-order message).
+  introduces           Boolean  @default(false)
+  /// Only orders placed after their lab was configured (no "new order" for old orders).
+  onlyNewSinceLabConfigured Boolean @default(false)
+  /// Lab integration types in scope: NON_API, API. Empty = any.
+  integrationTypes     Json     @default("[\"NON_API\"]")
+  /// Conditions on facts read from the lab's replies, e.g.
+  /// [{"kind":"report_shared","present":false}] — stop once the lab says so.
+  factConditions       Json     @default("[]")
+  /// A poll answer or a reply about this order stops further repeats.
+  stopOnAnswer         Boolean  @default(true)
+  /// Label for deadline-style rules, shown as {{sla_milestone}}.
+  milestoneLabel       String?
+  /// SUMMARY: local time of day.
+  summaryHour          Int?
+  summaryMinute        Int?
+  /// SUMMARY: which orders — APPOINTMENT_TOMORROW, APPOINTMENT_TODAY or OPEN.
+  summaryScope         String?
+  /// SUMMARY: say nothing when no order matches.
+  skipWhenEmpty        Boolean  @default(true)
   /// Empty = every configured lab.
   allowedLabIds        Json     @default("[]")
   /// Labs this rule must skip (e.g. labs covered by a converted legacy rule).
@@ -1973,8 +2001,11 @@ model ProviderMessageLedger {
   entityId        Int
   labId           Int
   occurrence      Int
-  /// SENT, MISSED (moment older than the catch-up window), SHADOW (would
-  /// have sent, in shadow mode) or IMPORTED (sent by the legacy scheduler).
+  /// SENT, MISSED (moment older than the catch-up window), SKIPPED, ANSWERED
+  /// (occurrence 0: the lab answered, stop repeating), IMPORTED (sent before
+  /// the move to message rules) or SHADOW / SHADOW_MISSED (historic).
+  /// entityType ORDER: entityId = order id. LAB_SUMMARY: entityId = lab id and
+  /// occurrence = the local day as YYYYMMDD.
   outcome         String
   /// Shadow rows never block a live send.
   shadow          Boolean  @default(false)
@@ -1988,4 +2019,29 @@ model ProviderMessageLedger {
   @@index([entityType, entityId])
   @@index([ruleId, outcome])
   @@map("provider_message_ledger")
+}
+
+/// What a lab said about an order in its own words, read from the group by
+/// reply understanding (lib/provider-rules/replies). Rules can test these
+/// ("stop once report_shared"), and templates can use the latest of each.
+model ProviderOrderFact {
+  id              String   @id @default(cuid())
+  orderId         Int
+  labId           Int
+  /// eta, phlebo_name, phlebo_phone, delay_reason, sample_collected,
+  /// patient_unavailable, new_appointment_time, report_shared, cannot_fulfil, note
+  kind            String
+  value           String
+  confidence      Float    @default(1)
+  /// wa_messages.id the fact came from.
+  sourceMessageId String?
+  sourceText      String?
+  /// How the message was tied to the order: REPLY_TO, ORDER_ID, ONLY_OPEN.
+  attributedBy    String?
+  extractor       String
+  createdAt       DateTime @default(now())
+
+  @@index([orderId, kind])
+  @@index([labId, createdAt])
+  @@map("provider_order_facts")
 }

@@ -28,13 +28,9 @@ type OrderRow = {
   rejectionReason: string | null;
 };
 
-/** What `GET /api/provider-comms/daily-digest` hands back. */
-type DigestPreview = {
-  text?: string;
-  recipient?: string;
-  sendBlocked?: boolean;
-  schedule: { enabled: boolean; hour: number; minute: number; skipWhenEmpty: boolean; timeZone: string };
-};
+/** A summary rule's message for this lab, as POST /api/message-rules/:id/summary renders it. */
+type DigestPreview = { text: string | null; orders: number; ruleId: string; ruleName: string; schedule: string };
+type SummaryRule = { id: string; name: string; kind: string; isActive: boolean; summaryHour: number | null; summaryMinute: number | null; allowedLabIds: number[] };
 
 type Lab = {
   labId: number;
@@ -93,43 +89,56 @@ export function ProviderOrdersPage({ labId }: { labId: number }) {
     return () => window.clearInterval(timer);
   }, [load]);
 
-  /** Render the evening message without sending it. */
+  /** The summary rules that cover this lab — "Tomorrow's orders" first. */
+  const summaryRuleFor = useCallback(async (): Promise<SummaryRule | null> => {
+    const response = await fetch("/api/message-rules");
+    const data = await response.json().catch(() => ({}));
+    const rules: SummaryRule[] = (data.rules ?? []).filter((rule: SummaryRule) =>
+      rule.kind === "SUMMARY" && (rule.allowedLabIds.length === 0 || rule.allowedLabIds.includes(labId)));
+    return rules.find((rule) => rule.isActive) ?? rules[0] ?? null;
+  }, [labId]);
+
+  /** Render the summary without sending it. */
   const previewDigest = useCallback(async () => {
     if (digest) { setDigest(null); return; }
     setDigestBusy(true); setDigestNote(null);
     try {
-      const response = await fetch(`/api/provider-comms/daily-digest?labId=${labId}`);
+      const rule = await summaryRuleFor();
+      if (!rule) { setDigestNote("No summary rule covers this lab — add one on the Message Rules page."); return; }
+      const response = await fetch(`/api/message-rules/${rule.id}/summary`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ labId }),
+      });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) setDigestNote(data.error ?? "Could not build the preview");
-      else setDigest(data);
+      else setDigest({
+        text: data.text, orders: data.orders, ruleId: rule.id, ruleName: rule.name,
+        schedule: rule.isActive && rule.summaryHour != null
+          ? `Sends automatically at ${String(rule.summaryHour).padStart(2, "0")}:${String(rule.summaryMinute ?? 0).padStart(2, "0")}`
+          : "The rule is paused — switch it on under Message Rules",
+      });
     } catch {
       setDigestNote("Could not build the preview");
     } finally {
       setDigestBusy(false);
     }
-  }, [labId, digest]);
+  }, [labId, digest, summaryRuleFor]);
 
-  /** Send it now, as a one-off. Does not consume today's scheduled slot. */
+  /** Send it now, as a one-off. Does not use up today's scheduled slot. */
   const sendDigest = useCallback(async () => {
+    if (!digest) return;
     setDigestBusy(true); setDigestNote(null);
     try {
-      const response = await fetch("/api/provider-comms/daily-digest", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ labId }),
+      const response = await fetch(`/api/message-rules/${digest.ruleId}/summary`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ labId, send: true }),
       });
       const data = await response.json().catch(() => ({}));
-      setDigestNote(
-        !response.ok ? (data.error ?? "Could not send the summary")
-          : data.sendBlocked ? "Queued — but sending is still switched off for this group, so it will not leave until you enable it."
-          : "Queued. The gateway will send it within a minute.",
-      );
+      setDigestNote(!response.ok ? (data.error ?? "Could not send the summary") : "Queued. The gateway sends it within a minute if sending is on for this group.");
     } catch {
       setDigestNote("Could not send the summary");
     } finally {
       setDigestBusy(false);
     }
-  }, [labId]);
+  }, [labId, digest]);
 
   const clock = (iso: string | null) =>
     iso ? new Intl.DateTimeFormat("en-IN", { hour: "numeric", minute: "2-digit", timeZone }).format(new Date(iso)) : "—";
@@ -200,13 +209,8 @@ export function ProviderOrdersPage({ labId }: { labId: number }) {
             <div className="mb-5 rounded-xl border border-zinc-800 bg-zinc-900/40 p-4">
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                 <div>
-                  <div className="text-xs font-medium text-zinc-200">Tomorrow&apos;s orders — evening summary</div>
-                  <div className="mt-0.5 text-[11px] text-zinc-500">
-                    {digest.schedule.enabled
-                      ? `Sends automatically at ${String(digest.schedule.hour).padStart(2, "0")}:${String(digest.schedule.minute).padStart(2, "0")} ${digest.schedule.timeZone}`
-                      : "Not scheduled — switch it on for this lab under Lab config"}
-                    {digest.schedule.enabled && digest.schedule.skipWhenEmpty && " · skipped on days with no orders"}
-                  </div>
+                  <div className="text-xs font-medium text-zinc-200">{digest.ruleName}</div>
+                  <div className="mt-0.5 text-[11px] text-zinc-500">{digest.schedule} · {digest.orders} order{digest.orders === 1 ? "" : "s"} on the list</div>
                 </div>
                 <button
                   onClick={sendDigest}
@@ -219,12 +223,8 @@ export function ProviderOrdersPage({ labId }: { labId: number }) {
               {/* Exactly what would be sent, whitespace and all — a summary of
                   the summary would defeat the point of looking. */}
               <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-lg border border-zinc-800 bg-zinc-950/60 p-3 text-xs leading-relaxed text-zinc-300">
-                {digest.text}
+                {digest.text ?? "Nothing to list right now."}
               </pre>
-              <div className="mt-2 font-mono text-[11px] text-zinc-600">
-                To {digest.recipient}
-                {digest.sendBlocked && <span className="ml-1 text-amber-400">· sending is off for this group</span>}
-              </div>
             </div>
           )}
 

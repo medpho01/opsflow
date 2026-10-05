@@ -60,26 +60,11 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
       );
     }
 
-    const [configFields, rulesUsing] = await Promise.all([
-      prisma.nonApiLabConfig.findMany({
-        where: {
-          OR: [
-            { initialTemplateKey: key }, { reminderTemplateKey: key },
-            { escalationTemplateKey: key }, { appointmentTemplateKey: key },
-            { slaBreachTemplateKey: key },
-          ],
-        },
-        select: { labId: true, labName: true },
-      }),
-      prisma.providerCommunicationRule.findMany({ where: { templateKey: key }, select: { id: true, name: true } }),
-    ]);
-    if (configFields.length > 0 || rulesUsing.length > 0) {
-      const usedBy = [
-        ...configFields.map((c) => `lab "${c.labName}"`),
-        ...rulesUsing.map((r) => `rule "${r.name}"`),
-      ].join(", ");
+    // A template is in use when a message rule sends it.
+    const rulesUsing = await prisma.providerMessageRule.findMany({ where: { templateKey: key }, select: { name: true } });
+    if (rulesUsing.length > 0) {
       return NextResponse.json(
-        { error: `Still in use by ${usedBy} — point those at a different message first`, code: "TEMPLATE_IN_USE", requestId },
+        { error: `Still used by ${rulesUsing.map((r) => `rule "${r.name}"`).join(", ")} — point those at a different message first`, code: "TEMPLATE_IN_USE", requestId },
         { status: 409 },
       );
     }

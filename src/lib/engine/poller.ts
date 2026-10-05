@@ -26,7 +26,6 @@ import { sendDailySummary } from "./dailySummary";
 import { runTaskRetirer, RetirementStats } from "./taskRetirer";
 import { runCallRecordingSweep } from "./callRecordingSweep";
 import { runTranscriptionSweep } from "./transcriptionSweep";
-import { startDetectedNonApiLabWorkflows } from "@/lib/non-api-labs/workflow";
 import { acquireLock, releaseLock, POLLING_LOCK_KEY } from "./pollingLock";
 
 const POLLING_INTERVAL_MS = parseInt(process.env.POLLING_INTERVAL_MS ?? "300000", 10);
@@ -254,27 +253,9 @@ export async function runPollCycle(): Promise<void> {
     ordersFound = orders.length;
     console.log(`[Poller] ${ordersFound} active orders fetched from labstack${since ? ` since ${since.toISOString()}` : " (full scan)"}`);
 
-    // 1b. Non-API lab communication workflows. This observes the same source
-    // orders as task creation but owns all state in taskos; the helper's
-    // unique(orderId) boundary makes replays from the checkpoint overlap safe.
-    // A failure here is isolated so API-integrated orders and the established
-    // task engine preserve their existing behavior.
-    try {
-      const nonApi = await startDetectedNonApiLabWorkflows(orders);
-      if (nonApi.started || nonApi.failed) {
-        console.log(`[Poller] Non-API workflows: started=${nonApi.started}, existing=${nonApi.existing}, skipped=${nonApi.skipped}, failed=${nonApi.failed}`);
-      }
-    } catch (nonApiError) {
-      console.error("[Poller] Non-API workflow trigger failed (non-fatal):", nonApiError);
-    }
-
-    // 1c. (Moved) Due reminder/escalation jobs used to run here. They now have
-    // their own 1-minute cron in lib/non-api-labs/runner.ts under lock key
-    // 1001. Running them here made the communication clock a hostage of the
-    // pre-flight probe below: a replica too contended for bulk scans silenced
-    // every reminder and escalation, even though the runner only needs
-    // primary-key lookups, which stay fast on a contended replica. The
-    // workflow starter above stays put — it genuinely consumes the bulk fetch.
+    // Lab communications are not started here any more: the message-rules
+    // engine (lib/provider-rules, run every minute by non-api-labs/runner.ts)
+    // reads open orders itself and sends the new-order message as a rule.
 
     // 2. Load active rules
     const rules = await loadActiveRules();

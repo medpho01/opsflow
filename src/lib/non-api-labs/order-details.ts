@@ -22,6 +22,12 @@ export type OrderContactDetails = {
   area: string | null;
   mapUrl: string | null;
   tests: string | null;
+  /** Every package on the order, with the individual tests inside it. */
+  packages: OrderPackage[];
+  /** Tests booked on the order directly, outside any package. */
+  directTests: string[];
+  /** The centre, for a centre visit. */
+  storeName: string | null;
 };
 
 type AddressParts = {
@@ -127,6 +133,9 @@ export function formatTestBreakdown(packages: OrderPackage[], directTests: strin
 
 type DetailsRow = {
   id: number;
+  packages: OrderPackage[] | null;
+  directTests: string[] | null;
+  storeName: string | null;
   mobile: string | null;
   unitFloorBuilding: string | null;
   address: string | null;
@@ -158,10 +167,27 @@ export async function fetchOrderContactDetails(ids: number[]): Promise<Map<numbe
             (SELECT string_agg(pk."packageName", ', ' ORDER BY pk."packageName")
                FROM public."_OrderToPackage" op
                JOIN public."Package" pk ON pk.id = op."B"
-              WHERE op."A" = o.id) AS tests
+              WHERE op."A" = o.id) AS tests,
+            -- Each package with its individual tests: the test catalogue
+            -- (Master) first, the package's own sub-test list otherwise.
+            (SELECT json_agg(json_build_object(
+                      'name', pk."packageName",
+                      'tests', COALESCE(
+                        (SELECT array_agg(DISTINCT m.name ORDER BY m.name)
+                           FROM public."_MasterToPackage" mp JOIN public."Master" m ON m.id = mp."A"
+                          WHERE mp."B" = pk.id),
+                        pk."panelSubTests", ARRAY[]::text[]))
+                      ORDER BY pk."packageName")
+               FROM public."_OrderToPackage" op JOIN public."Package" pk ON pk.id = op."B"
+              WHERE op."A" = o.id) AS packages,
+            (SELECT array_agg(m.name ORDER BY m.name)
+               FROM public."_MasterToOrder" mo JOIN public."Master" m ON m.id = mo."A"
+              WHERE mo."B" = o.id) AS "directTests",
+            s."storeName"
        FROM public."Order" o
        LEFT JOIN public."User" u    ON u.id = o."userId"
        LEFT JOIN public."Profile" p ON p."profileUserId" = o."userId"
+       LEFT JOIN public."Store" s   ON s.id = o."storeId"
       WHERE o.id = ANY($1::int[])`,
     unique,
   );
@@ -177,6 +203,9 @@ export async function fetchOrderContactDetails(ids: number[]): Promise<Map<numbe
       area: clean(row.locality) || clean(row.city) || null,
       mapUrl: mapUrlFor(row.latitude, row.longitude, address),
       tests: clean(row.tests) || null,
+      packages: row.packages ?? [],
+      directTests: row.directTests ?? [],
+      storeName: clean(row.storeName) || null,
     }];
   }));
 }

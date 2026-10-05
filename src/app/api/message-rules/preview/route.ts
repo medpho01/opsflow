@@ -26,7 +26,6 @@ export async function POST(request: NextRequest) {
       builtInKey: null,
       description: parsed.data.description ?? null,
       version: 1,
-      sourceKey: "orders",
       triggerCondition: parsed.data.triggerCondition as MessageRule["triggerCondition"],
     };
     return NextResponse.json({ preview: await previewRule(rule) });

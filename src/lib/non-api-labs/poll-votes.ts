@@ -19,9 +19,9 @@ import prisma from "@/lib/db/client";
 import { applyProviderAction, attachProviderReason, WorkflowClosedError } from "./provider-action";
 import { resolveLabTarget } from "./target";
 import { renderLabTemplate } from "./templates";
-import { parsePollOptions, breachOutcomeOf } from "./poll-definitions";
-import { applyBreachAnswer, attachBreachReason } from "@/lib/provider-comms/breach-answers";
-import { formatDate, formatTime } from "./scheduler";
+import { parsePollOptions } from "./poll-definitions";
+import { formatDate, formatTime } from "@/lib/provider-rules/format";
+import { recordAnswered } from "@/lib/provider-rules/engine";
 
 /**
  * Today's wording for an option, used only when a sent poll carried none.
@@ -190,19 +190,16 @@ export async function processPollVotes(): Promise<PollVoteResult> {
             payload: { source: "POLL", answer: poll.votedLabel, reason: poll.reason, actorRef: poll.voterJid },
           },
         });
-      } else {
-        // A breach poll: record the lab's answer on its breach and pause or
-        // stop chasing accordingly (see provider-comms/breach-answers.ts).
-        // Without this the answer was acknowledged and then ignored.
-        const chosen =
-          parsePollOptions(poll.options).find((option) => option.label === poll.votedLabel) ??
-          (poll.votedAction ? { label: "", action: poll.votedAction, outcome: null } : null);
-        await applyBreachAnswer({
-          outboundId: poll.outboundId,
-          outcome: breachOutcomeOf(chosen),
-          voterJid: poll.voterJid,
+      }
+      // The lab answered the rule that asked: its repeats stop.
+      if (poll.outboundId) {
+        const asked = await prisma.labCommunication.findUnique({
+          where: { waOutboundId: poll.outboundId },
+          select: { ruleId: true, orderId: true, labId: true },
         });
-        if (poll.reason) await attachBreachReason({ outboundId: poll.outboundId, reason: poll.reason });
+        if (asked?.ruleId && asked.orderId && asked.labId) {
+          await recordAnswered(asked.ruleId, asked.orderId, asked.labId, `Poll: ${poll.votedLabel ?? poll.votedAction ?? "answered"}`);
+        }
       }
       await prisma.waPoll.update({
         where: { waMsgId: poll.waMsgId },
@@ -269,25 +266,6 @@ export async function processPollVotes(): Promise<PollVoteResult> {
       result.reasonsAttached += 1;
     } catch (error) {
       console.error(`[PollVotes] reason for ${poll.waMsgId} failed:`, error instanceof Error ? error.message : error);
-      result.failed += 1;
-    }
-  }
-
-  // ── 3. Late reasons on breach polls ─────────────────────────────────────
-  // A breach poll has no workflow for attachProviderReason; the text belongs on
-  // the breach itself, where Ops sees it next to the lab's answer.
-  const lateBreachReasons = await prisma.waPoll.findMany({
-    where: { status: "APPLIED", reason: { not: null }, reasonAppliedAt: null, workflowId: null },
-    orderBy: { reasonAt: "asc" },
-    take: BATCH,
-  });
-  for (const poll of lateBreachReasons) {
-    try {
-      await attachBreachReason({ outboundId: poll.outboundId, reason: poll.reason! });
-      await prisma.waPoll.update({ where: { waMsgId: poll.waMsgId }, data: { reasonAppliedAt: new Date() } });
-      result.reasonsAttached += 1;
-    } catch (error) {
-      console.error(`[PollVotes] breach reason for ${poll.waMsgId} failed:`, error instanceof Error ? error.message : error);
       result.failed += 1;
     }
   }

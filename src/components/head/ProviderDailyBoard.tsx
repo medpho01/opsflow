@@ -39,7 +39,6 @@ type LabBoard = {
   today: Day;
   tomorrow: Day;
   confirmation: { awaiting: number; accepted: number; rescheduleRequested: number; rejected: number; escalated: number };
-  openBreaches: number;
 };
 
 function clock(iso: string | null, timeZone: string) {
@@ -65,7 +64,6 @@ function active(day: { total: number; cancelled: number }) {
 
 function urgency(lab: LabBoard) {
   if (lab.isActive && !lab.reachable && active(lab.today) > 0) return 3;
-  if (lab.openBreaches > 0) return 2;
   if (lab.confirmation.awaiting > 0) return 1;
   return 0;
 }
@@ -112,8 +110,7 @@ export function ProviderDailyBoard() {
     today: acc.today + active(lab.today),
     tomorrow: acc.tomorrow + active(lab.tomorrow),
     awaiting: acc.awaiting + lab.confirmation.awaiting,
-    breaches: acc.breaches + lab.openBreaches,
-  }), { today: 0, tomorrow: 0, awaiting: 0, breaches: 0 });
+  }), { today: 0, tomorrow: 0, awaiting: 0 });
 
   return (
     <div>
@@ -135,7 +132,6 @@ export function ProviderDailyBoard() {
         <Metric label="Orders today" value={totals.today} />
         <Metric label="Orders tomorrow" value={totals.tomorrow} />
         <Metric label="Awaiting confirmation" value={totals.awaiting} tone={totals.awaiting ? "text-amber-400" : "text-zinc-100"} />
-        <Metric label="Open SLA breaches" value={totals.breaches} tone={totals.breaches ? "text-red-400" : "text-zinc-100"} />
       </div>
 
       {labs.length === 0 ? (
@@ -210,7 +206,6 @@ export function ProviderDailyBoard() {
                     <div className="flex flex-col gap-1 text-[11px]">
                       {/* Unreachable first: every other number is unactionable until it is fixed. */}
                       {lab.isActive && !lab.reachable && <Flag tone="red">No WhatsApp target</Flag>}
-                      {lab.openBreaches > 0 && <Flag tone="red">{lab.openBreaches} SLA breach{lab.openBreaches > 1 ? "es" : ""}</Flag>}
                       {lab.confirmation.awaiting > 0 && (
                         <Flag tone="amber">
                           {lab.confirmation.awaiting} unconfirmed

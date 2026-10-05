@@ -80,12 +80,7 @@ export async function GET(request: NextRequest) {
         : w.status,
     }));
 
-    // Milestone breaches still unresolved — the exceptions §41 wants surfaced.
-    const openBreaches = await prisma.slaBreachEvent.groupBy({
-      by: ["labId"],
-      where: { labId: { in: labIds }, status: "ACTIVE" },
-      _count: true,
-    });
+
 
     /** Dates cross the wire as ISO strings; everything else is already a number. */
     const serialize = (counts: DayCounts) => ({
@@ -115,7 +110,6 @@ export async function GET(request: NextRequest) {
           rejected: count("LAB_REJECTED"),
           escalated: count("ESCALATED"),
         },
-        openBreaches: openBreaches.find((b) => b.labId === config.labId)?._count ?? 0,
       };
     });
 

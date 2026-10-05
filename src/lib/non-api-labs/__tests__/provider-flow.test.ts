@@ -9,7 +9,6 @@ import assert from "node:assert/strict";
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { confirmationUrl, decryptOrderToken, encryptOrderId, ConfirmationLinkConfigError } from "../confirmation-link";
 import { composePatientAddress, mapUrlFor, contactVariables } from "../order-details";
-import { buildLadder, planStatusCheck, recomputeAppointmentRungs, type LadderConfig } from "../ladder";
 import { isAwaitingConfirmation, isPastCollection } from "../source-check";
 import {
   TEMPLATE_DEFAULTS, validateNonApiTemplateBody, renderLabTemplate, isSupersededDefault,
@@ -91,50 +90,6 @@ describe("patient address", () => {
   it("falls back to readable text, never an empty variable", () => {
     const vars = contactVariables(null);
     for (const value of Object.values(vars)) assert.ok(value.trim().length > 0);
-  });
-});
-
-const CONFIG: LadderConfig = {
-  confirmationSlaMinutes: 60, reminderSlaMinutes: 180, escalationSlaMinutes: 300,
-  appointmentRemindersEnabled: false, quietWindowMinutes: 10, postAppointmentCheckEnabled: true,
-};
-const at = (iso: string) => new Date(iso);
-
-describe("ladder with the status check", () => {
-  it("chases at 1h/3h/5h and asks 30 minutes after the appointment", () => {
-    const now = at("2026-10-05T04:00:00Z");
-    const ladder = buildLadder({ orderId: 7, createdAt: now, appointmentTime: at("2026-10-06T03:00:00Z"), config: CONFIG, now });
-    assert.deepEqual(
-      ladder.map((rung) => [rung.rungKey, rung.runAt.toISOString()]),
-      [
-        ["ORDER_CONFIRMATION", "2026-10-05T05:00:00.000Z"],
-        ["ORDER_URGENT", "2026-10-05T07:00:00.000Z"],
-        ["ORDER_ESCALATION", "2026-10-05T09:00:00.000Z"],
-        ["APPT_STATUS_CHECK", "2026-10-06T03:30:00.000Z"],
-      ],
-    );
-  });
-
-  it("keeps the status check even though it lands after the appointment", () => {
-    const now = at("2026-10-05T04:00:00Z");
-    const ladder = buildLadder({ orderId: 8, createdAt: now, appointmentTime: at("2026-10-05T04:30:00Z"), config: CONFIG, now });
-    assert.deepEqual(ladder.map((rung) => rung.rungKey), ["APPT_STATUS_CHECK"]);
-  });
-
-  it("is off when the lab turned it off, and when there is no appointment", () => {
-    const now = at("2026-10-05T04:00:00Z");
-    const off = buildLadder({ orderId: 9, createdAt: now, appointmentTime: at("2026-10-06T03:00:00Z"), config: { ...CONFIG, postAppointmentCheckEnabled: false }, now });
-    assert.ok(!off.some((rung) => rung.rungKey === "APPT_STATUS_CHECK"));
-    assert.equal(planStatusCheck({ orderId: 9, appointmentTime: null, now }), null);
-  });
-
-  it("moves with the appointment", () => {
-    const [outcome] = recomputeAppointmentRungs(
-      [{ id: "a", rungKey: "APPT_STATUS_CHECK", anchor: "APPOINTMENT", offsetMinutes: 30, runAt: at("2026-10-06T03:30:00Z") }],
-      at("2026-10-07T05:00:00Z"),
-      at("2026-10-05T04:00:00Z"),
-    );
-    assert.deepEqual(outcome, { id: "a", outcome: "RESCHEDULED", runAt: at("2026-10-07T05:30:00Z") });
   });
 });
 

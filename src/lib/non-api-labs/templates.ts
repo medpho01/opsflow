@@ -21,6 +21,11 @@ export const PROVIDER_SLA_BREACH_TEMPLATE = "PROVIDER_SLA_BREACH";
 export const SLA_MILESTONE_BREACH_TEMPLATE = "PROVIDER_SLA_MILESTONE";
 // The once-a-day wrap-up. Not NON_API_*: any lab with a config can opt in.
 export const PROVIDER_DAILY_DIGEST_TEMPLATE = "PROVIDER_DAILY_DIGEST";
+// Message rules added in Oct 2026 (seeded paused; see provider-rules/builtins).
+export const NON_API_ASSIGN_PHLEBO_TEMPLATE = "NON_API_ASSIGN_PHLEBO";
+export const NON_API_PHLEBO_ETA_TEMPLATE = "NON_API_PHLEBO_ETA";
+export const NON_API_REPORT_CHASE_TEMPLATE = "NON_API_REPORT_CHASE";
+export const PROVIDER_PENDING_REPORTS_TEMPLATE = "PROVIDER_PENDING_REPORTS";
 
 // Order details every template may use. `lab_name` has always been supplied to
 // the renderer by workflow.ts but was missing from this list, so a template
@@ -39,7 +44,15 @@ const ACTION_URL_VARIABLES = ["accept_url", "reschedule_url", "reject_url"] as c
 // (./confirmation-link). Only the confirmation workflow supplies these — the
 // breach alerts reach API labs too and know none of them — so they are kept
 // out of ORDER_VARIABLES rather than allowed everywhere and missing at send.
-const ORDER_CONTACT_VARIABLES = ["patient_mobile", "patient_address", "map_url", "confirm_url"] as const;
+const ORDER_CONTACT_VARIABLES = [
+  "patient_mobile", "patient_address", "map_url", "confirm_url",
+  // From LabStack's order, else from what the lab told us in the group.
+  "phlebo_name", "phlebo_phone",
+  // Time since the appointment, e.g. "14 h" — for report chasing.
+  "since_appointment",
+  // The rule's own timing: when it became due, how late now, which attempt.
+  "sla_milestone", "sla_deadline", "sla_overdue_by", "sla_attempt_no", "sla_attempts_remaining",
+] as const;
 
 // The poll that replaces those links. Defined in ./poll-config, which has no
 // imports, so the message-flow editor ("use client") can read it without
@@ -63,7 +76,13 @@ export const SLA_MILESTONE_VARIABLES = [
 // above: a digest names no order, no patient and no appointment, so a body
 // that reached for {{order_id}} would render "undefined" for every lab every
 // evening. Keeping the sets disjoint makes that a save-time error instead.
+/** Any summary rule: the lab, the day, the matched orders as a list, and counts. */
+export const SUMMARY_VARIABLES = [
+  "lab_name", "summary_date", "order_count", "order_list", "confirmed_count", "pending_count",
+] as const;
+
 export const DIGEST_VARIABLES = [
+  ...SUMMARY_VARIABLES,
   "lab_name", "digest_date",
   "today_total", "today_home", "today_centre", "today_collected",
   "today_pending", "today_reports_pending", "today_cancelled", "today_unconfirmed",
@@ -226,6 +245,36 @@ export const DEFAULT_PROVIDER_DAILY_DIGEST_BODY = `📋 *Tomorrow's orders – {
 
 Please confirm any pending orders tonight. Thank you!`;
 
+/** Confirmed, no phlebo yet, appointment soon. */
+export const DEFAULT_NON_API_ASSIGN_PHLEBO_BODY = `🧑‍⚕️ *Phlebo not assigned yet*
+
+{{lab_name}}, order *{{order_id}}* for *{{patient_name}}* is at {{appointment_time}} today and has no phlebo assigned.
+
+Please assign one and reply here with the phlebo's *name and number*.`;
+
+/** Phlebo assigned: share the details, ask for an ETA. */
+export const DEFAULT_NON_API_PHLEBO_ETA_BODY = `🚗 *Is the phlebo on time?*
+
+Order *{{order_id}}* – {{patient_name}}, {{appointment_time}}
+Phlebo: {{phlebo_name}} ({{phlebo_phone}})
+
+Please reply with the expected arrival time.`;
+
+/** Collected, report overdue. */
+export const DEFAULT_NON_API_REPORT_CHASE_BODY = `📄 *Report pending*
+
+{{lab_name}}, the report for order *{{order_id}}* ({{patient_name}}) is still pending — the sample was taken {{since_appointment}} ago.
+
+Please share the report, or reply with when it will be ready.`;
+
+/** Daily list of reports still pending. */
+export const DEFAULT_PROVIDER_PENDING_REPORTS_BODY = `📋 *Reports pending – {{summary_date}}*
+{{lab_name}} · Total: *{{order_count}}*
+
+{{order_list}}
+
+Please share these reports as soon as possible. Thank you!`;
+
 export const TEMPLATE_DEFAULTS: Record<string, { name: string; body: string }> = {
   [NON_API_NEW_ORDER_TEMPLATE]: { name: "Non-API lab: new order", body: DEFAULT_NON_API_NEW_ORDER_BODY },
   [NON_API_REMINDER_TEMPLATE]: { name: "Non-API lab: reminder (1 hour)", body: DEFAULT_NON_API_REMINDER_BODY },
@@ -239,6 +288,10 @@ export const TEMPLATE_DEFAULTS: Record<string, { name: string; body: string }> =
   [PROVIDER_SLA_BREACH_TEMPLATE]: { name: "Any lab: SLA breached", body: DEFAULT_PROVIDER_SLA_BREACH_BODY },
   [SLA_MILESTONE_BREACH_TEMPLATE]: { name: "Any lab: milestone SLA missed", body: DEFAULT_SLA_MILESTONE_BREACH_BODY },
   [PROVIDER_DAILY_DIGEST_TEMPLATE]: { name: "Any lab: tomorrow's orders (evening summary)", body: DEFAULT_PROVIDER_DAILY_DIGEST_BODY },
+  [NON_API_ASSIGN_PHLEBO_TEMPLATE]: { name: "Assign a phlebo", body: DEFAULT_NON_API_ASSIGN_PHLEBO_BODY },
+  [NON_API_PHLEBO_ETA_TEMPLATE]: { name: "Phlebo on time? (ETA)", body: DEFAULT_NON_API_PHLEBO_ETA_BODY },
+  [NON_API_REPORT_CHASE_TEMPLATE]: { name: "Report chase", body: DEFAULT_NON_API_REPORT_CHASE_BODY },
+  [PROVIDER_PENDING_REPORTS_TEMPLATE]: { name: "Pending reports (daily list)", body: DEFAULT_PROVIDER_PENDING_REPORTS_BODY },
 };
 
 // ── Upgrading untouched defaults ─────────────────────────────────────────
@@ -416,8 +469,12 @@ const TEMPLATE_RULES: Record<string, TemplateRules> = {
   // full set would stop anyone trimming it to two lines.
   [PROVIDER_DAILY_DIGEST_TEMPLATE]: {
     allowed: DIGEST_VARIABLES,
-    required: ["tomorrow_total"],
+    required: [],
   },
+  [NON_API_ASSIGN_PHLEBO_TEMPLATE]: { allowed: NON_API_NEW_ORDER_VARIABLES, required: ["order_id"] },
+  [NON_API_PHLEBO_ETA_TEMPLATE]: { allowed: NON_API_NEW_ORDER_VARIABLES, required: ["order_id"] },
+  [NON_API_REPORT_CHASE_TEMPLATE]: { allowed: NON_API_NEW_ORDER_VARIABLES, required: ["order_id"] },
+  [PROVIDER_PENDING_REPORTS_TEMPLATE]: { allowed: DIGEST_VARIABLES, required: ["order_list"] },
 };
 
 // Operator-authored templates get the full vocabulary and only the order

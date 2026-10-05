@@ -1,42 +1,46 @@
 /**
- * The built-in steps, as message rules.
+ * The built-in message rules.
  *
- * These reproduce what the legacy ladder (non-api-labs/ladder.ts) and the
- * status-check sweep send today — same moments, same templates, same per-lab
- * switches — so moving to the rules engine changes nothing a lab sees. They are
- * seeded once (keyed by builtInKey) and are then ordinary rules: edit a timing
- * and every open order follows it on the next tick.
+ * The first group reproduces what labs already receive — the new-order
+ * message, the 1h/3h/5h reminders, the appointment pings, the status check and
+ * the evening list — with the same moments and templates, so the move to
+ * rules changes nothing a lab sees. The second group adds the communications
+ * agreed in Oct 2026 (assign a phlebo, phlebo ETA, report chase, pending
+ * reports) and is seeded PAUSED: turning one on is a decision, not a deploy.
  *
- * Like the legacy ladder they apply to every order type the poller starts a
- * conversation for; narrow a rule's order types to change that.
- *
- * Pure data and pure conversion; the engine does the writes.
+ * Seeded once by builtInKey; after that they are ordinary rules — edit a
+ * timing and every open order follows it on the next tick.
  */
 import type { Prisma } from "@prisma/client";
-import type { CommunicationRule } from "@/lib/non-api-labs/rules";
-import type { TriggerCondition } from "@/types";
+import type { RuleCondition } from "./types";
 
 /** LabStack statuses in which the lab has not confirmed yet. */
 export const AWAITING_STATUSES = ["PENDING", "CREATED"];
+/** Confirmed by the lab, phlebo not yet assigned. */
+export const CONFIRMED_UNASSIGNED_STATUSES = ["ORDER_SCHEDULED", "RESCHEDULED"];
 /** Open and not yet collected. */
 export const NOT_COLLECTED_STATUSES = ["PENDING", "CREATED", "ORDER_SCHEDULED", "RESCHEDULED", "PHLEBO_ASSIGNED", "KIT_DISPATCHED"];
-/** Every status an order can be in before it is finished. */
-export const OPEN_ORDER_STATUSES = [...NOT_COLLECTED_STATUSES, "PATIENT_VISITED", "SAMPLE_COLLECTED", "SAMPLE_DELIVERED", "SAMPLE_PROCESSED"];
+/** Collected, report not delivered yet. */
+export const REPORT_PENDING_STATUSES = ["PATIENT_VISITED", "SAMPLE_COLLECTED", "SAMPLE_DELIVERED", "SAMPLE_PROCESSED"];
 /** Conversation states in which chasing a confirmation still makes sense. */
 export const OPEN_CONVERSATION = ["WAITING_FOR_LAB_CONFIRMATION", "ESCALATED"];
 
-type BuiltIn = Omit<Prisma.ProviderMessageRuleCreateInput, "ledger"> & { builtInKey: string };
+export type BuiltIn = Omit<Prisma.ProviderMessageRuleCreateInput, "ledger" | "triggerCondition"> & {
+  builtInKey: string;
+  triggerCondition: RuleCondition;
+};
+
+const hours = (minutes: number) => (minutes % 60 === 0 ? `${minutes / 60} hour${minutes === 60 ? "" : "s"}` : `${minutes} min`);
 
 const reminder = (key: string, name: string, minutes: number, templateKey: string, priority: number, extra: Partial<BuiltIn> = {}): BuiltIn => ({
   builtInKey: key,
   name,
-  description: `Sent ${minutes >= 60 ? `${minutes / 60} hour${minutes === 60 ? "" : "s"}` : `${minutes} min`} after the order, while the lab has not confirmed it. Never after the appointment.`,
-  triggerCondition: { statusIn: AWAITING_STATUSES, minutesSinceCreated: minutes } satisfies TriggerCondition,
+  description: `Sent ${hours(minutes)} after the order while the lab has not confirmed it. Never after the appointment.`,
+  triggerCondition: { statusIn: AWAITING_STATUSES, minutesSinceCreated: minutes },
   conversationStatusIn: OPEN_CONVERSATION,
   onlyIfIntroduced: true,
   notAfterAppointment: true,
   templateKey,
-  templateSlot: "reminder",
   priority,
   ...extra,
 });
@@ -44,24 +48,36 @@ const reminder = (key: string, name: string, minutes: number, templateKey: strin
 const appointmentPing = (key: string, name: string, minutesBefore: number, priority: number): BuiltIn => ({
   builtInKey: key,
   name,
-  description: `Sent ${minutesBefore >= 60 ? `${minutesBefore / 60} h` : `${minutesBefore} min`} before the appointment if the lab still has not confirmed. Only for labs with appointment reminders on.`,
-  triggerCondition: { statusIn: AWAITING_STATUSES, minutesBeforeAppointment: minutesBefore } satisfies TriggerCondition,
+  description: `Sent ${hours(minutesBefore)} before the appointment if the lab still has not confirmed.`,
+  triggerCondition: { statusIn: AWAITING_STATUSES, minutesBeforeAppointment: minutesBefore },
   conversationStatusIn: OPEN_CONVERSATION,
   onlyIfIntroduced: true,
   notAfterAppointment: true,
-  requiresLabSetting: "appointmentRemindersEnabled",
   templateKey: "NON_API_APPOINTMENT_REMINDER",
-  templateSlot: "appointment",
   priority,
 });
 
 export const BUILT_IN_RULES: BuiltIn[] = [
+  // ── What labs already get ────────────────────────────────────────────────
+  {
+    builtInKey: "NEW_ORDER",
+    name: "New order",
+    description: "As soon as an order is placed: the order details and the LabStack confirmation link. Only orders placed after the lab was configured.",
+    triggerCondition: { statusIn: [], minutesSinceCreated: 0 },
+    introduces: true,
+    onlyIfIntroduced: false,
+    onlyNewSinceLabConfigured: true,
+    notAfterAppointment: true,
+    // Orders noticed late (an outage) still reach the lab the same day.
+    catchUpMinutes: 1440,
+    templateKey: "NON_API_NEW_ORDER",
+    priority: 0,
+  },
   reminder("REMINDER_1H", "Reminder — 1 hour after the order", 60, "NON_API_REMINDER", 4),
   reminder("REMINDER_3H", "Reminder — 3 hours after the order", 180, "NON_API_URGENT_REMINDER", 3),
   reminder("ESCALATION_5H", "Final reminder — 5 hours after the order", 300, "NON_API_ESCALATION", 1, {
     action: "ESCALATE",
     recipient: "MANAGER",
-    templateSlot: "escalation",
     description: "Sent 5 hours after the order if still unconfirmed, to the lab manager when one is on file. Never after the appointment.",
   }),
   appointmentPing("APPT_24H", "Unconfirmed — 24 h before the appointment", 1440, 4),
@@ -72,18 +88,90 @@ export const BUILT_IN_RULES: BuiltIn[] = [
     builtInKey: "STATUS_CHECK",
     name: "Status check — 30 min after the appointment",
     description: "Asks what happened, with a one-tap poll. Sent whether or not the lab confirmed; skipped once LabStack shows the sample collected.",
-    triggerCondition: { statusIn: NOT_COLLECTED_STATUSES, minutesAfterAppointment: 30 } satisfies TriggerCondition,
+    triggerCondition: { statusIn: NOT_COLLECTED_STATUSES, minutesAfterAppointment: 30 },
     conversationStatusIn: [...OPEN_CONVERSATION, "LAB_ACCEPTED", "LAB_RESCHEDULE_REQUESTED"],
     onlyIfIntroduced: false,
-    requiresLabSetting: "postAppointmentCheckEnabled",
     templateKey: "NON_API_STATUS_CHECK",
     pollKey: "ORDER_STATUS_CHECK",
+    factConditions: [{ kind: "sample_collected", present: false }],
     priority: 2,
-    },
-];
+  },
+  {
+    builtInKey: "SUMMARY_TOMORROW",
+    name: "Tomorrow's orders — evening list",
+    description: "Once a day: every order with an appointment tomorrow, with address, map, tests and a confirmation link for the unconfirmed ones.",
+    kind: "SUMMARY",
+    summaryScope: "APPOINTMENT_TOMORROW",
+    summaryHour: 19,
+    summaryMinute: 0,
+    triggerCondition: { statusIn: [] },
+    catchUpMinutes: 180,
+    templateKey: "PROVIDER_DAILY_DIGEST",
+    skipWhenEmpty: true,
+    onlyIfIntroduced: false,
+    // The evening list went to every configured lab, API ones included.
+    integrationTypes: [],
+  },
 
-/** Built-ins that the legacy "rules replace the ladder" behaviour switched off. Not the status check. */
-export const LADDER_BUILT_IN_KEYS = BUILT_IN_RULES.map((rule) => rule.builtInKey).filter((key) => key !== "STATUS_CHECK");
+  // ── New communications (seeded paused) ───────────────────────────────────
+  {
+    builtInKey: "ASSIGN_PHLEBO",
+    name: "Assign a phlebo — 2 h before the appointment",
+    description: "Confirmed but no phlebo assigned 2 hours before the appointment: asks the lab to assign one and share the name and number. Repeats every 30 min, up to 3 times, until LabStack shows a phlebo or the lab replies with one.",
+    isActive: false,
+    triggerCondition: { statusIn: CONFIRMED_UNASSIGNED_STATUSES, minutesBeforeAppointment: 120 },
+    factConditions: [{ kind: "phlebo_name", present: false }],
+    onlyIfIntroduced: true,
+    notAfterAppointment: true,
+    templateKey: "NON_API_ASSIGN_PHLEBO",
+    priority: 1,
+    repeatEveryMinutes: 30,
+    maxSends: 3,
+  },
+  {
+    builtInKey: "PHLEBO_ETA",
+    name: "Phlebo on time? — 1 h before the appointment",
+    description: "Phlebo assigned: shares the phlebo's name and number from LabStack and asks whether they are on time, with an ETA. Stops once the lab replies with an ETA.",
+    isActive: false,
+    triggerCondition: { statusIn: ["PHLEBO_ASSIGNED"], minutesBeforeAppointment: 60 },
+    factConditions: [{ kind: "eta", present: false }],
+    onlyIfIntroduced: false,
+    notAfterAppointment: true,
+    templateKey: "NON_API_PHLEBO_ETA",
+    priority: 2,
+    repeatEveryMinutes: 20,
+    maxSends: 2,
+  },
+  {
+    builtInKey: "REPORT_CHASE",
+    name: "Report chase — 12 h after the appointment",
+    description: "Sample collected but no report 12 hours after the appointment: asks for the report. Repeats every 3 hours, up to 4 times, until LabStack shows it delivered or the lab says it is shared.",
+    isActive: false,
+    triggerCondition: { statusIn: REPORT_PENDING_STATUSES, minutesAfterAppointment: 720 },
+    factConditions: [{ kind: "report_shared", present: false }],
+    onlyIfIntroduced: false,
+    templateKey: "NON_API_REPORT_CHASE",
+    priority: 3,
+    repeatEveryMinutes: 180,
+    maxSends: 4,
+  },
+  {
+    builtInKey: "SUMMARY_PENDING_REPORTS",
+    name: "Pending reports — morning list",
+    description: "Once a day: every order collected more than 12 hours after its appointment with no report yet, oldest first.",
+    isActive: false,
+    kind: "SUMMARY",
+    summaryScope: "OPEN",
+    summaryHour: 10,
+    summaryMinute: 0,
+    triggerCondition: { statusIn: REPORT_PENDING_STATUSES, minutesAfterAppointment: 720 },
+    factConditions: [{ kind: "report_shared", present: false }],
+    catchUpMinutes: 180,
+    templateKey: "PROVIDER_PENDING_REPORTS",
+    skipWhenEmpty: true,
+    onlyIfIntroduced: false,
+  },
+];
 
 /** Legacy scheduled-action rung → the built-in that now sends it (ledger import). */
 export const LEGACY_RUNG_TO_BUILT_IN: Record<string, string> = {
@@ -96,37 +184,3 @@ export const LEGACY_RUNG_TO_BUILT_IN: Record<string, string> = {
   APPT_T_MINUS_10M: "APPT_10M",
   APPT_STATUS_CHECK: "STATUS_CHECK",
 };
-
-/**
- * An authored legacy sequence rule (ProviderCommunicationRule, RELATIVE_DELAY)
- * as a message rule. Its anchor + offset become the matching Task-Rule timing
- * field; its send-time gates carry over where they have an equivalent.
- */
-export function convertLegacyRule(rule: CommunicationRule): Omit<Prisma.ProviderMessageRuleCreateInput, "ledger"> {
-  const cond: TriggerCondition = {
-    statusIn: rule.sendCondition.sourceStatusIn?.length ? rule.sendCondition.sourceStatusIn : OPEN_ORDER_STATUSES,
-  };
-  if (rule.anchor === "ORDER") cond.minutesSinceCreated = Math.max(0, rule.offsetMinutes);
-  else if (rule.offsetMinutes <= 0) cond.minutesBeforeAppointment = -rule.offsetMinutes;
-  else cond.minutesAfterAppointment = rule.offsetMinutes;
-
-  return {
-    name: `${rule.name} (converted)`,
-    description: `Converted from the legacy rule "${rule.name}".`,
-    isActive: rule.isActive,
-    allowedLabIds: rule.allowedLabIds,
-    allowedOrderTypes: rule.allowedOrderTypes,
-    triggerCondition: cond as unknown as Prisma.InputJsonValue,
-    conversationStatusIn: rule.sendCondition.workflowStatusIn?.length ? rule.sendCondition.workflowStatusIn : OPEN_CONVERSATION,
-    onlyIfIntroduced: true,
-    // The legacy planner never scheduled anything after the appointment.
-    notAfterAppointment: true,
-    requiresLabSetting: rule.anchor === "APPOINTMENT" ? "appointmentRemindersEnabled" : null,
-    action: rule.action === "ESCALATE" ? "ESCALATE" : "SEND",
-    recipient: rule.recipient,
-    templateKey: rule.templateKey,
-    priority: rule.priority,
-    sendWindowStartHour: rule.sendCondition.sendWindow?.startHour ?? null,
-    sendWindowEndHour: rule.sendCondition.sendWindow?.endHour ?? null,
-  };
-}

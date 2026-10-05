@@ -10,7 +10,7 @@ import { Prisma, UserRole } from "@prisma/client";
 import prisma from "@/lib/db/client";
 import { getSessionFromRequest } from "@/lib/auth/session";
 import { newRequestId, logAndBuildErrorBody } from "@/lib/observability/request-id";
-import { ensureBuiltInRules, loadMessageRulesMode } from "@/lib/provider-rules/engine";
+import { ensureMigratedToRules } from "@/lib/provider-rules/migrate";
 import { BUILT_IN_RULES } from "@/lib/provider-rules/builtins";
 import { messageRuleSchema, flattenZodError } from "@/lib/provider-rules/validation";
 import { ensureNonApiTemplates } from "@/lib/non-api-labs/templates";
@@ -25,11 +25,10 @@ export async function GET(request: NextRequest) {
   const requestId = newRequestId();
   try {
     if (!(await requireOpsHead(request))) return NextResponse.json({ error: "Unauthorized", requestId }, { status: 403 });
-    await ensureBuiltInRules();
+    await ensureMigratedToRules();
     await Promise.all([ensureNonApiTemplates().catch(() => undefined), seedPollDefinitions().catch(() => undefined)]);
 
-    const [mode, rules, stats, templates, polls, labs] = await Promise.all([
-      loadMessageRulesMode(),
+    const [rules, stats, templates, polls, labs] = await Promise.all([
       prisma.providerMessageRule.findMany({ orderBy: [{ builtInKey: "asc" }, { createdAt: "asc" }] }),
       prisma.providerMessageLedger.groupBy({ by: ["ruleId", "outcome", "shadow"], _count: { _all: true } }),
       prisma.labCommunicationTemplate.findMany({ select: { key: true, name: true, isActive: true }, orderBy: { name: "asc" } }),
@@ -39,7 +38,8 @@ export async function GET(request: NextRequest) {
 
     const counts = new Map<string, Record<string, number>>();
     for (const row of stats) {
-      const key = row.shadow ? (row.outcome === "SHADOW" ? "wouldSend" : "wouldMiss") : row.outcome.toLowerCase();
+      if (row.shadow) continue;
+      const key = row.outcome.toLowerCase();
       const entry = counts.get(row.ruleId) ?? {};
       entry[key] = (entry[key] ?? 0) + row._count._all;
       counts.set(row.ruleId, entry);
@@ -50,7 +50,6 @@ export async function GET(request: NextRequest) {
       (builtInOrder.get(a.builtInKey ?? "") ?? 99) - (builtInOrder.get(b.builtInKey ?? "") ?? 99)
       || a.createdAt.getTime() - b.createdAt.getTime());
     return NextResponse.json({
-      mode,
       rules: ordered.map((rule) => ({ ...rule, stats: counts.get(rule.id) ?? {} })),
       templates,
       polls,

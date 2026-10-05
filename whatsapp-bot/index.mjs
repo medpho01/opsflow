@@ -279,7 +279,10 @@ function startLoops() {
       const all = Object.values(groups).map((g) => [g.id, g.subject]);
       // Register every group; pre-activate only the ones matching the listen hint.
       const preActive = all.filter(([jid, subject]) => GROUP_ALLOW.has(jid) || (GROUP_RE ? GROUP_RE.test(subject || "") : false)).map(([jid]) => jid);
-      if (all.length) { await CT.syncGroups(all, preActive, String(currentSock?.user?.id || "").split(/[:@]/)[0]); console.log(`registered ${all.length} groups (${preActive.length} pre-activated) in the console`); }
+      // Called even with ZERO groups: a new number in no groups still needs the
+      // previous number's data archived (syncGroups keys that on the number).
+      await CT.syncGroups(all, preActive, String(currentSock?.user?.id || "").split(/[:@]/)[0]);
+      if (all.length) console.log(`registered ${all.length} groups (${preActive.length} pre-activated) in the console`);
     } catch (e) { console.error("group discovery:", e.message); }
   };
   setTimeout(discoverAndSync, 15000);    // catch the fresh-link case quickly

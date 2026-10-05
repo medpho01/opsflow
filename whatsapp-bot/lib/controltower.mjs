@@ -75,13 +75,14 @@ export async function syncGroups(pairs, preActiveJids = null, accountNumber = nu
     return refreshGroups();
   }
 
-  // An ops number in ZERO groups is far likelier a fetch glitch than reality.
-  // Archiving / un-membering on a glitch would empty the inbox and switch off
-  // every Send toggle, so take no destructive step on an empty list.
-  if (pairs.length === 0) {
-    console.warn("syncGroups: WhatsApp returned no groups — skipping archive and membership update");
-    return refreshGroups();
-  }
+  // Archiving (steps 1-2) is driven by the NUMBER changing, not by the group
+  // list, so it runs even when the list is empty — a brand-new number is often
+  // in no groups yet, and skipping it there left the old number's data showing.
+  // Only the membership update (step 4) depends on the list, and an empty list
+  // for the SAME number is far likelier a fetch glitch (right after a fresh
+  // link) than reality, so that step is skipped on an empty list.
+  const listKnown = pairs.length > 0;
+  if (!listKnown) console.warn("syncGroups: WhatsApp returned no groups — archiving a previous number's data only, no membership update");
 
   const jids = pairs.map(([jid]) => jid);
   const client = await taskos.connect();
@@ -163,8 +164,8 @@ export async function syncGroups(pairs, preActiveJids = null, accountNumber = nu
     //    and Send are left alone: right after a fresh link WhatsApp can report
     //    a partial list, and switching groups off on a partial list would leave
     //    them off once they reappear. Sending to a non-member group fails
-    //    visibly anyway.
-    await client.query(
+    //    visibly anyway. Skipped entirely on an empty list (see above).
+    if (listKnown) await client.query(
       `UPDATE wa_groups SET "isMember" = false, "updatedAt" = now()
         WHERE "archivedAt" IS NULL AND "accountNumber" = $1 AND "isMember" = true AND jid <> ALL($2::text[])`,
       [number, jids]

@@ -4,13 +4,28 @@
     {
       "name": "taskos-docker",
       "runtimeExecutable": "tail",
-      "runtimeArgs": ["-f", "/dev/null"],
+      "runtimeArgs": [
+        "-f",
+        "/dev/null"
+      ],
       "port": 3000
     },
     {
       "name": "opsflow-dev",
       "runtimeExecutable": "node",
-      "runtimeArgs": ["node_modules/next/dist/bin/next", "dev"],
+      "runtimeArgs": [
+        "node_modules/next/dist/bin/next",
+        "dev"
+      ],
+      "autoPort": true
+    },
+    {
+      "name": "opsflow-dev-node22",
+      "runtimeExecutable": "/Users/maverick/.nvm/versions/node/v22.14.0/bin/node",
+      "runtimeArgs": [
+        "node_modules/next/dist/bin/next",
+        "dev"
+      ],
       "autoPort": true
     }
   ]

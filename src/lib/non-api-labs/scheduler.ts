@@ -781,7 +781,7 @@ async function sendForAction(
     }),
   };
   // Rendered with the link but stored without it (it is a fresh token per message).
-  const message = renderLabTemplate(template.body, { ...variables, confirm_url: confirmationUrl(workflow.orderId) });
+  const message = renderLabTemplate(template.body, { ...variables, confirm_url: await confirmationUrl(workflow.orderId) });
   // Confirmation chasers carry the link and nothing to tap; only the status
   // check asks a question. Read outside the transaction: a slow read should not
   // hold the write open.

@@ -6,7 +6,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { createCipheriv, randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { confirmationUrl, decryptOrderToken, encryptOrderId, ConfirmationLinkConfigError } from "../confirmation-link";
 import { composePatientAddress, mapUrlFor, contactVariables } from "../order-details";
 import { buildLadder, planStatusCheck, recomputeAppointmentRungs, type LadderConfig } from "../ladder";
@@ -22,11 +22,11 @@ import { parsePollOptions } from "../poll-definitions";
 const TEST_KEY = "0123456789abcdef0123456789abcdef";
 
 describe("confirmation link", () => {
-  it("round-trips the order id", () => {
-    assert.equal(decryptOrderToken(encryptOrderId(88795, TEST_KEY), TEST_KEY), "88795");
+  it("round-trips the order id", async () => {
+    assert.equal(await decryptOrderToken(await encryptOrderId(88795, TEST_KEY), TEST_KEY), "88795");
   });
 
-  it("decrypts a token made the way LabStack's encrypt() makes it", () => {
+  it("decrypts a token made the way LabStack's encrypt() makes it", async () => {
     // Re-implemented independently from LabStack's snippet, so a drift in
     // either direction fails here rather than as dead links in a lab's group.
     const iv = randomBytes(16);
@@ -35,23 +35,31 @@ describe("confirmation link", () => {
     encrypted += cipher.final("base64");
     const token = (iv.toString("base64") + ":" + encrypted)
       .replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "%3D").replace(/:/g, "%3A");
-    assert.equal(decryptOrderToken(token, TEST_KEY), "4242");
+    assert.equal(await decryptOrderToken(token, TEST_KEY), "4242");
   });
 
-  it("produces the URL-safe shape the console route expects", () => {
-    const url = confirmationUrl(73142, TEST_KEY);
+  it("makes tokens LabStack's decrypt() can read", async () => {
+    const token = (await encryptOrderId(31337, TEST_KEY))
+      .replace(/-/g, "+").replace(/_/g, "/").replace(/%3D/g, "=").replace(/%3A/g, ":");
+    const [iv, encrypted] = token.split(":");
+    const decipher = createDecipheriv("aes-256-cbc", Buffer.from(TEST_KEY), Buffer.from(iv, "base64"));
+    assert.equal(decipher.update(encrypted, "base64", "utf8") + decipher.final("utf8"), "31337");
+  });
+
+  it("produces the URL-safe shape the console route expects", async () => {
+    const url = await confirmationUrl(73142, TEST_KEY);
     assert.match(url, /^https:\/\/console\.labstack\.in\/confirmation\/[A-Za-z0-9_-]+(%3D)*%3A[A-Za-z0-9_-]+(%3D)*$/);
     const token = url.slice("https://console.labstack.in/confirmation/".length);
     assert.doesNotMatch(token, /[+/=:]/);
   });
 
-  it("uses a fresh IV each time", () => {
-    assert.notEqual(encryptOrderId(1, TEST_KEY), encryptOrderId(1, TEST_KEY));
+  it("uses a fresh IV each time", async () => {
+    assert.notEqual(await encryptOrderId(1, TEST_KEY), await encryptOrderId(1, TEST_KEY));
   });
 
-  it("refuses to run without a 32-character key", () => {
-    assert.throws(() => encryptOrderId(1, ""), ConfirmationLinkConfigError);
-    assert.throws(() => encryptOrderId(1, "short"), ConfirmationLinkConfigError);
+  it("refuses to run without a 32-character key", async () => {
+    await assert.rejects(() => encryptOrderId(1, ""), ConfirmationLinkConfigError);
+    await assert.rejects(() => encryptOrderId(1, "short"), ConfirmationLinkConfigError);
   });
 });
 

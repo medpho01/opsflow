@@ -219,7 +219,7 @@ export async function startNonApiLabWorkflow(order: RawOrder): Promise<WorkflowS
     // and deliberately NOT stored with the template variables.
     const rendered = renderLabTemplate(template.body, {
       ...safeVariables,
-      confirm_url: confirmationUrl(order.id),
+      confirm_url: await confirmationUrl(order.id),
       accept_url: actionUrl(acceptToken),
       reschedule_url: actionUrl(rescheduleToken),
       reject_url: actionUrl(rejectToken),

@@ -239,9 +239,9 @@ export function minutesPastSlot(config: NonApiLabConfig, now: Date, zone: string
 type BuiltDigest = { variables: TemplateVariables; todayHasOrders: boolean; tomorrowHasOrders: boolean };
 
 /** A confirmation link, or null when the deployment has no key configured. */
-function safeConfirmationUrl(orderId: number): string | null {
+async function safeConfirmationUrl(orderId: number): Promise<string | null> {
   try {
-    return confirmationUrl(orderId);
+    return await confirmationUrl(orderId);
   } catch (error) {
     if (error instanceof ConfirmationLinkConfigError) return null;
     throw error;
@@ -276,6 +276,11 @@ export async function buildDigest(config: NonApiLabConfig, zone: string): Promis
     Math.max(counts.total - counts.cancelled, listed);
 
   const count = (value: number) => String(value);
+  // Minted up front (encryption is async) for the orders that will show one.
+  const links = new Map<number, string | null>();
+  for (const order of tomorrowSchedule) {
+    if (isAwaitingConfirmation(order.orderStatus)) links.set(order.orderId, await safeConfirmationUrl(order.orderId));
+  }
   const tomorrowListable = days.tomorrow.total > 0 ? listable(days.tomorrow, tomorrowSchedule.length) : 0;
 
   const variables: TemplateVariables = {
@@ -301,7 +306,7 @@ export async function buildDigest(config: NonApiLabConfig, zone: string): Promis
     tomorrow_first: clock(days.tomorrow.firstAppointment, zone),
     tomorrow_unconfirmed: count(days.tomorrow.unconfirmed),
     tomorrow_confirmed: count(Math.max(tomorrowListable - days.tomorrow.unconfirmed, 0)),
-    tomorrow_schedule: tomorrowListBlock(tomorrowSchedule, tomorrowListable, zone, safeConfirmationUrl),
+    tomorrow_schedule: tomorrowListBlock(tomorrowSchedule, tomorrowListable, zone, (orderId) => links.get(orderId) ?? null),
   };
 
   return {

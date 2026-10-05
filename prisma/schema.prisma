@@ -1462,9 +1462,14 @@ model NonApiLabConfig {
   reminderTemplateKey         String             @default("NON_API_REMINDER")
   escalationTemplateKey       String             @default("NON_API_ESCALATION")
   appointmentTemplateKey      String             @default("NON_API_APPOINTMENT_REMINDER")
-  // Appointment-anchored reminders (T-24h/-2h/-30m/-10m) can be turned off per
-  // lab; the order clock always runs.
-  appointmentRemindersEnabled Boolean            @default(true)
+  // Appointment-anchored reminders (T-24h/-2h/-30m/-10m) can be turned on per
+  // lab; the order clock (1h/3h/5h) always runs. Off by default since Oct 2026:
+  // the agreed provider flow is the 1h/3h/5h chasers plus the status check.
+  appointmentRemindersEnabled Boolean            @default(false)
+  // "What is the status of this order?" 30 minutes after the appointment, with
+  // a one-tap poll. Sent whether or not the lab confirmed; skipped once LabStack
+  // shows the sample collected.
+  postAppointmentCheckEnabled Boolean            @default(true)
   // Minimum gap between two messages about the SAME order, across both clocks.
   // Confirmation ladder only: breach alerts are capped per order instead, and
   // lib/provider-comms/sla-breach.ts explains why applying this to them would

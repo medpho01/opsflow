@@ -15,6 +15,7 @@
  * rolls over at 05:30 local would be wrong for exactly the people using it.
  */
 import { labstackWorkerQuery } from "@/lib/db/labstack";
+import { AWAITING_CONFIRMATION_STATUSES } from "@/lib/non-api-labs/source-check";
 
 /** Statuses that mean the order will never be fulfilled, or is already done. */
 export const DEAD_STATUSES = ["CANCELED", "PATIENT_MISSED"];
@@ -32,6 +33,8 @@ export type DayCounts = {
   reportPending: number;
   done: number;
   cancelled: number;
+  /** Still PENDING/CREATED in LabStack — the lab has not confirmed it yet. */
+  unconfirmed: number;
   firstAppointment: Date | null;
   nextAppointment: Date | null;
 };
@@ -42,7 +45,7 @@ type DayRow = DayCounts & { labId: number; day: string };
 
 export const EMPTY_DAY: DayCounts = {
   total: 0, homeCollections: 0, centreVisits: 0, awaitingCollection: 0,
-  collected: 0, reportPending: 0, done: 0, cancelled: 0,
+  collected: 0, reportPending: 0, done: 0, cancelled: 0, unconfirmed: 0,
   firstAppointment: null, nextAppointment: null,
 };
 
@@ -99,6 +102,7 @@ export async function loadDaySummaries(labIds: number[], zone: string): Promise<
            -- Postgres enum ("OrderStatus"), and enum = text has no operator.
            COUNT(*) FILTER (WHERE "orderStatus"::text = ANY($3::text[]))::int AS done,
            COUNT(*) FILTER (WHERE "orderStatus"::text = ANY($4::text[]))::int AS cancelled,
+           COUNT(*) FILTER (WHERE "orderStatus"::text = ANY($5::text[]))::int AS unconfirmed,
            MIN("appointmentTime") AS "firstAppointment",
            MIN("appointmentTime") FILTER (WHERE "appointmentTime" > now()) AS "nextAppointment"
       FROM local
@@ -108,7 +112,7 @@ export async function loadDaySummaries(labIds: number[], zone: string): Promise<
            )
      GROUP BY "labId", local_day
     `,
-    [labIds, zone, DONE_STATUSES, DEAD_STATUSES],
+    [labIds, zone, DONE_STATUSES, DEAD_STATUSES, AWAITING_CONFIRMATION_STATUSES],
   );
 
   const today = todayKey(zone);
@@ -124,6 +128,7 @@ export async function loadDaySummaries(labIds: number[], zone: string): Promise<
       reportPending: row.reportPending,
       done: row.done,
       cancelled: row.cancelled,
+      unconfirmed: row.unconfirmed,
       firstAppointment: row.firstAppointment ? new Date(row.firstAppointment) : null,
       nextAppointment: row.nextAppointment ? new Date(row.nextAppointment) : null,
     };
@@ -146,11 +151,15 @@ export type ScheduledOrder = {
   patientName: string | null;
   /** Short form — city, or the centre's name. */
   location: string | null;
+  /** The patient's locality (else city), for a one-line list entry. */
+  area: string | null;
+  /** Package names, comma-separated. */
+  tests: string | null;
   /**
-   * The most precise location LabStack holds. Not a street address: the source
-   * has no such column, only city + pincode on the order and the centre's name
-   * and city. Composing them here keeps every caller from re-deciding which of
-   * the four fields to trust for which order type.
+   * A short location: the patient's city + pincode (from their Profile) for a
+   * home visit, the centre and its city for a centre visit. Composing them here
+   * keeps every caller from re-deciding which fields to trust for which order
+   * type. The full street address is in non-api-labs/order-details.
    */
   address: string | null;
 };
@@ -186,19 +195,26 @@ export async function loadDaySchedule(
     id: number; labOrderId: string | null; appointmentTime: Date; orderType: string; orderStatus: string;
     patientName: string | null; city: string | null; pincode: string | null;
     storeName: string | null; storeCity: string | null; userCity: string | null;
+    area: string | null; tests: string | null;
   }>(
     `
     SELECT o.id, o."labOrderId", o."appointmentTime",
            o."orderType"::text   AS "orderType",
            o."orderStatus"::text AS "orderStatus",
            u.name AS "patientName",
-           -- Real LabStack has no city/pincode on Order or User (the dummy schema
-           -- did); the store's city is the only location available.
-           NULL::text AS city, NULL::text AS pincode,
+           -- The patient's address lives on their Profile (one per User), not
+           -- on Order or User.
+           p.city AS city, p.pincode::text AS pincode,
            NULL::text AS "userCity",
+           NULLIF(btrim(COALESCE(NULLIF(btrim(p.locality), ''), p.city)), '') AS area,
+           (SELECT string_agg(pk."packageName", ', ' ORDER BY pk."packageName")
+              FROM public."_OrderToPackage" op
+              JOIN public."Package" pk ON pk.id = op."B"
+             WHERE op."A" = o.id) AS tests,
            s."storeName", s.city AS "storeCity"
       FROM public."Order" o
       LEFT JOIN public."User"  u ON u.id = o."userId"
+      LEFT JOIN public."Profile" p ON p."profileUserId" = o."userId"
       LEFT JOIN public."Store" s ON s.id = o."storeId"
      WHERE o."labId" = $1
        AND o."appointmentTime" IS NOT NULL
@@ -220,6 +236,8 @@ export async function loadDaySchedule(
     orderStatus: row.orderStatus,
     patientName: row.patientName,
     location: row.city || row.userCity || row.storeName || null,
+    area: row.area,
+    tests: row.tests,
     address: composeAddress(row),
   }));
 }

@@ -839,15 +839,20 @@ export async function recordPollVote(waMsgId, action, voterJid, label = null) {
   // time). "Already done" / "On the way" must NOT — waiting there captured the
   // lab's next, unrelated group message as a "reason", and could steal text
   // meant for a different poll still waiting in the same chat.
+  // An option can also ask for detail explicitly (askReason) — the status
+  // check's "Rescheduled" / "Patient not available" are informational, with no
+  // action, yet are useless without the new time or the reason.
   let outcome = null;
+  let askReason = false;
   try {
     const row = (await taskosQuery(`SELECT options FROM wa_polls WHERE "waMsgId" = $1 LIMIT 1`, [waMsgId])).rows[0];
     const options = Array.isArray(row?.options) ? row.options : JSON.parse(row?.options || "[]");
     const chosen = options.find((o) => o?.label === label);
     outcome = chosen?.outcome ?? null;
+    askReason = chosen?.askReason === true;
     if (!outcome && typeof label === "string" && label.trim().toLowerCase() === "delayed") outcome = "DELAYED";
   } catch { outcome = null; }
-  const needsReason = action === "RESCHEDULE" || action === "REJECT" || outcome === "DELAYED";
+  const needsReason = action === "RESCHEDULE" || action === "REJECT" || outcome === "DELAYED" || askReason;
   const r = await taskosQuery(
     `UPDATE wa_polls
         SET status='VOTED', "votedAction"=$2, "votedLabel"=$5, "voterJid"=$3, "votedAt"=now(),

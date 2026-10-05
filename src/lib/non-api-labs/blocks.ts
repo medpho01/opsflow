@@ -110,6 +110,16 @@ export const SAMPLE_VALUES: Record<string, string> = {
   accept_url: "https://opsflow.example/a/9f3c…",
   reschedule_url: "https://opsflow.example/r/2b81…",
   reject_url: "https://opsflow.example/x/7d45…",
+  patient_mobile: "98xxxxxx10",
+  patient_address: "Flat 302, 12th Main Rd, Indiranagar, Bengaluru – 560038",
+  map_url: "https://maps.google.com/?q=12.971900,77.641200",
+  confirm_url: "https://console.labstack.in/confirmation/sample…",
+  lab_name: "Star Pathology (sample)",
+  tomorrow_date: "Tue, 6 Oct",
+  tomorrow_total: "3",
+  tomorrow_confirmed: "2",
+  tomorrow_unconfirmed: "1",
+  tomorrow_schedule: "*1. 7:30 am* – R. Sharma (sample)\n   📍 Indiranagar\n   🧪 CBC, Lipid Profile",
   // Milestone breach. `sla_deadline` is already defined above and serves both
   // the confirmation templates and this one. The overdue value is deliberately
   // non-zero — a preview showing "0m overdue" would not tell an author whether

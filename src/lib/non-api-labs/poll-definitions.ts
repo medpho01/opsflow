@@ -17,6 +17,8 @@ import { PROVIDER_POLL_NAME, PROVIDER_POLL_OPTIONS } from "./poll-config";
 /** Where a poll is used. Keys are stable; the contents are Ops's to change. */
 export const ORDER_CONFIRMATION_POLL = "ORDER_CONFIRMATION";
 export const SLA_BREACH_POLL = "SLA_BREACH";
+/** Sent 30 minutes after the appointment: "what happened with this order?" */
+export const ORDER_STATUS_CHECK_POLL = "ORDER_STATUS_CHECK";
 
 export type PollOption = {
   /** What the provider taps. Votes come back as this text, so it is the key. */
@@ -33,6 +35,12 @@ export type PollOption = {
    * or hand-edited options fall back to breachOutcomeOf()'s label matching.
    */
   outcome?: BreachOutcome | null;
+  /**
+   * Wait for the provider's next message in the chat and record it as the
+   * detail behind this answer (a new time, a reason). RESCHEDULE, REJECT and a
+   * DELAYED outcome always wait; this lets an informational option ask too.
+   */
+  askReason?: boolean;
 };
 
 export type BreachOutcome = "DONE" | "ON_THE_WAY" | "DELAYED" | "CANNOT_FULFIL";
@@ -40,7 +48,55 @@ const BREACH_OUTCOMES: readonly BreachOutcome[] = ["DONE", "ON_THE_WAY", "DELAYE
 
 export type ResolvedPoll = { question: string; options: PollOption[] };
 
+// Informational on purpose: every action is null. The answer is recorded on the
+// order's timeline for the desk; the order itself is updated in LabStack.
+const STATUS_CHECK_SEED = {
+  name: "Order status — 30 minutes after the appointment",
+  question: "What's the status of this order?",
+  options: [
+    {
+      label: "✅ Sample collected",
+      action: null,
+      outcome: "DONE",
+      ack: `Thank you! Noted that the sample for order {{order_id}} ({{patient_name}}) has been collected.`,
+    },
+    {
+      label: "🚗 On the way / running late",
+      action: null,
+      outcome: "DELAYED",
+      ack: `Noted — order {{order_id}} is running late.
+
+Please reply with the expected arrival time so we can inform the patient.`,
+    },
+    {
+      label: "🔄 Rescheduled",
+      action: null,
+      askReason: true,
+      ack: `Noted — order {{order_id}} ({{patient_name}}) was rescheduled.
+
+Please reply with the new date and time.`,
+    },
+    {
+      label: "🙅 Patient not available",
+      action: null,
+      askReason: true,
+      ack: `Noted — the patient for order {{order_id}} was not available.
+
+Please reply with any details (no answer, wrong address, asked to come later…) so we can follow up.`,
+    },
+    {
+      label: "❌ Cancelled",
+      action: null,
+      askReason: true,
+      ack: `Noted — order {{order_id}} was cancelled.
+
+Please reply with the reason.`,
+    },
+  ] satisfies PollOption[],
+};
+
 const SEEDS: Record<string, { name: string; question: string; options: PollOption[] }> = {
+  [ORDER_STATUS_CHECK_POLL]: STATUS_CHECK_SEED,
   [ORDER_CONFIRMATION_POLL]: {
     name: "Order confirmation",
     question: PROVIDER_POLL_NAME,
@@ -147,6 +203,9 @@ export function parsePollOptions(raw: unknown): PollOption[] {
     ...(BREACH_OUTCOMES.includes((option as { outcome?: unknown }).outcome as BreachOutcome)
       ? { outcome: (option as { outcome: BreachOutcome }).outcome }
       : {}),
+    // Same rule: only carried when set. The gateway reads it off the copy of
+    // the options stored with the sent poll.
+    ...((option as { askReason?: unknown }).askReason === true ? { askReason: true } : {}),
   }));
 }
 

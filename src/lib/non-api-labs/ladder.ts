@@ -28,7 +28,8 @@ export type LadderRungKey =
   | "APPT_T_MINUS_24H"
   | "APPT_T_MINUS_2H"
   | "APPT_T_MINUS_30M"
-  | "APPT_T_MINUS_10M";
+  | "APPT_T_MINUS_10M"
+  | "APPT_STATUS_CHECK";
 
 /** The slice of NonApiLabConfig the ladder needs. */
 export type LadderConfig = {
@@ -37,6 +38,8 @@ export type LadderConfig = {
   escalationSlaMinutes: number;
   appointmentRemindersEnabled: boolean;
   quietWindowMinutes: number;
+  /** Ask the lab what happened, 30 minutes after the appointment. Off when absent. */
+  postAppointmentCheckEnabled?: boolean;
 };
 
 type RungDefinition = {
@@ -63,7 +66,19 @@ export const LADDER_RUNGS: readonly RungDefinition[] = [
   { key: "APPT_T_MINUS_10M", anchor: "APPOINTMENT", type: "SEND_REMINDER", priority: 0, offsetMinutes: () => -10 },
 ] as const;
 
-const RUNG_BY_KEY = new Map<string, RungDefinition>(LADDER_RUNGS.map((rung) => [rung.key, rung]));
+/**
+ * "What is the status of this order?" — the one message sent AFTER the
+ * appointment. Not a confirmation chaser: it goes whether or not the lab
+ * confirmed, which is why it sits outside LADDER_RUNGS and is exempt from the
+ * appointment cutoff that every chaser obeys.
+ */
+export const STATUS_CHECK_RUNG: RungDefinition = {
+  key: "APPT_STATUS_CHECK", anchor: "APPOINTMENT", type: "SEND_REMINDER", priority: 2, offsetMinutes: () => 30,
+};
+
+const RUNG_BY_KEY = new Map<string, RungDefinition>(
+  [...LADDER_RUNGS, STATUS_CHECK_RUNG].map((rung) => [rung.key, rung]),
+);
 
 export function rungDefinition(key: string | null | undefined): RungDefinition | null {
   return key ? RUNG_BY_KEY.get(key) ?? null : null;
@@ -146,7 +161,38 @@ export function buildLadder(input: {
     });
   }
 
+  if (config.postAppointmentCheckEnabled) {
+    const check = planStatusCheck({ orderId, appointmentTime, now });
+    if (check) planned.push(check);
+  }
+
   return planned.sort((a, b) => a.runAt.getTime() - b.runAt.getTime());
+}
+
+/**
+ * The post-appointment status check on its own — also used when authored
+ * rules replace the confirmation ladder, since the rules only describe how to
+ * chase a confirmation, not what to ask once the visit is due.
+ */
+export function planStatusCheck(input: { orderId: number; appointmentTime: Date | null; now: Date }): PlannedRung | null {
+  const { orderId, appointmentTime, now } = input;
+  if (!appointmentTime) return null;
+  const offsetMinutes = STATUS_CHECK_RUNG.offsetMinutes({} as LadderConfig);
+  const runAt = addMinutes(appointmentTime, offsetMinutes);
+  if (runAt.getTime() <= now.getTime()) return null;
+  return {
+    rungKey: STATUS_CHECK_RUNG.key,
+    anchor: STATUS_CHECK_RUNG.anchor,
+    type: STATUS_CHECK_RUNG.type,
+    priority: STATUS_CHECK_RUNG.priority,
+    offsetMinutes,
+    runAt,
+    idempotencyKey: `non-api:${orderId}:${STATUS_CHECK_RUNG.key.toLowerCase()}`,
+  };
+}
+
+export function isStatusCheckRung(rungKey: string | null | undefined): boolean {
+  return rungKey === STATUS_CHECK_RUNG.key;
 }
 
 export type RecomputableAction = {

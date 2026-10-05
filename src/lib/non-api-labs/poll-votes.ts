@@ -178,7 +178,19 @@ export async function processPollVotes(): Promise<PollVoteResult> {
           source: "POLL",
           actorRef: poll.voterJid,
         });
-      } else if (!poll.workflowId) {
+      } else if (poll.workflowId) {
+        // An informational answer on an order's own poll — the status check
+        // after the appointment. Nothing to move; put the answer on the
+        // order's timeline so the desk sees what the lab said.
+        await prisma.labCommunicationOrderEvent.create({
+          data: {
+            workflowId: poll.workflowId,
+            type: "PROVIDER_NOTE",
+            actorType: "LAB",
+            payload: { source: "POLL", answer: poll.votedLabel, reason: poll.reason, actorRef: poll.voterJid },
+          },
+        });
+      } else {
         // A breach poll: record the lab's answer on its breach and pause or
         // stop chasing accordingly (see provider-comms/breach-answers.ts).
         // Without this the answer was acknowledged and then ignored.

@@ -17,6 +17,10 @@
  *
  * ── What it deliberately does not do ─────────────────────────────────────
  *
+ * Since Oct 2026 the DEFAULT body is tomorrow only — a numbered list with a
+ * confirmation link beside each order the lab has not confirmed yet. The
+ * today_* variables are still rendered for labs whose template asks for them.
+ *
  * It does not consult the breach engine's quiet hours. Those exist to stop
  * event-driven alerts firing at 03:00, when nobody chose the moment. A digest
  * has a send time an operator picked on purpose, so the send time IS the
@@ -44,9 +48,11 @@ import {
   type TemplateVariables,
 } from "@/lib/non-api-labs/templates";
 import {
-  loadDaySummaries, loadDaySchedule, todayKey, tomorrowKey, localDayKey,
+  loadDaySummaries, loadDaySchedule, todayKey, tomorrowKey,
   TIME_ZONE, type ScheduledOrder,
 } from "./day-summary";
+import { isAwaitingConfirmation } from "@/lib/non-api-labs/source-check";
+import { confirmationUrl, ConfirmationLinkConfigError } from "@/lib/non-api-labs/confirmation-link";
 
 /**
  * How late a digest may still go out, in minutes past its own slot.
@@ -159,6 +165,38 @@ export function scheduleBlock(
   return [options.heading, ...lines].join("\n");
 }
 
+/**
+ * Tomorrow's orders as a numbered list a lab can staff from: time and patient,
+ * then where and what, and — for anything not yet confirmed — the link to
+ * confirm it right there. Blank lines between orders, because on a phone a
+ * dense block of thirty lines is unreadable.
+ *
+ * `linkFor` returns null when no link can be made; the order is still listed
+ * and still flagged, just without the link.
+ */
+export function tomorrowListBlock(
+  orders: ScheduledOrder[],
+  total: number,
+  zone: string,
+  linkFor: (orderId: number) => string | null,
+): string {
+  if (orders.length === 0) return "No appointments on tomorrow's list yet.";
+  const entries = orders.map((order, index) => {
+    const lines = [`*${index + 1}. ${clock(order.appointmentTime, zone)}* – ${order.patientName || "Name not on file"}`];
+    if (order.orderType === "CENTER_VISIT") lines.push(`   🏥 Centre visit${order.location ? ` – ${order.location}` : ""}`);
+    else if (order.area) lines.push(`   📍 ${order.area}`);
+    if (order.tests) lines.push(`   🧪 ${order.tests}`);
+    if (isAwaitingConfirmation(order.orderStatus)) {
+      const link = linkFor(order.orderId);
+      lines.push(link ? `   ⚠️ _Not confirmed_ – ${link}` : "   ⚠️ _Not confirmed_");
+    }
+    return lines.join("\n");
+  });
+  const remaining = total - orders.length;
+  if (remaining > 0) entries.push(`…and ${remaining} more — full list in LabStack.`);
+  return entries.join("\n\n");
+}
+
 // ── Due check ────────────────────────────────────────────────────────────
 
 /** Minutes past local midnight, in the operating timezone. */
@@ -187,34 +225,16 @@ export function minutesPastSlot(config: NonApiLabConfig, now: Date, zone: string
 
 // ── Building one digest ──────────────────────────────────────────────────
 
-type BuiltDigest = { variables: TemplateVariables; hasContent: boolean };
+type BuiltDigest = { variables: TemplateVariables; todayHasOrders: boolean; tomorrowHasOrders: boolean };
 
-/**
- * Count the orders on each day that the provider has still not answered for.
- *
- * Read from OpsFlow's own workflows rather than from LabStack: "unconfirmed"
- * is a fact about the conversation, and LabStack has no idea whether anyone
- * ever asked. Bucketed in JS by local day so this reuses the same day key the
- * counts use, instead of re-deriving local midnight in UTC and risking the two
- * disagreeing at the boundary.
- */
-async function unconfirmedByDay(labId: number, zone: string): Promise<Map<string, number>> {
-  const window = 3 * 86_400_000;
-  const pending = await prisma.labCommunicationWorkflow.findMany({
-    where: {
-      labId,
-      status: "WAITING_FOR_LAB_CONFIRMATION",
-      appointmentTime: { gte: new Date(Date.now() - window), lt: new Date(Date.now() + window) },
-    },
-    select: { appointmentTime: true },
-  });
-  const byDay = new Map<string, number>();
-  for (const workflow of pending) {
-    if (!workflow.appointmentTime) continue;
-    const key = localDayKey(workflow.appointmentTime, zone);
-    byDay.set(key, (byDay.get(key) ?? 0) + 1);
+/** A confirmation link, or null when the deployment has no key configured. */
+function safeConfirmationUrl(orderId: number): string | null {
+  try {
+    return confirmationUrl(orderId);
+  } catch (error) {
+    if (error instanceof ConfirmationLinkConfigError) return null;
+    throw error;
   }
-  return byDay;
 }
 
 /** Render one lab's digest variables. Reads only; sends nothing. */
@@ -222,10 +242,9 @@ export async function buildDigest(config: NonApiLabConfig, zone: string): Promis
   const today = todayKey(zone);
   const tomorrow = tomorrowKey(zone);
 
-  const [summaries, unconfirmed] = await Promise.all([
-    loadDaySummaries([config.labId], zone),
-    unconfirmedByDay(config.labId, zone),
-  ]);
+  // "Unconfirmed" is read from LabStack: the lab confirms on the LabStack
+  // confirmation page, which moves the order out of PENDING/CREATED.
+  const summaries = await loadDaySummaries([config.labId], zone);
   const days = summaries.get(config.labId)!;
 
   // Only fetched when there is something to list — an empty day should cost
@@ -246,6 +265,7 @@ export async function buildDigest(config: NonApiLabConfig, zone: string): Promis
     Math.max(counts.total - counts.cancelled, listed);
 
   const count = (value: number) => String(value);
+  const tomorrowListable = days.tomorrow.total > 0 ? listable(days.tomorrow, tomorrowSchedule.length) : 0;
 
   const variables: TemplateVariables = {
     lab_name: config.labName,
@@ -257,27 +277,27 @@ export async function buildDigest(config: NonApiLabConfig, zone: string): Promis
     today_pending: count(days.today.awaitingCollection),
     today_reports_pending: count(days.today.reportPending),
     today_cancelled: count(days.today.cancelled),
-    today_unconfirmed: count(unconfirmed.get(today) ?? 0),
+    today_unconfirmed: count(days.today.unconfirmed),
     today_schedule: scheduleBlock(todaySchedule, listable(days.today, todaySchedule.length), zone, {
       heading: "Today's orders:",
       empty: "No orders on today's list.",
     }),
     tomorrow_date: dateLabel(tomorrow, false),
-    tomorrow_total: count(days.tomorrow.total),
+    // Cancellations excluded: this is the number of visits to staff for.
+    tomorrow_total: count(tomorrowListable),
     tomorrow_home: count(days.tomorrow.homeCollections),
     tomorrow_centre: count(days.tomorrow.centreVisits),
     tomorrow_first: clock(days.tomorrow.firstAppointment, zone),
-    tomorrow_unconfirmed: count(unconfirmed.get(tomorrow) ?? 0),
-    // Addresses only here: tomorrow's list is what a dispatcher plans routes
-    // from, today's is a check against work already in hand.
-    tomorrow_schedule: scheduleBlock(tomorrowSchedule, listable(days.tomorrow, tomorrowSchedule.length), zone, {
-      heading: "Tomorrow's appointments:",
-      empty: "No appointments on tomorrow's list yet.",
-      withAddress: true,
-    }),
+    tomorrow_unconfirmed: count(days.tomorrow.unconfirmed),
+    tomorrow_confirmed: count(Math.max(tomorrowListable - days.tomorrow.unconfirmed, 0)),
+    tomorrow_schedule: tomorrowListBlock(tomorrowSchedule, tomorrowListable, zone, safeConfirmationUrl),
   };
 
-  return { variables, hasContent: days.today.total > 0 || days.tomorrow.total > 0 };
+  return {
+    variables,
+    todayHasOrders: days.today.total > 0,
+    tomorrowHasOrders: tomorrowListable > 0,
+  };
 }
 
 // ── Sending one digest ───────────────────────────────────────────────────
@@ -327,14 +347,19 @@ export async function sendDigestForLab(
     : `provider-digest:${config.labId}:${todayKey(zone)}`;
 
   try {
-    const { variables, hasContent } = await buildDigest(config, zone);
-    if (!hasContent && config.dailyDigestSkipWhenEmpty && !options.force) {
-      return { ...base, outcome: "empty" };
-    }
-
     const templateKey = config.dailyDigestTemplateKey || PROVIDER_DAILY_DIGEST_TEMPLATE;
     const template = await ensureTemplate(templateKey);
     if (!template.isActive) return { ...base, outcome: "disabled" };
+
+    // "Empty" depends on what the message talks about: the default is
+    // tomorrow's list only, so a busy today with nothing tomorrow sends
+    // nothing; a body that still reports on today counts today too.
+    const { variables, todayHasOrders, tomorrowHasOrders } = await buildDigest(config, zone);
+    const mentionsToday = /\{\{\s*today_/.test(template.body);
+    const hasContent = tomorrowHasOrders || (mentionsToday && todayHasOrders);
+    if (!hasContent && config.dailyDigestSkipWhenEmpty && !options.force) {
+      return { ...base, outcome: "empty" };
+    }
     const text = renderLabTemplate(template.body, variables);
 
     // Resolved before the transaction: a group target may register a wa_groups

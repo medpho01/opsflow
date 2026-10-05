@@ -10,8 +10,9 @@ import {
   renderLabTemplate,
   type TemplateVariables,
 } from "./templates";
-import { resolvePoll, ORDER_CONFIRMATION_POLL } from "./poll-definitions";
-import { buildLadder, tokenExpiryFor } from "./ladder";
+import { buildLadder, planStatusCheck, tokenExpiryFor } from "./ladder";
+import { confirmationUrl } from "./confirmation-link";
+import { contactVariables, fetchOrderContactDetails } from "./order-details";
 import { loadActiveCommunicationRules } from "./rule-store";
 import { planRuleActions, selectRulesFor } from "./rules";
 
@@ -154,9 +155,36 @@ export async function startNonApiLabWorkflow(order: RawOrder): Promise<WorkflowS
       runAt: rung.runAt,
       idempotencyKey: rung.idempotencyKey,
     }));
+  // Authored rules only describe how to chase a confirmation; the status check
+  // after the appointment still applies to those labs.
+  const statusCheck = scopedRules.length > 0 && config.postAppointmentCheckEnabled
+    ? planStatusCheck({ orderId: order.id, appointmentTime, now })
+    : null;
+  if (statusCheck) {
+    ladder.push({
+      rungKey: statusCheck.rungKey,
+      ruleId: null,
+      anchor: statusCheck.anchor,
+      type: statusCheck.type,
+      priority: statusCheck.priority,
+      offsetMinutes: statusCheck.offsetMinutes,
+      runAt: statusCheck.runAt,
+      idempotencyKey: statusCheck.idempotencyKey,
+    });
+  }
   // Action links must outlive the appointment; they used to die on
   // escalationDeadline, which could fall before the patient was even due.
   const tokenExpiry = tokenExpiryFor(appointmentTime, escalationDeadline);
+
+  // Who, where and which tests. A failed read is "unknown", not "no details":
+  // report the start as failed so the next poll retries it, rather than send
+  // a confirmation request with the address missing.
+  const detailsById = await fetchOrderContactDetails([order.id]).catch(() => null);
+  if (!detailsById) {
+    console.warn(`[NonApiWorkflow] LabStack details unavailable for order ${order.id}; will retry next poll.`);
+    return "failed";
+  }
+  const details = detailsById.get(order.id) ?? null;
 
   const acceptToken = bearerToken();
   const rescheduleToken = bearerToken();
@@ -172,8 +200,9 @@ export async function startNonApiLabWorkflow(order: RawOrder): Promise<WorkflowS
     appointment_date: formatDate(appointmentTime),
     appointment_time: formatTime(appointmentTime),
     location: locationFor(order),
-    tests: testsFor(order),
+    tests: details?.tests || testsFor(order),
     sla_deadline: `${formatDate(confirmationDeadline)} ${formatTime(confirmationDeadline)}`,
+    ...contactVariables(details),
   };
   try {
     // Resolved before the transaction below: for a group target this may
@@ -184,18 +213,13 @@ export async function startNonApiLabWorkflow(order: RawOrder): Promise<WorkflowS
     // WorkflowStartResult, so its caller's batch loop can process every
     // order in a poll cycle even when one lookup fails.
     const target = await resolveLabTarget(config);
-    // The poll the provider answers by tapping. Resolved here, outside the
-    // transaction, for the same reason as the target: it only reads.
-    //
-    // This message is the FIRST thing a provider sees about an order, and it has
-    // always ended with "Tap an option in the poll below to respond" — but the
-    // poll was only ever attached by scheduler.ts, so until a reminder fired
-    // there was nothing to tap. The provider was told to use a control that did
-    // not exist yet.
-    const confirmationPoll = await resolvePoll(ORDER_CONFIRMATION_POLL);
-
+    // The provider confirms on the LabStack confirmation page, which moves the
+    // order to ORDER_SCHEDULED — that is what stops the reminders. No poll:
+    // one message, one action (agreed Oct 2026). Minted per message (fresh IV)
+    // and deliberately NOT stored with the template variables.
     const rendered = renderLabTemplate(template.body, {
       ...safeVariables,
+      confirm_url: confirmationUrl(order.id),
       accept_url: actionUrl(acceptToken),
       reschedule_url: actionUrl(rescheduleToken),
       reject_url: actionUrl(rejectToken),
@@ -216,6 +240,9 @@ export async function startNonApiLabWorkflow(order: RawOrder): Promise<WorkflowS
             appointmentTime: appointmentTime ? appointmentTime.toISOString() : null,
             location: safeVariables.location,
             tests: safeVariables.tests,
+            patientMobile: details?.patientMobile ?? null,
+            patientAddress: details?.address ?? null,
+            mapUrl: details?.mapUrl ?? null,
           },
           confirmationDeadline,
           reminderDeadline,
@@ -251,16 +278,10 @@ export async function startNonApiLabWorkflow(order: RawOrder): Promise<WorkflowS
         // Group targets must carry groupId — that is what the gateway's
         // per-group sendEnabled guard keys off.
         //
-        // The poll rides along so the provider can answer by tapping. Its
-        // options are SNAPSHOTTED onto the row: editing the poll later must
-        // not change what an already-sent poll means when its vote comes back.
         data: {
           targetJid: target.targetJid,
           text: rendered,
           groupId: target.groupId,
-          ...(confirmationPoll
-            ? { pollName: confirmationPoll.question, pollOptions: confirmationPoll.options }
-            : {}),
         },
       });
       await tx.labCommunication.update({ where: { id: communication.id }, data: { waOutboundId: outbound.id } });

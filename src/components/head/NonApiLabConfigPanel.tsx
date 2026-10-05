@@ -19,6 +19,7 @@ type LabConfig = {
   escalationTemplateKey: string;
   appointmentTemplateKey: string;
   appointmentRemindersEnabled: boolean;
+  postAppointmentCheckEnabled: boolean;
   quietWindowMinutes: number;
   slaBreachAlertsEnabled: boolean;
   slaBreachMaxPerOrder: number;
@@ -43,6 +44,7 @@ type Draft = {
   escalationTemplateKey: string;
   appointmentTemplateKey: string;
   appointmentRemindersEnabled: boolean;
+  postAppointmentCheckEnabled: boolean;
   quietWindowMinutes: string;
   slaBreachAlertsEnabled: boolean;
   slaBreachMaxPerOrder: string;
@@ -56,7 +58,7 @@ const EMPTY_DRAFT: Draft = {
   labId: "", labName: "", integrationType: "NON_API", waGroupJid: "", whatsappNumber: "", isActive: true,
   confirmationSlaMinutes: "60", reminderSlaMinutes: "180", escalationSlaMinutes: "300",
   initialTemplateKey: "NON_API_NEW_ORDER", reminderTemplateKey: "NON_API_REMINDER", escalationTemplateKey: "NON_API_ESCALATION",
-  appointmentTemplateKey: "NON_API_APPOINTMENT_REMINDER", appointmentRemindersEnabled: true, quietWindowMinutes: "10",
+  appointmentTemplateKey: "NON_API_APPOINTMENT_REMINDER", appointmentRemindersEnabled: false, postAppointmentCheckEnabled: true, quietWindowMinutes: "10",
   slaBreachAlertsEnabled: true, slaBreachMaxPerOrder: "2",
   dailyDigestEnabled: false, dailyDigestAt: "19:00", dailyDigestSkipWhenEmpty: true,
 };
@@ -76,7 +78,8 @@ function toDraft(lab: LabConfig): Draft {
     confirmationSlaMinutes: String(lab.confirmationSlaMinutes), reminderSlaMinutes: String(lab.reminderSlaMinutes), escalationSlaMinutes: String(lab.escalationSlaMinutes),
     initialTemplateKey: lab.initialTemplateKey, reminderTemplateKey: lab.reminderTemplateKey, escalationTemplateKey: lab.escalationTemplateKey,
     appointmentTemplateKey: lab.appointmentTemplateKey ?? "NON_API_APPOINTMENT_REMINDER",
-    appointmentRemindersEnabled: lab.appointmentRemindersEnabled ?? true,
+    appointmentRemindersEnabled: lab.appointmentRemindersEnabled ?? false,
+    postAppointmentCheckEnabled: lab.postAppointmentCheckEnabled ?? true,
     quietWindowMinutes: String(lab.quietWindowMinutes ?? 10),
     slaBreachAlertsEnabled: lab.slaBreachAlertsEnabled ?? true,
     slaBreachMaxPerOrder: String(lab.slaBreachMaxPerOrder ?? 2),
@@ -229,6 +232,7 @@ export function NonApiLabConfigPanel() {
       initialTemplateKey: draft.initialTemplateKey, reminderTemplateKey: draft.reminderTemplateKey, escalationTemplateKey: draft.escalationTemplateKey,
       appointmentTemplateKey: draft.appointmentTemplateKey,
       appointmentRemindersEnabled: draft.appointmentRemindersEnabled,
+      postAppointmentCheckEnabled: draft.postAppointmentCheckEnabled,
       quietWindowMinutes: Number(draft.quietWindowMinutes),
       slaBreachAlertsEnabled: draft.slaBreachAlertsEnabled,
       slaBreachMaxPerOrder: Number(draft.slaBreachMaxPerOrder),
@@ -477,7 +481,7 @@ export function NonApiLabConfigPanel() {
                     {g.subject || g.jid}{g.sendEnabled ? "" : " — sending off"}
                   </option>
                 ))}
-              </select></Field><p className="text-[11px] text-zinc-500 -mt-2">Picked from the {groups.length} groups the gateway can actually see, so the id is never typed. A group still needs sending switched on under Settings &rarr; WhatsApp before anything leaves.</p><p className="text-[11px] text-zinc-500 -mt-2">The provider&apos;s ops group, so a reply is visible to their whole desk. Required for API labs too — that is where breach alerts go. Sending stays off until the group is enabled under Settings → WhatsApp.</p><Field label="Lab WhatsApp number (fallback, used only without a group)"><input value={draft.whatsappNumber} onChange={(e) => update("whatsappNumber", e.target.value)} placeholder="+9198…" className={inputClass} /></Field><div className={draft.integrationType === "API" ? "opacity-40" : undefined}><div className="text-xs font-medium text-zinc-300 mb-2">Confirmation workflow {draft.integrationType === "API" && <span className="font-normal text-zinc-500">— not used: this lab receives orders through the API</span>}</div><div className="text-[11px] text-zinc-500 mb-2">SLA (minutes)</div><div className="grid grid-cols-3 gap-3"><Field label="Confirm"><input required type="number" min="1" value={draft.confirmationSlaMinutes} onChange={(e) => update("confirmationSlaMinutes", e.target.value)} className={inputClass} /></Field><Field label="Reminder"><input required type="number" min="1" value={draft.reminderSlaMinutes} onChange={(e) => update("reminderSlaMinutes", e.target.value)} className={inputClass} /></Field><Field label="Escalate"><input required type="number" min="1" value={draft.escalationSlaMinutes} onChange={(e) => update("escalationSlaMinutes", e.target.value)} className={inputClass} /></Field></div><p className="text-[11px] text-zinc-500 mt-1.5">Must progress from confirmation → reminder → escalation. No reminder is ever scheduled after the appointment.</p></div><div className={draft.integrationType === "API" ? "opacity-40" : undefined}><div className="text-xs font-medium text-zinc-300 mb-2">Appointment clock</div><label className="flex items-center gap-2 text-sm text-zinc-300"><input type="checkbox" checked={draft.appointmentRemindersEnabled} onChange={(e) => update("appointmentRemindersEnabled", e.target.checked)} className="accent-blue-500" /> Chase unconfirmed orders as the appointment approaches (T‑24h, T‑2h, T‑30m, T‑10m)</label><div className="mt-3 max-w-[12rem]"><Field label="Quiet window (minutes)"><input required type="number" min="0" max="240" value={draft.quietWindowMinutes} onChange={(e) => update("quietWindowMinutes", e.target.value)} className={inputClass} /></Field></div><p className="text-[11px] text-zinc-500 mt-1.5">Minimum gap between two confirmation messages about one order, across both clocks. Only a T‑10m reminder may break it. Breach alerts use the per-order cap below instead.</p></div><div className="rounded-lg border border-zinc-800 bg-zinc-900/40 p-3">
+              </select></Field><p className="text-[11px] text-zinc-500 -mt-2">Picked from the {groups.length} groups the gateway can actually see, so the id is never typed. A group still needs sending switched on under Settings &rarr; WhatsApp before anything leaves.</p><p className="text-[11px] text-zinc-500 -mt-2">The provider&apos;s ops group, so a reply is visible to their whole desk. Required for API labs too — that is where breach alerts go. Sending stays off until the group is enabled under Settings → WhatsApp.</p><Field label="Lab WhatsApp number (fallback, used only without a group)"><input value={draft.whatsappNumber} onChange={(e) => update("whatsappNumber", e.target.value)} placeholder="+9198…" className={inputClass} /></Field><div className={draft.integrationType === "API" ? "opacity-40" : undefined}><div className="text-xs font-medium text-zinc-300 mb-2">Confirmation workflow {draft.integrationType === "API" && <span className="font-normal text-zinc-500">— not used: this lab receives orders through the API</span>}</div><div className="text-[11px] text-zinc-500 mb-2">SLA (minutes)</div><div className="grid grid-cols-3 gap-3"><Field label="Confirm"><input required type="number" min="1" value={draft.confirmationSlaMinutes} onChange={(e) => update("confirmationSlaMinutes", e.target.value)} className={inputClass} /></Field><Field label="Reminder"><input required type="number" min="1" value={draft.reminderSlaMinutes} onChange={(e) => update("reminderSlaMinutes", e.target.value)} className={inputClass} /></Field><Field label="Escalate"><input required type="number" min="1" value={draft.escalationSlaMinutes} onChange={(e) => update("escalationSlaMinutes", e.target.value)} className={inputClass} /></Field></div><p className="text-[11px] text-zinc-500 mt-1.5">Must progress from confirmation → reminder → escalation. No reminder is ever scheduled after the appointment.</p></div><div className={draft.integrationType === "API" ? "opacity-40" : undefined}><div className="text-xs font-medium text-zinc-300 mb-2">Appointment clock</div><label className="flex items-center gap-2 text-sm text-zinc-300"><input type="checkbox" checked={draft.appointmentRemindersEnabled} onChange={(e) => update("appointmentRemindersEnabled", e.target.checked)} className="accent-blue-500" /> Chase unconfirmed orders as the appointment approaches (T‑24h, T‑2h, T‑30m, T‑10m)</label><label className="mt-2 flex items-center gap-2 text-sm text-zinc-300"><input type="checkbox" checked={draft.postAppointmentCheckEnabled} onChange={(e) => update("postAppointmentCheckEnabled", e.target.checked)} className="accent-blue-500" /> Ask for the order status 30 minutes after the appointment (one-tap poll)</label><div className="mt-3 max-w-[12rem]"><Field label="Quiet window (minutes)"><input required type="number" min="0" max="240" value={draft.quietWindowMinutes} onChange={(e) => update("quietWindowMinutes", e.target.value)} className={inputClass} /></Field></div><p className="text-[11px] text-zinc-500 mt-1.5">Minimum gap between two confirmation messages about one order, across both clocks. Only a T‑10m reminder may break it. Breach alerts use the per-order cap below instead.</p></div><div className="rounded-lg border border-zinc-800 bg-zinc-900/40 p-3">
                 <div className="text-xs font-medium text-zinc-300 mb-2">SLA breach alerts <span className="font-normal text-emerald-400/80">— applies to every lab</span></div>
                 <label className="flex items-center gap-2 text-sm text-zinc-300">
                   <input type="checkbox" checked={draft.slaBreachAlertsEnabled} onChange={(e) => update("slaBreachAlertsEnabled", e.target.checked)} className="accent-blue-500" />

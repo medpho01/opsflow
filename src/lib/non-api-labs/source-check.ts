@@ -17,6 +17,25 @@ const ABANDONED_STATUSES = new Set(["CANCELED"]);
 /** LabStack statuses that mean the order is already finished. */
 const FINISHED_STATUSES = new Set(["REPORT_DELIVERED", "PATIENT_MISSED"]);
 
+/**
+ * Statuses in which the lab has NOT yet confirmed the order. Confirming on the
+ * LabStack confirmation page moves an order to ORDER_SCHEDULED, so anything
+ * past these — scheduled, phlebo assigned, collected, rescheduled — means the
+ * lab has picked it up and the confirmation reminders should stop.
+ */
+export const AWAITING_CONFIRMATION_STATUSES = ["PENDING", "CREATED"];
+
+export function isAwaitingConfirmation(orderStatus: string | null | undefined): boolean {
+  return AWAITING_CONFIRMATION_STATUSES.includes(orderStatus ?? "");
+}
+
+/** The sample is already taken — asking "what happened?" after the visit is noise. */
+const COLLECTED_STATUSES = new Set(["PATIENT_VISITED", "SAMPLE_COLLECTED", "SAMPLE_DELIVERED", "SAMPLE_PROCESSED"]);
+
+export function isPastCollection(orderStatus: string | null | undefined): boolean {
+  return COLLECTED_STATUSES.has(orderStatus ?? "");
+}
+
 export type SourceOrderState = {
   orderStatus: string;
   appointmentTime: Date | null;

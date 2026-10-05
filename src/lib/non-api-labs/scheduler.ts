@@ -4,11 +4,14 @@ import { hasWhatsAppTarget, resolveLabTarget } from "./target";
 import { fetchOrderSnapshotsByIds } from "@/lib/engine/labstack";
 import {
   ensureTemplate, isNonApiTemplateKey, renderLabTemplate,
+  NON_API_REMINDER_TEMPLATE, NON_API_URGENT_REMINDER_TEMPLATE, NON_API_STATUS_CHECK_TEMPLATE,
   type TemplateVariables,
 } from "./templates";
-import { resolvePoll, ORDER_CONFIRMATION_POLL } from "./poll-definitions";
-import { arbitrate, recomputeAppointmentRungs, rungDefinition, tokenExpiryFor } from "./ladder";
-import { classifySourceOrder } from "./source-check";
+import { resolvePoll, ORDER_STATUS_CHECK_POLL } from "./poll-definitions";
+import { arbitrate, isStatusCheckRung, recomputeAppointmentRungs, rungDefinition, tokenExpiryFor } from "./ladder";
+import { classifySourceOrder, isAwaitingConfirmation, isPastCollection } from "./source-check";
+import { confirmationUrl } from "./confirmation-link";
+import { contactVariables } from "./order-details";
 import { toCommunicationRule } from "./rule-store";
 import { evaluateSendCondition, type CommunicationRule } from "./rules";
 
@@ -117,6 +120,15 @@ export function buildNonApiScheduledMessage(
 
 function isWorkflowClosed(status: string | null | undefined) {
   return ["LAB_ACCEPTED", "LAB_RESCHEDULE_REQUESTED", "LAB_REJECTED", "COMPLETED", "CANCELLED"].includes(status ?? "");
+}
+
+/**
+ * A closed workflow stops the confirmation chasers, but the post-appointment
+ * status check is a different question: it is MOST useful once the lab has
+ * accepted. Only a rejection, a cancellation or a finished order makes it moot.
+ */
+function statusCheckSurvives(status: string | null | undefined) {
+  return ["LAB_ACCEPTED", "LAB_RESCHEDULE_REQUESTED", "WAITING_FOR_LAB_CONFIRMATION", "ESCALATED"].includes(status ?? "");
 }
 
 type DueAction = {
@@ -333,6 +345,44 @@ async function closeWorkflow(
   result.closed += 1;
 }
 
+/**
+ * The lab confirmed on the LabStack confirmation page — the order has moved
+ * past PENDING/CREATED. Stop every confirmation chaser still pending for it
+ * (not just what was due this tick), keep the post-appointment status check,
+ * and record the acceptance so the timeline shows it.
+ */
+async function markConfirmedInLabStack(workflowId: string, orderStatus: string, result: NonApiSchedulerResult) {
+  const now = new Date();
+  const reason = `Lab confirmed in LabStack (order is ${orderStatus})`;
+  await prisma.$transaction(async (tx) => {
+    const stopped = await tx.labScheduledAction.updateMany({
+      where: {
+        workflowId,
+        status: { in: ["PENDING", "RUNNING"] },
+        // Spelled out with the null arm: `rungKey <> X` alone would skip
+        // rule-scheduled actions, whose rungKey is NULL.
+        OR: [{ rungKey: null }, { rungKey: { not: "APPT_STATUS_CHECK" } }],
+      },
+      data: { status: "SUPPRESSED", completedAt: now, cancelledAt: now, lastError: reason, lockedAt: null, lockedBy: null },
+    });
+    result.suppressed += stopped.count;
+    const moved = await tx.labCommunicationWorkflow.updateMany({
+      where: { id: workflowId, status: { in: ["WAITING_FOR_LAB_CONFIRMATION", "ESCALATED"] } },
+      data: { status: "LAB_ACCEPTED", acceptedAt: now },
+    });
+    if (moved.count > 0) {
+      await tx.labCommunicationOrderEvent.create({
+        data: {
+          workflowId,
+          type: "LAB_ACCEPTED",
+          actorType: "LAB",
+          payload: { source: "LABSTACK", orderStatus, reason },
+        },
+      });
+    }
+  });
+}
+
 /** The appointment moved upstream. Re-derive every appointment-anchored rung. */
 async function applyReschedule(
   workflowId: string,
@@ -498,12 +548,20 @@ export async function processDueNonApiLabScheduledActions(): Promise<NonApiSched
     for (const row of rows) ruleById.set(row.id, toCommunicationRule(row));
   }
 
-  for (const [workflowId, actions] of byWorkflow) {
+  for (const [workflowId, claimedActions] of byWorkflow) {
     const workflow = workflowById.get(workflowId)!;
+    let actions = claimedActions;
     try {
       if (isWorkflowClosed(workflow.status)) {
-        await suppressActions(actions, workflowId, `Workflow already ${workflow.status}`, result);
-        continue;
+        const chasers = actions.filter((action) => !isStatusCheckRung(action.rungKey));
+        const checks = actions.filter((action) => isStatusCheckRung(action.rungKey));
+        if (chasers.length > 0) await suppressActions(chasers, workflowId, `Workflow already ${workflow.status}`, result);
+        if (checks.length > 0 && !statusCheckSurvives(workflow.status)) {
+          await suppressActions(checks, workflowId, `Workflow already ${workflow.status}`, result);
+          continue;
+        }
+        if (checks.length === 0) continue;
+        actions = checks;
       }
 
       const config = configByLabId.get(workflow.labId);
@@ -524,6 +582,26 @@ export async function processDueNonApiLabScheduledActions(): Promise<NonApiSched
       if (verdict.kind === "RESCHEDULE") {
         await applyReschedule(workflowId, verdict.appointmentTime, verdict.reason, actions, result);
         continue;
+      }
+
+      // ── Confirmed upstream? ──────────────────────────────────────────────
+      // The lab confirms on the LabStack confirmation page, which moves the
+      // order to ORDER_SCHEDULED. Once it has left PENDING/CREATED there is
+      // nothing left to chase.
+      const orderStatus = sourceSnapshot?.orderStatus ?? null;
+      if (orderStatus && !isAwaitingConfirmation(orderStatus) && actions.some((action) => !isStatusCheckRung(action.rungKey))) {
+        await markConfirmedInLabStack(workflowId, orderStatus, result);
+        actions = actions.filter((action) => isStatusCheckRung(action.rungKey));
+        if (actions.length === 0) continue;
+      }
+      // And the status check is moot once LabStack already shows the sample taken.
+      if (isPastCollection(orderStatus)) {
+        const checks = actions.filter((action) => isStatusCheckRung(action.rungKey));
+        if (checks.length > 0) {
+          await suppressActions(checks, workflowId, `Already ${orderStatus} in LabStack — no need to ask`, result);
+          actions = actions.filter((action) => !isStatusCheckRung(action.rungKey));
+          if (actions.length === 0) continue;
+        }
       }
 
       // ── Arbitration: at most one message per workflow per tick. ──────────
@@ -643,21 +721,34 @@ async function sendForAction(
   const target = await resolveLabTarget(config, wantsManager ? config.managerWhatsapp : null);
   const recipient = target.targetJid;
 
-  const selectedTemplateKey = rule?.templateKey ?? (isEscalation
-    ? config.escalationTemplateKey
-    : isAppointmentRung
-      ? config.appointmentTemplateKey
-      : config.reminderTemplateKey);
-  const fallbackTemplateKey = isEscalation
-    ? "NON_API_ESCALATION"
-    : isAppointmentRung
-      ? "NON_API_APPOINTMENT_REMINDER"
-      : "NON_API_REMINDER";
+  const isStatusCheck = isStatusCheckRung(action.rungKey);
+  // The 3-hour chaser gets its own, firmer wording — unless this lab was given
+  // a custom reminder, which then covers both order-clock reminders as before.
+  const orderReminderKey = action.rungKey === "ORDER_URGENT" && config.reminderTemplateKey === NON_API_REMINDER_TEMPLATE
+    ? NON_API_URGENT_REMINDER_TEMPLATE
+    : config.reminderTemplateKey;
+  const selectedTemplateKey = isStatusCheck
+    ? NON_API_STATUS_CHECK_TEMPLATE
+    : rule?.templateKey ?? (isEscalation
+      ? config.escalationTemplateKey
+      : isAppointmentRung
+        ? config.appointmentTemplateKey
+        : orderReminderKey);
+  const fallbackTemplateKey = isStatusCheck
+    ? NON_API_STATUS_CHECK_TEMPLATE
+    : isEscalation
+      ? "NON_API_ESCALATION"
+      : isAppointmentRung
+        ? "NON_API_APPOINTMENT_REMINDER"
+        : "NON_API_REMINDER";
   const templateKey = isNonApiTemplateKey(selectedTemplateKey) ? selectedTemplateKey : fallbackTemplateKey;
   const template = await ensureTemplate(templateKey);
   if (!template.isActive) return { suppressed: `Message "${template.name}" is paused` };
 
-  const snapshot = (workflow.orderSnapshot ?? {}) as { patientName?: string; location?: string; tests?: string };
+  const snapshot = (workflow.orderSnapshot ?? {}) as {
+    patientName?: string; location?: string; tests?: string;
+    patientMobile?: string | null; patientAddress?: string | null; mapUrl?: string | null;
+  };
   const appointmentTime = workflow.appointmentTime;
 
   const tokenExpiry = tokenExpiryFor(appointmentTime, workflow.escalationDeadline);
@@ -681,11 +772,20 @@ async function sendForAction(
     accept_url: actionUrl(rawTokens[0].token),
     reschedule_url: actionUrl(rawTokens[1].token),
     reject_url: actionUrl(rawTokens[2].token),
+    // Workflows started before Oct 2026 have no contact fields in their
+    // snapshot; the fallbacks keep their remaining reminders sendable.
+    ...contactVariables({
+      patientMobile: snapshot.patientMobile ?? null,
+      address: snapshot.patientAddress ?? null,
+      mapUrl: snapshot.mapUrl ?? null,
+    }),
   };
-  const message = renderLabTemplate(template.body, variables);
-  // Outside the transaction: this only reads, and a slow read should not hold
-  // the write open.
-  const confirmationPoll = await resolvePoll(ORDER_CONFIRMATION_POLL);
+  // Rendered with the link but stored without it (it is a fresh token per message).
+  const message = renderLabTemplate(template.body, { ...variables, confirm_url: confirmationUrl(workflow.orderId) });
+  // Confirmation chasers carry the link and nothing to tap; only the status
+  // check asks a question. Read outside the transaction: a slow read should not
+  // hold the write open.
+  const poll = isStatusCheck ? await resolvePoll(ORDER_STATUS_CHECK_POLL) : null;
 
   await prisma.$transaction(async (tx) => {
     await tx.labProviderActionToken.createMany({
@@ -722,11 +822,10 @@ async function sendForAction(
       // groupId is what arms the gateway's sendEnabled guard for group
       // targets; a bare jid with no groupId would bypass it entirely.
       //
-      // The poll rides along so the provider answers by tapping rather than
-      // opening a link. The gateway sends the text and the poll as two
-      // messages, records the poll on a WaPoll row, and a vote comes back
-      // through the every-minute tick. A DM target gets one too — polls work in
-      // a one-to-one chat as well.
+      // The status check's poll rides along so the provider answers by
+      // tapping. The gateway sends the text and the poll as two messages,
+      // records the poll on a WaPoll row, and a vote comes back through the
+      // every-minute tick.
       data: {
         targetJid: target.targetJid,
         text: message,
@@ -734,9 +833,7 @@ async function sendForAction(
         // Resolved from the editable definition, and SNAPSHOTTED onto the row:
         // editing the poll later must not change what an already-sent poll
         // means when its vote comes back.
-        ...(confirmationPoll
-          ? { pollName: confirmationPoll.question, pollOptions: confirmationPoll.options }
-          : {}),
+        ...(poll ? { pollName: poll.question, pollOptions: poll.options } : {}),
       },
     });
 

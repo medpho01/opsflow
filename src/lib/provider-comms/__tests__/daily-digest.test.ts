@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import type { NonApiLabConfig } from "@prisma/client";
-import { minutesPastSlot, scheduleBlock, dateLabel } from "../daily-digest";
+import { minutesPastSlot, scheduleBlock, dateLabel, tomorrowListBlock } from "../daily-digest";
 import { DEFAULT_PROVIDER_DAILY_DIGEST_BODY, PROVIDER_DAILY_DIGEST_TEMPLATE, validateNonApiTemplateBody, renderLabTemplate, DIGEST_VARIABLES } from "@/lib/non-api-labs/templates";
 import type { ScheduledOrder } from "../day-summary";
 
@@ -55,6 +55,8 @@ const order = (overrides: Partial<ScheduledOrder> = {}): ScheduledOrder => ({
   orderStatus: "ORDER_SCHEDULED",
   patientName: "Varun Banaal",
   location: "Solan",
+  area: "Chambaghat",
+  tests: "CBC, Lipid Profile",
   address: "Solan 173212",
   ...overrides,
 });
@@ -151,5 +153,53 @@ describe("the default digest template", () => {
   it("renders with the variables the engine actually supplies", () => {
     const supplied = Object.fromEntries(DIGEST_VARIABLES.map((name) => [name, "x"]));
     assert.doesNotThrow(() => renderLabTemplate(DEFAULT_PROVIDER_DAILY_DIGEST_BODY, supplied));
+  });
+});
+
+describe("tomorrowListBlock", () => {
+  const link = (orderId: number) => `https://console.labstack.in/confirmation/tok-${orderId}`;
+
+  it("numbers each order with its time, patient, area and tests", () => {
+    const block = tomorrowListBlock([order()], 1, IST, link);
+    assert.equal(block, "*1. 8:00 am* – Varun Banaal\n   📍 Chambaghat\n   🧪 CBC, Lipid Profile");
+  });
+
+  it("flags only unconfirmed orders, with the link to confirm them", () => {
+    const block = tomorrowListBlock(
+      [order(), order({ orderId: 102, orderStatus: "CREATED" })],
+      2, IST, link,
+    );
+    const [first, second] = block.split("\n\n");
+    assert.doesNotMatch(first, /Not confirmed/);
+    assert.match(second, /⚠️ _Not confirmed_ – https:\/\/console\.labstack\.in\/confirmation\/tok-102$/);
+  });
+
+  it("still flags an unconfirmed order when no link can be made", () => {
+    const block = tomorrowListBlock([order({ orderStatus: "PENDING" })], 1, IST, () => null);
+    assert.match(block, /⚠️ _Not confirmed_$/);
+  });
+
+  it("drops lines it has nothing for instead of printing blanks", () => {
+    const block = tomorrowListBlock([order({ area: null, tests: null })], 1, IST, link);
+    assert.equal(block, "*1. 8:00 am* – Varun Banaal");
+  });
+
+  it("reports the tail beyond the list as a count", () => {
+    assert.match(tomorrowListBlock([order()], 5, IST, link), /…and 4 more/);
+  });
+
+  it("says so when tomorrow is empty", () => {
+    assert.equal(tomorrowListBlock([], 0, IST, link), "No appointments on tomorrow's list yet.");
+  });
+});
+
+describe("tomorrow-only digest default", () => {
+  it("renders with the tomorrow variables alone", () => {
+    const text = renderLabTemplate(DEFAULT_PROVIDER_DAILY_DIGEST_BODY, {
+      lab_name: "Star Pathology", tomorrow_date: "Tue, 6 Oct", tomorrow_total: "3",
+      tomorrow_schedule: "*1. 7:30 am* – A", tomorrow_confirmed: "2", tomorrow_unconfirmed: "1",
+    });
+    assert.match(text, /Tomorrow's orders – Tue, 6 Oct/);
+    assert.match(text, /Confirmed: 2 {3}⚠️ Pending: 1/);
   });
 });

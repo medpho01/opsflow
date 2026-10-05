@@ -20,6 +20,7 @@ export type NonApiLabConfigInput = {
   escalationTemplateKey?: unknown;
   appointmentTemplateKey?: unknown;
   appointmentRemindersEnabled?: unknown;
+  postAppointmentCheckEnabled?: unknown;
   quietWindowMinutes?: unknown;
   slaBreachAlertsEnabled?: unknown;
   slaBreachTemplateKey?: unknown;
@@ -48,6 +49,7 @@ export type ValidatedNonApiLabConfig = {
   escalationTemplateKey: string;
   appointmentTemplateKey: string;
   appointmentRemindersEnabled: boolean;
+  postAppointmentCheckEnabled: boolean;
   quietWindowMinutes: number;
   slaBreachAlertsEnabled: boolean;
   slaBreachTemplateKey: string;
@@ -152,7 +154,13 @@ export function validateNonApiLabConfig(input: NonApiLabConfigInput):
     errors.appointmentRemindersEnabled = "must be true or false";
   }
   const appointmentRemindersEnabled =
-    typeof input.appointmentRemindersEnabled === "boolean" ? input.appointmentRemindersEnabled : true;
+    typeof input.appointmentRemindersEnabled === "boolean" ? input.appointmentRemindersEnabled : false;
+
+  if (typeof input.postAppointmentCheckEnabled !== "undefined" && typeof input.postAppointmentCheckEnabled !== "boolean") {
+    errors.postAppointmentCheckEnabled = "must be true or false";
+  }
+  const postAppointmentCheckEnabled =
+    typeof input.postAppointmentCheckEnabled === "boolean" ? input.postAppointmentCheckEnabled : true;
 
   if (typeof input.slaBreachAlertsEnabled !== "undefined" && typeof input.slaBreachAlertsEnabled !== "boolean") {
     errors.slaBreachAlertsEnabled = "must be true or false";
@@ -232,6 +240,7 @@ export function validateNonApiLabConfig(input: NonApiLabConfigInput):
       escalationTemplateKey: typeof input.escalationTemplateKey === "string" && input.escalationTemplateKey.trim() ? input.escalationTemplateKey.trim() : "NON_API_ESCALATION",
       appointmentTemplateKey: typeof input.appointmentTemplateKey === "string" && input.appointmentTemplateKey.trim() ? input.appointmentTemplateKey.trim() : "NON_API_APPOINTMENT_REMINDER",
       appointmentRemindersEnabled,
+      postAppointmentCheckEnabled,
       quietWindowMinutes: quietWindowNumber,
       slaBreachAlertsEnabled,
       slaBreachTemplateKey:

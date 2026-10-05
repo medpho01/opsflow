@@ -2,6 +2,11 @@ import prisma from "@/lib/db/client";
 
 export const NON_API_NEW_ORDER_TEMPLATE = "NON_API_NEW_ORDER";
 export const NON_API_REMINDER_TEMPLATE = "NON_API_REMINDER";
+// The second order-clock reminder (3h). It used to share NON_API_REMINDER with
+// the first; the provider flow agreed in Oct 2026 escalates in tone 1h → 3h → 5h.
+export const NON_API_URGENT_REMINDER_TEMPLATE = "NON_API_URGENT_REMINDER";
+// 30 minutes after the appointment: "what happened?", with a one-tap poll.
+export const NON_API_STATUS_CHECK_TEMPLATE = "NON_API_STATUS_CHECK";
 export const NON_API_ESCALATION_TEMPLATE = "NON_API_ESCALATION";
 export const NON_API_APPOINTMENT_TEMPLATE = "NON_API_APPOINTMENT_REMINDER";
 // Not NON_API_*: this one is sent to API labs too. See lib/provider-comms.
@@ -29,6 +34,12 @@ const ORDER_VARIABLES = [
 // with the message; these remain so that links already sent keep working and so
 // Ops can still put one in a hand-edited template if they want a web form.
 const ACTION_URL_VARIABLES = ["accept_url", "reschedule_url", "reject_url"] as const;
+
+// What a provider needs to serve the order, and the LabStack confirmation link
+// (./confirmation-link). Only the confirmation workflow supplies these — the
+// breach alerts reach API labs too and know none of them — so they are kept
+// out of ORDER_VARIABLES rather than allowed everywhere and missing at send.
+const ORDER_CONTACT_VARIABLES = ["patient_mobile", "patient_address", "map_url", "confirm_url"] as const;
 
 // The poll that replaces those links. Defined in ./poll-config, which has no
 // imports, so the message-flow editor ("use client") can read it without
@@ -58,7 +69,7 @@ export const DIGEST_VARIABLES = [
   "today_pending", "today_reports_pending", "today_cancelled", "today_unconfirmed",
   "today_schedule",
   "tomorrow_date", "tomorrow_total", "tomorrow_home", "tomorrow_centre",
-  "tomorrow_first", "tomorrow_unconfirmed", "tomorrow_schedule",
+  "tomorrow_first", "tomorrow_unconfirmed", "tomorrow_confirmed", "tomorrow_schedule",
 ] as const;
 
 /** A message using any sla_* variable may only be attached to a breach step. */
@@ -66,46 +77,75 @@ export function usesMilestoneVariables(body: string): boolean {
   return SLA_MILESTONE_VARIABLES.some((variable) => body.includes(`{{${variable}}}`));
 }
 
-export const NON_API_NEW_ORDER_VARIABLES = [...ORDER_VARIABLES, ...ACTION_URL_VARIABLES] as const;
+export const NON_API_NEW_ORDER_VARIABLES = [...ORDER_VARIABLES, ...ORDER_CONTACT_VARIABLES, ...ACTION_URL_VARIABLES] as const;
 
 // Stored in the database on first use. It intentionally lives here (server
 // configuration bootstrap) rather than in a React component, and Ops can edit
 // the persisted body through the template API without a deploy.
-export const DEFAULT_NON_API_NEW_ORDER_BODY = `LabStack New Order
+//
+// The provider flow (agreed Oct 2026): one message per stage, WhatsApp
+// formatting, and a single action — the LabStack confirmation link. Confirming
+// there moves the order to ORDER_SCHEDULED, which is what stops the reminders.
+export const DEFAULT_NON_API_NEW_ORDER_BODY = `Dear {{lab_name}},
 
-Order ID: {{order_id}}
-Patient: {{patient_name}}
-Appointment: {{appointment_date}} at {{appointment_time}}
-Location: {{location}}
-Tests: {{tests}}
+You have a *new order* with the following details:
 
-Please confirm by {{sla_deadline}}.
+👤 *Name:* {{patient_name}}
+📞 *Contact:* {{patient_mobile}}
+📍 *Address:* {{patient_address}}
+🗺️ {{map_url}}
+🗓️ *Appointment:* {{appointment_date}}, {{appointment_time}}
+🧪 *Tests:* {{tests}}
+🆔 *Order ID:* {{order_id}}
 
-Tap an option in the poll below to respond.`;
+Please confirm this order here:
+{{confirm_url}}
 
-export const DEFAULT_NON_API_REMINDER_BODY = `Reminder: please confirm LabStack order {{order_id}} for {{patient_name}}.
-Appointment: {{appointment_date}} at {{appointment_time}}
-Please confirm by {{sla_deadline}}.
+– Team LabStack`;
 
-Tap an option in the poll below to respond.`;
+/** 1 hour after the order, if still unconfirmed. Gentle. */
+export const DEFAULT_NON_API_REMINDER_BODY = `Hi {{lab_name}}, a quick reminder 🙂
 
-// Addressed to the lab's manager, not the lab inbox that has already gone
-// quiet — hence {{manager_name}} and {{lab_name}}.
-export const DEFAULT_NON_API_ESCALATION_BODY = `Hello {{manager_name}}, we still have no confirmation from {{lab_name}} for LabStack order {{order_id}}.
-Patient: {{patient_name}}
-Appointment: {{appointment_date}} at {{appointment_time}}
-Please respond by {{sla_deadline}}.
+Order *{{order_id}}* for *{{patient_name}}* ({{appointment_date}}, {{appointment_time}}) is still awaiting your confirmation.
 
-Tap an option in the poll below to respond.`;
+Confirm here: {{confirm_url}}`;
 
-// Appointment clock. This one is about the patient's clock, not the lab's SLA,
-// so it deliberately does not mention a confirmation deadline.
-export const DEFAULT_NON_API_APPOINTMENT_BODY = `Upcoming appointment — LabStack order {{order_id}} is still unconfirmed.
-Patient: {{patient_name}}
-Appointment: {{appointment_date}} at {{appointment_time}}
-Location: {{location}}
+/** 3 hours after the order. Firmer, and repeats the tests so it stands alone. */
+export const DEFAULT_NON_API_URGENT_REMINDER_BODY = `⏰ *Reminder: order not yet confirmed*
 
-Tap an option in the poll below to respond.`;
+{{lab_name}}, order *{{order_id}}* for *{{patient_name}}* is still pending.
+🗓️ {{appointment_date}}, {{appointment_time}}
+🧪 {{tests}}
+
+Please confirm now so we can inform the patient:
+{{confirm_url}}`;
+
+/** 5 hours after the order — the last chaser. Goes to the manager when one is on file. */
+export const DEFAULT_NON_API_ESCALATION_BODY = `⚠️ *Final reminder – action needed*
+
+{{lab_name}}, order *{{order_id}}* ({{patient_name}}, {{appointment_date}} {{appointment_time}}) has been unconfirmed for 5 hours.
+
+Please confirm immediately: {{confirm_url}}
+
+If you cannot take this order, reply *NO* here so we can reassign it.`;
+
+// Appointment clock (T-24h … T-10m). Off by default since Oct 2026, kept for
+// labs that want it switched back on.
+export const DEFAULT_NON_API_APPOINTMENT_BODY = `⏰ *Upcoming appointment – not yet confirmed*
+
+Order *{{order_id}}* for *{{patient_name}}*
+🗓️ {{appointment_date}}, {{appointment_time}}
+📍 {{patient_address}}
+
+Please confirm here: {{confirm_url}}`;
+
+/** 30 minutes after the appointment. The poll below it carries the answer. */
+export const DEFAULT_NON_API_STATUS_CHECK_BODY = `Hi {{lab_name}}, what's the status of this order?
+
+🆔 *{{order_id}}* – {{patient_name}}
+🗓️ Was due: {{appointment_date}}, {{appointment_time}}
+
+Please tap an option in the poll below.`;
 
 // Deliberately carries no accept/reschedule/reject link. Those are bearer
 // tokens minted against a LabCommunicationWorkflow, and an API lab never has
@@ -177,7 +217,73 @@ Please reply to this message with the reason, so we can reassign it quickly.`;
 // act on. Each half carries its counts and then names the orders behind them —
 // a count tells a lab how busy a day is, the list tells them which orders, and
 // tomorrow's carries the address a dispatcher plans routes from.
-export const DEFAULT_PROVIDER_DAILY_DIGEST_BODY = `*Daily summary — {{lab_name}}*
+export const DEFAULT_PROVIDER_DAILY_DIGEST_BODY = `📋 *Tomorrow's orders – {{tomorrow_date}}*
+{{lab_name}} · Total: *{{tomorrow_total}}*
+
+{{tomorrow_schedule}}
+
+✅ Confirmed: {{tomorrow_confirmed}}   ⚠️ Pending: {{tomorrow_unconfirmed}}
+
+Please confirm any pending orders tonight. Thank you!`;
+
+export const TEMPLATE_DEFAULTS: Record<string, { name: string; body: string }> = {
+  [NON_API_NEW_ORDER_TEMPLATE]: { name: "Non-API lab: new order", body: DEFAULT_NON_API_NEW_ORDER_BODY },
+  [NON_API_REMINDER_TEMPLATE]: { name: "Non-API lab: reminder (1 hour)", body: DEFAULT_NON_API_REMINDER_BODY },
+  [NON_API_URGENT_REMINDER_TEMPLATE]: { name: "Non-API lab: reminder (3 hours)", body: DEFAULT_NON_API_URGENT_REMINDER_BODY },
+  [NON_API_ESCALATION_TEMPLATE]: { name: "Non-API lab: final reminder (5 hours)", body: DEFAULT_NON_API_ESCALATION_BODY },
+  [NON_API_APPOINTMENT_TEMPLATE]: { name: "Non-API lab: appointment reminder", body: DEFAULT_NON_API_APPOINTMENT_BODY },
+  [NON_API_STATUS_CHECK_TEMPLATE]: { name: "Non-API lab: status check (30 min after appointment)", body: DEFAULT_NON_API_STATUS_CHECK_BODY },
+  [NON_API_ACCEPTED_TEMPLATE]: { name: "Non-API lab: order confirmed", body: DEFAULT_NON_API_ACCEPTED_BODY },
+  [NON_API_RESCHEDULE_ASK_TEMPLATE]: { name: "Non-API lab: reschedule — ask for a time", body: DEFAULT_NON_API_RESCHEDULE_ASK_BODY },
+  [NON_API_REJECT_ASK_TEMPLATE]: { name: "Non-API lab: cannot fulfil — ask for a reason", body: DEFAULT_NON_API_REJECT_ASK_BODY },
+  [PROVIDER_SLA_BREACH_TEMPLATE]: { name: "Any lab: SLA breached", body: DEFAULT_PROVIDER_SLA_BREACH_BODY },
+  [SLA_MILESTONE_BREACH_TEMPLATE]: { name: "Any lab: milestone SLA missed", body: DEFAULT_SLA_MILESTONE_BREACH_BODY },
+  [PROVIDER_DAILY_DIGEST_TEMPLATE]: { name: "Any lab: tomorrow's orders (evening summary)", body: DEFAULT_PROVIDER_DAILY_DIGEST_BODY },
+};
+
+// ── Upgrading untouched defaults ─────────────────────────────────────────
+// ensureTemplate never overwrites a stored body — an Ops edit must survive a
+// deploy. But a row that still holds EXACTLY a body this file used to ship was
+// never edited by anyone, and leaving it would keep sending the old wording
+// forever. So those, and only those, move to today's default (name too).
+// Every body ever shipped as a default belongs here, keyed by template.
+const LEGACY_NEW_ORDER_BODY = `LabStack New Order
+
+Order ID: {{order_id}}
+Patient: {{patient_name}}
+Appointment: {{appointment_date}} at {{appointment_time}}
+Location: {{location}}
+Tests: {{tests}}
+
+Please confirm by {{sla_deadline}}.
+
+Tap an option in the poll below to respond.`;
+
+const LEGACY_REMINDER_BODY = `Reminder: please confirm LabStack order {{order_id}} for {{patient_name}}.
+Appointment: {{appointment_date}} at {{appointment_time}}
+Please confirm by {{sla_deadline}}.
+
+Tap an option in the poll below to respond.`;
+
+// Addressed to the lab's manager, not the lab inbox that has already gone
+// quiet — hence {{manager_name}} and {{lab_name}}.
+const LEGACY_ESCALATION_BODY = `Hello {{manager_name}}, we still have no confirmation from {{lab_name}} for LabStack order {{order_id}}.
+Patient: {{patient_name}}
+Appointment: {{appointment_date}} at {{appointment_time}}
+Please respond by {{sla_deadline}}.
+
+Tap an option in the poll below to respond.`;
+
+// Appointment clock. This one is about the patient's clock, not the lab's SLA,
+// so it deliberately does not mention a confirmation deadline.
+const LEGACY_APPOINTMENT_BODY = `Upcoming appointment — LabStack order {{order_id}} is still unconfirmed.
+Patient: {{patient_name}}
+Appointment: {{appointment_date}} at {{appointment_time}}
+Location: {{location}}
+
+Tap an option in the poll below to respond.`;
+
+const LEGACY_DAILY_DIGEST_BODY = `*Daily summary — {{lab_name}}*
 {{digest_date}}
 
 *Today*
@@ -198,18 +304,18 @@ Awaiting your confirmation: {{tomorrow_unconfirmed}}
 
 Please reply here if anything on tomorrow's list cannot be covered.`;
 
-export const TEMPLATE_DEFAULTS: Record<string, { name: string; body: string }> = {
-  [NON_API_NEW_ORDER_TEMPLATE]: { name: "Non-API lab: new order", body: DEFAULT_NON_API_NEW_ORDER_BODY },
-  [NON_API_REMINDER_TEMPLATE]: { name: "Non-API lab: reminder", body: DEFAULT_NON_API_REMINDER_BODY },
-  [NON_API_ESCALATION_TEMPLATE]: { name: "Non-API lab: escalation (manager)", body: DEFAULT_NON_API_ESCALATION_BODY },
-  [NON_API_APPOINTMENT_TEMPLATE]: { name: "Non-API lab: appointment reminder", body: DEFAULT_NON_API_APPOINTMENT_BODY },
-  [NON_API_ACCEPTED_TEMPLATE]: { name: "Non-API lab: order confirmed", body: DEFAULT_NON_API_ACCEPTED_BODY },
-  [NON_API_RESCHEDULE_ASK_TEMPLATE]: { name: "Non-API lab: reschedule — ask for a time", body: DEFAULT_NON_API_RESCHEDULE_ASK_BODY },
-  [NON_API_REJECT_ASK_TEMPLATE]: { name: "Non-API lab: cannot fulfil — ask for a reason", body: DEFAULT_NON_API_REJECT_ASK_BODY },
-  [PROVIDER_SLA_BREACH_TEMPLATE]: { name: "Any lab: SLA breached", body: DEFAULT_PROVIDER_SLA_BREACH_BODY },
-  [SLA_MILESTONE_BREACH_TEMPLATE]: { name: "Any lab: milestone SLA missed", body: DEFAULT_SLA_MILESTONE_BREACH_BODY },
-  [PROVIDER_DAILY_DIGEST_TEMPLATE]: { name: "Any lab: daily summary (today & tomorrow)", body: DEFAULT_PROVIDER_DAILY_DIGEST_BODY },
+const SUPERSEDED_DEFAULTS: Record<string, { bodies: string[]; names: string[] }> = {
+  [NON_API_NEW_ORDER_TEMPLATE]: { bodies: [LEGACY_NEW_ORDER_BODY], names: ["Non-API lab: new order"] },
+  [NON_API_REMINDER_TEMPLATE]: { bodies: [LEGACY_REMINDER_BODY], names: ["Non-API lab: reminder"] },
+  [NON_API_ESCALATION_TEMPLATE]: { bodies: [LEGACY_ESCALATION_BODY], names: ["Non-API lab: escalation (manager)"] },
+  [NON_API_APPOINTMENT_TEMPLATE]: { bodies: [LEGACY_APPOINTMENT_BODY], names: ["Non-API lab: appointment reminder"] },
+  [PROVIDER_DAILY_DIGEST_TEMPLATE]: { bodies: [LEGACY_DAILY_DIGEST_BODY], names: ["Any lab: daily summary (today & tomorrow)"] },
 };
+
+/** Is this stored body a default we used to ship (and nobody has edited)? */
+export function isSupersededDefault(key: string, body: string): boolean {
+  return (SUPERSEDED_DEFAULTS[key]?.bodies ?? []).some((legacyBody) => legacyBody.trim() === body.trim());
+}
 
 export type NonApiTemplateKey = string;
 
@@ -220,11 +326,19 @@ export async function ensureTemplate(key: NonApiTemplateKey) {
     if (!existing) throw new Error(`Template ${key} was not found`);
     return existing;
   }
-  return prisma.labCommunicationTemplate.upsert({
+  const row = await prisma.labCommunicationTemplate.upsert({
     where: { key },
     create: { key, name: fallback.name, body: fallback.body },
     update: {},
   });
+  if (!isSupersededDefault(key, row.body)) return row;
+  // Guarded on the old body so a concurrent Ops edit is never overwritten.
+  const renamed = SUPERSEDED_DEFAULTS[key].names.includes(row.name) ? fallback.name : row.name;
+  await prisma.labCommunicationTemplate.updateMany({
+    where: { key, body: row.body },
+    data: { body: fallback.body, name: renamed },
+  });
+  return prisma.labCommunicationTemplate.findUniqueOrThrow({ where: { key } });
 }
 
 export async function ensureNonApiTemplates() {
@@ -251,9 +365,12 @@ export function renderLabTemplate(body: string, variables: TemplateVariables): s
 
 type TemplateRules = { allowed: readonly string[]; required: readonly string[] };
 
+// The LabStack confirmation link replaced the three action links as the one
+// thing every confirmation message must carry. The action links stay allowed
+// (and are still minted) so an older hand-edited body keeps rendering.
 const CONFIRMATION_RULES: TemplateRules = {
   allowed: NON_API_NEW_ORDER_VARIABLES,
-  required: ["order_id", "patient_name", "appointment_date", "appointment_time", ...ACTION_URL_VARIABLES],
+  required: ["order_id", "patient_name", "appointment_date", "appointment_time", "confirm_url"],
 };
 
 /**
@@ -265,9 +382,15 @@ const CONFIRMATION_RULES: TemplateRules = {
 const TEMPLATE_RULES: Record<string, TemplateRules> = {
   [NON_API_NEW_ORDER_TEMPLATE]: CONFIRMATION_RULES,
   [NON_API_REMINDER_TEMPLATE]: CONFIRMATION_RULES,
+  [NON_API_URGENT_REMINDER_TEMPLATE]: CONFIRMATION_RULES,
   [NON_API_ESCALATION_TEMPLATE]: {
     allowed: [...NON_API_NEW_ORDER_VARIABLES, "manager_name"],
-    required: ["order_id", "patient_name", "appointment_time", ...ACTION_URL_VARIABLES],
+    required: ["order_id", "patient_name", "appointment_time", "confirm_url"],
+  },
+  // Asked after the visit, answered by poll: no link is required.
+  [NON_API_STATUS_CHECK_TEMPLATE]: {
+    allowed: NON_API_NEW_ORDER_VARIABLES,
+    required: ["order_id", "patient_name"],
   },
   [NON_API_APPOINTMENT_TEMPLATE]: {
     allowed: NON_API_NEW_ORDER_VARIABLES,
@@ -293,7 +416,7 @@ const TEMPLATE_RULES: Record<string, TemplateRules> = {
   // full set would stop anyone trimming it to two lines.
   [PROVIDER_DAILY_DIGEST_TEMPLATE]: {
     allowed: DIGEST_VARIABLES,
-    required: ["today_total", "tomorrow_total"],
+    required: ["tomorrow_total"],
   },
 };
 

@@ -487,8 +487,8 @@ function RuleEditor({ draft, setDraft, templates, polls, labs, saving, error, pr
               )}
               <Field label="Send to">
                 <select value={draft.recipient} onChange={(e) => update("recipient", e.target.value as Rule["recipient"])} className={inputClass}>
-                  <option value="LAB">The order&apos;s lab — its group</option>
-                  <option value="MANAGER">The order&apos;s lab — its manager (else the group)</option>
+                  <option value="LAB">{isSummary ? "Each lab — its group" : "The order’s lab — its group"}</option>
+                  <option value="MANAGER">{isSummary ? "Each lab — its manager (else the group)" : "The order’s lab — its manager (else the group)"}</option>
                 </select>
               </Field>
               {!isSummary && (
@@ -554,6 +554,9 @@ function RuleEditor({ draft, setDraft, templates, polls, labs, saving, error, pr
           )}
           {isSummary && draft.id && (
             <div className="rounded-lg border border-zinc-800 bg-zinc-900/40 p-3">
+              <p className="mb-2 text-xs text-zinc-400">
+                <span className="font-medium text-zinc-200">Preview for one lab.</span> Pick a lab to see the exact list it would get if this went out now. Nothing is sent.
+              </p>
               <div className="flex items-center gap-2">
                 <select value={summaryLab ?? ""} onChange={(e) => setSummaryLab(Number(e.target.value))} className={`${inputClass} w-auto`} aria-label="Lab to preview">
                   {labs.map((lab) => <option key={lab.labId} value={lab.labId}>{lab.labName}</option>)}

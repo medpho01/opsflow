@@ -303,7 +303,7 @@ export default function OrderQuickView({ orderId, onClose, variant = "modal", en
                 </div>
               )}
 
-              <CallActivity endpoint={`/api/orders/${orderId}/calls`} />
+              <CallActivity endpoint={`/api/orders/${orderId}/calls?entityType=${encodeURIComponent(entityType)}`} />
 
               {/* Milestone SLA breaches — what the PROVIDER was chased about.
                   Distinct from the tasks below, which are OpsFlow's own

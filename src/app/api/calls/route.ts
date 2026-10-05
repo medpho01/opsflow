@@ -8,6 +8,7 @@
  *         entityType?: string, entityId?: number, triggeredFrom?: string }
  */
 import { NextRequest, NextResponse } from "next/server";
+import { normalizeEntityType } from "@/lib/calls/callHistory";
 import { getSessionFromRequest } from "@/lib/auth/session";
 import prisma from "@/lib/db/client";
 import { UserRole } from "@prisma/client";
@@ -40,8 +41,10 @@ export async function POST(request: NextRequest) {
     userId: user.id,
     storeId: typeof body?.storeId === "number" ? body.storeId : null,
     taskId: typeof body?.taskId === "number" ? body.taskId : null,
-    entityType: typeof body?.entityType === "string" ? body.entityType : null,
-    entityId: typeof body?.entityId === "number" ? body.entityId : null,
+    // Validated, not stored verbatim: these tag the call for entity-scoped
+    // history, so junk here would silently hide a call from its drawer.
+    entityType: normalizeEntityType(body?.entityType),
+    entityId: Number.isInteger(body?.entityId) && body.entityId > 0 ? body.entityId : null,
     triggeredFrom: body?.triggeredFrom ?? null,
   });
 

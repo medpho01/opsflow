@@ -54,8 +54,17 @@ function clock(iso: string | null, timeZone: string) {
  * provider is. A lab that cannot be reached at all outranks everything, because
  * every other number on its row is unactionable until that is fixed.
  */
+/**
+ * Orders still to serve on a day. LabStack's day total includes cancellations
+ * (and missed patients), which made "4 tomorrow" read as four visits when two
+ * had been called off. The cancelled count is shown beside it instead.
+ */
+function active(day: { total: number; cancelled: number }) {
+  return Math.max(day.total - day.cancelled, 0);
+}
+
 function urgency(lab: LabBoard) {
-  if (lab.isActive && !lab.reachable && lab.today.total > 0) return 3;
+  if (lab.isActive && !lab.reachable && active(lab.today) > 0) return 3;
   if (lab.openBreaches > 0) return 2;
   if (lab.confirmation.awaiting > 0) return 1;
   return 0;
@@ -100,8 +109,8 @@ export function ProviderDailyBoard() {
     || a.labName.localeCompare(b.labName));
 
   const totals = labs.reduce((acc, lab) => ({
-    today: acc.today + lab.today.total,
-    tomorrow: acc.tomorrow + lab.tomorrow.total,
+    today: acc.today + active(lab.today),
+    tomorrow: acc.tomorrow + active(lab.tomorrow),
     awaiting: acc.awaiting + lab.confirmation.awaiting,
     breaches: acc.breaches + lab.openBreaches,
   }), { today: 0, tomorrow: 0, awaiting: 0, breaches: 0 });
@@ -165,7 +174,7 @@ export function ProviderDailyBoard() {
                     </Link>
                   </td>
                   <td className="px-3 py-3">
-                    <span className="text-lg font-semibold text-zinc-100">{lab.today.total}</span>
+                    <span className="text-lg font-semibold text-zinc-100">{active(lab.today)}</span>
                     {lab.today.cancelled > 0 && <span className="ml-1 text-[11px] text-zinc-500">({lab.today.cancelled} cancelled)</span>}
                   </td>
                   <td className="px-3 py-3 text-xs text-zinc-400">
@@ -191,8 +200,9 @@ export function ProviderDailyBoard() {
                     <div className="text-zinc-500">next {clock(lab.today.nextAppointment, timeZone)}</div>
                   </td>
                   <td className="px-3 py-3">
-                    <span className={lab.tomorrow.total > 0 ? "text-zinc-100" : "text-zinc-600"}>{lab.tomorrow.total}</span>
-                    {lab.tomorrow.total > 0 && (
+                    <span className={active(lab.tomorrow) > 0 ? "text-zinc-100" : "text-zinc-600"}>{active(lab.tomorrow)}</span>
+                    {lab.tomorrow.cancelled > 0 && <span className="ml-1 text-[11px] text-zinc-500">({lab.tomorrow.cancelled} cancelled)</span>}
+                    {active(lab.tomorrow) > 0 && (
                       <div className="text-[11px] text-zinc-500">from {clock(lab.tomorrow.firstAppointment, timeZone)}</div>
                     )}
                   </td>
@@ -201,11 +211,15 @@ export function ProviderDailyBoard() {
                       {/* Unreachable first: every other number is unactionable until it is fixed. */}
                       {lab.isActive && !lab.reachable && <Flag tone="red">No WhatsApp target</Flag>}
                       {lab.openBreaches > 0 && <Flag tone="red">{lab.openBreaches} SLA breach{lab.openBreaches > 1 ? "es" : ""}</Flag>}
-                      {lab.confirmation.awaiting > 0 && <Flag tone="amber">{lab.confirmation.awaiting} unconfirmed</Flag>}
-                      {lab.confirmation.escalated > 0 && <Flag tone="amber">{lab.confirmation.escalated} escalated</Flag>}
+                      {lab.confirmation.awaiting > 0 && (
+                        <Flag tone="amber">
+                          {lab.confirmation.awaiting} unconfirmed
+                          {lab.confirmation.escalated > 0 && ` · ${lab.confirmation.escalated} past the 5h reminder`}
+                        </Flag>
+                      )}
                       {lab.confirmation.rejected > 0 && <Flag tone="zinc">{lab.confirmation.rejected} rejected</Flag>}
-                      {urgency(lab) === 0 && lab.today.total > 0 && <span className="text-emerald-400">On track</span>}
-                      {lab.today.total === 0 && lab.tomorrow.total === 0 && <span className="text-zinc-600">No orders</span>}
+                      {urgency(lab) === 0 && active(lab.today) + active(lab.tomorrow) > 0 && <span className="text-emerald-400">On track</span>}
+                      {active(lab.today) === 0 && active(lab.tomorrow) === 0 && <span className="text-zinc-600">No orders</span>}
                     </div>
                   </td>
                 </tr>

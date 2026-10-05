@@ -175,8 +175,9 @@ describe("tomorrowListBlock", () => {
         "*1. 8:00 am* – Varun Banaal",
         "   📍 Flat 2, 4th Cross, Chambaghat, Solan – 173212",
         "   🗺️ https://maps.google.com/?q=30.900000,77.100000",
-        "   🧪 *Full Body Check*",
-        "      CBC, HbA1c, Lipid Profile",
+        "   📦 *Packages*",
+        "   • Full Body Check",
+        "     CBC, HbA1c, Lipid Profile",
       ].join("\n"),
     );
   });
@@ -185,9 +186,28 @@ describe("tomorrowListBlock", () => {
     assert.equal(tomorrowListBlock([order()], 1, IST, link), "*1. 8:00 am* – Varun Banaal\n   📍 Chambaghat\n   🧪 CBC, Lipid Profile");
   });
 
-  it("names a package whose tests are not broken down, and lists tests booked outside packages", () => {
-    const block = tomorrowListBlock([order({ packages: [{ name: "Thyroid Profile", tests: [] }], directTests: ["Vitamin D"] })], 1, IST, link);
-    assert.match(block, /🧪 \*Thyroid Profile\*\n {3}🧪 Also: Vitamin D$/);
+  it("shows packages and individual tests as two sections", () => {
+    const block = tomorrowListBlock([order({
+      packages: [{ name: "Full Body Check", tests: ["CBC", "HbA1c"] }, { name: "Thyroid Profile", tests: [] }],
+      directTests: ["Vitamin D", "Vitamin B12"],
+    })], 1, IST, link);
+    assert.equal(block, [
+      "*1. 8:00 am* – Varun Banaal",
+      "   📍 Chambaghat",
+      "   📦 *Packages*",
+      "   • Full Body Check",
+      "     CBC, HbA1c",
+      "   • Thyroid Profile",
+      "   🧪 *Individual tests*",
+      "   • Vitamin D",
+      "   • Vitamin B12",
+    ].join("\n"));
+  });
+
+  it("leaves out the packages section when only individual tests were booked", () => {
+    const block = tomorrowListBlock([order({ directTests: ["Vitamin D"] })], 1, IST, link);
+    assert.doesNotMatch(block, /Packages/);
+    assert.match(block, /🧪 \*Individual tests\*\n {3}• Vitamin D$/);
   });
 
   it("caps a very long panel instead of printing every test", () => {

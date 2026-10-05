@@ -240,6 +240,7 @@ export async function loadDaySchedule(
               FROM public."_OrderToPackage" op
               JOIN public."Package" pk ON pk.id = op."B"
              WHERE op."A" = o.id) AS packages,
+           -- Tests booked on their own, outside any package.
            (SELECT array_agg(m.name ORDER BY m.name)
               FROM public."_MasterToOrder" mo
               JOIN public."Master" m ON m.id = mo."A"

@@ -87,28 +87,41 @@ export type OrderPackage = { name: string; tests: string[] };
 const MAX_TESTS_PER_PACKAGE = 25;
 
 /**
- * Packages with their individual tests, one block per package:
+ * What the lab must collect, in two labelled sections — the packages, each
+ * broken down into its tests, and the tests booked on their own:
  *
- *   🧪 *Full Body Checkup*
- *      CBC, HbA1c, Lipid Profile, …
+ *   📦 *Packages*
+ *   • Full Body Checkup
+ *     CBC, HbA1c, Lipid Profile, …
+ *   🧪 *Individual tests*
+ *   • Vitamin D
  *
- * A package whose tests LabStack does not break down is listed by name alone,
- * so the line is never empty. Tests booked outside any package come last.
+ * A package whose tests LabStack does not break down is listed by name alone.
+ * A section with nothing in it is left out.
  */
 export function formatTestBreakdown(packages: OrderPackage[], directTests: string[], indent = "   "): string[] {
-  const lines: string[] = [];
-  const names = (tests: string[]) => {
-    const unique = [...new Set(tests.map((test) => test.trim()).filter(Boolean))];
-    const shown = unique.slice(0, MAX_TESTS_PER_PACKAGE).join(", ");
-    return unique.length > MAX_TESTS_PER_PACKAGE ? `${shown} +${unique.length - MAX_TESTS_PER_PACKAGE} more` : shown;
+  const unique = (tests: string[]) => [...new Set(tests.map((test) => test.trim()).filter(Boolean))];
+  const capped = (tests: string[]) => {
+    const shown = tests.slice(0, MAX_TESTS_PER_PACKAGE).join(", ");
+    return tests.length > MAX_TESTS_PER_PACKAGE ? `${shown} +${tests.length - MAX_TESTS_PER_PACKAGE} more` : shown;
   };
-  for (const pkg of packages) {
-    lines.push(`${indent}🧪 *${pkg.name.trim()}*`);
-    const tests = names(pkg.tests ?? []);
-    if (tests) lines.push(`${indent}   ${tests}`);
+
+  const lines: string[] = [];
+  const named = packages.filter((pkg) => pkg.name?.trim());
+  if (named.length > 0) {
+    lines.push(`${indent}📦 *Packages*`);
+    for (const pkg of named) {
+      lines.push(`${indent}• ${pkg.name.trim()}`);
+      const tests = unique(pkg.tests ?? []);
+      if (tests.length > 0) lines.push(`${indent}  ${capped(tests)}`);
+    }
   }
-  const direct = names(directTests);
-  if (direct) lines.push(`${indent}🧪 ${packages.length > 0 ? "Also: " : ""}${direct}`);
+  const individual = unique(directTests);
+  if (individual.length > 0) {
+    lines.push(`${indent}🧪 *Individual tests*`);
+    for (const test of individual.slice(0, MAX_TESTS_PER_PACKAGE)) lines.push(`${indent}• ${test}`);
+    if (individual.length > MAX_TESTS_PER_PACKAGE) lines.push(`${indent}• +${individual.length - MAX_TESTS_PER_PACKAGE} more`);
+  }
   return lines;
 }
 

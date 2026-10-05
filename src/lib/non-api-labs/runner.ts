@@ -28,7 +28,7 @@ export async function runNonApiLabTick(now = new Date()): Promise<void> {
   if (!acquired) return;
   try {
     try {
-      const votes = await processPollVotes();
+      const votes = await processPollVotes(now);
       if (votes.applied || votes.reasonsAttached || votes.skipped || votes.failed) {
         console.log(`[PollVotes] applied=${votes.applied} reasons=${votes.reasonsAttached} skipped=${votes.skipped} failed=${votes.failed}`);
       }

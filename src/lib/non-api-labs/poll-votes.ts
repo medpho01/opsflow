@@ -65,7 +65,7 @@ async function acknowledge(poll: {
   votedAction: LabProviderActionType | null;
   votedLabel: string | null;
   options: unknown;
-}) {
+}, now: Date) {
   // The reply belongs to the OPTION the provider tapped, read from the copy
   // stored on this poll — not from a template chosen by action. That is what
   // lets two polls share an action and still say different things, and what
@@ -139,7 +139,7 @@ async function acknowledge(poll: {
   const text = renderLabTemplate(ack, { ...variables, lab_name: config.labName });
   const target = await resolveLabTarget(config);
   await prisma.waOutbound.create({
-    data: { targetJid: target.targetJid, text, groupId: target.groupId },
+    data: { targetJid: target.targetJid, text, groupId: target.groupId, createdAt: now },
   });
 }
 
@@ -152,7 +152,7 @@ export type PollVoteResult = {
 
 const BATCH = 50;
 
-export async function processPollVotes(): Promise<PollVoteResult> {
+export async function processPollVotes(now = new Date()): Promise<PollVoteResult> {
   const result: PollVoteResult = { applied: 0, reasonsAttached: 0, skipped: 0, failed: 0 };
 
   // ── 1. Votes waiting to be applied ──────────────────────────────────────
@@ -187,6 +187,7 @@ export async function processPollVotes(): Promise<PollVoteResult> {
             workflowId: poll.workflowId,
             type: "PROVIDER_NOTE",
             actorType: "LAB",
+            occurredAt: now,
             payload: { source: "POLL", answer: poll.votedLabel, reason: poll.reason, actorRef: poll.voterJid },
           },
         });
@@ -198,21 +199,21 @@ export async function processPollVotes(): Promise<PollVoteResult> {
           select: { ruleId: true, orderId: true, labId: true },
         });
         if (asked?.ruleId && asked.orderId && asked.labId) {
-          await recordAnswered(asked.ruleId, asked.orderId, asked.labId, `Poll: ${poll.votedLabel ?? poll.votedAction ?? "answered"}`);
+          await recordAnswered(asked.ruleId, asked.orderId, asked.labId, `Poll: ${poll.votedLabel ?? poll.votedAction ?? "answered"}`, now);
         }
       }
       await prisma.waPoll.update({
         where: { waMsgId: poll.waMsgId },
         data: {
           status: "APPLIED",
-          reasonAppliedAt: poll.reason ? new Date() : null,
+          reasonAppliedAt: poll.reason ? now : null,
         },
       });
 
       // Tell the provider what their tap did. Outside the try that guards the
       // state change: the vote is already applied and durable, so a failure to
       // send the courtesy reply must not be retried as if the vote had failed.
-      await acknowledge(poll).catch((error) =>
+      await acknowledge(poll, now).catch((error) =>
         console.error(`[PollVotes] acknowledgement for ${poll.waMsgId} failed:`, error instanceof Error ? error.message : error));
 
       result.applied += 1;
@@ -261,7 +262,7 @@ export async function processPollVotes(): Promise<PollVoteResult> {
       });
       await prisma.waPoll.update({
         where: { waMsgId: poll.waMsgId },
-        data: { reasonAppliedAt: new Date() },
+        data: { reasonAppliedAt: now },
       });
       result.reasonsAttached += 1;
     } catch (error) {

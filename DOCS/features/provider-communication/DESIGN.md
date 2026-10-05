@@ -239,6 +239,31 @@ context.
 4. **Agent actions.** Escalation beyond WhatsApp: individual nudges, calls,
    task hand-off, with per-rule guardrails.
 
+Status (Oct 2026): stages 1 and 2 are built, and message rules are the only way
+labs are messaged. On first boot a one-time move (`ensureMigratedToRules`) seeds
+the built-ins, gives labs with custom timings their own copies, converts timed
+rules and deadline watchers, credits earlier sends to the rule that now owns
+them (so nothing is sent twice) and retires the old scheduler's queue.
+
+### Testing it locally
+
+`npm run test:comms` (`scripts/provider-comms-sim.sh`) creates orders in a
+throwaway LabStack copy (`labstack_sim`), runs the real minute tick through a
+simulated day against a scratch OpsFlow DB, plays lab replies and poll taps,
+and prints what each lab would receive, without sending anything:
+
+```
+[Wed 7 Oct 10:00] Message 2 → Sim Lab A group: Reminder — 1 hour after the order · order-2
+[Wed 7 Oct 14:00] Message 4 → Sim Lab A manager: Final reminder — 5 hours after the order · order-2
+```
+
+Each scenario states the messages it expects and the run fails on any
+difference: new order + confirmation, 1h/3h/5h, evening list, phlebo assign and
+ETA stopped by replies, status check answered by poll, report chase stopped by
+a reply, pending-reports list, retroactive rule edit, cancelled order and
+paused rule, and the upgrade from the old scheduler. Patient details are never
+printed. Pass a word to run matching scenarios only (`npm run test:comms -- phlebo`).
+
 ## 11. Decisions and open questions
 
 Decided (Oct 2026):

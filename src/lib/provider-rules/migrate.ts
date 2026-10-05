@@ -175,7 +175,8 @@ async function convertLabSettings(configs: NonApiLabConfig[], report: Report) {
   }
 }
 
-async function convertLegacyRules(configs: NonApiLabConfig[], report: Report) {
+async function convertLegacyRules(configs: NonApiLabConfig[], report: Report): Promise<Map<string, ProviderMessageRule>> {
+  const convertedFrom = new Map<string, ProviderMessageRule>();
   const legacy = await prisma.providerCommunicationRule.findMany();
   const settings = await prisma.providerCommsSettings.findUnique({ where: { id: "default" } });
   const milestoneConfigs = await prisma.slaMilestoneConfig.findMany();
@@ -194,7 +195,7 @@ async function convertLegacyRules(configs: NonApiLabConfig[], report: Report) {
     if (rule.anchor === "ORDER") cond.minutesSinceCreated = Math.max(0, rule.offsetMinutes);
     else if (rule.offsetMinutes <= 0) cond.minutesBeforeAppointment = -rule.offsetMinutes;
     else cond.minutesAfterAppointment = rule.offsetMinutes;
-    await prisma.providerMessageRule.create({
+    const converted = await prisma.providerMessageRule.create({
       data: {
         name: `${rule.name} (converted)`,
         description: `Converted from the earlier timed rule "${rule.name}".`,
@@ -212,6 +213,7 @@ async function convertLegacyRules(configs: NonApiLabConfig[], report: Report) {
         sendWindowEndHour: send.sendWindow?.endHour ?? null,
       },
     });
+    convertedFrom.set(rule.id, converted);
     report.converted += 1;
   }
   if (coversAll) {
@@ -221,6 +223,18 @@ async function convertLegacyRules(configs: NonApiLabConfig[], report: Report) {
       const builtIn = await prisma.providerMessageRule.findUniqueOrThrow({ where: { builtInKey: key } });
       const excluded = new Set([...((builtIn.excludedLabIds as number[]) ?? []), ...covered]);
       await prisma.providerMessageRule.update({ where: { id: builtIn.id }, data: { excludedLabIds: [...excluded] } });
+    }
+  }
+  // A lab's own copies of the ladder (custom timings) are replaced too.
+  if (coversAll || covered.size > 0) {
+    const ladder = await prisma.providerMessageRule.findMany({ where: { builtInKey: { in: LADDER_KEYS } } });
+    const copies = await prisma.providerMessageRule.findMany({ where: { builtInKey: null } });
+    for (const copy of copies) {
+      const labs = ((copy.allowedLabIds as number[]) ?? []).map(Number);
+      const isLadderCopy = ladder.some((builtIn) => copy.name.startsWith(`${builtIn.name} — `));
+      if (isLadderCopy && labs.length === 1 && (coversAll || covered.has(labs[0]))) {
+        await prisma.providerMessageRule.update({ where: { id: copy.id }, data: { isActive: false } });
+      }
     }
   }
 
@@ -276,20 +290,29 @@ async function convertLegacyRules(configs: NonApiLabConfig[], report: Report) {
       if (rows.length) report.imported += (await prisma.providerMessageLedger.createMany({ data: rows, skipDuplicates: true })).count;
     }
   }
+  return convertedFrom;
 }
 
-async function importLegacySends(report: Report) {
-  const builtIns = await prisma.providerMessageRule.findMany({ where: { builtInKey: { not: null } } });
-  const byKey = new Map(builtIns.map((rule) => [rule.builtInKey!, rule]));
+async function importLegacySends(convertedFrom: Map<string, ProviderMessageRule>, report: Report) {
+  const all = await prisma.providerMessageRule.findMany();
+  const byKey = new Map(all.filter((rule) => rule.builtInKey).map((rule) => [rule.builtInKey!, rule]));
+  // A lab with its own timings has its own copy of the built-in; its earlier sends belong to that copy.
+  const ruleFor = (builtInKey: string | undefined, labId: number) => {
+    const builtIn = builtInKey ? byKey.get(builtInKey) : undefined;
+    if (!builtIn) return undefined;
+    return all.find((rule) => !rule.builtInKey && rule.name.startsWith(`${builtIn.name} — `)
+      && ((rule.allowedLabIds as number[]) ?? []).map(Number).includes(labId)) ?? builtIn;
+  };
   const rows: Prisma.ProviderMessageLedgerCreateManyInput[] = [];
 
-  // Timed steps: non-api:<orderId>:<rungKey>:<runAt>
+  // Timed steps: non-api:<orderId>:<rungKey or earlier rule id>:<runAt>
   const timed = await prisma.labCommunication.findMany({
     where: { type: { in: ["REMINDER", "ESCALATION"] }, orderId: { not: null }, labId: { not: null }, idempotencyKey: { startsWith: "non-api:" } },
     select: { id: true, orderId: true, labId: true, idempotencyKey: true, createdAt: true },
   });
   for (const sent of timed) {
-    const rule = byKey.get(LEGACY_RUNG_TO_BUILT_IN[sent.idempotencyKey.split(":")[2] ?? ""] ?? "");
+    const step = sent.idempotencyKey.split(":")[2] ?? "";
+    const rule = convertedFrom.get(step) ?? ruleFor(LEGACY_RUNG_TO_BUILT_IN[step], sent.labId!);
     if (!rule) continue;
     rows.push({
       ruleId: rule.id, ruleVersion: rule.version, entityType: "ORDER", entityId: sent.orderId!, labId: sent.labId!,
@@ -327,8 +350,8 @@ export async function ensureMigratedToRules(): Promise<Report | null> {
   await seedBuiltIns(report);
   const configs = await prisma.nonApiLabConfig.findMany();
   await convertLabSettings(configs, report);
-  await convertLegacyRules(configs, report);
-  await importLegacySends(report);
+  const convertedFrom = await convertLegacyRules(configs, report);
+  await importLegacySends(convertedFrom, report);
   report.retired = (await prisma.labScheduledAction.updateMany({
     where: { status: { in: ["PENDING", "RUNNING"] } },
     data: { status: "SUPPRESSED", cancelledAt: new Date(), completedAt: new Date(), lastError: "Replaced by message rules", lockedAt: null, lockedBy: null },

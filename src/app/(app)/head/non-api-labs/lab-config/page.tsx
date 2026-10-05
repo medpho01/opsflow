@@ -1,15 +1,9 @@
 import { NonApiLabConfigPanel } from "@/components/head/NonApiLabConfigPanel";
-import { NonApiWorkflowTimeline } from "@/components/head/NonApiWorkflowTimeline";
-import { SlaDeadlinesSection } from "@/components/head/SlaDeadlinesSection";
 
 export const metadata = { title: "Lab Config | OpsFlow" };
 
+// Configuration only. Delivery deadlines live in each lab's Edit dialog; order
+// activity belongs on the board, not here.
 export default function LabConfigPage() {
-  return (
-    <>
-      <NonApiLabConfigPanel />
-      <SlaDeadlinesSection />
-      <NonApiWorkflowTimeline />
-    </>
-  );
+  return <NonApiLabConfigPanel />;
 }

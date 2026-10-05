@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useState } from "react";
+import { SlaDeadlinesPanel } from "./SlaDeadlinesPanel";
 
 type LabConfig = {
   labId: number;
@@ -89,13 +90,9 @@ function toDraft(lab: LabConfig): Draft {
   };
 }
 
-async function requestLabs() {
-  // The catalogue, not the configured list: every lab LabStack knows about,
-  // so a lab nobody has configured yet is visible instead of absent.
-  const response = await fetch("/api/non-api-labs/catalog");
-  const data = await response.json().catch(() => ({}));
-  return { response, data };
-}
+type SetupStatus = "NOT_CONFIGURED" | "NEEDS_GROUP" | "PAUSED" | "SENDING_OFF" | "LIVE";
+type StatusFilter = "ALL" | "CONFIGURED" | SetupStatus;
+type SortKey = "fulfilled" | "open" | "name" | "id";
 
 /** One lab as LabStack knows it, plus our config for it when there is one. */
 type CatalogRow = {
@@ -104,9 +101,12 @@ type CatalogRow = {
   city: string | null;
   sourceActive: boolean;
   openOrders: number;
+  /** Lifetime REPORT_DELIVERED orders — the measure of how much this lab matters. */
+  fulfilledOrders: number;
   configured: boolean;
   orphaned?: boolean;
   config: LabConfig | null;
+  status: SetupStatus;
   /** Best guess at this lab's WhatsApp group, or null when nothing is convincing. */
   suggestedGroup: { jid: string; subject: string; score: number } | null;
   /** The stored jid matches no group the gateway has ever seen — almost always a typo. */
@@ -117,73 +117,141 @@ type CatalogRow = {
 /** A WhatsApp group the gateway can actually see. */
 type WaGroupOption = { jid: string; subject: string; sendEnabled: boolean; active: boolean; labId: number | null };
 
+type Filters = {
+  q: string;
+  status: StatusFilter;
+  type: "ALL" | "NON_API" | "API";
+  includeInactive: boolean;
+  sort: SortKey;
+  dir: "asc" | "desc";
+  page: number;
+  pageSize: number;
+};
+
+type PageData = {
+  labs: CatalogRow[];
+  groups: WaGroupOption[];
+  total: number;
+  page: number;
+  pageCount: number;
+  statusCounts: Record<SetupStatus, number>;
+  configuredCount: number;
+};
+
+const DEFAULT_FILTERS: Filters = {
+  q: "", status: "ALL", type: "ALL", includeInactive: false, sort: "fulfilled", dir: "desc", page: 1, pageSize: 25,
+};
+
+const STATUS_LABELS: Record<SetupStatus, string> = {
+  LIVE: "Live",
+  SENDING_OFF: "Sending off",
+  PAUSED: "Paused",
+  NEEDS_GROUP: "Needs a group",
+  NOT_CONFIGURED: "Not configured",
+};
+
+const STATUS_TONES: Record<SetupStatus, string> = {
+  LIVE: "bg-emerald-500/10 text-emerald-300",
+  SENDING_OFF: "bg-amber-500/10 text-amber-300",
+  PAUSED: "bg-zinc-700/40 text-zinc-300",
+  NEEDS_GROUP: "bg-rose-500/10 text-rose-300",
+  NOT_CONFIGURED: "bg-transparent text-zinc-500",
+};
+
+const SORT_OPTIONS: Array<{ key: SortKey; label: string; dir: "asc" | "desc" }> = [
+  { key: "fulfilled", label: "Most orders fulfilled", dir: "desc" },
+  { key: "open", label: "Most open orders", dir: "desc" },
+  { key: "name", label: "Name (A–Z)", dir: "asc" },
+  { key: "id", label: "Lab ID", dir: "asc" },
+];
+
+/**
+ * One page of the roster. The server searches, filters, sorts and pages —
+ * thousands of labs are too many to ship here and sort in the browser.
+ */
+async function requestLabs(filters: Filters, refresh = false) {
+  const params = new URLSearchParams({
+    q: filters.q, status: filters.status, type: filters.type, sort: filters.sort, dir: filters.dir,
+    page: String(filters.page), pageSize: String(filters.pageSize),
+    ...(filters.includeInactive ? { includeInactive: "1" } : {}),
+    ...(refresh ? { refresh: "1" } : {}),
+  });
+  const response = await fetch(`/api/non-api-labs/catalog?${params}`);
+  const data = await response.json().catch(() => ({}));
+  return { response, data };
+}
+
 /** A lab is only "on" when it is configured AND switched on. */
 const isLive = (row: CatalogRow) => !!row.config?.isActive;
 
-/**
- * Ordering, by how much attention the lab deserves right now.
- *
- * NON_API labs are the focus: they are the ones running the confirmation
- * ladder, so they lead. An unconfigured lab comes next — it is a candidate,
- * and configuring one defaults it to NON_API. API labs sort last: they already
- * receive orders over the API and only ever get breach alerts, so there is far
- * less to tune and they would otherwise push the interesting rows down.
- */
-function focusRank(row: CatalogRow) {
-  if (row.config?.integrationType === "API") return 2;
-  if (row.configured) return 0;
-  return 1;
-}
-
-/** Name, id or city — whichever the person happens to remember. */
-function matches(row: CatalogRow, query: string) {
-  const q = query.trim().toLowerCase();
-  if (!q) return true;
-  return row.labName.toLowerCase().includes(q)
-    || String(row.labId) === q
-    || (row.city ?? "").toLowerCase().includes(q);
-}
+const formatCount = (value: number) => value.toLocaleString("en-IN");
 
 export function NonApiLabConfigPanel() {
   const [labs, setLabs] = useState<CatalogRow[]>([]);
   const [groups, setGroups] = useState<WaGroupOption[]>([]);
-  const [query, setQuery] = useState("");
-  // Off by default: hiding rows by default is how a lab goes unnoticed. The
-  // sort already puts NON_API first; this is for when you want only them.
-  const [nonApiOnly, setNonApiOnly] = useState(false);
+  const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS);
+  // Typed text, applied to `filters.q` after a pause so each keystroke is not a request.
+  const [search, setSearch] = useState("");
+  const [meta, setMeta] = useState<Omit<PageData, "labs" | "groups"> | null>(null);
   const [draft, setDraft] = useState<Draft>(EMPTY_DRAFT);
   const [editingLabId, setEditingLabId] = useState<number | null>(null);
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [listError, setListError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
 
   const flash = (message: string) => { setToast(message); window.setTimeout(() => setToast(null), 2400); };
-  const load = useCallback(async () => {
+
+  const apply = useCallback((data: PageData) => {
+    setLabs(data.labs ?? []);
+    setGroups(data.groups ?? []);
+    setMeta({
+      total: data.total, page: data.page, pageCount: data.pageCount,
+      statusCounts: data.statusCounts, configuredCount: data.configuredCount,
+    });
+    setListError(null);
+  }, []);
+
+  const load = useCallback(async (refresh = false) => {
+    setLoading(true);
     try {
-      const { response, data } = await requestLabs();
-      if (response.ok) { setLabs(data.labs ?? []); setGroups(data.groups ?? []); }
-      else setError(data.error ?? "Could not load lab configuration");
+      const { response, data } = await requestLabs(filters, refresh);
+      if (response.ok) apply(data);
+      else setListError(data.error ?? "Could not load labs");
     } catch {
-      setError("Could not load lab configuration");
+      setListError("Could not load labs");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [filters, apply]);
 
   useEffect(() => {
     let cancelled = false;
-    void requestLabs().then(({ response, data }) => {
+    setLoading(true);
+    void requestLabs(filters).then(({ response, data }) => {
       if (cancelled) return;
-      if (response.ok) { setLabs(data.labs ?? []); setGroups(data.groups ?? []); }
-      else setError(data.error ?? "Could not load lab configuration");
+      if (response.ok) apply(data);
+      else setListError(data.error ?? "Could not load labs");
       setLoading(false);
     }).catch(() => {
-      if (!cancelled) { setError("Could not load lab configuration"); setLoading(false); }
+      if (!cancelled) { setListError("Could not load labs"); setLoading(false); }
     });
     return () => { cancelled = true; };
-  }, []);
+  }, [filters, apply]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setFilters((current) => (current.q === search ? current : { ...current, q: search, page: 1 }));
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [search]);
+
+  /** Any filter change returns to page 1; paging itself does not. */
+  function setFilter<K extends keyof Filters>(key: K, value: Filters[K]) {
+    setFilters((current) => ({ ...current, [key]: value, ...(key === "page" ? {} : { page: 1 }) }));
+  }
 
   /**
    * Open the editor for a lab from the catalogue.
@@ -211,16 +279,6 @@ export function NonApiLabConfigPanel() {
   function update<K extends keyof Draft>(key: K, value: Draft[K]) {
     setDraft((current) => ({ ...current, [key]: value }));
   }
-
-  // NON_API first, then unconfigured candidates, then API. Within a group the
-  // live ones lead, so an active lab never hides below a paused one.
-  const visible = labs
-    .filter((row) => matches(row, query))
-    .filter((row) => !nonApiOnly || row.config?.integrationType !== "API")
-    .sort((a, b) =>
-      focusRank(a) - focusRank(b)
-      || Number(isLive(b)) - Number(isLive(a))
-      || a.labName.localeCompare(b.labName));
 
   async function save(event: FormEvent) {
     event.preventDefault(); setSaving(true); setError(null);
@@ -300,6 +358,7 @@ export function NonApiLabConfigPanel() {
     flash(integrationType === "NON_API"
       ? `${row.labName} now gets the confirmation ladder`
       : `${row.labName} set to API — breach alerts only`);
+    void load();
   }
 
   async function toggleActive(row: CatalogRow) {
@@ -322,97 +381,131 @@ export function NonApiLabConfigPanel() {
       return flash("Could not update lab status");
     }
     flash(next ? `${row.labName} is now active` : `${row.labName} paused`);
+    // Re-read so the status badge follows the switch.
+    void load();
   }
+
+  const statusCounts = meta?.statusCounts;
+  const statusOption = (value: StatusFilter, label: string, count?: number) => (
+    <option value={value}>{label}{typeof count === "number" ? ` (${formatCount(count)})` : ""}</option>
+  );
+  const firstRow = meta && meta.total > 0 ? (meta.page - 1) * filters.pageSize + 1 : 0;
+  const lastRow = meta ? Math.min(meta.page * filters.pageSize, meta.total) : 0;
 
   return (
     <div>
-      <div className="flex items-start justify-between gap-4 mb-6">
-        <div>
-          <div className="text-xs text-zinc-500 mb-1">Settings / Integrations</div>
-          <h1 className="text-2xl font-semibold tracking-tight text-zinc-100">Provider communication</h1>
-          <p className="text-sm text-zinc-400 mt-1 max-w-2xl">Configure how OpsFlow talks to external labs over WhatsApp. Every lab can be told when one of its orders breaches an SLA; labs that are not API-integrated also get the order confirmation workflow. LabStack remains the source of truth for orders and lab records.</p>
-        </div>
-        {/* No "add lab" button: the roster is whatever LabStack has. */}
-        <div className="shrink-0 flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => setNonApiOnly((v) => !v)}
-            aria-pressed={nonApiOnly}
-            title="API labs only ever get breach alerts — hide them to focus on the confirmation ladder"
-            className={`rounded-lg border px-3 py-2 text-xs font-medium transition ${
-              nonApiOnly
-                ? "border-blue-500 bg-blue-500/10 text-blue-300"
-                : "border-zinc-700 text-zinc-400 hover:text-zinc-200"
-            }`}
-          >
-            Non-API only
-          </button>
-          <input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search labs…"
-            className="w-56 rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-blue-500"
-          />
-        </div>
+      <div className="mb-5">
+        <div className="text-xs text-zinc-500 mb-1">Provider communication</div>
+        <h1 className="text-2xl font-semibold tracking-tight text-zinc-100">Lab configuration</h1>
+        <p className="text-sm text-zinc-400 mt-1 max-w-2xl">Choose which labs get WhatsApp messages, which group they go to, and what they receive. Sorted by lifetime orders fulfilled, so the labs that matter most come first.</p>
       </div>
 
-      <div className="grid grid-cols-4 gap-3 mb-5 max-md:grid-cols-2">
-        <Metric label="Labs in LabStack" value={labs.length} />
-        {/* The number that matters: labs running the confirmation ladder. */}
-        <Metric
-          label="Non-API configured"
-          value={labs.filter((lab) => lab.config?.integrationType === "NON_API").length}
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search by name, city or lab ID"
+          aria-label="Search labs"
+          className="w-72 rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-blue-500"
         />
-        <Metric
-          label="Non-API active"
-          value={labs.filter((lab) => lab.config?.integrationType === "NON_API" && isLive(lab)).length}
-          tone="text-emerald-400"
-        />
-        <Metric
-          label="Not configured"
-          value={labs.filter((lab) => !lab.configured).length}
-          tone={labs.some((lab) => !lab.configured) ? "text-amber-400" : "text-zinc-100"}
-        />
+        <select
+          value={filters.status}
+          onChange={(e) => setFilter("status", e.target.value as StatusFilter)}
+          aria-label="Filter by setup status"
+          className={selectClass}
+        >
+          {statusOption("ALL", "All labs")}
+          {statusOption("CONFIGURED", "Configured", meta?.configuredCount)}
+          {(["LIVE", "SENDING_OFF", "PAUSED", "NEEDS_GROUP", "NOT_CONFIGURED"] as SetupStatus[]).map((status) => (
+            <option key={status} value={status}>{STATUS_LABELS[status]}{statusCounts ? ` (${formatCount(statusCounts[status])})` : ""}</option>
+          ))}
+        </select>
+        <select
+          value={filters.type}
+          onChange={(e) => setFilter("type", e.target.value as Filters["type"])}
+          aria-label="Filter by how the lab receives orders"
+          className={selectClass}
+        >
+          <option value="ALL">Any order channel</option>
+          <option value="NON_API">Orders over WhatsApp</option>
+          <option value="API">Orders through the API</option>
+        </select>
+        <label className="flex items-center gap-2 text-xs text-zinc-400 px-1">
+          <input
+            type="checkbox"
+            checked={filters.includeInactive}
+            onChange={(e) => setFilter("includeInactive", e.target.checked)}
+            className="accent-blue-500"
+          />
+          Include labs inactive in LabStack
+        </label>
+        <div className="ml-auto flex items-center gap-2">
+          <select
+            value={filters.sort}
+            onChange={(e) => {
+              const option = SORT_OPTIONS.find((item) => item.key === e.target.value)!;
+              setFilters((current) => ({ ...current, sort: option.key, dir: option.dir, page: 1 }));
+            }}
+            aria-label="Sort labs"
+            className={selectClass}
+          >
+            {SORT_OPTIONS.map((option) => <option key={option.key} value={option.key}>Sort: {option.label}</option>)}
+          </select>
+          <button
+            type="button"
+            onClick={() => setFilter("dir", filters.dir === "asc" ? "desc" : "asc")}
+            aria-label={filters.dir === "asc" ? "Ascending — switch to descending" : "Descending — switch to ascending"}
+            title={filters.dir === "asc" ? "Ascending" : "Descending"}
+            className="rounded-lg border border-zinc-700 px-2.5 py-2 text-xs text-zinc-400 hover:text-zinc-200"
+          >
+            {filters.dir === "asc" ? "↑" : "↓"}
+          </button>
+          <button
+            type="button"
+            onClick={() => void load(true)}
+            title="Re-read order counts from LabStack (they are cached for 5 minutes)"
+            className="rounded-lg border border-zinc-700 px-3 py-2 text-xs text-zinc-400 hover:text-zinc-200"
+          >
+            Refresh
+          </button>
+        </div>
       </div>
 
       <div className="rounded-xl border border-zinc-800 overflow-hidden">
-        <div className="px-4 py-3 border-b border-zinc-800 flex items-center gap-3">
-          <div className="text-[11px] uppercase tracking-wide text-zinc-500 font-semibold">Lab communication policy</div>
-          <span className="text-xs text-zinc-500 ml-auto">Breach alerts apply to every active lab. The confirmation workflow runs for NON_API labs only.</span>
-        </div>
-        {loading ? <div className="p-10 text-center text-sm text-zinc-500">Loading labs from LabStack…</div> : visible.length === 0 ? (
-          <div className="p-10 text-center"><p className="text-sm text-zinc-400">{query ? `No lab matches “${query}”.` : "LabStack returned no labs."}</p></div>
-        ) : <div className="overflow-x-auto"><table className="w-full text-sm">
+        {listError ? (
+          <div className="p-10 text-center text-sm text-rose-300">{listError} <button onClick={() => void load()} className="underline">Try again</button></div>
+        ) : !meta && loading ? <div className="p-10 text-center text-sm text-zinc-500">Loading labs from LabStack…</div> : labs.length === 0 ? (
+          <div className="p-10 text-center"><p className="text-sm text-zinc-400">{filters.q ? `No lab matches “${filters.q}”.` : "No labs match these filters."}</p></div>
+        ) : <div className={`overflow-x-auto transition-opacity ${loading ? "opacity-60" : ""}`}><table className="w-full text-sm">
           <thead className="bg-zinc-950/70"><tr className="text-left text-[11px] uppercase tracking-wide text-zinc-500 border-b border-zinc-800">
             <th className="px-4 py-2.5">Lab</th>
-            <th className="px-3 py-2.5">Open orders</th>
+            <SortHeader label="Fulfilled" sortKey="fulfilled" filters={filters} onSort={setFilters} title="Lifetime orders with the report delivered" />
+            <SortHeader label="Open" sortKey="open" filters={filters} onSort={setFilters} title="Orders not yet delivered or cancelled" />
+            <th className="px-3 py-2.5">Status</th>
             <th className="px-3 py-2.5">Receives orders</th>
-            <th className="px-3 py-2.5">WhatsApp target</th>
-            <th className="px-3 py-2.5">Automation</th>
+            <th className="px-3 py-2.5">WhatsApp group</th>
+            <th className="px-3 py-2.5">Messages</th>
             <th className="px-3 py-2.5">Active</th>
             <th className="px-4 py-2.5 text-right">Config</th>
           </tr></thead>
-          <tbody>{visible.map((row) => {
+          <tbody>{labs.map((row) => {
             const cfg = row.config;
-            // API labs stay visible but recede: nothing here is tunable for
-            // them beyond breach alerts, so they should not compete for the eye.
             const isApi = cfg?.integrationType === "API";
             return (
-            <tr key={row.labId} className={`border-b border-zinc-800/60 hover:bg-zinc-900/40 ${isApi ? "opacity-60" : ""}`}>
+            <tr key={row.labId} className="border-b border-zinc-800/60 hover:bg-zinc-900/40">
               <td className="px-4 py-3">
-                <div className="font-medium text-zinc-100">
-                  {row.labName}
-                  {cfg?.integrationType === "NON_API" && (
-                    <span className="ml-2 rounded-full bg-blue-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-blue-300 align-middle">NON-API</span>
-                  )}
-                </div>
+                <div className="font-medium text-zinc-100">{row.labName}</div>
                 <div className="font-mono text-[11px] text-zinc-500">
                   Lab #{row.labId}{row.city ? ` · ${row.city}` : ""}
                   {row.orphaned && <span className="ml-1 text-amber-400">· not in LabStack</span>}
-                  {!row.sourceActive && !row.orphaned && <span className="ml-1 text-zinc-600">· inactive upstream</span>}
+                  {!row.sourceActive && !row.orphaned && <span className="ml-1 text-zinc-600">· inactive in LabStack</span>}
                 </div>
               </td>
-              <td className="px-3 py-3 text-zinc-300">{row.openOrders}</td>
+              <td className="px-3 py-3 tabular-nums text-zinc-200">{formatCount(row.fulfilledOrders)}</td>
+              <td className="px-3 py-3 tabular-nums text-zinc-400">{formatCount(row.openOrders)}</td>
+              <td className="px-3 py-3">
+                <span className={`whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium ${STATUS_TONES[row.status]}`}>{STATUS_LABELS[row.status]}</span>
+              </td>
               <td className="px-3 py-3">
                 <IntegrationPicker
                   value={cfg?.integrationType ?? null}
@@ -420,25 +513,21 @@ export function NonApiLabConfigPanel() {
                   labName={row.labName}
                 />
               </td>
-              <td className="px-3 py-3">
-                {cfg?.waGroupJid ? <><div className={`text-xs ${row.unknownGroup || row.groupNotMember ? "text-amber-400" : "text-zinc-300"}`}>{row.unknownGroup ? "⚠ Unknown group" : row.groupNotMember ? "⚠ Linked number not in this group" : "Group"}</div><div className="font-mono text-[11px] text-zinc-500 break-all">{groups.find((g) => g.jid === cfg.waGroupJid)?.subject ?? cfg.waGroupJid}</div></>
-                  : cfg?.whatsappNumber ? <><div className="text-zinc-300 text-xs">Direct</div><div className="font-mono text-[11px] text-zinc-500">{cfg.whatsappNumber}</div></>
-                  : <span className="text-xs text-amber-400">Not set</span>}
+              <td className="px-3 py-3 max-w-[16rem]">
+                {cfg?.waGroupJid ? <>
+                  <div className={`text-xs truncate ${row.unknownGroup || row.groupNotMember ? "text-amber-400" : "text-zinc-300"}`} title={groups.find((g) => g.jid === cfg.waGroupJid)?.subject ?? cfg.waGroupJid}>
+                    {row.unknownGroup ? "⚠ Unknown group" : row.groupNotMember ? "⚠ Linked number not in this group" : groups.find((g) => g.jid === cfg.waGroupJid)?.subject ?? cfg.waGroupJid}
+                  </div>
+                </>
+                  : cfg?.whatsappNumber ? <div className="font-mono text-[11px] text-zinc-400">DM {cfg.whatsappNumber}</div>
+                  : row.suggestedGroup ? <div className="text-[11px] text-zinc-500 truncate" title={row.suggestedGroup.subject}>Suggested: {row.suggestedGroup.subject}</div>
+                  : <span className="text-xs text-zinc-600">—</span>}
               </td>
-              <td className="px-3 py-3 text-xs">
-                {!cfg ? <span className="text-zinc-600">Not configured</span> : (
-                  <div className="flex flex-col gap-1">
-                    <span className={cfg.slaBreachAlertsEnabled ? "text-emerald-400" : "text-zinc-600"}>
-                      {cfg.slaBreachAlertsEnabled ? `Breach alerts · max ${cfg.slaBreachMaxPerOrder}/order` : "No breach alerts"}
-                    </span>
-                    {cfg.integrationType === "NON_API"
-                      ? <span className="text-zinc-400">Confirm · {cfg.confirmationSlaMinutes}m / {cfg.reminderSlaMinutes}m / {cfg.escalationSlaMinutes}m</span>
-                      : <span className="text-zinc-600">No confirmation workflow</span>}
-                    <span className={cfg.dailyDigestEnabled ? "text-emerald-400" : "text-zinc-600"}>
-                      {cfg.dailyDigestEnabled
-                        ? `Daily summary · ${String(cfg.dailyDigestHour).padStart(2, "0")}:${String(cfg.dailyDigestMinute).padStart(2, "0")}`
-                        : "No daily summary"}
-                    </span>
+              <td className="px-3 py-3 text-[11px] text-zinc-400">
+                {!cfg ? <span className="text-zinc-600">—</span> : isApi ? "Breach alerts" : (
+                  <div className="flex flex-col gap-0.5">
+                    <span>New order · reminders {cfg.confirmationSlaMinutes / 60 >= 1 && Number.isInteger(cfg.confirmationSlaMinutes / 60) ? `${cfg.confirmationSlaMinutes / 60}h` : `${cfg.confirmationSlaMinutes}m`}/{Number.isInteger(cfg.reminderSlaMinutes / 60) ? `${cfg.reminderSlaMinutes / 60}h` : `${cfg.reminderSlaMinutes}m`}/{Number.isInteger(cfg.escalationSlaMinutes / 60) ? `${cfg.escalationSlaMinutes / 60}h` : `${cfg.escalationSlaMinutes}m`}</span>
+                    <span>{[cfg.postAppointmentCheckEnabled && "status check", cfg.dailyDigestEnabled && `list ${String(cfg.dailyDigestHour).padStart(2, "0")}:${String(cfg.dailyDigestMinute).padStart(2, "0")}`].filter(Boolean).join(" · ") || "No status check or list"}</span>
                   </div>
                 )}
               </td>
@@ -451,8 +540,23 @@ export function NonApiLabConfigPanel() {
             </tr>);
           })}</tbody>
         </table></div>}
+        {meta && meta.total > 0 && (
+          <div className="flex flex-wrap items-center gap-3 border-t border-zinc-800 px-4 py-3 text-xs text-zinc-400">
+            <span>Showing {formatCount(firstRow)}–{formatCount(lastRow)} of {formatCount(meta.total)} labs</span>
+            <label className="flex items-center gap-2">
+              Rows
+              <select
+                value={filters.pageSize}
+                onChange={(e) => setFilter("pageSize", Number(e.target.value))}
+                className="rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200"
+              >
+                {[25, 50, 100].map((size) => <option key={size} value={size}>{size}</option>)}
+              </select>
+            </label>
+            <Pagination page={meta.page} pageCount={meta.pageCount} onPage={(page) => setFilter("page", page)} />
+          </div>
+        )}
       </div>
-
       {open && <div className="fixed inset-0 z-50 bg-black/65 p-4 overflow-y-auto"><div className="max-w-xl mx-auto my-8 rounded-xl border border-zinc-700 bg-zinc-950 shadow-2xl"><form onSubmit={save}><div className="px-5 py-4 border-b border-zinc-800 flex justify-between items-center"><div><h2 className="font-semibold text-zinc-100">{editingLabId ? "Edit lab" : "Configure a lab"}</h2><p className="text-xs text-zinc-500 mt-0.5">This never modifies LabStack&apos;s source lab record.</p></div><button type="button" onClick={() => setOpen(false)} className="text-zinc-500 hover:text-zinc-200">✕</button></div><div className="p-5 space-y-4"><div className="grid grid-cols-3 gap-3"><Field label="Lab ID"><input disabled type="number" value={draft.labId} className={inputClass} /></Field><div className="col-span-2"><Field label="Lab name"><input disabled value={draft.labName} className={inputClass} /></Field></div></div><p className="text-[11px] text-zinc-500 -mt-1">Both come from LabStack and are read-only here. Everything below is OpsFlow&apos;s own configuration.</p><div>
                 <div className="text-xs font-medium text-zinc-300 mb-2">How does this lab receive orders?</div>
                 <div className="grid grid-cols-2 gap-2">
@@ -510,7 +614,13 @@ export function NonApiLabConfigPanel() {
                 <p className="text-[11px] text-zinc-500 mt-1.5">
                   A numbered list of tomorrow&apos;s appointments — time, patient, area and tests — with a confirmation link beside every order the lab has not confirmed yet. Preview or send it now from the lab&apos;s page on the board. Wording lives in the <span className="text-zinc-400">tomorrow&apos;s orders</span> template.
                 </p>
-              </div><label className="flex items-center gap-2 text-sm text-zinc-300"><input type="checkbox" checked={draft.isActive} onChange={(e) => update("isActive", e.target.checked)} className="accent-blue-500" /> Enable automation for this lab</label>{error && <div className="rounded-md bg-rose-500/10 text-rose-300 text-sm px-3 py-2">{error}</div>}</div><div className="px-5 py-4 border-t border-zinc-800 flex justify-end gap-2"><button type="button" onClick={() => setOpen(false)} className="px-3 py-2 text-sm text-zinc-400 hover:text-zinc-200">Cancel</button><button disabled={saving} className="rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-60 text-white font-semibold text-sm px-4 py-2">{saving ? "Saving…" : "Save configuration"}</button></div></form></div></div>}
+              </div><label className="flex items-center gap-2 text-sm text-zinc-300"><input type="checkbox" checked={draft.isActive} onChange={(e) => update("isActive", e.target.checked)} className="accent-blue-500" /> Enable automation for this lab</label>{error && <div className="rounded-md bg-rose-500/10 text-rose-300 text-sm px-3 py-2">{error}</div>}</div><div className="px-5 py-4 border-t border-zinc-800 flex justify-end gap-2"><button type="button" onClick={() => setOpen(false)} className="px-3 py-2 text-sm text-zinc-400 hover:text-zinc-200">Cancel</button><button disabled={saving} className="rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-60 text-white font-semibold text-sm px-4 py-2">{saving ? "Saving…" : "Save configuration"}</button></div></form>{editingLabId && (
+        <details className="mx-5 mb-5 rounded-lg border border-zinc-800 bg-zinc-900/40 p-3">
+          <summary className="cursor-pointer text-xs font-medium text-zinc-300">Delivery deadlines <span className="font-normal text-zinc-500">— advanced · saved separately from the form above</span></summary>
+          <p className="mt-2 text-[11px] text-zinc-500">Alert the lab when sample collection or the report runs late.</p>
+          <div className="mt-3"><SlaDeadlinesPanel labId={editingLabId} labName={draft.labName} /></div>
+        </details>
+      )}</div></div>}
       {toast && <div className="fixed z-[60] left-1/2 bottom-6 -translate-x-1/2 rounded-lg bg-zinc-100 text-zinc-950 px-4 py-2 text-sm font-medium shadow-lg">{toast}</div>}
     </div>
   );
@@ -602,4 +712,63 @@ function Toggle({ on, disabled, onClick, label }: { on: boolean; disabled?: bool
 
 const inputClass = "w-full rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-blue-500 disabled:opacity-50";
 function Field({ label, children }: { label: string; children: React.ReactNode }) { return <label className="block"><span className="block text-xs text-zinc-400 mb-1">{label}</span>{children}</label>; }
-function Metric({ label, value, tone = "text-zinc-100" }: { label: string; value: number; tone?: string }) { return <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 px-4 py-3"><div className="text-xs text-zinc-500">{label}</div><div className={`text-2xl font-semibold mt-1 ${tone}`}>{value}</div></div>; }
+const selectClass = "rounded-lg border border-zinc-700 bg-zinc-900 px-2.5 py-2 text-xs text-zinc-200 outline-none focus:border-blue-500";
+
+/** A column header that sorts by its column; clicking again flips the direction. */
+function SortHeader({
+  label, sortKey, filters, onSort, title,
+}: {
+  label: string;
+  sortKey: SortKey;
+  filters: Filters;
+  onSort: (update: (current: Filters) => Filters) => void;
+  title: string;
+}) {
+  const active = filters.sort === sortKey;
+  return (
+    <th className="px-3 py-2.5" aria-sort={active ? (filters.dir === "asc" ? "ascending" : "descending") : "none"}>
+      <button
+        type="button"
+        title={title}
+        onClick={() => onSort((current) => ({
+          ...current,
+          sort: sortKey,
+          dir: current.sort === sortKey ? (current.dir === "asc" ? "desc" : "asc") : "desc",
+          page: 1,
+        }))}
+        className={`uppercase tracking-wide ${active ? "text-zinc-200" : "text-zinc-500 hover:text-zinc-300"}`}
+      >
+        {label}{active ? (filters.dir === "asc" ? " ↑" : " ↓") : ""}
+      </button>
+    </th>
+  );
+}
+
+/** First, previous, a window of pages around the current one, next, last. */
+function Pagination({ page, pageCount, onPage }: { page: number; pageCount: number; onPage: (page: number) => void }) {
+  if (pageCount <= 1) return null;
+  const start = Math.max(1, Math.min(page - 2, pageCount - 4));
+  const pages = Array.from({ length: Math.min(5, pageCount) }, (_, i) => start + i);
+  const button = (label: string, target: number, disabled: boolean, current = false) => (
+    <button
+      key={`${label}-${target}`}
+      type="button"
+      onClick={() => onPage(target)}
+      disabled={disabled}
+      aria-current={current ? "page" : undefined}
+      className={`min-w-[2rem] rounded border px-2 py-1 ${current ? "border-blue-500 bg-blue-500/10 text-blue-300" : "border-zinc-700 text-zinc-400 hover:text-zinc-200"} disabled:opacity-40`}
+    >
+      {label}
+    </button>
+  );
+  return (
+    <div className="ml-auto flex items-center gap-1">
+      {button("«", 1, page === 1)}
+      {button("‹", page - 1, page === 1)}
+      {pages.map((p) => button(String(p), p, false, p === page))}
+      {button("›", page + 1, page === pageCount)}
+      {button("»", pageCount, page === pageCount)}
+      <span className="ml-2 text-zinc-500">Page {page} of {pageCount}</span>
+    </div>
+  );
+}

@@ -158,14 +158,14 @@ export function SlaDeadlinesPanel({ labId, labName }: { labId: number; labName: 
                 <div className="ml-auto flex shrink-0 items-center gap-1">
                   {config && !isEditing && (
                     <>
-                      <button
+                      <button type="button"
                         onClick={() => void save({ ...config, enabled: !config.enabled })}
                         disabled={busy}
                         className="rounded border border-zinc-700 px-2 py-1 text-[11px] text-zinc-400 hover:text-zinc-100 disabled:opacity-50"
                       >
                         {config.enabled ? "Turn off" : "Turn on"}
                       </button>
-                      <button
+                      <button type="button"
                         onClick={() => { setEditing(row.milestone); setDraft({ ...config }); setNotice(null); }}
                         disabled={busy}
                         className="rounded border border-zinc-700 px-2 py-1 text-[11px] text-zinc-400 hover:text-zinc-100 disabled:opacity-50"
@@ -173,7 +173,7 @@ export function SlaDeadlinesPanel({ labId, labName }: { labId: number; labName: 
                         Edit
                       </button>
                       {!config.inherited && (
-                        <button
+                        <button type="button"
                           onClick={() => void resetToDefault(row.milestone)}
                           disabled={busy}
                           className="rounded border border-zinc-700 px-2 py-1 text-[11px] text-zinc-500 hover:text-zinc-200 disabled:opacity-50"
@@ -245,13 +245,13 @@ export function SlaDeadlinesPanel({ labId, labName }: { labId: number; labName: 
                     </label>
                     <span className="text-[11px] text-zinc-500">{describe(draft)}</span>
                     <div className="ml-auto flex items-center gap-2">
-                      <button
+                      <button type="button"
                         onClick={() => { setEditing(null); setDraft(null); }}
                         className="rounded border border-zinc-700 px-3 py-1.5 text-xs text-zinc-400 hover:text-zinc-100"
                       >
                         Cancel
                       </button>
-                      <button
+                      <button type="button"
                         onClick={() => void save(draft)}
                         disabled={busy}
                         className="rounded bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-500 disabled:opacity-50"

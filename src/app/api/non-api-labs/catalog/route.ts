@@ -2,32 +2,44 @@
  * GET /api/non-api-labs/catalog — every lab LabStack knows about, with whatever
  * provider-communication configuration OpsFlow holds for it.
  *
- * The Lab Config screen used to be a list of rows an Ops head had typed in by
- * hand, which meant the lab id had to be copied from LabStack correctly and a
- * lab nobody had gotten round to configuring was simply invisible. The source
- * system already knows the labs, so this reads them from there and LEFT JOINs
- * our own config onto them: the screen becomes a roster of every lab, marked
- * configured or not, rather than a list of what somebody remembered to add.
+ * The roster comes from LabStack rather than from what somebody remembered to
+ * type in, so a lab nobody has configured yet is visible instead of absent.
  *
- * Kept separate from GET /api/non-api-labs, which still returns configured labs
- * only — the message-flow editor builds its provider picker from that and has
- * no use for labs it cannot message.
+ * Two shapes:
+ *   ?page=N&…   one page of the Lab Config list — searched, filtered and
+ *               sorted on the server (see lib/non-api-labs/lab-catalog.ts).
+ *               Params: q, status, type, includeInactive, sort, dir, page,
+ *               pageSize, refresh.
+ *   no `page`   every lab, unpaged — kept for callers that need the whole
+ *               roster in one go.
  */
 import { NextRequest, NextResponse } from "next/server";
-import prisma from "@/lib/db/client";
 import { getSessionFromRequest } from "@/lib/auth/session";
 import { UserRole } from "@prisma/client";
-import { labstackWorkerQuery } from "@/lib/db/labstack";
-import { suggestGroup } from "@/lib/non-api-labs/group-match";
 import { newRequestId, logAndBuildErrorBody } from "@/lib/observability/request-id";
+import {
+  buildRows, loadOpsflowSide, loadSourceLabs, queryCatalog,
+  LAB_SETUP_STATUSES, type CatalogQuery, type CatalogSort,
+} from "@/lib/non-api-labs/lab-catalog";
 
-type SourceLab = {
-  id: number;
-  labName: string;
-  city: string | null;
-  isActive: boolean;
-  openOrders: number;
-};
+const SORTS: CatalogSort[] = ["fulfilled", "open", "name", "id"];
+
+function parseQuery(params: URLSearchParams): CatalogQuery {
+  const status = params.get("status") ?? "ALL";
+  const type = params.get("type") ?? "ALL";
+  const sort = params.get("sort") as CatalogSort | null;
+  const dir = params.get("dir");
+  return {
+    q: params.get("q") ?? "",
+    status: (["ALL", "CONFIGURED", ...LAB_SETUP_STATUSES] as string[]).includes(status) ? status as CatalogQuery["status"] : "ALL",
+    type: type === "NON_API" || type === "API" ? type : "ALL",
+    includeInactive: params.get("includeInactive") === "1",
+    sort: sort && SORTS.includes(sort) ? sort : "fulfilled",
+    dir: dir === "asc" || dir === "desc" ? dir : undefined,
+    page: Number(params.get("page")) || 1,
+    pageSize: Number(params.get("pageSize")) || 25,
+  };
+}
 
 export async function GET(request: NextRequest) {
   const requestId = newRequestId();
@@ -37,86 +49,16 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: "Unauthorized", code: "FORBIDDEN", requestId }, { status: 403 });
     }
 
-    // Open order count comes along because it is the number that tells an Ops
-    // head which unconfigured lab actually matters.
-    const [sourceLabs, configs, groups] = await Promise.all([
-      labstackWorkerQuery<SourceLab>(`
-        SELECT l.id,
-               l."labName",
-               l.city,
-               -- Real LabStack names this column "active" (the dummy schema this
-               -- was first written against invented "isActive", so on the real
-               -- replica the query failed and the screen listed no labs).
-               l.active AS "isActive",
-               COUNT(o.id) FILTER (
-                 WHERE o."orderStatus" NOT IN ('CANCELED', 'REPORT_DELIVERED', 'PATIENT_MISSED')
-               )::int AS "openOrders"
-          FROM public."Lab" l
-          LEFT JOIN public."Order" o ON o."labId" = l.id
-         GROUP BY l.id, l."labName", l.city, l.active
-         ORDER BY l."labName" ASC
-      `),
-      prisma.nonApiLabConfig.findMany(),
-      // Every group the gateway can actually see. This is what makes the
-      // WhatsApp target selectable instead of typed.
-      // Only the linked number's groups: archived rows belong to a previously
-      // linked number and their jids are suffixed, so they can never match.
-      prisma.waGroup.findMany({
-        where: { archivedAt: null },
-        select: { jid: true, subject: true, sendEnabled: true, active: true, labId: true, isMember: true },
-        orderBy: { subject: "asc" },
-      }),
+    const params = request.nextUrl.searchParams;
+    const [sourceLabs, { configs, groups }] = await Promise.all([
+      loadSourceLabs(params.get("refresh") === "1"),
+      loadOpsflowSide(),
     ]);
+    const rows = buildRows(sourceLabs, configs, groups);
 
-    const configByLabId = new Map(configs.map((config) => [config.labId, config]));
-    const groupByJid = new Map(groups.map((group) => [group.jid, group]));
-
-    const labs = sourceLabs.map((lab) => {
-      const config = configByLabId.get(lab.id) ?? null;
-      // Suggest only groups the linked number is actually in.
-      const suggestion = suggestGroup(lab.labName, groups.filter((group) => group.isMember));
-      return {
-        labId: lab.id,
-        labName: lab.labName,
-        city: lab.city,
-        sourceActive: lab.isActive,
-        openOrders: lab.openOrders,
-        configured: !!config,
-        config,
-        // Offered when the lab has no group yet, so the jid never has to be typed.
-        suggestedGroup: suggestion
-          ? { jid: suggestion.group.jid, subject: suggestion.group.subject, score: Number(suggestion.score.toFixed(2)) }
-          : null,
-        // The configured jid corresponds to no group the gateway has ever seen.
-        // Almost always a typo, and otherwise invisible: a malformed jid saves
-        // happily and then silently fails to deliver.
-        unknownGroup: !!config?.waGroupJid && !groupByJid.has(config.waGroupJid),
-        // Known group, but the linked number is not in it (e.g. after switching
-        // numbers) — messages to this lab will fail until it is added.
-        groupNotMember: !!config?.waGroupJid && groupByJid.get(config.waGroupJid)?.isMember === false,
-      };
-    });
-
-    // A config whose lab has vanished from LabStack would otherwise disappear
-    // from this screen while still driving messages, so surface it too.
-    const sourceIds = new Set(sourceLabs.map((lab) => lab.id));
-    const orphaned = configs
-      .filter((config) => !sourceIds.has(config.labId))
-      .map((config) => ({
-        labId: config.labId,
-        labName: config.labName,
-        city: null,
-        sourceActive: false,
-        openOrders: 0,
-        configured: true,
-        orphaned: true,
-        config,
-        suggestedGroup: null,
-        unknownGroup: false,
-      }));
-
-    // groups ships alongside so the editor can offer a picker.
-    return NextResponse.json({ labs: [...labs, ...orphaned], groups });
+    // groups ship alongside so the editor can offer a picker.
+    if (!params.has("page")) return NextResponse.json({ labs: rows, groups });
+    return NextResponse.json({ ...queryCatalog(rows, parseQuery(params)), groups });
   } catch (error) {
     return NextResponse.json(
       logAndBuildErrorBody({

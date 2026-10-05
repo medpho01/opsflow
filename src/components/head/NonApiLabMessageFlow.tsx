@@ -48,7 +48,24 @@ import {
 } from "@/lib/non-api-labs/blocks";
 // From poll-config, not templates: templates.ts imports Prisma and this is a
 // client component.
-import { PROVIDER_POLL_OPTIONS } from "@/lib/non-api-labs/poll-config";
+/** A stored poll definition, as GET /api/poll-definitions returns it. */
+type PollDefinition = { key: string; name: string; question: string; isActive: boolean; options: Array<{ label: string }> };
+
+/**
+ * Which poll, if any, the sender attaches to a message. Mirrors the senders:
+ * the scheduler attaches ORDER_STATUS_CHECK to the status check only, and the
+ * breach engine attaches SLA_BREACH to milestone alerts. Confirmation messages
+ * carry the LabStack link instead of a poll.
+ */
+function pollKeyFor(templateKey: string): string | null {
+  if (templateKey === "NON_API_STATUS_CHECK") return "ORDER_STATUS_CHECK";
+  if (templateKey === "PROVIDER_SLA_MILESTONE") return "SLA_BREACH";
+  return null;
+}
+
+const CONFIRMATION_TEMPLATE_KEYS = new Set([
+  "NON_API_NEW_ORDER", "NON_API_REMINDER", "NON_API_URGENT_REMINDER", "NON_API_ESCALATION", "NON_API_APPOINTMENT_REMINDER",
+]);
 
 type Template = {
   key: string;
@@ -154,6 +171,17 @@ export function NonApiLabMessageFlow() {
   const [draftName, setDraftName] = useState("");
   const [renamingKey, setRenamingKey] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
+  // The live poll definitions, so "how the provider answers" shows the poll
+  // that is actually sent — editable below on this page — not a fixed list.
+  const [polls, setPolls] = useState<PollDefinition[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    void fetch("/api/poll-definitions")
+      .then((res) => (res.ok ? res.json() : { polls: [] }))
+      .then((data) => { if (!cancelled) setPolls(data.polls ?? []); })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, []);
 
   const load = useCallback(async () => {
     const [templateRes, labRes, ruleRes] = await Promise.all([
@@ -965,29 +993,49 @@ export function NonApiLabMessageFlow() {
 
                     {/* The reply mechanism is not a block, so without this the
                         editor looks as though nothing collects an answer. */}
-                    <div className="mt-3 rounded-lg border border-zinc-800 bg-zinc-900/40 p-3">
-                      <div className="text-[11px] font-medium text-zinc-300">How the provider answers</div>
-                      <p className="mt-1 text-[11px] leading-relaxed text-zinc-500">
-                        A WhatsApp poll is sent with this message automatically — you do not add it here, and
-                        there is nothing to configure. The provider taps one option:
-                      </p>
-                      <div className="mt-2 flex flex-wrap gap-1.5">
-                        {PROVIDER_POLL_OPTIONS.map((option) => (
-                          <span
-                            key={option.action}
-                            className="rounded-full border border-zinc-700 bg-zinc-900 px-2 py-0.5 text-[11px] text-zinc-300"
-                          >
-                            {option.label}
-                          </span>
-                        ))}
-                      </div>
-                      <p className="mt-2 text-[11px] leading-relaxed text-zinc-500">
-                        The tap updates the order straight away and stops further chasing. For
-                        <span className="text-zinc-400"> Reschedule</span> and
-                        <span className="text-zinc-400"> Cannot fulfil</span>, the bot then asks in the group for
-                        the reason or a new time, and records whatever they reply.
-                      </p>
-                    </div>
+                    {template && (() => {
+                      const pollKey = pollKeyFor(template.key);
+                      const poll = pollKey ? polls.find((item) => item.key === pollKey) : null;
+                      return (
+                        <div className="mt-3 rounded-lg border border-zinc-800 bg-zinc-900/40 p-3">
+                          <div className="text-[11px] font-medium text-zinc-300">How the provider answers</div>
+                          {pollKey ? (
+                            <>
+                              <p className="mt-1 text-[11px] leading-relaxed text-zinc-500">
+                                {poll && !poll.isActive
+                                  ? "The poll for this message is switched off, so it goes out as plain text."
+                                  : "A WhatsApp poll is sent right after this message. The provider taps one option:"}
+                              </p>
+                              {poll && poll.isActive && (
+                                <>
+                                  <div className="mt-2 text-[11px] text-zinc-400">{poll.question}</div>
+                                  <div className="mt-1.5 flex flex-wrap gap-1.5">
+                                    {poll.options.map((option) => (
+                                      <span key={option.label} className="rounded-full border border-zinc-700 bg-zinc-900 px-2 py-0.5 text-[11px] text-zinc-300">
+                                        {option.label}
+                                      </span>
+                                    ))}
+                                  </div>
+                                </>
+                              )}
+                              <p className="mt-2 text-[11px] leading-relaxed text-zinc-500">
+                                Edit the question, options and replies in <span className="text-zinc-400">{poll?.name ?? "Polls"}</span> below.
+                              </p>
+                            </>
+                          ) : CONFIRMATION_TEMPLATE_KEYS.has(template.key) ? (
+                            <p className="mt-1 text-[11px] leading-relaxed text-zinc-500">
+                              No poll. The provider confirms by tapping the LabStack confirmation link
+                              (<span className="font-mono text-zinc-400">{"{{confirm_url}}"}</span>) in this message. Reminders stop
+                              as soon as LabStack shows the order confirmed.
+                            </p>
+                          ) : (
+                            <p className="mt-1 text-[11px] leading-relaxed text-zinc-500">
+                              No poll. The provider can reply in the group, where the desk sees it.
+                            </p>
+                          )}
+                        </div>
+                      );
+                    })()}
                   </div>
                 )}
               </div>

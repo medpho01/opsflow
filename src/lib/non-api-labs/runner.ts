@@ -27,6 +27,7 @@ import { processDueNonApiLabScheduledActions } from "./scheduler";
 import { processPollVotes } from "./poll-votes";
 import { runSlaBreachTick } from "@/lib/provider-comms/breach-engine";
 import { runDailyDigestTick } from "@/lib/provider-comms/daily-digest";
+import { runStatusCheckSweep } from "./status-check-sweep";
 
 const TICK_CRON = process.env.NON_API_LAB_TICK_CRON ?? "* * * * *";
 // Short TTL: a tick is seconds of work, and a dead process should not hold the
@@ -51,6 +52,17 @@ export async function runNonApiLabTick(): Promise<void> {
       }
     } catch (error) {
       console.error("[PollVotes] Cycle error:", error);
+    }
+
+    // Before the scheduler, so a check planned this tick can go out this tick.
+    // Self-throttled to every 10 minutes; see status-check-sweep.ts.
+    try {
+      const sweep = await runStatusCheckSweep();
+      if (sweep.added || sweep.shells) {
+        console.log(`[StatusCheckSweep] added=${sweep.added} newWorkflows=${sweep.shells}`);
+      }
+    } catch (error) {
+      console.error("[StatusCheckSweep] Cycle error:", error);
     }
 
     const stats = await processDueNonApiLabScheduledActions();

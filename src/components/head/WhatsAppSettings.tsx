@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 type Gateway = { status: string; online: boolean; connectedNumber: string | null; qrDataUrl: string | null; lastSeenAt: string | null; gatewayLive?: boolean };
-type Group = { id: string; jid: string; subject: string; role: string; storeId: number | null; labId: number | null; active: boolean; sendEnabled: boolean; autoAskIdOnMissing: boolean };
+type Group = { id: string; jid: string; subject: string; role: string; storeId: number | null; labId: number | null; active: boolean; sendEnabled: boolean; autoAskIdOnMissing: boolean; isMember: boolean };
 
 const ROLES = [
   { v: "SUPPORT", label: "Customer" },
@@ -19,17 +19,24 @@ export function WhatsAppSettings() {
   const [q, setQ] = useState("");
   const [roleFilter, setRoleFilter] = useState("ALL");
   const [listenFilter, setListenFilter] = useState<"ALL" | "ON" | "OFF">("ALL");
+  // Groups the linked number has LEFT stay in the table (their history is
+  // kept) but are hidden unless asked for. A previous number's groups never
+  // appear here at all — they are archived when the number changes.
+  const [showFormer, setShowFormer] = useState(false);
   const [contacts, setContacts] = useState<{ id: string; name: string; phone: string | null; team: string | null }[]>([]);
   const [contactText, setContactText] = useState("");
   const flash = (m: string) => { setToast(m); setTimeout(() => setToast(null), 2200); };
 
+  const memberGroups = groups.filter((g) => g.isMember);
+  const formerCount = groups.length - memberGroups.length;
   const shownGroups = groups.filter(
     (g) =>
+      (showFormer || g.isMember) &&
       (roleFilter === "ALL" || g.role === roleFilter) &&
       (listenFilter === "ALL" || (listenFilter === "ON" ? g.active : !g.active)) &&
       g.subject.toLowerCase().includes(q.toLowerCase())
   );
-  const listeningCount = groups.filter((g) => g.active).length;
+  const listeningCount = memberGroups.filter((g) => g.active).length;
 
   const loadGw = useCallback(async () => {
     const r = await fetch("/api/whatsapp/gateway"); if (r.ok) setGw(await r.json());
@@ -114,7 +121,7 @@ export function WhatsAppSettings() {
               <p className="text-xs text-zinc-500 mt-2">Refreshes automatically until the device connects.</p>
               {gw && gw.gatewayLive === false && (
                 <p className="text-xs text-amber-400 mt-2">
-                  Start it on the server with <code className="font-mono">./run-gateway.sh start</code>, then this code refreshes on its own.
+                  The gateway isn&apos;t running. On the server, start it with <code className="font-mono">docker compose -f docker-compose.yml -f docker-compose.wa.yml up -d wa-gateway</code> (or <code className="font-mono">./run-gateway.sh start</code> if it runs outside Docker); this code then refreshes on its own.
                 </p>
               )}
             </div>
@@ -126,7 +133,13 @@ export function WhatsAppSettings() {
       <div className="rounded-xl border border-zinc-800 overflow-hidden">
         <div className="px-4 py-3 border-b border-zinc-800 flex items-center gap-3 flex-wrap">
           <div className="text-[11px] uppercase tracking-wide text-zinc-500 font-semibold">Group classification</div>
-          <span className="text-[11px] text-zinc-500">Listening to <b className="text-emerald-400">{listeningCount}</b> of {groups.length} groups</span>
+          <span className="text-[11px] text-zinc-500">Listening to <b className="text-emerald-400">{listeningCount}</b> of {memberGroups.length} groups</span>
+          {formerCount > 0 && (
+            <label className="flex items-center gap-1.5 text-[11px] text-zinc-500 cursor-pointer select-none">
+              <input id="wa-show-former" type="checkbox" checked={showFormer} onChange={(e) => setShowFormer(e.target.checked)} />
+              Show {formerCount} group{formerCount === 1 ? "" : "s"} this number left
+            </label>
+          )}
           <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search groups…"
             className="ml-auto w-56 bg-zinc-900 border border-zinc-700 rounded-md px-3 py-1.5 text-xs text-zinc-200 focus:border-blue-500 outline-none" />
           <div className="flex rounded-md border border-zinc-700 overflow-hidden text-xs">
@@ -158,7 +171,7 @@ export function WhatsAppSettings() {
             <tbody>
               {shownGroups.map((g) => (
                 <tr key={g.id} className="border-b border-zinc-800/60 hover:bg-zinc-900/40">
-                  <td className="px-4 py-2.5 text-zinc-200 font-medium">{g.subject.replace("Labstack", "LS").replace("LABSTACK", "LS")}</td>
+                  <td className="px-4 py-2.5 text-zinc-200 font-medium">{g.subject.replace("Labstack", "LS").replace("LABSTACK", "LS")}{!g.isMember && <span className="ml-2 text-[10px] font-normal text-amber-400">left this group</span>}</td>
                   <td className="px-3 py-2.5">
                     <select value={g.role} onChange={(e) => patchGroup(g.id, { role: e.target.value })}
                       className="bg-zinc-900 border border-zinc-700 rounded-md px-2 py-1 text-xs text-zinc-200 focus:border-blue-500 outline-none">

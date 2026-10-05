@@ -59,8 +59,11 @@ export async function GET(request: NextRequest) {
       prisma.nonApiLabConfig.findMany(),
       // Every group the gateway can actually see. This is what makes the
       // WhatsApp target selectable instead of typed.
+      // Only the linked number's groups: archived rows belong to a previously
+      // linked number and their jids are suffixed, so they can never match.
       prisma.waGroup.findMany({
-        select: { jid: true, subject: true, sendEnabled: true, active: true, labId: true },
+        where: { archivedAt: null },
+        select: { jid: true, subject: true, sendEnabled: true, active: true, labId: true, isMember: true },
         orderBy: { subject: "asc" },
       }),
     ]);
@@ -70,7 +73,8 @@ export async function GET(request: NextRequest) {
 
     const labs = sourceLabs.map((lab) => {
       const config = configByLabId.get(lab.id) ?? null;
-      const suggestion = suggestGroup(lab.labName, groups);
+      // Suggest only groups the linked number is actually in.
+      const suggestion = suggestGroup(lab.labName, groups.filter((group) => group.isMember));
       return {
         labId: lab.id,
         labName: lab.labName,
@@ -87,6 +91,9 @@ export async function GET(request: NextRequest) {
         // Almost always a typo, and otherwise invisible: a malformed jid saves
         // happily and then silently fails to deliver.
         unknownGroup: !!config?.waGroupJid && !groupByJid.has(config.waGroupJid),
+        // Known group, but the linked number is not in it (e.g. after switching
+        // numbers) — messages to this lab will fail until it is added.
+        groupNotMember: !!config?.waGroupJid && groupByJid.get(config.waGroupJid)?.isMember === false,
       };
     });
 

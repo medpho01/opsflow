@@ -946,6 +946,21 @@ model WaGroup {
   sendEnabled        Boolean     @default(false) // per-group send guard
   active             Boolean     @default(true) // listening on/off
   lastReadAt         DateTime? // console: inbound messages after this count as unread
+  /// The linked WhatsApp number this row belongs to (digits, e.g. 919522584955).
+  /// When the gateway connects as a DIFFERENT number, every row of the old one
+  /// is archived (see archivedAt) and the new number's groups start fresh.
+  accountNumber      String?
+  /// Set when the row was archived because the linked number changed. Archived
+  /// rows (and their messages/tickets) are hidden everywhere but never deleted —
+  /// deleting a group would cascade-delete its whole history. The row's jid is
+  /// suffixed "~archived~<timestamp>" so the real jid is free for the new number.
+  archivedAt         DateTime?
+  /// Listening state at the moment of archiving. The archived row itself is
+  /// switched off (so it drops out of every listener/sender), and the fresh row
+  /// for the same jid under the new number takes its listening from here.
+  activeBeforeArchive Boolean?
+  /// Whether the CURRENT number is still in this group (false after it leaves).
+  isMember           Boolean     @default(true)
   createdAt          DateTime    @default(now())
   updatedAt          DateTime    @updatedAt
 
@@ -955,6 +970,7 @@ model WaGroup {
 
   @@index([role])
   @@index([active])
+  @@index([archivedAt])
   @@map("wa_groups")
 }
 

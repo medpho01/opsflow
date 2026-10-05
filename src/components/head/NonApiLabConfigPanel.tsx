@@ -108,6 +108,7 @@ type CatalogRow = {
   suggestedGroup: { jid: string; subject: string; score: number } | null;
   /** The stored jid matches no group the gateway has ever seen — almost always a typo. */
   unknownGroup?: boolean;
+  groupNotMember?: boolean;
 };
 
 /** A WhatsApp group the gateway can actually see. */
@@ -416,7 +417,7 @@ export function NonApiLabConfigPanel() {
                 />
               </td>
               <td className="px-3 py-3">
-                {cfg?.waGroupJid ? <><div className={`text-xs ${row.unknownGroup ? "text-amber-400" : "text-zinc-300"}`}>{row.unknownGroup ? "⚠ Unknown group" : "Group"}</div><div className="font-mono text-[11px] text-zinc-500 break-all">{groups.find((g) => g.jid === cfg.waGroupJid)?.subject ?? cfg.waGroupJid}</div></>
+                {cfg?.waGroupJid ? <><div className={`text-xs ${row.unknownGroup || row.groupNotMember ? "text-amber-400" : "text-zinc-300"}`}>{row.unknownGroup ? "⚠ Unknown group" : row.groupNotMember ? "⚠ Linked number not in this group" : "Group"}</div><div className="font-mono text-[11px] text-zinc-500 break-all">{groups.find((g) => g.jid === cfg.waGroupJid)?.subject ?? cfg.waGroupJid}</div></>
                   : cfg?.whatsappNumber ? <><div className="text-zinc-300 text-xs">Direct</div><div className="font-mono text-[11px] text-zinc-500">{cfg.whatsappNumber}</div></>
                   : <span className="text-xs text-amber-400">Not set</span>}
               </td>

@@ -33,7 +33,8 @@ export async function GET(request: NextRequest) {
     : { status: { notIn: ["RESOLVED" as const] } };
 
   const rows = await prisma.waTicket.findMany({
-    where,
+    // Only the linked number's groups — archived ones belong to a previous number.
+    where: { ...where, group: { archivedAt: null } },
     take: 300,
     orderBy: { lastActivityAt: "desc" },
     include: {

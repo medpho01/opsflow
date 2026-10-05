@@ -91,7 +91,11 @@ export async function resolveLabTarget(
 
   if (isGroupJid(groupJid)) {
     const jid = groupJid!;
-    // Registered disabled on first sight — see "The guard" above.
+    // Registered disabled on first sight — see "The guard" above. Stamped with
+    // the currently linked number (so the next gateway sync does not archive it
+    // as a previous number's row) and as a non-member until the gateway
+    // actually sees the number in this group.
+    const gateway = await prisma.waGateway.findUnique({ where: { id: "default" }, select: { connectedNumber: true } });
     const group = await prisma.waGroup.upsert({
       where: { jid },
       update: {},
@@ -102,6 +106,8 @@ export async function resolveLabTarget(
         labId: config.labId,
         sendEnabled: false,
         active: true,
+        accountNumber: gateway?.connectedNumber ?? null,
+        isMember: false,
       },
       select: { id: true, sendEnabled: true },
     });

@@ -279,7 +279,7 @@ function startLoops() {
       const all = Object.values(groups).map((g) => [g.id, g.subject]);
       // Register every group; pre-activate only the ones matching the listen hint.
       const preActive = all.filter(([jid, subject]) => GROUP_ALLOW.has(jid) || (GROUP_RE ? GROUP_RE.test(subject || "") : false)).map(([jid]) => jid);
-      if (all.length) { await CT.syncGroups(all, preActive); console.log(`registered ${all.length} groups (${preActive.length} pre-activated) in the console`); }
+      if (all.length) { await CT.syncGroups(all, preActive, String(currentSock?.user?.id || "").split(/[:@]/)[0]); console.log(`registered ${all.length} groups (${preActive.length} pre-activated) in the console`); }
     } catch (e) { console.error("group discovery:", e.message); }
   };
   setTimeout(discoverAndSync, 15000);    // catch the fresh-link case quickly
@@ -353,6 +353,10 @@ async function start() {
       // Discover groups so you can label them partner vs lab in config.
       try {
         const groups = await sock.groupFetchAllParticipating();
+        // Rebuild from THIS fetch only. groupSubjects outlives a RELINK in the
+        // same process, so accumulating into it would hand the new number's
+        // sync the OLD number's groups as if it were still in them.
+        groupSubjects.clear();
         for (const g of Object.values(groups)) groupSubjects.set(g.id, g.subject);
         const all = [...groupSubjects.entries()];
         const preActive = all.filter(([jid, subject]) => GROUP_ALLOW.has(jid) || (GROUP_RE ? GROUP_RE.test(subject || "") : false)).map(([jid]) => jid);
@@ -362,7 +366,9 @@ async function start() {
         // Register EVERY group in the console so the admin sees the full roster
         // and picks which to listen to. New groups land inactive; the ones that
         // match the hint are pre-activated for a turnkey first run.
-        if (CT_ENABLED) await CT.syncGroups(all, preActive);
+        // Scoped to the linked number: a DIFFERENT number archives the previous
+        // number's groups and their data (see CT.syncGroups).
+        if (CT_ENABLED) await CT.syncGroups(all, preActive, String(sock.user?.id || "").split(/[:@]/)[0]);
       } catch (e) { console.warn("Could not fetch groups:", e.message); }
     }
     if (connection === "close") {
@@ -403,7 +409,12 @@ async function start() {
       currentSock = null;
       for (const timer of loopTimers) clearInterval(timer);
       loopTimers.length = 0;
-      banner("Exiting. Re-link with:  ./run-gateway.sh relink  then  ./run-gateway.sh start");
+      // Clear the dead credentials. Without this, a supervisor (Docker's
+      // `restart: unless-stopped`) restarts straight back into the same 401 —
+      // a loop that never shows a QR, so relinking needed shell access. With
+      // auth cleared, the restart comes up with a fresh QR in the console.
+      try { fs.rmSync("./auth", { recursive: true, force: true }); } catch {}
+      banner("Logged out by WhatsApp — credentials cleared. Restart (or let Docker restart it) and scan the new QR.");
       // Non-zero so the exit is distinguishable from a clean shutdown.
       setTimeout(() => process.exit(2), 500);
     }

@@ -42,7 +42,9 @@ export async function GET(request: NextRequest) {
     // One row per query type across open cases — the "major types" rollup.
     const rows = await prisma.$queryRaw<Array<{ qt: string; n: bigint }>>`
       SELECT COALESCE(intent, 'OTHER') AS qt, count(*) AS n
-      FROM wa_tickets WHERE status <> 'RESOLVED' GROUP BY 1 ORDER BY 2 DESC`;
+      FROM wa_tickets WHERE status <> 'RESOLVED'
+        AND "groupId" IN (SELECT id FROM wa_groups WHERE "archivedAt" IS NULL)
+      GROUP BY 1 ORDER BY 2 DESC`;
     const total = rows.reduce((s, r) => s + Number(r.n), 0) || 1;
     const lines = [row(["Query type", "Open cases", "Share %"])];
     for (const r of rows) lines.push(row([r.qt, Number(r.n), ((Number(r.n) / total) * 100).toFixed(1)]));
@@ -51,7 +53,8 @@ export async function GET(request: NextRequest) {
     filename = "wa-query-summary.csv";
   } else if (type === "cases") {
     const tickets = await prisma.waTicket.findMany({
-      where: { OR: [{ status: { not: "RESOLVED" } }, { resolvedAt: { gte: since } }] },
+      // Only the linked number's groups — archived ones belong to a previous number.
+      where: { OR: [{ status: { not: "RESOLVED" } }, { resolvedAt: { gte: since } }], group: { archivedAt: null } },
       orderBy: { lastActivityAt: "desc" },
       take: 10000,
       include: { group: { select: { subject: true, role: true } } },
@@ -82,7 +85,7 @@ export async function GET(request: NextRequest) {
     filename = `wa-queries-${days}d.csv`;
   } else {
     const msgs = await prisma.waMessage.findMany({
-      where: { ts: { gte: since } },
+      where: { ts: { gte: since }, group: { archivedAt: null } },
       orderBy: { ts: "asc" },
       take: 50000,
       select: { ts: true, direction: true, fromMe: true, sender: true, senderJid: true, text: true, ocrText: true, mediaType: true, intent: true, orderIds: true, group: { select: { subject: true, role: true } } },

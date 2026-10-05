@@ -12,15 +12,18 @@ export async function GET(request: NextRequest) {
   if (!user || (user.role !== UserRole.OPS_HEAD && user.role !== UserRole.OPS_AGENT))
     return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
 
-  const OPEN = Prisma.sql`t.status <> 'RESOLVED'`;
+  // Only the linked number's data: archived groups belong to a previously
+  // linked WhatsApp number and are hidden everywhere.
+  const LIVE = Prisma.sql`t."groupId" IN (SELECT id FROM wa_groups WHERE "archivedAt" IS NULL)`;
+  const OPEN = Prisma.sql`t.status <> 'RESOLVED' AND ${LIVE}`;
 
   const [totals, byStatus, byIntent, byStore, byLab, ageBuckets, volume, briefs] = await Promise.all([
     prisma.$queryRaw<Array<{ open: bigint; resolved_today: bigint; listening: bigint; unread: bigint }>>`
       SELECT
         (SELECT count(*) FROM wa_tickets t WHERE ${OPEN}) AS open,
-        (SELECT count(*) FROM wa_tickets t WHERE t.status='RESOLVED' AND t."resolvedAt" >= now() - interval '1 day') AS resolved_today,
-        (SELECT count(*) FROM wa_groups WHERE active = true) AS listening,
-        (SELECT count(*) FROM wa_groups g WHERE g.active = true AND EXISTS (
+        (SELECT count(*) FROM wa_tickets t WHERE t.status='RESOLVED' AND t."resolvedAt" >= now() - interval '1 day' AND ${LIVE}) AS resolved_today,
+        (SELECT count(*) FROM wa_groups WHERE active = true AND "archivedAt" IS NULL) AS listening,
+        (SELECT count(*) FROM wa_groups g WHERE g.active = true AND g."archivedAt" IS NULL AND EXISTS (
             SELECT 1 FROM wa_messages m WHERE m."groupId"=g.id AND m.ts > COALESCE(g."lastReadAt", 'epoch'))) AS unread`,
     prisma.$queryRaw<Array<{ status: string; n: bigint }>>`
       SELECT t.status::text AS status, count(*) AS n FROM wa_tickets t WHERE ${OPEN} GROUP BY 1 ORDER BY 2 DESC`,
@@ -43,7 +46,7 @@ export async function GET(request: NextRequest) {
       SELECT
         count(*) FILTER (WHERE ts > now() - interval '1 day') AS d1,
         count(*) FILTER (WHERE ts > now() - interval '7 days') AS d7
-      FROM wa_messages`,
+      FROM wa_messages WHERE "groupId" IN (SELECT id FROM wa_groups WHERE "archivedAt" IS NULL)`,
     prisma.$queryRaw<Array<{ total: bigint; resolved: bigint }>>`
       SELECT count(*) AS total, count(*) FILTER (WHERE resolved) AS resolved FROM wa_case_briefs`,
   ]);
@@ -59,7 +62,7 @@ export async function GET(request: NextRequest) {
         FILTER (WHERE "firstResponseAt" IS NOT NULL AND "createdAt" > now() - interval '7 days') AS avg_first_min,
       count(*) FILTER (WHERE status <> 'RESOLVED' AND "lastActivityAt" < now() - interval '24 hours') AS stale,
       count(*) FILTER (WHERE status = 'RESOLVED' AND "resolvedAt" > now() - interval '1 day') AS resolved_24h
-    FROM wa_tickets`;
+    FROM wa_tickets t WHERE ${LIVE}`;
 
   // `t` alias is required: OPEN is `t.status <> 'RESOLVED'`, so an unaliased
   // FROM here made the whole endpoint 500 with 42P01 "missing FROM-clause

@@ -20,7 +20,8 @@ import { loadTeam, makeTeamMatcher } from "./team.mjs";
 let groupCache = new Map();
 export async function refreshGroups() {
   const r = await taskosQuery(
-    `SELECT id, jid, subject, role, active, "storeId", "labId", "autoAskIdOnMissing", "sendEnabled" FROM wa_groups`
+    `SELECT id, jid, subject, role, active, "storeId", "labId", "autoAskIdOnMissing", "sendEnabled"
+       FROM wa_groups WHERE "archivedAt" IS NULL`
   );
   const m = new Map();
   for (const g of r.rows) m.set(g.jid, g);
@@ -34,21 +35,151 @@ export const knownGroupCount = () => groupCache.size;
 // (default role SUPPORT for an admin to classify) and refreshes the subject on
 // existing ones — never overwrites an admin's role/mapping. Makes server
 // deploys turnkey: no manual seed step. `pairs` = iterable of [jid, subject].
-export async function syncGroups(pairs, preActiveJids = null) {
-  // preActiveJids: jids to activate on FIRST registration (e.g. hint matches).
-  // When null, every discovered group is pre-activated (legacy turnkey). On
-  // conflict we only refresh the subject — never the admin's active/role choice.
+/**
+ * Register the groups the linked number is in, scoped to THAT number.
+ *
+ * pairs:         [jid, subject] for every group the number is in right now —
+ *                the fresh groupFetchAllParticipating() result, never a cache.
+ * preActiveJids: jids to start listening to on FIRST registration (the listen
+ *                hint). null = pre-activate everything (legacy turnkey).
+ * accountNumber: the linked number's digits.
+ *
+ * When the number differs from the one a row was registered under (or the row
+ * predates number tracking), that row is ARCHIVED: hidden everywhere with its
+ * messages and tickets, never deleted (a delete would cascade the history), and
+ * its jid suffixed so the real jid is free for a fresh row under the new number.
+ * Classification (role, store/lab mapping, listening) carries over to the fresh
+ * row; Send does not — a new number is enabled group by group, deliberately.
+ * Groups the SAME number has left are marked non-members (nothing switched off).
+ *
+ * All of it is one transaction: a half-applied archive would leave the inbox
+ * pointing at the wrong rows.
+ */
+export async function syncGroups(pairs, preActiveJids = null, accountNumber = null) {
   const activeSet = preActiveJids ? new Set(preActiveJids) : null;
-  for (const [jid, subject] of pairs) {
-    const active = activeSet ? activeSet.has(jid) : true;
-    try {
-      await taskosQuery(
-        `INSERT INTO wa_groups (id, jid, subject, role, active, "updatedAt")
-           VALUES (gen_random_uuid()::text, $1, $2, 'SUPPORT', $3, now())
-         ON CONFLICT (jid) DO UPDATE SET subject = EXCLUDED.subject, "updatedAt" = now()`,
-        [jid, subject, active]
+  const number = accountNumber ? String(accountNumber).replace(/\D/g, "") : "";
+
+  // Without a number there is nothing to scope by: register/rename only.
+  if (!number) {
+    for (const [jid, subject] of pairs) {
+      const active = activeSet ? activeSet.has(jid) : true;
+      try {
+        await taskosQuery(
+          `INSERT INTO wa_groups (id, jid, subject, role, active, "updatedAt")
+             VALUES (gen_random_uuid()::text, $1, $2, 'SUPPORT', $3, now())
+           ON CONFLICT (jid) DO UPDATE SET subject = EXCLUDED.subject, "updatedAt" = now()`,
+          [jid, subject || jid, active]
+        );
+      } catch (e) { console.error("syncGroups:", e.message); }
+    }
+    return refreshGroups();
+  }
+
+  // An ops number in ZERO groups is far likelier a fetch glitch than reality.
+  // Archiving / un-membering on a glitch would empty the inbox and switch off
+  // every Send toggle, so take no destructive step on an empty list.
+  if (pairs.length === 0) {
+    console.warn("syncGroups: WhatsApp returned no groups — skipping archive and membership update");
+    return refreshGroups();
+  }
+
+  const jids = pairs.map(([jid]) => jid);
+  const client = await taskos.connect();
+  let archivedCount = 0;
+  let cancelledCount = 0;
+  try {
+    await client.query("BEGIN");
+
+    // 1. Archive every live row that belongs to another (or an unrecorded)
+    //    number. (Their classification is picked up again in step 3.)
+    const archived = (await client.query(
+      `WITH old AS (
+         SELECT id, jid, role, "storeId", "labId", "autoAskIdOnMissing", active
+           FROM wa_groups
+          WHERE "archivedAt" IS NULL AND "accountNumber" IS DISTINCT FROM $1
+          FOR UPDATE
+       )
+       UPDATE wa_groups g
+          SET "archivedAt" = now(), "activeBeforeArchive" = old.active,
+              active = false, "sendEnabled" = false, "isMember" = false,
+              jid = g.jid || '~archived~' || to_char(now(), 'YYYYMMDDHH24MISSMS'), "updatedAt" = now()
+         FROM old
+        WHERE g.id = old.id
+       RETURNING old.id`,
+      [number]
+    )).rows;
+    archivedCount = archived.length;
+
+    // 2. Nothing still queued for an archived group may go out from the new
+    //    number; mirror the cancellation onto the lab communication timeline.
+    if (archived.length > 0) {
+      const cancelled = (await client.query(
+        `UPDATE wa_outbound SET status = 'FAILED', error = 'cancelled: the linked WhatsApp number changed'
+          WHERE "groupId" = ANY($1::text[]) AND status = 'QUEUED'
+          RETURNING id`,
+        [archived.map((r) => r.id)]
+      )).rows.map((r) => r.id);
+      cancelledCount = cancelled.length;
+      if (cancelled.length > 0) {
+        await client.query(
+          `UPDATE lab_communications SET status = 'FAILED', "failedAt" = now(), "updatedAt" = now()
+            WHERE "waOutboundId" = ANY($1::text[]) AND status = 'QUEUED'`,
+          [cancelled]
+        );
+      }
+    }
+    // 3. Register the number's current groups. Classification (role, store /
+    //    lab mapping, listening) is carried from the newest ARCHIVED row for
+    //    the same jid, looked up in SQL rather than from this run's archive —
+    //    after a fresh link groups trickle in over several discoveries, and a
+    //    group that arrives later must still get its mapping back. Send never
+    //    carries: a new number is enabled group by group. An existing row of
+    //    this number keeps every admin choice; only subject/membership refresh.
+    for (const [jid, subject] of pairs) {
+      const hintActive = activeSet ? activeSet.has(jid) : true;
+      await client.query(
+        `INSERT INTO wa_groups (id, jid, subject, role, active, "storeId", "labId", "autoAskIdOnMissing",
+                                "sendEnabled", "accountNumber", "isMember", "updatedAt")
+         SELECT gen_random_uuid()::text, $1, $2,
+                COALESCE(prev.role, 'SUPPORT'::"WaGroupRole"), COALESCE(prev."activeBeforeArchive", $3),
+                prev."storeId", prev."labId", COALESCE(prev."autoAskIdOnMissing", false),
+                false, $4, true, now()
+           FROM (SELECT 1) AS one
+           LEFT JOIN LATERAL (
+             SELECT role, "activeBeforeArchive", "storeId", "labId", "autoAskIdOnMissing"
+               FROM wa_groups
+              WHERE "archivedAt" IS NOT NULL AND split_part(jid, '~archived~', 1) = $1
+              ORDER BY "archivedAt" DESC
+              LIMIT 1
+           ) AS prev ON true
+         ON CONFLICT (jid) DO UPDATE
+           SET subject = EXCLUDED.subject, "accountNumber" = EXCLUDED."accountNumber",
+               "isMember" = true, "updatedAt" = now()`,
+        [jid, subject || jid, hintActive, number]
       );
-    } catch (e) { console.error("syncGroups:", e.message); }
+    }
+
+    // 4. Groups this same number is no longer in. Membership ONLY — listening
+    //    and Send are left alone: right after a fresh link WhatsApp can report
+    //    a partial list, and switching groups off on a partial list would leave
+    //    them off once they reappear. Sending to a non-member group fails
+    //    visibly anyway.
+    await client.query(
+      `UPDATE wa_groups SET "isMember" = false, "updatedAt" = now()
+        WHERE "archivedAt" IS NULL AND "accountNumber" = $1 AND "isMember" = true AND jid <> ALL($2::text[])`,
+      [number, jids]
+    );
+
+    await client.query("COMMIT");
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
+    console.error("syncGroups:", e.message);
+  } finally {
+    client.release();
+  }
+  if (archivedCount > 0) {
+    console.log(`syncGroups: archived ${archivedCount} group(s) from a previous WhatsApp number` +
+      (cancelledCount ? `, cancelled ${cancelledCount} queued message(s)` : ""));
   }
   return refreshGroups();
 }

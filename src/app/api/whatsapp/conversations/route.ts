@@ -44,7 +44,7 @@ LEFT JOIN unread u ON u."groupId" = g.id
 LEFT JOIN opentix o ON o."groupId" = g.id
 LEFT JOIN toptix t ON t."groupId" = g.id
 LEFT JOIN brk b ON b."groupId" = g.id
-WHERE g.active AND g.role <> 'IGNORE'
+WHERE g.active AND g.role <> 'IGNORE' AND g."archivedAt" IS NULL  -- archived groups belong to a previously linked WhatsApp number
 ORDER BY l.ts DESC
 LIMIT 250`;
 

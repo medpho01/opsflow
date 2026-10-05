@@ -394,28 +394,47 @@ function RuleEditor({ draft, setDraft, templates, polls, labs, saving, error, pr
             </label>
           </Section>
 
-          <Section title="Which labs and orders">
-            <div className="text-[11px] text-zinc-500">Labs (none selected = every configured lab)</div>
-            <div className="mt-1.5 flex flex-wrap gap-1.5">
-              {labs.map((lab) => (
-                <Chip key={lab.labId} on={draft.allowedLabIds.includes(lab.labId)} onClick={() => update("allowedLabIds", toggleIn(draft.allowedLabIds, lab.labId))}>{lab.labName}</Chip>
-              ))}
-            </div>
-            <div className="mt-3 text-[11px] text-zinc-500">Order types (none selected = all)</div>
-            <div className="mt-1.5 flex flex-wrap gap-1.5">
-              {ORDER_TYPES.map((type) => (
-                <Chip key={type} on={draft.allowedOrderTypes.includes(type)} onClick={() => update("allowedOrderTypes", toggleIn(draft.allowedOrderTypes, type))}>{type.replaceAll("_", " ").toLowerCase()}</Chip>
-              ))}
-            </div>
-            <div className="mt-3 max-w-xs">
-              <Field label="Only for labs with this switch on (Lab Config)">
-                <select value={draft.requiresLabSetting ?? ""} onChange={(e) => update("requiresLabSetting", e.target.value || null)} className={inputClass}>
-                  <option value="">No requirement</option>
-                  <option value="appointmentRemindersEnabled">Appointment reminders</option>
-                  <option value="postAppointmentCheckEnabled">Status check after appointment</option>
-                </select>
-              </Field>
-            </div>
+          <Section title="Who gets it">
+            <p className="text-xs text-zinc-300">
+              The lab on the order — each message goes to the WhatsApp group (or manager) of whichever lab the order belongs to.
+            </p>
+            {(() => {
+              const narrowed = draft.allowedLabIds.length > 0 || draft.allowedOrderTypes.length > 0 || !!draft.requiresLabSetting;
+              return (
+                <details open={narrowed} className="mt-3">
+                  <summary className="cursor-pointer text-[11px] text-zinc-400 hover:text-zinc-200">
+                    {narrowed ? "Limited to some orders" : "Applies to every order of every configured lab — limit it"}
+                  </summary>
+                  <div className="mt-2 space-y-3 border-l border-zinc-800 pl-3">
+                    <div>
+                      <div className="text-[11px] text-zinc-500">Only orders of these labs</div>
+                      <div className="mt-1.5 flex flex-wrap gap-1.5">
+                        {labs.map((lab) => (
+                          <Chip key={lab.labId} on={draft.allowedLabIds.includes(lab.labId)} onClick={() => update("allowedLabIds", toggleIn(draft.allowedLabIds, lab.labId))}>{lab.labName}</Chip>
+                        ))}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[11px] text-zinc-500">Only these order types</div>
+                      <div className="mt-1.5 flex flex-wrap gap-1.5">
+                        {ORDER_TYPES.map((type) => (
+                          <Chip key={type} on={draft.allowedOrderTypes.includes(type)} onClick={() => update("allowedOrderTypes", toggleIn(draft.allowedOrderTypes, type))}>{type.replaceAll("_", " ").toLowerCase()}</Chip>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="max-w-xs">
+                      <Field label="Only labs that switched this on in Lab Config">
+                        <select value={draft.requiresLabSetting ?? ""} onChange={(e) => update("requiresLabSetting", e.target.value || null)} className={inputClass}>
+                          <option value="">Any lab</option>
+                          <option value="appointmentRemindersEnabled">Appointment reminders</option>
+                          <option value="postAppointmentCheckEnabled">Status check after appointment</option>
+                        </select>
+                      </Field>
+                    </div>
+                  </div>
+                </details>
+              );
+            })()}
           </Section>
 
           <Section title="Message">
@@ -433,8 +452,8 @@ function RuleEditor({ draft, setDraft, templates, polls, labs, saving, error, pr
               </Field>
               <Field label="Send to">
                 <select value={draft.recipient} onChange={(e) => update("recipient", e.target.value as Rule["recipient"])} className={inputClass}>
-                  <option value="LAB">The lab&apos;s group</option>
-                  <option value="MANAGER">The lab manager (falls back to the group)</option>
+                  <option value="LAB">The order&apos;s lab — its group</option>
+                  <option value="MANAGER">The order&apos;s lab — its manager (else the group)</option>
                 </select>
               </Field>
               <Field label="Priority when several are due together">

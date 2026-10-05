@@ -496,7 +496,7 @@ export function NonApiLabConfigPanel() {
                 <div className="text-xs font-medium text-zinc-300 mb-2">Daily summary <span className="font-normal text-zinc-500">— one message a day</span></div>
                 <label className="flex items-center gap-2 text-sm text-zinc-300">
                   <input type="checkbox" checked={draft.dailyDigestEnabled} onChange={(e) => update("dailyDigestEnabled", e.target.checked)} className="accent-blue-500" />
-                  Send this lab a wrap-up of today and a preview of tomorrow
+                  Send this lab tomorrow&apos;s orders every evening
                 </label>
                 <div className="mt-3 max-w-[10rem]">
                   <Field label="Send at (local time)">
@@ -508,7 +508,7 @@ export function NonApiLabConfigPanel() {
                   Stay quiet on days with no orders
                 </label>
                 <p className="text-[11px] text-zinc-500 mt-1.5">
-                  Counts for today, then tomorrow&apos;s appointment list — the same numbers as the provider board, from the same query. Evening suits it: today is settled and tomorrow is still changeable. Wording lives in the <span className="text-zinc-400">Daily summary</span> template.
+                  A numbered list of tomorrow&apos;s appointments — time, patient, area and tests — with a confirmation link beside every order the lab has not confirmed yet. Preview or send it now from the lab&apos;s page on the board. Wording lives in the <span className="text-zinc-400">tomorrow&apos;s orders</span> template.
                 </p>
               </div><label className="flex items-center gap-2 text-sm text-zinc-300"><input type="checkbox" checked={draft.isActive} onChange={(e) => update("isActive", e.target.checked)} className="accent-blue-500" /> Enable automation for this lab</label>{error && <div className="rounded-md bg-rose-500/10 text-rose-300 text-sm px-3 py-2">{error}</div>}</div><div className="px-5 py-4 border-t border-zinc-800 flex justify-end gap-2"><button type="button" onClick={() => setOpen(false)} className="px-3 py-2 text-sm text-zinc-400 hover:text-zinc-200">Cancel</button><button disabled={saving} className="rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-60 text-white font-semibold text-sm px-4 py-2">{saving ? "Saving…" : "Save configuration"}</button></div></form></div></div>}
       {toast && <div className="fixed z-[60] left-1/2 bottom-6 -translate-x-1/2 rounded-lg bg-zinc-100 text-zinc-950 px-4 py-2 text-sm font-medium shadow-lg">{toast}</div>}

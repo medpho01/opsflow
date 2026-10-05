@@ -182,7 +182,7 @@ export function ProviderOrdersPage({ labId }: { labId: number }) {
                 disabled={digestBusy}
                 className="rounded-lg border border-zinc-700 px-3 py-2 text-xs text-zinc-400 hover:text-zinc-200 disabled:opacity-50"
               >
-                {digest ? "Hide daily summary" : "Daily summary"}
+                {digest ? "Hide tomorrow's summary" : "Tomorrow's summary"}
               </button>
               <button onClick={load} className="rounded-lg border border-zinc-700 px-3 py-2 text-xs text-zinc-400 hover:text-zinc-200">
                 Refresh
@@ -200,7 +200,7 @@ export function ProviderOrdersPage({ labId }: { labId: number }) {
             <div className="mb-5 rounded-xl border border-zinc-800 bg-zinc-900/40 p-4">
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                 <div>
-                  <div className="text-xs font-medium text-zinc-200">Daily summary</div>
+                  <div className="text-xs font-medium text-zinc-200">Tomorrow&apos;s orders — evening summary</div>
                   <div className="mt-0.5 text-[11px] text-zinc-500">
                     {digest.schedule.enabled
                       ? `Sends automatically at ${String(digest.schedule.hour).padStart(2, "0")}:${String(digest.schedule.minute).padStart(2, "0")} ${digest.schedule.timeZone}`

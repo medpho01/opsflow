@@ -44,3 +44,6 @@ docker/labstack-dummy/02-seed.sql
 # Local scratch/debug files — never commit.
 .scratch/
 .scratch-*.ts
+
+# local provider-comms demo output
+.sim/

@@ -3,6 +3,7 @@
 #
 #   bash scripts/provider-comms-sim.sh            # all scenarios
 #   bash scripts/provider-comms-sim.sh "phlebo"   # only matching ones
+#   bash scripts/provider-comms-sim.sh demo       # dummy labs, every message in full (.sim/provider-comms-demo.html)
 #
 # Builds two THROWAWAY databases on the local Postgres and never touches others:
 #   labstack_sim         — a copy of the local `labstack` DB's order tables
@@ -32,4 +33,5 @@ export LABSTACK_CONFIRMATION_KEY="${LABSTACK_CONFIRMATION_KEY:-0123456789abcdef0
 export TIMEZONE="Asia/Kolkata"
 npx prisma db push --skip-generate --accept-data-loss >/dev/null
 
+if [ "${1:-}" = "demo" ]; then npx tsx scripts/provider-comms-demo.ts 2>&1 | grep -v "^\[MessageRules\]\|^\[Replies\]\|^\[PollVotes\]"; exit "${PIPESTATUS[0]}"; fi
 if [ -n "${RAW:-}" ]; then npx tsx scripts/provider-comms-scenarios.ts "${1:-}"; else npx tsx scripts/provider-comms-scenarios.ts "${1:-}" 2>&1 | grep -v "^\[MessageRules\]\|^\[Replies\]\|^\[PollVotes\]\|^→"; fi

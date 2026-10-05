@@ -264,6 +264,11 @@ a reply, pending-reports list, retroactive rule edit, cancelled order and
 paused rule, and the upgrade from the old scheduler. Patient details are never
 printed. Pass a word to run matching scenarios only (`npm run test:comms -- phlebo`).
 
+`npm run demo:comms` plays a day and a half for three dummy labs (made-up
+patients and addresses, so messages are shown in full) in which every rule
+fires, with the labs confirming, replying and tapping polls along the way. It
+prints the story and writes a chat view to `.sim/provider-comms-demo.html`.
+
 ## 11. Decisions and open questions
 
 Decided (Oct 2026):

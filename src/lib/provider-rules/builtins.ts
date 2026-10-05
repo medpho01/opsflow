@@ -145,7 +145,7 @@ export const BUILT_IN_RULES: BuiltIn[] = [
   {
     builtInKey: "REPORT_CHASE",
     name: "Report chase — 12 h after the appointment",
-    description: "Sample collected but no report 12 hours after the appointment: asks for the report. Repeats every 3 hours, up to 4 times, until LabStack shows it delivered or the lab says it is shared.",
+    description: "Sample collected but no report 12 hours after the appointment: asks for the report. Repeats every 3 hours, up to 4 times, until LabStack shows it delivered or the lab says it is shared. Only between 08:00 and 20:00.",
     isActive: false,
     triggerCondition: { statusIn: REPORT_PENDING_STATUSES, minutesAfterAppointment: 720 },
     factConditions: [{ kind: "report_shared", present: false }],
@@ -154,6 +154,9 @@ export const BUILT_IN_RULES: BuiltIn[] = [
     priority: 3,
     repeatEveryMinutes: 180,
     maxSends: 4,
+    // Not urgent enough to wake a lab group: chases go out 08:00–20:00 only.
+    sendWindowStartHour: 8,
+    sendWindowEndHour: 20,
   },
   {
     builtInKey: "SUMMARY_PENDING_REPORTS",

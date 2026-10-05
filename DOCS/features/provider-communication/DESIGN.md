@@ -101,6 +101,14 @@ existing once-per-day key.
 
 ## 5. Retroactive changes, safely
 
+In plain terms: the catch-up window decides what happens when a rule's moment
+for an order has **already passed** by the time the rule first sees that order
+(a new or edited rule, or the app coming back after downtime). Example — at
+3:00 pm you create "remind 1 hour after the order if still unconfirmed":
+an order from 2:45 pm is due at 3:45 → sent normally; one from 1:50 pm was due
+at 2:50, ten minutes ago → sent now; one from yesterday → skipped and logged.
+Without it, a new rule would message every old open order at once.
+
 Because evaluation is continuous, edits apply on their own. What needs a policy
 is a rule whose moment **has already passed** for existing items — without one,
 creating "remind 1h after order" would message every open order at once.
@@ -137,15 +145,56 @@ declares how to find it (a field path, configured once per source):
 `(providerKind, providerId) → WhatsApp group / number, manager, active, send window`.
 Lab Config becomes the "Labs" view of that directory.
 
-## 7. Replies
+## 7. Replies — free text, about anything
 
-A rule may attach a poll. Each option is one of:
-- **record** — save the answer on the item's timeline (status check today);
-- **ask for detail** — save the provider's next message as the reason/ETA;
-- **stop this rule** for the item (e.g. "Report shared");
-- **stop all chasing** for the item.
+Decision: replies are **free text**, and not only answers to a question. Every
+message from a provider in its group (or from its named individuals) is
+captured and attributed to the item it is about:
 
-Answers are recorded in OpsFlow only. Nothing is written to LabStack.
+1. **Which item.** The reply quotes our message (WhatsApp reply-to), or names an
+   order id / patient, or is the only open question in that group. Otherwise it
+   is attached to the provider, unassigned, for the desk.
+2. **What it says.** An extraction step (Claude — the gateway already uses it)
+   turns the text into **facts** on the item, each with the source message and
+   a confidence: `eta`, `phlebo_name`, `phlebo_phone`, `delay_reason`,
+   `sample_collected`, `patient_unavailable`, `new_appointment_time`,
+   `report_shared`, `cannot_fulfil`, free `note`.
+3. **What it changes.** Rules can use facts in conditions, exactly like source
+   fields: e.g. "stop the report chase when `report_shared` is set", "if
+   `eta` is later than the appointment + 30 min, alert the desk". Facts never
+   write to LabStack.
+
+Polls stay available for yes/no style questions where a one-tap answer is
+enough, but they are optional, not the main channel.
+
+## 7b. Recipients
+
+Decision: everything goes to the **lab's group** or to **named individuals at
+the lab** (manager, coordinator). Never to phlebos or patients directly.
+
+## 7c. Toward agents
+
+The rules stay the predictable **trigger layer**. An agent is a new kind of
+**action** a rule can hand off to, with a goal and limits:
+
+```
+rule fires → WhatsApp → no useful reply in N min
+  → agent, goal: "get the phlebo's name and ETA for order 87668"
+      allowed: nudge group → message manager → call lab (Exotel) →
+               transcribe + extract → create an OpsFlow task with everything tried
+      limits:  max attempts, max calls, working hours, cost cap
+```
+
+Already in place: Exotel calls with per-order call history and recordings,
+Whisper transcription, Claude in the gateway, OpsFlow tasks with assignment and
+escalation, the per-item timeline as the audit trail.
+
+To build: the agent loop (goal + tools + stop conditions), per-rule guardrails
+("may call", "ask a human first"), and later a live voice agent (today calls are
+transcribed after the fact). Independent actions in LabStack itself (reassign,
+reschedule) need write APIs that OpsFlow deliberately does not have today — until
+then the agent's strongest move is putting the right human on it with full
+context.
 
 ## 8. Your six communications as rules
 
@@ -180,18 +229,24 @@ Answers are recorded in OpsFlow only. Nothing is written to LabStack.
 1. **Engine on Lab Orders, behaviour-identical.** Rule model, ledger, catch-up,
    seeded rules matching today, rules page in plain language. Retroactive edits
    land here.
-2. **New capabilities.** `statusNotIn`, phlebo fields in templates, ETA reply,
-   summaries as rules (pending reports), dry-run preview.
+2. **New capabilities.** `statusNotIn`, phlebo fields in templates, free-text
+   reply capture + fact extraction, summaries as rules (pending reports),
+   dry-run preview.
 3. **New sources.** Appointments, then PharmaOrder; provider directory;
    EDTA / injection as type filters.
+4. **Agent actions.** Escalation beyond WhatsApp: individual nudges, calls,
+   task hand-off, with per-rule guardrails.
 
-## 11. Open questions
+## 11. Decisions and open questions
 
-1. Catch-up window: 30 minutes by default — agreed?
-2. Phlebo questions to the lab group only, or also direct to the phlebo's number
-   (different channel, needs consent)?
-3. ETA as a poll (on time / 15 / 30+ min late) or free text?
-4. Appointments and PharmaOrder: which field identifies the provider, and which
-   statuses mean "pickup pending" for injection / EDTA services?
-5. Should Task Rules and communication rules share one editor (one rule, two
-   possible actions), or stay as two lists over the same building blocks?
+Decided (Oct 2026):
+- Catch-up window: 30 minutes default (a safety setting, see §5).
+- Recipients: lab groups and named individuals at the lab only.
+- Replies: free text about anything, extracted into facts (§7).
+- Task Rules and communication rules: two separate lists for now.
+- Agent behaviour (§7c) is the direction; the rule engine is built so an
+  "agent" action can be added later.
+
+Later:
+- Appointments and PharmaOrder: provider field and "pickup pending" statuses.
+- LabStack write access for agent actions.

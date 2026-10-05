@@ -81,6 +81,37 @@ export function contactVariables(details: Pick<OrderContactDetails, "patientMobi
   };
 }
 
+export type OrderPackage = { name: string; tests: string[] };
+
+/** Beyond this, a package's tests are summarised — a 69-test panel is not a list a lab reads on a phone. */
+const MAX_TESTS_PER_PACKAGE = 25;
+
+/**
+ * Packages with their individual tests, one block per package:
+ *
+ *   🧪 *Full Body Checkup*
+ *      CBC, HbA1c, Lipid Profile, …
+ *
+ * A package whose tests LabStack does not break down is listed by name alone,
+ * so the line is never empty. Tests booked outside any package come last.
+ */
+export function formatTestBreakdown(packages: OrderPackage[], directTests: string[], indent = "   "): string[] {
+  const lines: string[] = [];
+  const names = (tests: string[]) => {
+    const unique = [...new Set(tests.map((test) => test.trim()).filter(Boolean))];
+    const shown = unique.slice(0, MAX_TESTS_PER_PACKAGE).join(", ");
+    return unique.length > MAX_TESTS_PER_PACKAGE ? `${shown} +${unique.length - MAX_TESTS_PER_PACKAGE} more` : shown;
+  };
+  for (const pkg of packages) {
+    lines.push(`${indent}🧪 *${pkg.name.trim()}*`);
+    const tests = names(pkg.tests ?? []);
+    if (tests) lines.push(`${indent}   ${tests}`);
+  }
+  const direct = names(directTests);
+  if (direct) lines.push(`${indent}🧪 ${packages.length > 0 ? "Also: " : ""}${direct}`);
+  return lines;
+}
+
 type DetailsRow = {
   id: number;
   mobile: string | null;

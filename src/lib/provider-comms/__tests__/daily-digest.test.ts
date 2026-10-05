@@ -57,6 +57,10 @@ const order = (overrides: Partial<ScheduledOrder> = {}): ScheduledOrder => ({
   location: "Solan",
   area: "Chambaghat",
   tests: "CBC, Lipid Profile",
+  packages: [],
+  directTests: [],
+  fullAddress: null,
+  mapUrl: null,
   address: "Solan 173212",
   ...overrides,
 });
@@ -158,10 +162,38 @@ describe("the default digest template", () => {
 
 describe("tomorrowListBlock", () => {
   const link = (orderId: number) => `https://console.labstack.in/confirmation/tok-${orderId}`;
+  const detailed = order({
+    fullAddress: "Flat 2, 4th Cross, Chambaghat, Solan – 173212",
+    mapUrl: "https://maps.google.com/?q=30.900000,77.100000",
+    packages: [{ name: "Full Body Check", tests: ["CBC", "HbA1c", "Lipid Profile"] }],
+  });
 
-  it("numbers each order with its time, patient, area and tests", () => {
-    const block = tomorrowListBlock([order()], 1, IST, link);
-    assert.equal(block, "*1. 8:00 am* – Varun Banaal\n   📍 Chambaghat\n   🧪 CBC, Lipid Profile");
+  it("lists the full address, a map pin and each package's individual tests", () => {
+    assert.equal(
+      tomorrowListBlock([detailed], 1, IST, link),
+      [
+        "*1. 8:00 am* – Varun Banaal",
+        "   📍 Flat 2, 4th Cross, Chambaghat, Solan – 173212",
+        "   🗺️ https://maps.google.com/?q=30.900000,77.100000",
+        "   🧪 *Full Body Check*",
+        "      CBC, HbA1c, Lipid Profile",
+      ].join("\n"),
+    );
+  });
+
+  it("falls back to the area and the package names when there is no detail", () => {
+    assert.equal(tomorrowListBlock([order()], 1, IST, link), "*1. 8:00 am* – Varun Banaal\n   📍 Chambaghat\n   🧪 CBC, Lipid Profile");
+  });
+
+  it("names a package whose tests are not broken down, and lists tests booked outside packages", () => {
+    const block = tomorrowListBlock([order({ packages: [{ name: "Thyroid Profile", tests: [] }], directTests: ["Vitamin D"] })], 1, IST, link);
+    assert.match(block, /🧪 \*Thyroid Profile\*\n {3}🧪 Also: Vitamin D$/);
+  });
+
+  it("caps a very long panel instead of printing every test", () => {
+    const tests = Array.from({ length: 30 }, (_, i) => `Test ${String(i).padStart(2, "0")}`);
+    const block = tomorrowListBlock([order({ packages: [{ name: "Mega Panel", tests }] })], 1, IST, link);
+    assert.match(block, /Test 24 \+5 more$/);
   });
 
   it("flags only unconfirmed orders, with the link to confirm them", () => {

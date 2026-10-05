@@ -16,6 +16,7 @@
  */
 import { labstackWorkerQuery } from "@/lib/db/labstack";
 import { AWAITING_CONFIRMATION_STATUSES } from "@/lib/non-api-labs/source-check";
+import { composePatientAddress, mapUrlFor, type OrderPackage } from "@/lib/non-api-labs/order-details";
 
 /** Statuses that mean the order will never be fulfilled, or is already done. */
 export const DEAD_STATUSES = ["CANCELED", "PATIENT_MISSED"];
@@ -155,6 +156,14 @@ export type ScheduledOrder = {
   area: string | null;
   /** Package names, comma-separated. */
   tests: string | null;
+  /** Every package on the order, with the individual tests inside it. */
+  packages: OrderPackage[];
+  /** Tests booked on the order directly rather than through a package. */
+  directTests: string[];
+  /** The patient's full street address, from their Profile. */
+  fullAddress: string | null;
+  /** Pin on the saved coordinates, else a search on the address. */
+  mapUrl: string | null;
   /**
    * A short location: the patient's city + pincode (from their Profile) for a
    * home visit, the centre and its city for a centre visit. Composing them here
@@ -196,6 +205,9 @@ export async function loadDaySchedule(
     patientName: string | null; city: string | null; pincode: string | null;
     storeName: string | null; storeCity: string | null; userCity: string | null;
     area: string | null; tests: string | null;
+    unitFloorBuilding: string | null; street: string | null; locality: string | null;
+    latitude: number | null; longitude: number | null;
+    packages: OrderPackage[] | null; directTests: string[] | null;
   }>(
     `
     SELECT o.id, o."labOrderId", o."appointmentTime",
@@ -211,6 +223,27 @@ export async function loadDaySchedule(
               FROM public."_OrderToPackage" op
               JOIN public."Package" pk ON pk.id = op."B"
              WHERE op."A" = o.id) AS tests,
+           p."unitFloorBuilding", p.address AS street, p.locality, p.latitude, p.longitude,
+           -- Each package with the individual tests inside it: the test
+           -- catalogue (Master) link first, the package's own sub-test list
+           -- when the catalogue has none.
+           (SELECT json_agg(json_build_object(
+                     'name', pk."packageName",
+                     'tests', COALESCE(
+                       (SELECT array_agg(DISTINCT m.name ORDER BY m.name)
+                          FROM public."_MasterToPackage" mp
+                          JOIN public."Master" m ON m.id = mp."A"
+                         WHERE mp."B" = pk.id),
+                       pk."panelSubTests",
+                       ARRAY[]::text[]))
+                     ORDER BY pk."packageName")
+              FROM public."_OrderToPackage" op
+              JOIN public."Package" pk ON pk.id = op."B"
+             WHERE op."A" = o.id) AS packages,
+           (SELECT array_agg(m.name ORDER BY m.name)
+              FROM public."_MasterToOrder" mo
+              JOIN public."Master" m ON m.id = mo."A"
+             WHERE mo."B" = o.id) AS "directTests",
            s."storeName", s.city AS "storeCity"
       FROM public."Order" o
       LEFT JOIN public."User"  u ON u.id = o."userId"
@@ -238,6 +271,16 @@ export async function loadDaySchedule(
     location: row.city || row.userCity || row.storeName || null,
     area: row.area,
     tests: row.tests,
+    packages: row.packages ?? [],
+    directTests: row.directTests ?? [],
+    fullAddress: composePatientAddress({
+      unitFloorBuilding: row.unitFloorBuilding, address: row.street,
+      locality: row.locality, city: row.city, pincode: row.pincode,
+    }),
+    mapUrl: mapUrlFor(row.latitude, row.longitude, composePatientAddress({
+      unitFloorBuilding: row.unitFloorBuilding, address: row.street,
+      locality: row.locality, city: row.city, pincode: row.pincode,
+    })),
     address: composeAddress(row),
   }));
 }

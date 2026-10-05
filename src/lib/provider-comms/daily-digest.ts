@@ -53,6 +53,7 @@ import {
 } from "./day-summary";
 import { isAwaitingConfirmation } from "@/lib/non-api-labs/source-check";
 import { confirmationUrl, ConfirmationLinkConfigError } from "@/lib/non-api-labs/confirmation-link";
+import { formatTestBreakdown } from "@/lib/non-api-labs/order-details";
 
 /**
  * How late a digest may still go out, in minutes past its own slot.
@@ -167,7 +168,8 @@ export function scheduleBlock(
 
 /**
  * Tomorrow's orders as a numbered list a lab can staff from: time and patient,
- * then where and what, and — for anything not yet confirmed — the link to
+ * then the full address with a map pin, each package with its individual tests,
+ * and — for anything not yet confirmed — the link to
  * confirm it right there. Blank lines between orders, because on a phone a
  * dense block of thirty lines is unreadable.
  *
@@ -183,9 +185,18 @@ export function tomorrowListBlock(
   if (orders.length === 0) return "No appointments on tomorrow's list yet.";
   const entries = orders.map((order, index) => {
     const lines = [`*${index + 1}. ${clock(order.appointmentTime, zone)}* – ${order.patientName || "Name not on file"}`];
-    if (order.orderType === "CENTER_VISIT") lines.push(`   🏥 Centre visit${order.location ? ` – ${order.location}` : ""}`);
-    else if (order.area) lines.push(`   📍 ${order.area}`);
-    if (order.tests) lines.push(`   🧪 ${order.tests}`);
+    if (order.orderType === "CENTER_VISIT") {
+      lines.push(`   🏥 Centre visit${order.location ? ` – ${order.location}` : ""}`);
+    } else {
+      // The full street address and a map pin: this list is what the
+      // phlebotomist routes from.
+      const where = order.fullAddress ?? order.area;
+      if (where) lines.push(`   📍 ${where}`);
+      if (order.mapUrl) lines.push(`   🗺️ ${order.mapUrl}`);
+    }
+    const tests = formatTestBreakdown(order.packages ?? [], order.directTests ?? []);
+    if (tests.length > 0) lines.push(...tests);
+    else if (order.tests) lines.push(`   🧪 ${order.tests}`);
     if (isAwaitingConfirmation(order.orderStatus)) {
       const link = linkFor(order.orderId);
       lines.push(link ? `   ⚠️ _Not confirmed_ – ${link}` : "   ⚠️ _Not confirmed_");

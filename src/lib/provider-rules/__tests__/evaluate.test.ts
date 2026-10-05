@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { decideRule, planOrder, triggerMoment, nextWindowOpening } from "../evaluate";
 import { BUILT_IN_RULES, convertLegacyRule } from "../builtins";
 import { templateFor } from "../engine";
-import type { MessageRule, RuleConversation, RuleLab, RuleOrder } from "../types";
+import type { LedgerState, MessageRule, RuleConversation, RuleLab, RuleOrder } from "../types";
 import type { ConfigRow } from "@/lib/non-api-labs/scheduler";
 import type { CommunicationRule } from "@/lib/non-api-labs/rules";
 
@@ -16,7 +16,7 @@ function builtIn(key: string, overrides: Partial<MessageRule> = {}): MessageRule
   return {
     id: key, builtInKey: key, name: def.name, description: null, isActive: true, version: 1, sourceKey: "orders",
     allowedLabIds: [], excludedLabIds: [], allowedOrderTypes: [],
-    triggerCondition: def.triggerCondition as MessageRule["triggerCondition"],
+    triggerCondition: def.triggerCondition as unknown as MessageRule["triggerCondition"],
     conversationStatusIn: (def.conversationStatusIn as string[]) ?? [],
     onlyIfIntroduced: def.onlyIfIntroduced ?? true,
     notAfterAppointment: def.notAfterAppointment ?? false,
@@ -41,8 +41,8 @@ const order = (overrides: Partial<RuleOrder> = {}): RuleOrder => ({
   ...overrides,
 });
 const waiting: RuleConversation = { id: "w", status: "WAITING_FOR_LAB_CONFIRMATION", introduced: true, lastMessageAt: null };
-const fresh = { count: 0, lastAt: null };
-const decide = (rule: MessageRule, o: RuleOrder, now: string, extra: Partial<{ conversation: RuleConversation | undefined; ledger: typeof fresh; lab: RuleLab }> = {}) =>
+const fresh: LedgerState = { count: 0, lastAt: null };
+const decide = (rule: MessageRule, o: RuleOrder, now: string, extra: Partial<{ conversation: RuleConversation | undefined; ledger: LedgerState; lab: RuleLab }> = {}) =>
   decideRule(rule, o, { lab, conversation: waiting, ledger: fresh, now: at(now), timeZone: IST, ...extra });
 
 describe("built-in reminders behave like the legacy ladder", () => {

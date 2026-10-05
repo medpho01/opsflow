@@ -152,6 +152,7 @@ const navItems: NavItem[] = [
       // are configuration you visit when something on this board is wrong.
       { label: "Today & Tomorrow", href: "/head/non-api-labs/board" },
       { label: "Lab Config", href: "/head/non-api-labs/lab-config" },
+      { label: "Message Rules", href: "/head/non-api-labs/message-rules" },
       { label: "Task Rules", href: "/head/non-api-labs/task-rules" },
       { label: "Templates", href: "/head/non-api-labs/templates" },
       { label: "SLA Breaches", href: "/head/non-api-labs/breaches" },

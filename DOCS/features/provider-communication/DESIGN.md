@@ -1,6 +1,8 @@
 # Provider communication rules — design
 
-Status: **proposal, for review.** Nothing here is built yet.
+Status: **stage 1 built** (Oct 2026) — message rules engine on Lab Orders,
+built-in rules matching the previous steps, Shadow/Live switch, rules page at
+Provider Communication → Message Rules. Stages 2–4 are still proposals.
 
 ## 1. The idea in one paragraph
 

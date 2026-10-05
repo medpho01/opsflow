@@ -168,7 +168,8 @@ type OrderRow = {
   patientName: string | null; metadata: Record<string, unknown> | null;
 };
 
-export async function fetchOpenOrders(labIds: number[]): Promise<RuleOrder[]> {
+/** `now` is passed in rather than read from the database, so a pass is about one instant. */
+export async function fetchOpenOrders(labIds: number[], now = new Date()): Promise<RuleOrder[]> {
   if (labIds.length === 0) return [];
   const rows = await labstackWorkerQuery<OrderRow>(
     `SELECT o.id, o."labId", o."orderType"::text AS "orderType", o."orderStatus"::text AS "orderStatus",
@@ -179,11 +180,12 @@ export async function fetchOpenOrders(labIds: number[]): Promise<RuleOrder[]> {
       WHERE o."labId" = ANY($1::int[])
         AND o."orderStatus"::text <> ALL($2::text[])
         AND (
-              (o."appointmentTime" >= now() - make_interval(hours => $3::int)
-               AND o."appointmentTime" < now() + make_interval(hours => $4::int))
-           OR o."createdAt" >= now() - make_interval(hours => $3::int)
+              (o."appointmentTime" >= $5::timestamp - make_interval(hours => $3::int)
+               AND o."appointmentTime" < $5::timestamp + make_interval(hours => $4::int))
+           OR o."createdAt" >= $5::timestamp - make_interval(hours => $3::int)
         )`,
-    [labIds, DEAD_STATUSES, LOOKBACK_HOURS, LOOKAHEAD_HOURS],
+    // LabStack stores naive UTC, so compare against naive UTC.
+    [labIds, DEAD_STATUSES, LOOKBACK_HOURS, LOOKAHEAD_HOURS, now.toISOString().replace("T", " ").replace("Z", "")],
   );
   const date = (value: Date | null) => (value ? new Date(value) : null);
   return rows.map((row) => ({
@@ -272,7 +274,7 @@ export async function runMessageRulesPass(now = new Date()): Promise<RulesPassRe
   const [rules, labs] = await Promise.all([loadMessageRules(), loadLiveLabs()]);
   if (rules.length === 0 || labs.size === 0) return result;
 
-  const orders = await fetchOpenOrders([...labs.keys()]);
+  const orders = await fetchOpenOrders([...labs.keys()], now);
   result.orders = orders.length;
   if (orders.length === 0) return result;
 
@@ -441,7 +443,7 @@ async function sendRuleMessage(
  */
 export async function previewRule(rule: MessageRule, now = new Date()) {
   const labs = await loadLiveLabs();
-  const orders = await fetchOpenOrders([...labs.keys()]);
+  const orders = await fetchOpenOrders([...labs.keys()], now);
   const conversations = await loadConversations(orders.map((order) => order.id));
   const ledger = rule.id ? await loadLedger([rule.id], orders.map((order) => order.id), false) : new Map<string, LedgerState>();
   const counts = { checked: orders.length, sendNow: 0, tooLate: 0, later: 0, done: 0 };

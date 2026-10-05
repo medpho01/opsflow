@@ -19,6 +19,7 @@
 import prisma from "@/lib/db/client";
 import { extractFacts } from "./reply-extract";
 import { recordAnswered } from "./engine";
+import { labstackWorkerQuery } from "@/lib/db/labstack";
 
 const BATCH = 200;
 const ONLY_OPEN_WINDOW_MS = 3 * 3_600_000;
@@ -43,6 +44,12 @@ async function attribute(
   if (message.orderIds.length > 0) {
     const conversation = await prisma.labCommunicationWorkflow.findFirst({ where: { labId, orderId: { in: message.orderIds } } });
     if (conversation) return { orderId: conversation.orderId, via: "ORDER_ID", ruleId: await lastRuleFor(conversation.orderId), context: null };
+    // An order of this lab we have not messaged yet ("<id> sample collected" before the check): still its fact.
+    const [own] = await labstackWorkerQuery<{ id: number }>(
+      `SELECT id FROM public."Order" WHERE id = ANY($1::int[]) AND "labId" = $2 ORDER BY id LIMIT 1`, [message.orderIds, labId]);
+    if (own) return { orderId: own.id, via: "ORDER_ID", ruleId: null, context: null };
+    // It names orders, just not this lab's: do not guess another one.
+    return null;
   }
   const recent = await prisma.labCommunication.findMany({
     where: {

@@ -14,7 +14,6 @@ import { ensureMigratedToRules } from "@/lib/provider-rules/migrate";
 import { BUILT_IN_RULES } from "@/lib/provider-rules/builtins";
 import { messageRuleSchema, flattenZodError } from "@/lib/provider-rules/validation";
 import { ensureNonApiTemplates } from "@/lib/non-api-labs/templates";
-import { seedPollDefinitions } from "@/lib/non-api-labs/poll-definitions";
 
 async function requireOpsHead(request: NextRequest) {
   const user = await getSessionFromRequest(request);
@@ -26,13 +25,12 @@ export async function GET(request: NextRequest) {
   try {
     if (!(await requireOpsHead(request))) return NextResponse.json({ error: "Unauthorized", requestId }, { status: 403 });
     await ensureMigratedToRules();
-    await Promise.all([ensureNonApiTemplates().catch(() => undefined), seedPollDefinitions().catch(() => undefined)]);
+    await ensureNonApiTemplates().catch(() => undefined);
 
-    const [rules, stats, templates, polls, labs] = await Promise.all([
+    const [rules, stats, templates, labs] = await Promise.all([
       prisma.providerMessageRule.findMany({ orderBy: [{ builtInKey: "asc" }, { createdAt: "asc" }] }),
       prisma.providerMessageLedger.groupBy({ by: ["ruleId", "outcome", "shadow"], _count: { _all: true } }),
       prisma.labCommunicationTemplate.findMany({ select: { key: true, name: true, isActive: true }, orderBy: { name: "asc" } }),
-      prisma.waPollDefinition.findMany({ select: { key: true, name: true, isActive: true }, orderBy: { name: "asc" } }),
       prisma.nonApiLabConfig.findMany({ select: { labId: true, labName: true }, orderBy: { labName: "asc" } }),
     ]);
 
@@ -52,7 +50,6 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({
       rules: ordered.map((rule) => ({ ...rule, stats: counts.get(rule.id) ?? {} })),
       templates,
-      polls,
       labs,
     });
   } catch (error) {

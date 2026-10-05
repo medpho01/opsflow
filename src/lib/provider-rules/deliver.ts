@@ -18,7 +18,6 @@ import { Prisma, type NonApiLabConfig } from "@prisma/client";
 import prisma from "@/lib/db/client";
 import { resolveLabTarget } from "@/lib/non-api-labs/target";
 import { ensureTemplate, renderLabTemplate, type TemplateVariables } from "@/lib/non-api-labs/templates";
-import { resolvePoll } from "@/lib/non-api-labs/poll-definitions";
 import { confirmationUrl } from "@/lib/non-api-labs/confirmation-link";
 import { contactVariables, type OrderContactDetails } from "@/lib/non-api-labs/order-details";
 import { newConversationStatus } from "./evaluate";
@@ -166,7 +165,6 @@ export async function deliverOrderMessage(input: DeliverOrderInput): Promise<Del
   };
   // Rendered with the link but stored without it (a fresh token per message).
   const text = renderLabTemplate(template.body, { ...variables, confirm_url: await confirmationUrl(order.id) });
-  const poll = rule.pollKey ? await resolvePoll(rule.pollKey) : null;
   const type = rule.introduces ? "INITIAL_NOTIFICATION" : rule.action === "ESCALATE" ? "ESCALATION" : "REMINDER";
   const conversationId = workflow.id;
 
@@ -185,11 +183,8 @@ export async function deliverOrderMessage(input: DeliverOrderInput): Promise<Del
     communicationId = communication.id;
     const outbound = await tx.waOutbound.create({
       // groupId arms the gateway's per-group sendEnabled guard.
-      data: {
-        targetJid: target.targetJid, text, groupId: target.groupId, createdAt: now,
-        // SNAPSHOTTED: editing the poll later must not change what a sent poll means.
-        ...(poll ? { pollName: poll.question, pollOptions: poll.options } : {}),
-      },
+      // No polls: labs answer in their own words (replies.ts reads them).
+      data: { targetJid: target.targetJid, text, groupId: target.groupId, createdAt: now },
     });
     await tx.labCommunication.update({ where: { id: communication.id }, data: { waOutboundId: outbound.id, status: "QUEUED" } });
     // The ledger row commits with the message: both or neither, so a crash
@@ -233,7 +228,7 @@ export async function deliverOrderMessage(input: DeliverOrderInput): Promise<Del
     }).catch(() => undefined);
   }
 
-  transcript(`${destinationLabel(config, target.kind, toManager)}: ${template.name} — order ${order.id}${occurrence > 1 ? ` (#${occurrence})` : ""}${poll ? " + poll" : ""}`);
+  transcript(`${destinationLabel(config, target.kind, toManager)}: ${template.name} — order ${order.id}${occurrence > 1 ? ` (#${occurrence})` : ""}`);
   return { sent: true, communicationId };
 }
 

@@ -165,7 +165,6 @@ function payload(rule: Rule) {
 export function MessageRulesPanel() {
   const [rules, setRules] = useState<Rule[]>([]);
   const [templates, setTemplates] = useState<Option[]>([]);
-  const [polls, setPolls] = useState<Option[]>([]);
   const [labs, setLabs] = useState<Lab[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -182,7 +181,7 @@ export function MessageRulesPanel() {
       const response = await fetch("/api/message-rules");
       const data = await response.json();
       if (!response.ok) throw new Error(data.error ?? "Could not load message rules");
-      setRules(data.rules); setTemplates(data.templates); setPolls(data.polls); setLabs(data.labs);
+      setRules(data.rules); setTemplates(data.templates); setLabs(data.labs);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not load message rules");
@@ -263,7 +262,7 @@ export function MessageRulesPanel() {
 
       {draft && (
         <RuleEditor
-          draft={draft} setDraft={setDraft} templates={templates} polls={polls} labs={labs}
+          draft={draft} setDraft={setDraft} templates={templates} labs={labs}
           saving={saving} error={formError} preview={preview}
           onPreview={() => void runPreview(draft)} onSave={save} onClose={() => { setDraft(null); setPreview(null); }}
         />
@@ -305,7 +304,6 @@ function RuleList({ rules, labs, templates, onEdit, onToggle, onDelete }: {
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-sm font-medium text-zinc-100">{rule.name}</span>
                 {rule.builtInKey && <span className="rounded-full bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-400">built-in</span>}
-                {rule.pollKey && <span className="rounded-full bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-400">with poll</span>}
                 {rule.action === "ESCALATE" && <span className="rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-300">escalation</span>}
               </div>
               <div className="mt-0.5 text-[11px] text-zinc-400">{describe(rule, labs, templates)}</div>
@@ -327,8 +325,8 @@ function RuleList({ rules, labs, templates, onEdit, onToggle, onDelete }: {
   );
 }
 
-function RuleEditor({ draft, setDraft, templates, polls, labs, saving, error, preview, onPreview, onSave, onClose }: {
-  draft: Rule; setDraft: (rule: Rule) => void; templates: Option[]; polls: Option[]; labs: Lab[];
+function RuleEditor({ draft, setDraft, templates, labs, saving, error, preview, onPreview, onSave, onClose }: {
+  draft: Rule; setDraft: (rule: Rule) => void; templates: Option[]; labs: Lab[];
   saving: boolean; error: string | null; preview: Preview | null;
   onPreview: () => void; onSave: (event: FormEvent) => void; onClose: () => void;
 }) {
@@ -435,7 +433,7 @@ function RuleEditor({ draft, setDraft, templates, polls, labs, saving, error, pr
             {!isSummary && (
               <label className="mt-3 flex items-center gap-2 text-xs text-zinc-300">
                 <input type="checkbox" checked={draft.stopOnAnswer} onChange={(e) => update("stopOnAnswer", e.target.checked)} className="accent-blue-500" />
-                Stop repeating as soon as the lab answers it (a poll tap or a reply)
+                Stop repeating as soon as the lab replies to it
               </label>
             )}
           </Section>
@@ -477,14 +475,6 @@ function RuleEditor({ draft, setDraft, templates, polls, labs, saving, error, pr
                   {templates.map((t) => <option key={t.key} value={t.key}>{t.name}{t.isActive === false ? " — paused" : ""}</option>)}
                 </select>
               </Field>
-              {!isSummary && (
-                <Field label="Poll">
-                  <select value={draft.pollKey ?? ""} onChange={(e) => update("pollKey", e.target.value || null)} className={inputClass}>
-                    <option value="">No poll</option>
-                    {polls.map((p) => <option key={p.key} value={p.key}>{p.name}</option>)}
-                  </select>
-                </Field>
-              )}
               <Field label="Send to">
                 <select value={draft.recipient} onChange={(e) => update("recipient", e.target.value as Rule["recipient"])} className={inputClass}>
                   <option value="LAB">{isSummary ? "Each lab — its group" : "The order’s lab — its group"}</option>

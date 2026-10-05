@@ -158,8 +158,16 @@ Order *{{order_id}}* for *{{patient_name}}*
 
 Please confirm here: {{confirm_url}}`;
 
-/** 30 minutes after the appointment. The poll below it carries the answer. */
+/** 30 minutes after the appointment. The lab answers in its own words (read by provider-rules/replies). */
 export const DEFAULT_NON_API_STATUS_CHECK_BODY = `Hi {{lab_name}}, what's the status of this order?
+
+🆔 *{{order_id}}* – {{patient_name}}
+🗓️ Was due: {{appointment_date}}, {{appointment_time}}
+
+Please reply to this message with the status — e.g. sample collected, patient not available, or the new time if rescheduled.`;
+
+/** The status check as it read while it carried a poll; unedited copies move to the default above. */
+const LEGACY_STATUS_CHECK_BODY = `Hi {{lab_name}}, what's the status of this order?
 
 🆔 *{{order_id}}* – {{patient_name}}
 🗓️ Was due: {{appointment_date}}, {{appointment_time}}
@@ -363,6 +371,7 @@ const SUPERSEDED_DEFAULTS: Record<string, { bodies: string[]; names: string[] }>
   [NON_API_ESCALATION_TEMPLATE]: { bodies: [LEGACY_ESCALATION_BODY], names: ["Non-API lab: escalation (manager)"] },
   [NON_API_APPOINTMENT_TEMPLATE]: { bodies: [LEGACY_APPOINTMENT_BODY], names: ["Non-API lab: appointment reminder"] },
   [PROVIDER_DAILY_DIGEST_TEMPLATE]: { bodies: [LEGACY_DAILY_DIGEST_BODY], names: ["Any lab: daily summary (today & tomorrow)"] },
+  [NON_API_STATUS_CHECK_TEMPLATE]: { bodies: [LEGACY_STATUS_CHECK_BODY], names: [] },
 };
 
 /** Is this stored body a default we used to ship (and nobody has edited)? */

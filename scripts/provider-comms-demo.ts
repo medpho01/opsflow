@@ -7,7 +7,7 @@
  * The labs, patients and addresses are made up (LabStack ids 990001+), so the
  * full text is safe to print. Orders are created in a throwaway LabStack copy
  * and the real minute tick runs every 5 simulated minutes from Tuesday 17:00 to
- * Wednesday 19:30. The labs act along the way — confirm, reply, tap polls — and
+ * Wednesday 19:30. The labs act along the way — confirm, reply — and
  * each action is shown where it happens. Nothing is sent.
  *
  * Output: the story in the terminal, and .sim/provider-comms-demo.html (a chat
@@ -114,7 +114,7 @@ type Action =
   | { kind: "place"; alias: string; order: OrderSpec }
   | { kind: "status"; alias: string; status: string; phlebo?: [string, string]; why: string }
   | { kind: "reply"; lab: LabKey; text: string; quoting?: string }
-  | { kind: "tap"; alias: string; label: string };
+;
 type Step = { time: string; action: Action };
 
 async function place(alias: string, spec: OrderSpec, when: Date) {
@@ -166,18 +166,6 @@ async function perform(action: Action, when: Date): Promise<Entry> {
       } });
       return { ...base, lab: action.lab, title: `Lab replies in the group${action.quoting ? ` (quoting our message about ${action.quoting})` : ""}`, text: action.text };
     }
-    case "tap": {
-      const id = orderIds.get(action.alias)!;
-      const ours = await prisma.labCommunication.findFirst({ where: { orderId: id }, orderBy: { createdAt: "desc" } });
-      const outbound = ours?.waOutboundId ? await prisma.waOutbound.findUnique({ where: { id: ours.waOutboundId } }) : null;
-      if (!outbound?.pollName) throw new Error(`No poll was sent about ${action.alias}`);
-      await prisma.waPoll.create({ data: {
-        waMsgId: `sim-poll-${outbound.id}`, outboundId: outbound.id, workflowId: ours!.workflowId, options: outbound.pollOptions ?? [],
-        messageJson: {}, status: "VOTED", votedLabel: action.label, voterJid: "sim-lab-user", votedAt: when,
-      } });
-      const lab = (Object.keys(LABS) as LabKey[]).find((k) => action.alias.startsWith(k))!;
-      return { ...base, lab, title: `Lab taps the poll about ${action.alias}`, text: action.label };
-    }
   }
 }
 
@@ -202,8 +190,8 @@ const STORY: Step[] = [
   { time: "11:30", action: { kind: "reply", lab: "C", quoting: "C1", text: "Report shared on email" } },
   { time: "12:20", action: { kind: "status", alias: "A3", status: "ORDER_SCHEDULED", why: "Lab confirms after the 1-hour reminder" } },
   { time: "13:00", action: { kind: "status", alias: "B3", status: "ORDER_SCHEDULED", why: "Lab finally confirms B3" } },
-  { time: "13:40", action: { kind: "tap", alias: "B2", label: "🙅 Patient not available" } },
-  { time: "15:45", action: { kind: "tap", alias: "C3", label: "✅ Sample collected" } },
+  { time: "13:40", action: { kind: "reply", lab: "B", quoting: "B2", text: "Patient not available, not picking the phone" } },
+  { time: "15:45", action: { kind: "reply", lab: "C", quoting: "C3", text: "Sample collected" } },
   { time: "15:50", action: { kind: "status", alias: "C3", status: "SAMPLE_COLLECTED", why: "LabStack catches up" } },
 ];
 // Already in LabStack before the story starts (collected earlier, reports pending).
@@ -213,7 +201,7 @@ const BEFORE: Array<{ alias: string; placed: string; order: OrderSpec }> = [
 ];
 
 // ── Transcript ─────────────────────────────────────────────────────────────
-type Entry = { at: Date; kind: "lab" | "message"; lab: LabKey; title: string; text: string; to?: string; poll?: string[]; rule?: string };
+type Entry = { at: Date; kind: "lab" | "message"; lab: LabKey; title: string; text: string; to?: string; rule?: string };
 const entries: Entry[] = [];
 const seen = new Set<string>();
 const fired = new Map<string, number>();
@@ -229,12 +217,11 @@ async function collect() {
     const rule = communication?.ruleId ? await prisma.providerMessageRule.findUnique({ where: { id: communication.ruleId } }) : null;
     if (rule) fired.set(rule.id, (fired.get(rule.id) ?? 0) + 1);
     const about = communication?.orderId ? ` · ${aliasOf(communication.orderId)}` : "";
-    const options = Array.isArray(row.pollOptions) ? (row.pollOptions as Array<string | { label?: string }>).map((o) => (typeof o === "string" ? o : o.label ?? "")) : undefined;
     entries.push({
       at: row.createdAt, kind: "message", lab, rule: rule?.name,
       to: groupLab ? `${LABS[lab].name} group` : `${LABS[lab].name} manager (personal)`,
-      title: communication ? `${rule?.name ?? communication.templateKey}${about}` : "Acknowledgement of the poll answer",
-      text: row.text, poll: row.pollName ? options : undefined,
+      title: `${rule?.name ?? communication?.templateKey ?? "Message"}${about}`,
+      text: row.text,
     });
   }
 }
@@ -246,7 +233,6 @@ function printEntry(e: Entry, n: number) {
   } else {
     console.log(`\n  ${clock(e.at)}  ✉ Message ${n} → ${e.to}\n        ${e.title}`);
     console.log(indent(e.text));
-    if (e.poll) console.log(indent(`📊 Poll: ${e.poll.join("  |  ")}`));
   }
 }
 
@@ -266,8 +252,7 @@ function html(rules: Array<{ name: string; count: number; kind: string }>) {
       return `${header}<div class="row in" data-lab="${e.lab}"><div class="bubble lab"><div class="meta">${clock(e.at)} · ${esc(LABS[e.lab].name)}</div><div class="what">${esc(e.title)}</div><div>${wa(e.text)}</div></div></div>`;
     }
     n += 1;
-    const poll = e.poll ? `<div class="poll">${e.poll.map((o) => `<div>○ ${esc(o)}</div>`).join("")}</div>` : "";
-    return `${header}<div class="row out" data-lab="${e.lab}"><div class="bubble"><div class="meta">${clock(e.at)} · Message ${n} → ${esc(e.to!)}</div><div class="what">${esc(e.title)}</div><div class="text">${wa(e.text)}</div>${poll}</div></div>`;
+    return `${header}<div class="row out" data-lab="${e.lab}"><div class="bubble"><div class="meta">${clock(e.at)} · Message ${n} → ${esc(e.to!)}</div><div class="what">${esc(e.title)}</div><div class="text">${wa(e.text)}</div></div></div>`;
   }).join("\n");
   const chips = (Object.keys(LABS) as LabKey[]).map((k) => `<button data-lab="${k}">${esc(LABS[k].name)}</button>`).join("");
   const themes = (Object.keys(LABS) as LabKey[]).map((k) => `<li><b>${esc(LABS[k].name)}</b> — ${esc(LABS[k].theme)}</li>`).join("");
@@ -286,7 +271,6 @@ main{max-width:860px;margin:0 auto;padding:16px}.day{text-align:center;margin:18
 .day{color:var(--muted);font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.04em}
 .row{display:flex;margin:6px 0}.row.out{justify-content:flex-end}.bubble{max-width:min(620px,92%);background:var(--out);border-radius:8px;padding:8px 10px;box-shadow:0 1px .5px rgba(0,0,0,.13);overflow-wrap:anywhere}
 .bubble.lab{background:var(--lab)}.meta{font-size:11px;color:var(--muted)}.what{font-weight:600;margin:2px 0 4px}.text{white-space:pre-wrap}
-.poll{margin-top:8px;border-top:1px solid var(--line);padding-top:6px}.poll div{padding:2px 0}
 a{color:var(--accent)}section{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px 16px;margin-bottom:16px}
 section h2{font-size:15px;margin:0 0 8px}ul{margin:0;padding-left:18px}table{border-collapse:collapse;width:100%}td{padding:4px 6px;border-top:1px solid var(--line)}td:last-child{text-align:right}
 tr.zero td{color:#c0392b}

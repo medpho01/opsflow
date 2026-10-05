@@ -262,7 +262,6 @@ async function convertLegacyRules(configs: NonApiLabConfig[], report: Report): P
           triggerCondition: { statusIn: statusesBefore(milestone), ...milestoneTiming(config.anchor, config.offsetMinutes) } as unknown as Prisma.InputJsonValue,
           onlyIfIntroduced: false,
           templateKey: watcher.templateKey || "PROVIDER_SLA_MILESTONE",
-          pollKey: "SLA_BREACH",
           milestoneLabel: MILESTONE_LABELS[milestone],
           priority: watcher.priority,
           repeatEveryMinutes: config.maxAttempts > 1 ? config.repeatIntervalMinutes : null,
@@ -341,6 +340,13 @@ async function importLegacySends(convertedFrom: Map<string, ProviderMessageRule>
 
 /** Run the move once. Safe to call on every pass. */
 export async function ensureMigratedToRules(): Promise<Report | null> {
+  // Polls were dropped (Oct 2026): labs answer in their own words. Clears any rule still
+  // carrying one; a no-op after the first pass.
+  await prisma.providerMessageRule.updateMany({ where: { pollKey: { not: null } }, data: { pollKey: null } });
+  await prisma.providerMessageRule.updateMany({
+    where: { builtInKey: "STATUS_CHECK", description: { contains: "one-tap poll" } },
+    data: { description: BUILT_IN_RULES.find((rule) => rule.builtInKey === "STATUS_CHECK")!.description },
+  });
   const settings = await prisma.providerCommsSettings.upsert({ where: { id: "default" }, update: {}, create: { id: "default" } });
   if (settings.rulesMigratedAt) return null;
 

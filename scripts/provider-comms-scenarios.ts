@@ -128,17 +128,8 @@ async function labReplies(lab: LabKey, when: string, text: string, quotingOrder?
   await prisma.waMessage.create({ data: {
     waMsgId: `sim-in-${Date.now()}-${Math.random()}`, groupId: group.id, direction: "IN", fromMe: false,
     sender: `${LABS[lab].name} desk`, text, ts: at(when), replyToWaId, createdAt: at(when),
-  } });
-}
-
-/** The lab taps a poll option on our latest poll about an order. */
-async function labTapsPoll(orderId: number, when: string, label: string) {
-  const ours = await prisma.labCommunication.findFirst({ where: { orderId }, orderBy: { createdAt: "desc" } });
-  const outbound = ours?.waOutboundId ? await prisma.waOutbound.findUnique({ where: { id: ours.waOutboundId } }) : null;
-  if (!outbound?.pollName) throw new Error(`No poll was sent about ${aliases.get(orderId)}`);
-  await prisma.waPoll.create({ data: {
-    waMsgId: `sim-poll-${outbound.id}`, outboundId: outbound.id, workflowId: ours!.workflowId, options: outbound.pollOptions ?? [],
-    messageJson: {}, status: "VOTED", votedLabel: label, voterJid: "sim-lab-user", votedAt: at(when),
+    // The gateway fills orderIds with the real orders a message names; do the same here.
+    orderIds: [...aliases.keys()].filter((id) => text.includes(String(id))),
   } });
 }
 
@@ -164,7 +155,7 @@ async function collect() {
     if (communication) {
       const rule = communication.ruleId ? await prisma.providerMessageRule.findUnique({ where: { id: communication.ruleId } }) : null;
       const about = communication.orderId ? ` · ${aliases.get(communication.orderId) ?? `order #${communication.orderId}`}` : "";
-      what = `${rule?.name ?? communication.templateKey}${about}${row.pollName ? " + poll" : ""}`;
+      what = `${rule?.name ?? communication.templateKey}${about}`;
       short = `${rule?.builtInKey ?? rule?.name}${about}`;
     } else {
       what = `reply: “${row.text.split("\n")[0].replace(/\(.*?\)/g, "(…)")}”`;
@@ -240,14 +231,18 @@ const scenarios: Scenario[] = [
     expect: ["09:00 NEW_ORDER · order-5", "09:10 ASSIGN_PHLEBO · order-5", "10:00 PHLEBO_ETA · order-5"],
   },
   {
-    name: "6. Status check 30 min after the appointment, answered by poll",
+    name: "6. Status check 30 min after the appointment, answered in the group — no repeat, sample-collected stops it",
     run: async () => {
       const id = await createOrder({ status: "ORDER_SCHEDULED", placed: "-1d 10:00", appointment: "11:00", alias: "order-6" });
       await run("11:25", "11:35");
-      await labTapsPoll(id, "11:37", "🔄 Rescheduled");
+      await labReplies("A", "11:37", "Patient not available, rescheduled to tomorrow 10 am", id);
       await run("11:40", "12:30", 10);
+      // A second order: the lab says the sample is collected before the check is due.
+      const other = await createOrder({ status: "ORDER_SCHEDULED", placed: "-1d 10:00", appointment: "12:00", alias: "order-6b" });
+      await labReplies("A", "12:10", `Order ${other}: sample collected`);
+      await run("12:15", "13:00", 5);
     },
-    expect: ["11:30 STATUS_CHECK · order-6", "11:40 ack"],
+    expect: ["11:30 STATUS_CHECK · order-6"],
   },
   {
     name: "7. Report chase 12 h after the appointment, repeats, stops when the report is shared",

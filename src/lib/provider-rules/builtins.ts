@@ -87,12 +87,11 @@ export const BUILT_IN_RULES: BuiltIn[] = [
   {
     builtInKey: "STATUS_CHECK",
     name: "Status check — 30 min after the appointment",
-    description: "Asks what happened, with a one-tap poll. Sent whether or not the lab confirmed; skipped once LabStack shows the sample collected.",
+    description: "Asks what happened; the lab answers in the group in its own words. Sent whether or not the lab confirmed; skipped once LabStack shows the sample collected.",
     triggerCondition: { statusIn: NOT_COLLECTED_STATUSES, minutesAfterAppointment: 30 },
     conversationStatusIn: [...OPEN_CONVERSATION, "LAB_ACCEPTED", "LAB_RESCHEDULE_REQUESTED"],
     onlyIfIntroduced: false,
     templateKey: "NON_API_STATUS_CHECK",
-    pollKey: "ORDER_STATUS_CHECK",
     factConditions: [{ kind: "sample_collected", present: false }],
     priority: 2,
   },

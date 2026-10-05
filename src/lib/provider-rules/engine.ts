@@ -13,7 +13,7 @@
  * to every open order on the next pass. Every write takes `now`, so the local
  * harness can run the engine through simulated time.
  */
-import { Prisma, type NonApiLabConfig } from "@prisma/client";
+import type { NonApiLabConfig } from "@prisma/client";
 import prisma from "@/lib/db/client";
 import { labstackWorkerQuery } from "@/lib/db/labstack";
 import { hasWhatsAppTarget } from "@/lib/non-api-labs/target";
@@ -310,17 +310,14 @@ async function sendSummary(rule: MessageRule, config: NonApiLabConfig, labOrders
 }
 
 async function writeLedger(rule: MessageRule, entityType: string, entityId: number, labId: number, occurrence: number, outcome: string, detail: string, now: Date) {
-  try {
-    await prisma.providerMessageLedger.create({
-      data: { ruleId: rule.id, ruleVersion: rule.version, entityType, entityId, labId, occurrence, outcome, shadow: false, detail, createdAt: now },
-    });
-  } catch (error) {
-    // Another pass recorded it first — exactly what the unique key is for.
-    if (!(error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002")) throw error;
-  }
+  // Already recorded (another pass, or the lab answered twice) is fine — that is what the unique key is for.
+  await prisma.providerMessageLedger.createMany({
+    data: [{ ruleId: rule.id, ruleVersion: rule.version, entityType, entityId, labId, occurrence, outcome, shadow: false, detail, createdAt: now }],
+    skipDuplicates: true,
+  });
 }
 
-/** Stop a rule's repeats for an order: the lab answered (poll or reply). */
+/** Stop a rule's repeats for an order: the lab answered. */
 export async function recordAnswered(ruleId: string, orderId: number, labId: number, detail: string, now = new Date()) {
   const rule = await prisma.providerMessageRule.findUnique({ where: { id: ruleId } });
   if (!rule) return;

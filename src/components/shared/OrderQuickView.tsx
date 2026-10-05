@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import CallButton from "@/components/shared/CallButton";
+import CallActivity from "@/components/shared/CallActivity";
 import TaskActionCard, { type ActionableTask } from "@/components/shared/TaskActionCard";
 import { formatISTTimestamp, formatISTDate } from "@/lib/utils/timezone";
 import { labstackConsoleUrl } from "@/lib/utils/labstackConsole";
@@ -263,7 +264,7 @@ export default function OrderQuickView({ orderId, onClose, variant = "modal", en
                   label="Phlebo"
                   name={order.phleboName ?? "Not assigned"}
                   action={order.phleboNumber && (
-                    <CallButton to={order.phleboNumber} name={order.phleboName} triggeredFrom="order-phlebo" />
+                    <CallButton to={order.phleboNumber} name={order.phleboName} entityType={entityType} entityId={orderId} triggeredFrom="order-phlebo" />
                   )}
                 />
                 <InfoCard icon={STORE_ICON} label="Store" name={order.storeName ?? (order.storeId ? `#${order.storeId}` : "—")} sub={order.labName ? `Lab: ${order.labName}` : undefined} />
@@ -301,6 +302,8 @@ export default function OrderQuickView({ orderId, onClose, variant = "modal", en
                   </div>
                 </div>
               )}
+
+              <CallActivity endpoint={`/api/orders/${orderId}/calls`} />
 
               {/* Milestone SLA breaches — what the PROVIDER was chased about.
                   Distinct from the tasks below, which are OpsFlow's own

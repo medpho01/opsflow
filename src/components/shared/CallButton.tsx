@@ -12,6 +12,8 @@ export default function CallButton({
   name,
   taskId,
   storeId,
+  entityType,
+  entityId,
   triggeredFrom,
   compact = true,
 }: {
@@ -19,6 +21,8 @@ export default function CallButton({
   name?: string | null;
   taskId?: number;
   storeId?: number;
+  entityType?: string;
+  entityId?: number;
   triggeredFrom?: string;
   compact?: boolean;
 }) {
@@ -36,7 +40,7 @@ export default function CallButton({
       const res = await fetch("/api/calls", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ to, toName: name ?? null, taskId, storeId, triggeredFrom }),
+        body: JSON.stringify({ to, toName: name ?? null, taskId, storeId, entityType, entityId, triggeredFrom }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {

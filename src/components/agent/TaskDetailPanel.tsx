@@ -520,12 +520,12 @@ export default function TaskDetailPanel({ task, onUpdate }: TaskDetailPanelProps
               { label: "Status", value: apptContext?.appointmentStatus || (meta.orderStatus as string) || "—" },
               { label: "Doctor", value: apptContext?.doctorName || "—" },
               { label: "Doctor Contact", value: apptContext?.doctorMobile
-                  ? <span>{apptContext.doctorMobile} <CallButton to={apptContext.doctorMobile} name={apptContext.doctorName} taskId={displayedTask.id} triggeredFrom="appt-doctor" /></span>
+                  ? <span>{apptContext.doctorMobile} <CallButton to={apptContext.doctorMobile} name={apptContext.doctorName} taskId={displayedTask.id} entityType={displayedTask.entityType} entityId={displayedTask.entityId} triggeredFrom="appt-doctor" /></span>
                   : "—" },
               { label: "Store", value: apptContext?.storeName || "—" },
               { label: "Reference", value: apptContext?.referenceId || "—" },
               { label: "Patient Contact", value: apptContext?.patientMobile
-                  ? <span>{apptContext.patientMobile} <CallButton to={apptContext.patientMobile} name={apptContext.patientName} taskId={displayedTask.id} triggeredFrom="appt-patient" /></span>
+                  ? <span>{apptContext.patientMobile} <CallButton to={apptContext.patientMobile} name={apptContext.patientName} taskId={displayedTask.id} entityType={displayedTask.entityType} entityId={displayedTask.entityId} triggeredFrom="appt-patient" /></span>
                   : "—" },
             ].map(({ label, value }) => (
               <div key={label}>
@@ -562,7 +562,7 @@ export default function TaskDetailPanel({ task, onUpdate }: TaskDetailPanelProps
               { label: "Store", value: (meta.storeName as string) || "—" },
               { label: "Phlebo", value: (meta.phleboName as string) || "Not assigned" },
               { label: "Phone", value: (meta.phleboNumber as string)
-                  ? <span>{meta.phleboNumber as string} <CallButton to={meta.phleboNumber as string} name={(meta.phleboName as string) ?? null} taskId={displayedTask.id} triggeredFrom="order-phlebo" /></span>
+                  ? <span>{meta.phleboNumber as string} <CallButton to={meta.phleboNumber as string} name={(meta.phleboName as string) ?? null} taskId={displayedTask.id} entityType={displayedTask.entityType} entityId={displayedTask.entityId} triggeredFrom="order-phlebo" /></span>
                   : "—" },
               {
                 label: "Appointment",
@@ -584,7 +584,7 @@ export default function TaskDetailPanel({ task, onUpdate }: TaskDetailPanelProps
         </div>
         )}
 
-        <CallActivity taskId={displayedTask.id} />
+        <CallActivity endpoint={`/api/tasks/${displayedTask.id}/calls`} />
 
         {/* Order context from labstack — patient/phlebo + internal notes.
             Agents need this to know what's already been tried (e.g. "Tried

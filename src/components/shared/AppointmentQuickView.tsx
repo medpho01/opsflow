@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import CallButton from "@/components/shared/CallButton";
+import CallActivity from "@/components/shared/CallActivity";
 import TaskActionCard, { type ActionableTask } from "@/components/shared/TaskActionCard";
 import { formatISTTimestamp } from "@/lib/utils/timezone";
 import { labstackConsoleUrl } from "@/lib/utils/labstackConsole";
@@ -211,7 +212,7 @@ export default function AppointmentQuickView({ appointmentId, onClose, variant =
                 label="Patient"
                 name={appt.patientName ?? "—"}
                 action={appt.patientMobile && (
-                  <CallButton to={appt.patientMobile} name={appt.patientName} triggeredFrom="appt-patient" />
+                  <CallButton to={appt.patientMobile} name={appt.patientName} entityType="APPOINTMENT" entityId={appointmentId} triggeredFrom="appt-patient" />
                 )}
               />
               <div className="grid grid-cols-2 gap-3">
@@ -220,7 +221,7 @@ export default function AppointmentQuickView({ appointmentId, onClose, variant =
                   label="Doctor"
                   name={appt.doctorName ?? "—"}
                   action={appt.doctorMobile && (
-                    <CallButton to={appt.doctorMobile} name={appt.doctorName} triggeredFrom="appt-doctor" />
+                    <CallButton to={appt.doctorMobile} name={appt.doctorName} entityType="APPOINTMENT" entityId={appointmentId} triggeredFrom="appt-doctor" />
                   )}
                 />
                 <InfoCard icon={STORE_ICON} label="Store" name={appt.storeName ?? "—"} />
@@ -266,6 +267,8 @@ export default function AppointmentQuickView({ appointmentId, onClose, variant =
                   </div>
                 </div>
               )}
+
+              <CallActivity endpoint={`/api/appointments/${appointmentId}/calls`} />
 
               {/* OpsFlow Tasks */}
               <div>

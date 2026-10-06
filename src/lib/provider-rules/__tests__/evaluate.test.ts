@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { decideRule, planOrder, triggerMoment, nextWindowOpening, summaryDue, summaryMatches, conditionMatches } from "../evaluate";
 import { BUILT_IN_RULES } from "../builtins";
-import { statusesBefore, milestoneTiming } from "../migrate";
+import { statusesBefore, milestoneTiming, milestoneStatuses } from "../migrate";
 import { EMPTY_LEDGER, type LedgerState, type MessageRule, type RuleConversation, type RuleLab, type RuleOrder } from "../types";
 
 const IST = "Asia/Kolkata";
@@ -187,6 +187,13 @@ describe("converting the delivery-deadline watchers", () => {
   it("'still before the milestone' becomes a status list", () => {
     assert.deepEqual(statusesBefore("PHLEBO_ASSIGNED"), ["PENDING", "CREATED", "ORDER_SCHEDULED", "RESCHEDULED"]);
     assert.ok(statusesBefore("REPORT_UPLOADED").includes("SAMPLE_PROCESSED"));
+  });
+  it("a deadline counted from the previous milestone only counts once that milestone is done", () => {
+    // "Sample delivered within 3 h of collection": a scheduled order is not late for delivery.
+    assert.deepEqual(milestoneStatuses("SAMPLE_DELIVERED", "PREV_MILESTONE_COMPLETED"), ["SAMPLE_COLLECTED"]);
+    assert.deepEqual(milestoneStatuses("REPORT_UPLOADED", "PREV_MILESTONE_COMPLETED"), ["SAMPLE_DELIVERED", "SAMPLE_PROCESSED"]);
+    assert.deepEqual(milestoneStatuses("PHLEBO_ASSIGNED", "PREV_MILESTONE_COMPLETED"), ["ORDER_SCHEDULED", "RESCHEDULED"]);
+    assert.deepEqual(milestoneStatuses("SAMPLE_COLLECTED", "APPOINTMENT_TIME"), statusesBefore("SAMPLE_COLLECTED"));
   });
   it("anchors become Task-Rule timings", () => {
     assert.deepEqual(milestoneTiming("ORDER_CREATED", 120), { minutesSinceCreated: 120 });

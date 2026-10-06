@@ -73,7 +73,8 @@ async function prepareLabStack() {
 async function resetOpsFlow(migrate = true) {
   await prisma.$executeRawUnsafe(`TRUNCATE taskos.provider_message_ledger, taskos.provider_message_rules, taskos.provider_order_facts,
     taskos.wa_polls, taskos.wa_messages, taskos.wa_outbound, taskos.lab_communications, taskos.lab_communication_workflows,
-    taskos.non_api_lab_configs, taskos.wa_groups, taskos.provider_comms_settings, taskos.lab_communication_templates CASCADE`);
+    taskos.non_api_lab_configs, taskos.wa_groups, taskos.provider_comms_settings, taskos.lab_communication_templates,
+    taskos.provider_communication_rules, taskos.sla_milestone_configs, taskos.lab_scheduled_actions CASCADE`);
   for (const lab of Object.values(LABS)) {
     await prisma.waGroup.create({ data: { jid: lab.jid, subject: `LS<>${lab.name}`, active: true, sendEnabled: true, isMember: true } });
     await prisma.nonApiLabConfig.create({ data: {
@@ -326,6 +327,28 @@ const scenarios: Scenario[] = [
       if (queued.status !== "SUPPRESSED") throw new Error(`old scheduler step still ${queued.status}`);
     },
     expect: ["12:00 REMINDER_3H · order-11a", "14:00 ESCALATION_5H · order-11a"],
+  },
+  {
+    name: "12. 'Sample delivered within 3 h of collection' — counts from collection, not from scheduling (repairs the earlier conversion)",
+    run: async () => {
+      // The rule as the first conversion wrote it: any status before delivery, 3 h after the last status change.
+      await prisma.providerMessageRule.create({ data: {
+        name: "Sample delivered to lab overdue", milestoneLabel: "Sample delivered to lab", integrationTypes: [], onlyIfIntroduced: false,
+        triggerCondition: { statusIn: ["PENDING", "CREATED", "ORDER_SCHEDULED", "RESCHEDULED", "PHLEBO_ASSIGNED", "KIT_DISPATCHED", "PATIENT_VISITED", "SAMPLE_COLLECTED"], minutesSinceStatusUpdated: 180 },
+        templateKey: "PROVIDER_SLA_MILESTONE", priority: 2, repeatEveryMinutes: 60, maxSends: 3,
+      } });
+      // Scheduled two days out (the reported case): not late for delivery.
+      await createOrder({ status: "ORDER_SCHEDULED", placed: "-2d 07:00", appointment: "+2d 07:00", alias: "order-12-scheduled" });
+      // Collected at 08:00 and still not at the lab by 11:00: late.
+      const collected = await createOrder({ status: "ORDER_SCHEDULED", placed: "-2d 07:00", appointment: "07:30", alias: "order-12-collected" });
+      await updateOrder(collected, "08:00", { status: "SAMPLE_COLLECTED" });
+      await run("10:00", "13:30", 5);
+    },
+    expect: [
+      "11:00 Sample delivered to lab overdue · order-12-collected",
+      "12:00 Sample delivered to lab overdue · order-12-collected",
+      "13:00 Sample delivered to lab overdue · order-12-collected",
+    ],
   },
 ];
 

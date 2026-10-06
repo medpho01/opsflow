@@ -45,6 +45,44 @@ export function statusesBefore(milestone: string): string[] {
   return STATUS_RANK.slice(0, STATUS_RANK.indexOf(MILESTONE_DONE_AT[milestone] ?? "REPORT_DELIVERED"));
 }
 
+const MILESTONE_SEQUENCE = ["ORDER_CONFIRMED", "PHLEBO_ASSIGNED", "SAMPLE_COLLECTED", "SAMPLE_DELIVERED", "REPORT_UPLOADED"];
+
+/**
+ * Statuses in which a deadline watcher was counting. Anchored on the previous
+ * milestone, it only counted once that milestone was done ("delivered within
+ * 3 h of collection" starts at collection), so only the statuses between the
+ * two qualify. Otherwise: every status before the milestone.
+ */
+export function milestoneStatuses(milestone: string, anchor: string): string[] {
+  const previous = MILESTONE_SEQUENCE[MILESTONE_SEQUENCE.indexOf(milestone) - 1];
+  if (anchor !== "PREV_MILESTONE_COMPLETED" || !previous) return statusesBefore(milestone);
+  // A confirmed order is a scheduled one.
+  const from = previous === "ORDER_CONFIRMED" ? "ORDER_SCHEDULED" : MILESTONE_DONE_AT[previous];
+  return STATUS_RANK.slice(STATUS_RANK.indexOf(from), STATUS_RANK.indexOf(MILESTONE_DONE_AT[milestone] ?? "REPORT_DELIVERED"));
+}
+
+/**
+ * Watchers converted before milestoneStatuses existed (Oct 2026) counted from
+ * the last status change in ANY earlier status, so "sample delivered within 3 h
+ * of collection" fired 3 h after an order was merely scheduled. Narrows them;
+ * a no-op once done.
+ */
+async function repairMilestoneRules() {
+  const rules = await prisma.providerMessageRule.findMany({ where: { milestoneLabel: { not: null }, builtInKey: null } });
+  for (const rule of rules) {
+    const milestone = Object.keys(MILESTONE_LABELS).find((key) => MILESTONE_LABELS[key] === rule.milestoneLabel);
+    const cond = rule.triggerCondition as unknown as RuleCondition;
+    if (!milestone || cond.minutesSinceStatusUpdated == null) continue;
+    if (JSON.stringify(cond.statusIn) !== JSON.stringify(statusesBefore(milestone))) continue;
+    const statusIn = milestoneStatuses(milestone, "PREV_MILESTONE_COMPLETED");
+    await prisma.providerMessageRule.update({
+      where: { id: rule.id },
+      data: { triggerCondition: { ...cond, statusIn } as unknown as Prisma.InputJsonValue, version: { increment: 1 } },
+    });
+    console.log(`[MessageRules] "${rule.name}": now only counts in ${statusIn.join(", ")}`);
+  }
+}
+
 /** A deadline config's anchor + offset as a Task-Rule timing field. */
 export function milestoneTiming(anchor: string, offsetMinutes: number): Partial<RuleCondition> {
   if (anchor === "ORDER_CREATED") return { minutesSinceCreated: Math.max(0, offsetMinutes) };
@@ -259,7 +297,7 @@ async function convertLegacyRules(configs: NonApiLabConfig[], report: Report): P
           isActive: watcher.isActive && config.enabled && sendingEnabled,
           allowedLabIds: labIds,
           integrationTypes: [],
-          triggerCondition: { statusIn: statusesBefore(milestone), ...milestoneTiming(config.anchor, config.offsetMinutes) } as unknown as Prisma.InputJsonValue,
+          triggerCondition: { statusIn: milestoneStatuses(milestone, config.anchor), ...milestoneTiming(config.anchor, config.offsetMinutes) } as unknown as Prisma.InputJsonValue,
           onlyIfIntroduced: false,
           templateKey: watcher.templateKey || "PROVIDER_SLA_MILESTONE",
           milestoneLabel: MILESTONE_LABELS[milestone],
@@ -340,6 +378,7 @@ async function importLegacySends(convertedFrom: Map<string, ProviderMessageRule>
 
 /** Run the move once. Safe to call on every pass. */
 export async function ensureMigratedToRules(): Promise<Report | null> {
+  await repairMilestoneRules();
   // Polls were dropped (Oct 2026): labs answer in their own words. Clears any rule still
   // carrying one; a no-op after the first pass.
   await prisma.providerMessageRule.updateMany({ where: { pollKey: { not: null } }, data: { pollKey: null } });

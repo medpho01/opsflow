@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { decideRule, planOrder, triggerMoment, nextWindowOpening, summaryDue, summaryMatches, conditionMatches } from "../evaluate";
 import { BUILT_IN_RULES } from "../builtins";
-import { statusesBefore, milestoneTiming, milestoneStatuses } from "../migrate";
+import { statusesBefore, milestoneTiming, milestoneStatuses, milestoneCondition } from "../migrate";
 import { EMPTY_LEDGER, type LedgerState, type MessageRule, type RuleConversation, type RuleLab, type RuleOrder } from "../types";
 
 const IST = "Asia/Kolkata";
@@ -194,6 +194,13 @@ describe("converting the delivery-deadline watchers", () => {
     assert.deepEqual(milestoneStatuses("REPORT_UPLOADED", "PREV_MILESTONE_COMPLETED"), ["SAMPLE_DELIVERED", "SAMPLE_PROCESSED"]);
     assert.deepEqual(milestoneStatuses("PHLEBO_ASSIGNED", "PREV_MILESTONE_COMPLETED"), ["ORDER_SCHEDULED", "RESCHEDULED"]);
     assert.deepEqual(milestoneStatuses("SAMPLE_COLLECTED", "APPOINTMENT_TIME"), statusesBefore("SAMPLE_COLLECTED"));
+  });
+  it("collection, delivery and report deadlines never fall before the appointment", () => {
+    assert.deepEqual(milestoneCondition("SAMPLE_DELIVERED", "PREV_MILESTONE_COMPLETED", 180),
+      { statusIn: ["SAMPLE_COLLECTED"], minutesSinceStatusUpdated: 180, minutesAfterAppointment: 0 });
+    assert.deepEqual(milestoneCondition("SAMPLE_COLLECTED", "APPOINTMENT_TIME", 30).minutesAfterAppointment, 30);
+    // Before-the-visit stages keep their own timing.
+    assert.equal(milestoneCondition("PHLEBO_ASSIGNED", "APPOINTMENT_TIME", -60).minutesAfterAppointment, undefined);
   });
   it("anchors become Task-Rule timings", () => {
     assert.deepEqual(milestoneTiming("ORDER_CREATED", 120), { minutesSinceCreated: 120 });

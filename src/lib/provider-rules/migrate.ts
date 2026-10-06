@@ -61,25 +61,41 @@ export function milestoneStatuses(milestone: string, anchor: string): string[] {
   return STATUS_RANK.slice(STATUS_RANK.indexOf(from), STATUS_RANK.indexOf(MILESTONE_DONE_AT[milestone] ?? "REPORT_DELIVERED"));
 }
 
+/** Stages that happen at or after the visit: never overdue before the appointment. */
+const AFTER_VISIT = new Set(["SAMPLE_COLLECTED", "SAMPLE_DELIVERED", "REPORT_UPLOADED"]);
+
+/** A watcher's full condition: its statuses, its timing and, for after-visit stages, "the appointment has passed". */
+export function milestoneCondition(milestone: string, anchor: string, offsetMinutes: number): RuleCondition {
+  const cond: RuleCondition = { statusIn: milestoneStatuses(milestone, anchor), ...milestoneTiming(anchor, offsetMinutes) };
+  if (AFTER_VISIT.has(milestone) && cond.minutesAfterAppointment == null && cond.minutesBeforeAppointment == null) cond.minutesAfterAppointment = 0;
+  return cond;
+}
+
 /**
- * Watchers converted before milestoneStatuses existed (Oct 2026) counted from
- * the last status change in ANY earlier status, so "sample delivered within 3 h
- * of collection" fired 3 h after an order was merely scheduled. Narrows them;
- * a no-op once done.
+ * Watchers converted before milestoneCondition existed (Oct 2026) counted from
+ * the last status change in ANY earlier status and ignored the appointment, so
+ * "sample delivered within 3 h of collection" fired for an order merely
+ * scheduled days ahead. Brings them in line; a no-op once done.
  */
 async function repairMilestoneRules() {
   const rules = await prisma.providerMessageRule.findMany({ where: { milestoneLabel: { not: null }, builtInKey: null } });
   for (const rule of rules) {
     const milestone = Object.keys(MILESTONE_LABELS).find((key) => MILESTONE_LABELS[key] === rule.milestoneLabel);
     const cond = rule.triggerCondition as unknown as RuleCondition;
-    if (!milestone || cond.minutesSinceStatusUpdated == null) continue;
-    if (JSON.stringify(cond.statusIn) !== JSON.stringify(statusesBefore(milestone))) continue;
-    const statusIn = milestoneStatuses(milestone, "PREV_MILESTONE_COMPLETED");
+    if (!milestone) continue;
+    const next: RuleCondition = { ...cond };
+    // Counted from the previous step: only once that step is done.
+    if (cond.minutesSinceStatusUpdated != null && JSON.stringify(cond.statusIn) === JSON.stringify(statusesBefore(milestone))) {
+      next.statusIn = milestoneStatuses(milestone, "PREV_MILESTONE_COMPLETED");
+    }
+    // Collection, delivery, report: never overdue before the appointment.
+    if (AFTER_VISIT.has(milestone) && cond.minutesAfterAppointment == null && cond.minutesBeforeAppointment == null) next.minutesAfterAppointment = 0;
+    if (JSON.stringify(next) === JSON.stringify(cond)) continue;
     await prisma.providerMessageRule.update({
       where: { id: rule.id },
-      data: { triggerCondition: { ...cond, statusIn } as unknown as Prisma.InputJsonValue, version: { increment: 1 } },
+      data: { triggerCondition: next as unknown as Prisma.InputJsonValue, version: { increment: 1 } },
     });
-    console.log(`[MessageRules] "${rule.name}": now only counts in ${statusIn.join(", ")}`);
+    console.log(`[MessageRules] "${rule.name}": now counts only in ${(next.statusIn ?? []).join(", ")}${next.minutesAfterAppointment != null ? ", after the appointment" : ""}`);
   }
 }
 
@@ -297,7 +313,7 @@ async function convertLegacyRules(configs: NonApiLabConfig[], report: Report): P
           isActive: watcher.isActive && config.enabled && sendingEnabled,
           allowedLabIds: labIds,
           integrationTypes: [],
-          triggerCondition: { statusIn: milestoneStatuses(milestone, config.anchor), ...milestoneTiming(config.anchor, config.offsetMinutes) } as unknown as Prisma.InputJsonValue,
+          triggerCondition: milestoneCondition(milestone, config.anchor, config.offsetMinutes) as unknown as Prisma.InputJsonValue,
           onlyIfIntroduced: false,
           templateKey: watcher.templateKey || "PROVIDER_SLA_MILESTONE",
           milestoneLabel: MILESTONE_LABELS[milestone],

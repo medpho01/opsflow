@@ -329,7 +329,7 @@ const scenarios: Scenario[] = [
     expect: ["12:00 REMINDER_3H · order-11a", "14:00 ESCALATION_5H · order-11a"],
   },
   {
-    name: "12. 'Sample delivered within 3 h of collection' — counts from collection, not from scheduling (repairs the earlier conversion)",
+    name: "12. 'Sample delivered within 3 h of collection' — only after collection and after the appointment (repairs the earlier conversion)",
     run: async () => {
       // The rule as the first conversion wrote it: any status before delivery, 3 h after the last status change.
       await prisma.providerMessageRule.create({ data: {
@@ -342,6 +342,9 @@ const scenarios: Scenario[] = [
       // Collected at 08:00 and still not at the lab by 11:00: late.
       const collected = await createOrder({ status: "ORDER_SCHEDULED", placed: "-2d 07:00", appointment: "07:30", alias: "order-12-collected" });
       await updateOrder(collected, "08:00", { status: "SAMPLE_COLLECTED" });
+      // Marked collected early by mistake, appointment tomorrow: never overdue before the appointment.
+      const early = await createOrder({ status: "ORDER_SCHEDULED", placed: "-2d 07:00", appointment: "+1d 07:00", alias: "order-12-early" });
+      await updateOrder(early, "08:00", { status: "SAMPLE_COLLECTED" });
       await run("10:00", "13:30", 5);
     },
     expect: [

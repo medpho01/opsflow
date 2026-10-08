@@ -738,7 +738,7 @@ export async function newestPerActiveGroup() {
   const rows = (await taskosQuery(
     `SELECT DISTINCT ON (g.jid) g.jid, m."waMsgId", m."fromMe", m.ts
        FROM wa_messages m JOIN wa_groups g ON g.id = m."groupId"
-      WHERE g.active = true
+      WHERE g.active = true AND m.intent IS DISTINCT FROM 'AUTOMATED'
       ORDER BY g.jid, m.ts DESC`
   )).rows;
   return rows;
@@ -945,6 +945,30 @@ async function markCommunicationFailed(outboundId) {
   } catch (e) { console.error("mirror failure:", e.message); }
 }
 
+export const AUTOMATED_INTENT = "AUTOMATED";
+
+/**
+ * Show a message we just sent in the console's group chat.
+ *
+ * Baileys reports a message sent by this socket as a `messages.upsert` of type
+ * "append", and the gateway only handles "notify", so our own sends were never
+ * stored and the console showed none of them. Written here instead, straight
+ * after the send. It carries no ticketId and no order ids on purpose: it must
+ * not count as a team reply on any case. A failure to record never fails the
+ * send — the message is already with the lab.
+ */
+export async function recordSentMessage(row, waId, text) {
+  if (!waId || !row.groupId) return;
+  try {
+    await taskosQuery(
+      `INSERT INTO wa_messages (id, "waMsgId", "groupId", direction, "fromMe", sender, text, ts, intent, "createdAt")
+       VALUES (gen_random_uuid()::text, $1, $2, 'OUT', true, 'me (LabStack)', $3, $4, $5, now())
+       ON CONFLICT ("waMsgId") DO NOTHING`,
+      [waId, row.groupId, text, new Date().toISOString(), AUTOMATED_INTENT]
+    );
+  } catch (e) { console.error("record sent message:", e.message); }
+}
+
 export async function drainOutbound(send, { limit = 5, sendPoll = null } = {}) {
   // Before taking new work, pick up anything a previous run dropped.
   try { await reclaimStalledSends(); } catch (e) { console.error("reclaim:", e.message); }
@@ -1012,8 +1036,10 @@ export async function drainOutbound(send, { limit = 5, sendPoll = null } = {}) {
       // @-mentions: jids to notify (the text already carries "@<localpart>").
       let mentions = null;
       try { mentions = Array.isArray(row.mentions) ? row.mentions : (row.mentions ? JSON.parse(row.mentions) : null); } catch { mentions = null; }
-      const waId = await send(row.targetJid, signText(row.text), { quoted, media, mentions: mentions?.length ? mentions : null });
+      const signed = signText(row.text);
+      const waId = await send(row.targetJid, signed, { quoted, media, mentions: mentions?.length ? mentions : null });
       await taskosQuery(`UPDATE wa_outbound SET status='SENT', "sentWaMsgId"=$2, "sentAt"=now() WHERE id=$1`, [row.id, waId || null]);
+      await recordSentMessage(row, waId, signed);
       await taskosQuery(
         `UPDATE lab_communications SET status='SENT', "sentAt"=COALESCE("sentAt", now()), "updatedAt"=now()
          WHERE "waOutboundId"=$1 AND status='QUEUED'`,

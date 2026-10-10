@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/db/client";
 import { getSessionFromRequest } from "@/lib/auth/session";
 import { UserRole } from "@prisma/client";
-import { loadTeam, makeTeamMatcher } from "@/lib/wa/team";
+import { loadTeam, makeTeamMatcher, isAutomated } from "@/lib/wa/team";
 
 // GET /api/whatsapp/groups/:id/messages — the raw chronological message stream
 // for a group (the WhatsApp-replica "Inbox" view). Tags each message with the
@@ -36,7 +36,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     return {
       id: m.id, waMsgId: m.waMsgId, fromMe: m.fromMe, sender: m.sender, text: m.text, ts: m.ts,
       intent: m.intent, orderId: (m.orderIds || [])[0] ?? null, requestId: (m.requestIds || [])[0] ?? null,
-      ticketId: m.ticketId, mediaType: m.mediaType, isTeam, teamName: m.fromMe ? "You" : tc?.name || null, role,
+      ticketId: m.ticketId, mediaType: m.mediaType, isTeam, teamName: isAutomated(m) ? "LabStack (automated)" : m.fromMe ? "You" : tc?.name || null, role,
     };
   });
 

@@ -15,6 +15,12 @@ WITH latest AS (
   SELECT DISTINCT ON ("groupId") "groupId", text, sender, ts, direction, "fromMe"
   FROM wa_messages ORDER BY "groupId", ts DESC
 ),
+-- The newest message a person wrote (ours or theirs). Our automated sends show as
+-- the preview but do not reorder the list or make a group look urgent.
+human AS (
+  SELECT DISTINCT ON ("groupId") "groupId", text, ts
+  FROM wa_messages WHERE intent IS DISTINCT FROM 'AUTOMATED' ORDER BY "groupId", ts DESC
+),
 unread AS (
   SELECT m."groupId", count(*)::int n FROM wa_messages m JOIN wa_groups g ON g.id = m."groupId"
   WHERE m.direction = 'IN' AND (g."lastReadAt" IS NULL OR m.ts > g."lastReadAt")
@@ -35,17 +41,19 @@ brk AS (
 )
 SELECT g.id, g.subject, g.role,
        l.text AS last_text, l.sender AS last_sender, l.ts AS last_ts, l.direction AS last_dir, l."fromMe" AS last_fromme,
+       h.text AS human_text,
        COALESCE(u.n, 0) AS unread, COALESCE(o.n, 0) AS open_tickets,
        t.ticket_id, t.intent AS top_intent, t."orderId" AS top_order, t."requestId" AS top_request, t.status AS top_status,
        b.obj AS breakdown
 FROM wa_groups g
 JOIN latest l ON l."groupId" = g.id
+LEFT JOIN human h ON h."groupId" = g.id
 LEFT JOIN unread u ON u."groupId" = g.id
 LEFT JOIN opentix o ON o."groupId" = g.id
 LEFT JOIN toptix t ON t."groupId" = g.id
 LEFT JOIN brk b ON b."groupId" = g.id
 WHERE g.active AND g.role <> 'IGNORE' AND g."archivedAt" IS NULL  -- archived groups belong to a previously linked WhatsApp number
-ORDER BY l.ts DESC
+ORDER BY COALESCE(h.ts, l.ts) DESC
 LIMIT 250`;
 
 export async function GET(request: NextRequest) {
@@ -70,7 +78,7 @@ export async function GET(request: NextRequest) {
       topIntent: intent, topOrderId: r.top_order || r.top_request || null,
       breakdown: (r.breakdown as Record<string, number>) || {},
       answerReady: hasId && ANSWERABLE.has(intent || "") && (r.top_status as string) !== "RESOLVED",
-      escalating: ESC_RE.test((r.last_text as string) || ""),
+      escalating: ESC_RE.test((r.human_text as string) || ""),
     };
   });
 

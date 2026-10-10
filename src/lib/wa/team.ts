@@ -32,3 +32,12 @@ export function makeTeamMatcher(team: TeamContact[]) {
     return null;
   };
 }
+
+/**
+ * Intent the gateway stamps on messages it sent itself (reminders, new-order
+ * notices, console sends) when it records them for the group chat view. They
+ * are ours, but not the team answering anyone: never a reply, never activity
+ * that makes a group urgent or unread.
+ */
+export const AUTOMATED_INTENT = "AUTOMATED";
+export const isAutomated = (m: { intent?: string | null }) => m.intent === AUTOMATED_INTENT;

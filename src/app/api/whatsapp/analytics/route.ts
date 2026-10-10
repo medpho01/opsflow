@@ -24,7 +24,7 @@ export async function GET(request: NextRequest) {
         (SELECT count(*) FROM wa_tickets t WHERE t.status='RESOLVED' AND t."resolvedAt" >= now() - interval '1 day' AND ${LIVE}) AS resolved_today,
         (SELECT count(*) FROM wa_groups WHERE active = true AND "archivedAt" IS NULL) AS listening,
         (SELECT count(*) FROM wa_groups g WHERE g.active = true AND g."archivedAt" IS NULL AND EXISTS (
-            SELECT 1 FROM wa_messages m WHERE m."groupId"=g.id AND m.ts > COALESCE(g."lastReadAt", 'epoch'))) AS unread`,
+            SELECT 1 FROM wa_messages m WHERE m."groupId"=g.id AND m.direction = 'IN' AND m.ts > COALESCE(g."lastReadAt", 'epoch'))) AS unread`,
     prisma.$queryRaw<Array<{ status: string; n: bigint }>>`
       SELECT t.status::text AS status, count(*) AS n FROM wa_tickets t WHERE ${OPEN} GROUP BY 1 ORDER BY 2 DESC`,
     prisma.$queryRaw<Array<{ intent: string | null; n: bigint }>>`
@@ -46,7 +46,8 @@ export async function GET(request: NextRequest) {
       SELECT
         count(*) FILTER (WHERE ts > now() - interval '1 day') AS d1,
         count(*) FILTER (WHERE ts > now() - interval '7 days') AS d7
-      FROM wa_messages WHERE "groupId" IN (SELECT id FROM wa_groups WHERE "archivedAt" IS NULL)`,
+      FROM wa_messages WHERE "groupId" IN (SELECT id FROM wa_groups WHERE "archivedAt" IS NULL)
+        AND intent IS DISTINCT FROM 'AUTOMATED'`,
     prisma.$queryRaw<Array<{ total: bigint; resolved: bigint }>>`
       SELECT count(*) AS total, count(*) FILTER (WHERE resolved) AS resolved FROM wa_case_briefs`,
   ]);

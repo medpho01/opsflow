@@ -4,7 +4,7 @@ import labstack, { labstackOr } from "@/lib/db/labstack";
 import { getSessionFromRequest } from "@/lib/auth/session";
 import { UserRole, WaTicketStatus, Prisma } from "@prisma/client";
 import { patientNameFor, patientNames } from "@/lib/wa/patientNames";
-import { loadTeam, makeTeamMatcher } from "@/lib/wa/team";
+import { loadTeam, makeTeamMatcher, isAutomated } from "@/lib/wa/team";
 
 // GET /api/whatsapp/tickets/:id — ticket + full thread + live order context
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -133,16 +133,19 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   // Identify OUR team (roster) so team replies are distinct from customer msgs.
   const team = await loadTeam();
   const matchTeam = makeTeamMatcher(team);
+  // Our automated sends (reminders, notices) show in the thread but are neither the
+  // team handling the case nor activity awaiting a reply.
   const taggedMsgs = groupMessages.map((m) => {
+    const automated = isAutomated(m);
     const tc = m.fromMe ? null : matchTeam(m.sender, m.senderJid);
-    return { ...m, isTeam: m.fromMe || !!tc, teamName: m.fromMe ? "You" : tc?.name || null };
+    return { ...m, automated, isTeam: (m.fromMe && !automated) || !!tc, teamName: automated ? "LabStack (automated)" : m.fromMe ? "You" : tc?.name || null };
   });
   const handledIdx = taggedMsgs.map((m) => m.isTeam).lastIndexOf(true);
   const handledMsg = handledIdx >= 0 ? taggedMsgs[handledIdx] : null;
   // How much customer/store/lab activity has landed AFTER our team's last reply.
   // A "last handled" time next to newer unanswered messages reads as handled when
   // the case is actually cold — so surface the gap.
-  const newSince = handledIdx >= 0 ? taggedMsgs.slice(handledIdx + 1).filter((m) => !m.isTeam).length : taggedMsgs.filter((m) => !m.isTeam).length;
+  const newSince = handledIdx >= 0 ? taggedMsgs.slice(handledIdx + 1).filter((m) => !m.isTeam && !m.automated).length : taggedMsgs.filter((m) => !m.isTeam && !m.automated).length;
   const lastHandledBy = handledMsg ? { name: handledMsg.teamName || "Team", ts: handledMsg.ts, newSince } : null;
 
   // Which media messages actually have their bytes stored? A message can carry a
@@ -222,7 +225,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   // our team has replied AND the newest message in the thread is that reply
   // (the ball is no longer in the customer's court). Stronger when a provider
   // status has also landed for this order (query ↔ status closed).
-  const newest = taggedMsgs[taggedMsgs.length - 1];
+  const newest = taggedMsgs.filter((m) => !m.automated).at(-1);
   const suggestResolve =
     ticket.status !== "RESOLVED" && lastHandledBy && newest?.isTeam
       ? {
@@ -255,7 +258,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       return {
         id: m.id, groupId: m.group.id, groupSubject: m.group.subject, groupRole: m.group.role,
         sender: m.sender, text: m.text, intent: m.intent, ts: m.ts,
-        isTeam: m.fromMe || !!tc, teamName: m.fromMe ? "You" : tc?.name || null,
+        isTeam: (m.fromMe && !isAutomated(m)) || !!tc, teamName: isAutomated(m) ? "LabStack (automated)" : m.fromMe ? "You" : tc?.name || null,
         isCurrentGroup: m.group.id === ticket.groupId,
       };
     });

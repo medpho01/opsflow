@@ -741,7 +741,7 @@ export async function newestPerActiveGroup() {
   const rows = (await taskosQuery(
     `SELECT DISTINCT ON (g.jid) g.jid, m."waMsgId", m."fromMe", m.ts
        FROM wa_messages m JOIN wa_groups g ON g.id = m."groupId"
-      WHERE g.active = true AND m.intent IS DISTINCT FROM 'AUTOMATED'
+      WHERE g.active = true AND COALESCE(m.intent, '') NOT IN ('AUTOMATED', 'CONSOLE')
       ORDER BY g.jid, m.ts DESC`
   )).rows;
   return rows;
@@ -949,6 +949,9 @@ async function markCommunicationFailed(outboundId) {
 }
 
 export const AUTOMATED_INTENT = "AUTOMATED";
+// A reply a team member typed in the console: ours AND a person answering, so it
+// counts as the team (threaded to its ticket), unlike an AUTOMATED send.
+export const CONSOLE_INTENT = "CONSOLE";
 
 /**
  * Show a message we just sent in the console's group chat.
@@ -956,21 +959,24 @@ export const AUTOMATED_INTENT = "AUTOMATED";
  * Baileys reports a message sent by this socket as a `messages.upsert` of type
  * "append", and the gateway only handles "notify", so our own sends were never
  * stored and the console showed none of them. Written here instead, straight
- * after the send. It is ours but never the team answering anyone: it carries no
- * ticketId or order ids, and everything that judges replies or activity skips
- * intent AUTOMATED — the BACKFILL re-resolve (which would otherwise read order
+ * after the send. An engine message (no createdById) is AUTOMATED: ours but
+ * never the team answering anyone. It carries no ticketId or order ids, and
+ * everything that judges replies or activity skips intent AUTOMATED: the
+ * BACKFILL re-resolve (which would otherwise read order
  * ids out of the text), response stamping, the Inbox order and escalation flag,
- * the case view, unread counts. A failure to record never fails the send — the
- * message is already with the lab.
+ * the case view, unread counts. A reply a team member typed in the console is
+ * CONSOLE instead, threaded to its ticket: that one IS the team answering. A
+ * failure to record never fails the send — the message is already with the lab.
  */
 export async function recordSentMessage(row, waId, text) {
   if (!waId || !row.groupId) return;
+  const console_ = row.createdById != null;
   try {
     await taskosQuery(
-      `INSERT INTO wa_messages (id, "waMsgId", "groupId", direction, "fromMe", sender, text, ts, intent, "createdAt")
-       VALUES (gen_random_uuid()::text, $1, $2, 'OUT', true, 'me (LabStack)', $3, $4, $5, now())
+      `INSERT INTO wa_messages (id, "waMsgId", "groupId", "ticketId", direction, "fromMe", sender, text, ts, intent, "createdAt")
+       VALUES (gen_random_uuid()::text, $1, $2, $3, 'OUT', true, 'me (LabStack)', $4, $5, $6, now())
        ON CONFLICT ("waMsgId") DO NOTHING`,
-      [waId, row.groupId, text, new Date().toISOString(), AUTOMATED_INTENT]
+      [waId, row.groupId, console_ ? row.ticketId ?? null : null, text, new Date().toISOString(), console_ ? CONSOLE_INTENT : AUTOMATED_INTENT]
     );
   } catch (e) { console.error("record sent message:", e.message); }
 }
@@ -1006,7 +1012,7 @@ export async function drainOutbound(send, { limit = 5, sendPoll = null } = {}) {
      )
      SELECT c.id, c."targetJid", c.text, c."groupId", c."quotedWaId", c."mentions",
             c."mediaMime", c."mediaName", c."mediaBytes", c."pollName", c."pollOptions",
-            c."createdAt", g."sendEnabled", g.subject
+            c."createdAt", c."createdById", c."ticketId", g."sendEnabled", g.subject
        FROM claimed c LEFT JOIN wa_groups g ON g.id = c."groupId"
       ORDER BY c."createdAt" ASC`, [limit]
   )).rows;
@@ -1079,4 +1085,43 @@ export async function drainOutbound(send, { limit = 5, sendPoll = null } = {}) {
     }
   }
   return { drained: rows.length, sent };
+}
+
+/**
+ * Bring messages we sent BEFORE recordSentMessage existed into the group chat
+ * view, from the send log (wa_outbound keeps the text, the send time and the
+ * WhatsApp id). Same labels as live sends: AUTOMATED for the engine's
+ * messages, CONSOLE for replies a team member typed. Idempotent (keyed on the
+ * WhatsApp id), so it runs on every connect and on BACKFILL.
+ *
+ * A history sync may already have stored some of our automated sends through
+ * the normal ingest, which read order ids out of their text and so counted
+ * them as team replies. Those copies are relabelled AUTOMATED and their ids
+ * cleared, so they stop doing that. Console replies synced that way are left
+ * alone — they are the team answering.
+ */
+export async function backfillSentMessages({ days = Number(process.env.SENT_BACKFILL_DAYS || 30) } = {}) {
+  const since = `${Math.max(1, days)} days`;
+  // signText() in SQL: the text as delivered, signature appended once.
+  const signed = SIGNATURE
+    ? `CASE WHEN position($2 IN o.text) > 0 THEN rtrim(o.text) ELSE rtrim(o.text) || E'\\n\\n_' || $2 || '_' END`
+    : `rtrim(o.text)`;
+  const params = SIGNATURE ? [since, SIGNATURE] : [since];
+  const inserted = (await taskosQuery(
+    `INSERT INTO wa_messages (id, "waMsgId", "groupId", "ticketId", direction, "fromMe", sender, text, ts, intent, "createdAt")
+     SELECT gen_random_uuid()::text, o."sentWaMsgId", o."groupId",
+            CASE WHEN o."createdById" IS NOT NULL THEN o."ticketId" END,
+            'OUT', true, 'me (LabStack)', ${signed}, COALESCE(o."sentAt", o."createdAt"),
+            CASE WHEN o."createdById" IS NOT NULL THEN '${CONSOLE_INTENT}' ELSE '${AUTOMATED_INTENT}' END, now()
+       FROM wa_outbound o
+      WHERE o.status = 'SENT' AND o."sentWaMsgId" IS NOT NULL AND o."groupId" IS NOT NULL
+        AND COALESCE(o."sentAt", o."createdAt") >= now() - $1::interval
+     ON CONFLICT ("waMsgId") DO NOTHING`, params)).rowCount;
+  const relabelled = (await taskosQuery(
+    `UPDATE wa_messages m SET intent = '${AUTOMATED_INTENT}', "orderIds" = '{}', "requestIds" = '{}', "refIds" = '{}', "ticketId" = NULL
+       FROM wa_outbound o
+      WHERE o."sentWaMsgId" = m."waMsgId" AND o."createdById" IS NULL
+        AND m.intent IS DISTINCT FROM '${AUTOMATED_INTENT}'
+        AND COALESCE(o."sentAt", o."createdAt") >= now() - $1::interval`, [since])).rowCount;
+  return { inserted, relabelled };
 }

@@ -5,6 +5,7 @@ import { getSessionFromRequest } from "@/lib/auth/session";
 import { UserRole, WaTicketStatus, Prisma } from "@prisma/client";
 import { patientNameFor, patientNames } from "@/lib/wa/patientNames";
 import { loadTeam, makeTeamMatcher, isAutomated } from "@/lib/wa/team";
+import { resolveMentionNames } from "@/lib/wa/mentionNames";
 
 // GET /api/whatsapp/tickets/:id — ticket + full thread + live order context
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -157,53 +158,6 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   if (mediaWaIds.length) {
     const have = await prisma.waMedia.findMany({ where: { waMsgId: { in: mediaWaIds } }, select: { waMsgId: true } });
     for (const r of have) mediaBytesSet.add(r.waMsgId);
-  }
-
-  // Resolve @mentions (e.g. "@919811111111" / "@271686813356076") to names.
-  // Two sources: the team roster, and anyone who has spoken in the thread
-  // (their senderJid → pushName). Keyed by the full local-part and its last 10
-  // digits so a phone-jid mention and a roster phone line up.
-  const last10 = (s: string) => (s || "").replace(/\D/g, "").slice(-10);
-  const mentions: Record<string, string> = {};
-  const addMention = (idDigits: string, name?: string | null) => {
-    if (!idDigits || !name) return;
-    mentions[idDigits] = name;
-    const l10 = idDigits.slice(-10);
-    if (l10 && !mentions[l10]) mentions[l10] = name;
-  };
-  for (const t of team) {
-    const d = (t.phone || "").replace(/\D/g, "");
-    if (d) addMention(d, t.name);
-  }
-  for (const m of taggedMsgs) {
-    const d = (m.senderJid || "").split("@")[0].replace(/\D/g, "");
-    if (d) addMention(d, m.teamName || m.sender);
-  }
-  // Only expose the mentions actually referenced in the thread's text.
-  const mentionMap: Record<string, string> = {};
-  const unresolved = new Set<string>();
-  const mentionRe = /@(\d{5,})/g;
-  for (const m of taggedMsgs) {
-    let mm: RegExpExecArray | null;
-    const re = new RegExp(mentionRe.source, "g");
-    while ((mm = re.exec(m.text || ""))) {
-      const raw = mm[1];
-      const name = mentions[raw] || mentions[last10(raw)];
-      if (name) mentionMap[raw] = name;
-      else unresolved.add(raw);
-    }
-  }
-  // Resolve leftover @mentions (often WhatsApp LID numbers, not phones) against
-  // anyone who has EVER spoken — their senderJid local-part → pushName.
-  if (unresolved.size) {
-    const ids = [...unresolved];
-    const rows = await prisma.$queryRaw<Array<{ lp: string; sender: string }>>(
-      Prisma.sql`SELECT DISTINCT split_part("senderJid", '@', 1) AS lp, sender
-                 FROM wa_messages
-                 WHERE "senderJid" IS NOT NULL AND sender <> ''
-                   AND split_part("senderJid", '@', 1) IN (${Prisma.join(ids)})`
-    ).catch(() => []);
-    for (const r of rows) if (r.lp && r.sender && !mentionMap[r.lp]) mentionMap[r.lp] = r.sender;
   }
 
   // Cross-group activity for THIS order: a Store case surfaces the Provider's
@@ -397,6 +351,11 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       };
     }
   }
+
+  // @mentions in everything shown here (the thread, its timeline, the other groups).
+  const mentionMap = await resolveMentionNames(
+    [...taggedMsgs.map((m) => m.text), ...timeline.map((t) => t.text), ...related.map((r) => r.text)], { team },
+  );
 
   return NextResponse.json({
     ticket: {

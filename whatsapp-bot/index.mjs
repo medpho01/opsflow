@@ -369,6 +369,11 @@ async function start() {
         // sync the OLD number's groups as if it were still in them.
         groupSubjects.clear();
         for (const g of Object.values(groups)) groupSubjects.set(g.id, g.subject);
+        // Every member's LID <-> phone, including people who never write: they get @-mentioned too.
+        if (CT_ENABLED) {
+          const members = Object.values(groups).flatMap((g) => (g.participants || []).map((p) => ({ jids: [p.id, p.lid, p.jid], name: p.notify || p.name || null })));
+          CT.rememberIdentities(members).then((n) => n && console.log(`identities: ${n} member ids remembered`)).catch(() => {});
+        }
         const all = [...groupSubjects.entries()];
         const preActive = all.filter(([jid, subject]) => GROUP_ALLOW.has(jid) || (GROUP_RE ? GROUP_RE.test(subject || "") : false)).map(([jid]) => jid);
         banner(`In ${groupSubjects.size} groups · ${preActive.length} match the listen hint (/${GROUP_FILTER}/i) — pick which to listen to in Settings:`);
@@ -681,6 +686,10 @@ async function handle(m) {
   if (!text && !media) return; // pure system/empty event — nothing to capture
   const fromMe = !!m.key.fromMe;
   const sender = fromMe ? "me (LabStack)" : (m.pushName || m.key.participant || "");
+  // The sender's LID, phone and name, so @-mentions of them can be named in the console.
+  if (!fromMe && CT_ENABLED) {
+    CT.rememberIdentities([{ jids: [m.key.participant, m.key.participantPn, m.key.participantLid], name: m.pushName }]).catch(() => {});
+  }
   const side = fromMe || isLabstack(sender) ? "LAB" : "PARTNER";
   const rc = replyContext(m);
 

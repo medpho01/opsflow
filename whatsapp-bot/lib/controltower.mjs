@@ -1125,3 +1125,45 @@ export async function backfillSentMessages({ days = Number(process.env.SENT_BACK
         AND COALESCE(o."sentAt", o."createdAt") >= now() - $1::interval`, [since])).rowCount;
   return { inserted, relabelled };
 }
+
+/**
+ * Remember who is behind WhatsApp ids, so the console can name an @-mention.
+ * Groups address members by LID (an anonymous number) or by phone, and a
+ * mention carries whichever the sender's app used; without the other form or a
+ * display name the console can only show the bare number. Each entry is one
+ * person: the ids WhatsApp gave for them (a LID and/or a phone jid) and their
+ * display name if known. Fire-and-forget: never blocks message handling.
+ */
+export async function rememberIdentities(entries) {
+  const kindOf = (jid) => (jid.endsWith("@lid") ? "LID" : /@(s\.whatsapp\.net|c\.us)$/.test(jid) ? "PN" : null);
+  const rows = new Map();
+  for (const { jids = [], name = null } of entries) {
+    const ids = [...new Set(jids.filter(Boolean))]
+      .map((jid) => ({ kind: kindOf(jid), lp: jid.split("@")[0].split(":")[0] }))
+      .filter((i) => i.kind && /^\d{5,}$/.test(i.lp));
+    for (const id of ids) {
+      const other = ids.find((o) => o.kind !== id.kind);
+      const prev = rows.get(id.lp);
+      rows.set(id.lp, {
+        kind: id.kind,
+        counterpart: other?.lp ?? prev?.counterpart ?? null,
+        name: (name && String(name).trim()) || prev?.name || null,
+      });
+    }
+  }
+  if (!rows.size) return 0;
+  const lps = [...rows.keys()];
+  const vals = lps.map((lp) => rows.get(lp));
+  try {
+    await taskosQuery(
+      `INSERT INTO wa_identities (localpart, kind, counterpart, name, "updatedAt")
+       SELECT lp, kind, cp, nm, now() FROM unnest($1::text[], $2::text[], $3::text[], $4::text[]) AS t(lp, kind, cp, nm)
+       ON CONFLICT (localpart) DO UPDATE SET
+         counterpart = COALESCE(EXCLUDED.counterpart, wa_identities.counterpart),
+         name = COALESCE(EXCLUDED.name, wa_identities.name),
+         "updatedAt" = now()`,
+      [lps, vals.map((v) => v.kind), vals.map((v) => v.counterpart), vals.map((v) => v.name)]
+    );
+  } catch (e) { console.error("remember identities:", e.message); return 0; }
+  return rows.size;
+}

@@ -935,6 +935,23 @@ enum WaOutboundStatus {
   FAILED
 }
 
+/// Who is behind a WhatsApp id. Groups address members by LID (an anonymous
+/// number, e.g. 157140018823280) or by phone, and @-mentions carry whichever the
+/// sender's app used, so a mention can only be named once we know that id's
+/// other form or display name. The gateway fills this from incoming messages
+/// (sender LID + phone + pushName) and from group member lists on connect.
+/// One row per id; a person known both ways has two rows pointing at each other.
+model WaIdentity {
+  localpart   String   @id // the digits before "@": a LID or a phone number
+  kind        String // LID | PN
+  counterpart String? // the same person's other id (LID <-> phone), when known
+  name        String? // WhatsApp display name, as last seen
+  updatedAt   DateTime @updatedAt
+
+  @@index([counterpart])
+  @@map("wa_identities")
+}
+
 model WaGroup {
   id                 String      @id @default(cuid())
   jid                String      @unique // WhatsApp group jid (…@g.us)

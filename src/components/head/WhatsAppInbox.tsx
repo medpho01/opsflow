@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { applyMentions, type Mention } from "@/lib/wa/mentions";
+import { applyMentions, withMentionNames, type Mention } from "@/lib/wa/mentions";
 
 type Convo = { groupId: string; subject: string; role: string; lastText: string; lastTs: string; unread: number };
 type Msg = {
@@ -27,6 +27,7 @@ export default function WhatsAppInbox({ gwDryRun, onOpenCase }: { gwDryRun: bool
   const [attachment, setAttachment] = useState<File | null>(null);
   const [mentions, setMentions] = useState<Mention[]>([]);
   const [participants, setParticipants] = useState<Mention[]>([]);
+  const [mentionNames, setMentionNames] = useState<Record<string, string>>({});
   const [tagOpen, setTagOpen] = useState(false);
   const [tagQuery, setTagQuery] = useState("");
   const [busy, setBusy] = useState(false);
@@ -42,7 +43,7 @@ export default function WhatsAppInbox({ gwDryRun, onOpenCase }: { gwDryRun: bool
   }, []);
   const loadMsgs = useCallback(async (id: string) => {
     const r = await fetch(`/api/whatsapp/groups/${id}/messages?limit=250`);
-    if (r.ok) { const d = await r.json(); setGroup(d.group); setMsgs(d.messages); }
+    if (r.ok) { const d = await r.json(); setGroup(d.group); setMsgs(d.messages); setMentionNames(d.mentions ?? {}); }
   }, []);
 
   useEffect(() => { loadConvos(); }, [loadConvos]);
@@ -145,7 +146,7 @@ export default function WhatsAppInbox({ gwDryRun, onOpenCase }: { gwDryRun: bool
                     <img src={`/api/whatsapp/media/${m.waMsgId}`} alt="" className="max-h-52 rounded-lg border border-zinc-700/50 object-contain mb-1" />
                   )}
                   {m.mediaType === "document" && <a href={`/api/whatsapp/media/${m.waMsgId}`} target="_blank" rel="noreferrer" className="text-xs text-blue-300 underline">📄 document</a>}
-                  <div className="text-zinc-100 whitespace-pre-wrap break-words">{m.text}</div>
+                  <div className="text-zinc-100 whitespace-pre-wrap break-words">{withMentionNames(m.text, mentionNames)}</div>
                   <div className="text-[10px] text-zinc-500 mt-1 text-right">{fmtTime(m.ts)}</div>
                 </div>
               ))}
@@ -154,7 +155,7 @@ export default function WhatsAppInbox({ gwDryRun, onOpenCase }: { gwDryRun: bool
             <div className="border-t border-zinc-800 p-3 flex flex-col gap-2 bg-zinc-900/40">
               {replyTo && (
                 <div className="flex items-start gap-2 rounded-lg border-l-2 border-blue-500 bg-zinc-900/60 px-2.5 py-1.5">
-                  <div className="flex-1 min-w-0"><div className="text-[10px] font-semibold text-blue-300">↩ Replying to {replyTo.sender}</div><div className="text-[11px] text-zinc-400 truncate">{replyTo.text}</div></div>
+                  <div className="flex-1 min-w-0"><div className="text-[10px] font-semibold text-blue-300">↩ Replying to {replyTo.sender}</div><div className="text-[11px] text-zinc-400 truncate">{withMentionNames(replyTo.text, mentionNames)}</div></div>
                   <button onClick={() => setReplyTo(null)} className="text-zinc-500 hover:text-zinc-300">✕</button>
                 </div>
               )}
@@ -216,7 +217,7 @@ export default function WhatsAppInbox({ gwDryRun, onOpenCase }: { gwDryRun: bool
             <div className="text-[11px] uppercase tracking-wide text-zinc-500 font-semibold">Message context</div>
             <div className="rounded-lg border border-zinc-700/60 bg-zinc-900/40 p-3">
               <div className="text-[11px] font-semibold mb-1"><span className={roleTint(selected.role)}>{selected.isTeam ? "Ops · " + (selected.teamName || "You") : `${selected.role} · ${selected.sender}`}</span></div>
-              <div className="text-sm text-zinc-200 whitespace-pre-wrap">{selected.text}</div>
+              <div className="text-sm text-zinc-200 whitespace-pre-wrap">{withMentionNames(selected.text, mentionNames)}</div>
               <div className="text-[10px] text-zinc-500 mt-1">{fmtTime(selected.ts)}</div>
             </div>
             <Row k="Intent" v={selected.intent || "—"} />

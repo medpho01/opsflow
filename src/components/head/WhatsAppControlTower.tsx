@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import WhatsAppInbox from "./WhatsAppInbox";
 import WhatsAppAnalytics from "./WhatsAppAnalytics";
+import { withMentionNames } from "@/lib/wa/mentions";
 
 type Conversation = {
   groupId: string; subject: string; role: string; ticketId: string | null;
@@ -38,13 +39,7 @@ type Detail = {
 };
 
 // Replace "@919811111111" mentions with "@Name" using the resolved map.
-function withMentions(text: string, mentions?: Record<string, string>): string {
-  if (!text || !mentions) return text;
-  return text.replace(/@(\d{5,})/g, (m, id: string) => {
-    const name = mentions[id] || mentions[id.slice(-10)];
-    return name ? `@${name}` : m;
-  });
-}
+const withMentions = withMentionNames;
 
 const STATUS_PHRASE: Record<string, string> = {
   CREATED: "order created, being scheduled", PENDING: "pending scheduling",

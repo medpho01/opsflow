@@ -26,3 +26,13 @@ export function normalizeMentions(raw: unknown): string[] {
   if (!Array.isArray(arr)) return [];
   return [...new Set(arr.map((x) => String(x).trim()).filter((s) => s.includes("@")))].slice(0, 20);
 }
+
+// Show "@157140018823280" as "@Name", using the map the API resolved
+// (lib/wa/mentionNames.ts). Unknown ids stay as they are.
+export function withMentionNames(text: string, names?: Record<string, string>): string {
+  if (!text || !names) return text;
+  return text.replace(/@(\d{5,})/g, (whole, id: string) => {
+    const name = names[id] || names[id.slice(-10)];
+    return name ? `@${name}` : whole;
+  });
+}

@@ -7,6 +7,8 @@
 .next
 build
 node_modules
+# Every nested node_modules too (a bare "node_modules" only matches the top level).
+**/node_modules
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
@@ -37,3 +39,14 @@ prisma/migrate_templates_to_poll.ts
 docker/labstack-dummy
 .scratch
 .scratch-*.ts
+
+# Other services and local artefacts: built from their own folders (see
+# docker-compose*.yml), never part of the app image. The gateway's WhatsApp
+# session, media and node_modules alone made the context gigabytes.
+whatsapp-bot
+whisper-service
+mockups
+.sim
+*.xlsx
+*.dump
+*.sql.gz

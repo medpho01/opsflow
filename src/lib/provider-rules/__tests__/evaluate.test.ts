@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { decideRule, planOrder, triggerMoment, nextWindowOpening, summaryDue, summaryMatches, conditionMatches } from "../evaluate";
 import { BUILT_IN_RULES } from "../builtins";
 import { statusesBefore, milestoneTiming, milestoneStatuses, milestoneCondition } from "../migrate";
+import { batchIntentOf, releaseAt, currentSlot, splitBatchReply, itemLine, shortWhen } from "../batching";
 import { EMPTY_LEDGER, type LedgerState, type MessageRule, type RuleConversation, type RuleLab, type RuleOrder } from "../types";
 
 const IST = "Asia/Kolkata";
@@ -206,5 +207,74 @@ describe("converting the delivery-deadline watchers", () => {
     assert.deepEqual(milestoneTiming("ORDER_CREATED", 120), { minutesSinceCreated: 120 });
     assert.deepEqual(milestoneTiming("APPOINTMENT_TIME", 60), { minutesAfterAppointment: 60 });
     assert.deepEqual(milestoneTiming("APPOINTMENT_TIME", -30), { minutesBeforeAppointment: 30 });
+  });
+});
+
+describe("combined messages", () => {
+  it("which rules combine, and with what", () => {
+    assert.equal(batchIntentOf(builtIn("STATUS_CHECK")), "STATUS");
+    assert.equal(batchIntentOf(builtIn("REMINDER_1H")), "UNCONFIRMED");
+    assert.equal(batchIntentOf(builtIn("REMINDER_3H")), "UNCONFIRMED");
+    assert.equal(batchIntentOf(builtIn("ESCALATION_5H")), "ESCALATION");
+    assert.equal(batchIntentOf(builtIn("REPORT_CHASE")), "REPORT");
+    // Never combined: the new-order message, urgent (P0) rules.
+    assert.equal(batchIntentOf(builtIn("NEW_ORDER")), null);
+    assert.equal(batchIntentOf(builtIn("APPT_10M")), null);
+    // A custom rule combines with itself only.
+    assert.equal(batchIntentOf(builtIn("STATUS_CHECK", { id: "r1", templateKey: "MY_TEMPLATE" })), "RULE:r1");
+  });
+
+  it("fixed slots: :00 / :30, reports at 10, 14, 18", () => {
+    const ist = (s: string) => new Date(`${s}+05:30`);
+    assert.deepEqual(releaseAt("STATUS", ist("2026-10-12T09:05:00"), IST), ist("2026-10-12T09:30:00"));
+    assert.deepEqual(releaseAt("STATUS", ist("2026-10-12T09:30:00"), IST), ist("2026-10-12T09:30:00"));
+    assert.deepEqual(releaseAt("STATUS", ist("2026-10-12T09:31:10"), IST), ist("2026-10-12T10:00:00"));
+    assert.deepEqual(releaseAt("REPORT", ist("2026-10-12T10:20:00"), IST), ist("2026-10-12T14:00:00"));
+    assert.deepEqual(releaseAt("REPORT", ist("2026-10-12T19:00:00"), IST), ist("2026-10-13T10:00:00"));
+    assert.deepEqual(currentSlot(ist("2026-10-12T09:44:59"), IST), ist("2026-10-12T09:30:00"));
+  });
+
+  it("an item waits for its slot, and waiting is never a miss", () => {
+    const rule = builtIn("STATUS_CHECK");
+    const o = order({ orderStatus: "ORDER_SCHEDULED", appointmentTime: at("2026-10-12T03:05:00Z") }); // 8:35 IST → due 9:05
+    const ctx = (now: string) => ({
+      lab, conversation: undefined, ledger: EMPTY_LEDGER, facts: new Set<string>(), now: at(now), timeZone: IST,
+      releaseAt: (r: MessageRule, dueAt: Date) => releaseAt(batchIntentOf(r)!, dueAt, IST),
+    });
+    assert.equal(decideRule(rule, o, ctx("2026-10-12T03:40:00Z")).kind, "WAIT"); // 9:10
+    assert.equal(decideRule(rule, o, ctx("2026-10-12T04:00:00Z")).kind, "SEND"); // 9:30, the slot
+    assert.equal(decideRule(rule, o, ctx("2026-10-12T05:00:00Z")).kind, "SEND"); // 10:30: slot + 60 min slack
+    assert.equal(decideRule(rule, o, ctx("2026-10-12T05:40:00Z")).kind, "MISS"); // 11:10: too late
+  });
+
+  it("reads numbered replies, 'all …', order ids — and never guesses", () => {
+    const items = [{ n: 1, orderId: 88704 }, { n: 2, orderId: 88711 }, { n: 3, orderId: 88730 }];
+    const read = (text: string) => Object.fromEntries(splitBatchReply(text, items));
+    assert.deepEqual(read("1 done, 2 not home, 3 at 5 pm"), { 1: "done", 2: "not home", 3: "at 5 pm" });
+    assert.deepEqual(read("1,2 collected. 3 rescheduled to tomorrow"), { 1: "collected", 2: "collected", 3: "rescheduled to tomorrow" });
+    assert.deepEqual(read("1) collected\n2) stuck in traffic"), { 1: "collected", 2: "stuck in traffic" });
+    assert.deepEqual(read("All done"), { 1: "done", 2: "done", 3: "done" });
+    assert.deepEqual(read("88711 patient not available"), { 2: "patient not available" });
+    assert.deepEqual(read("ok"), {});
+    assert.deepEqual(read("4 done"), {});
+    assert.deepEqual(Object.fromEntries(splitBatchReply("collected", [{ n: 1, orderId: 5 }])), { 1: "collected" });
+  });
+
+  it("one short line per order", () => {
+    const now = at("2026-10-12T03:30:00Z"); // 9:00 IST
+    assert.equal(shortWhen(at("2026-10-12T01:30:00Z"), now, IST), "7:00 am");
+    assert.equal(shortWhen(at("2026-10-13T01:30:00Z"), now, IST), "tomorrow 7:00 am");
+    assert.equal(
+      itemLine("STATUS", { n: 1, orderId: 88704, patientName: "Manjusha K", appointment: at("2026-10-12T01:30:00Z") }, now, IST),
+      "1. #88704 · Manjusha · 7:00 am",
+    );
+    assert.equal(
+      itemLine("UNCONFIRMED", { n: 2, orderId: 88711, patientName: "Ravi", appointment: at("2026-10-13T02:00:00Z"), confirmUrl: "https://x/c" }, now, IST),
+      "2. #88711 · Ravi · tomorrow 7:30 am\n    https://x/c",
+    );
+    assert.equal(
+      itemLine("REPORT", { n: 3, orderId: 88501, patientName: "Kavita", appointment: at("2026-10-11T02:30:00Z") }, now, IST),
+      "3. #88501 · Kavita · visit yesterday 8:00 am (25 h ago)",
+    );
   });
 });

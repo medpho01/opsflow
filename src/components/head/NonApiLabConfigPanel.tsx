@@ -21,6 +21,8 @@ type LabConfig = {
   appointmentRemindersEnabled: boolean;
   postAppointmentCheckEnabled: boolean;
   quietWindowMinutes: number;
+  batchingMode?: "OFF" | "SHADOW" | "LIVE";
+  maxBatchesPerSlot?: number;
   slaBreachAlertsEnabled: boolean;
   slaBreachMaxPerOrder: number;
   dailyDigestEnabled: boolean;
@@ -48,6 +50,8 @@ type Draft = {
   appointmentRemindersEnabled: boolean;
   postAppointmentCheckEnabled: boolean;
   quietWindowMinutes: string;
+  batchingMode: "OFF" | "SHADOW" | "LIVE";
+  maxBatchesPerSlot: string;
   slaBreachAlertsEnabled: boolean;
   slaBreachMaxPerOrder: string;
   dailyDigestEnabled: boolean;
@@ -61,6 +65,7 @@ const EMPTY_DRAFT: Draft = {
   confirmationSlaMinutes: "60", reminderSlaMinutes: "180", escalationSlaMinutes: "300",
   initialTemplateKey: "NON_API_NEW_ORDER", reminderTemplateKey: "NON_API_REMINDER", escalationTemplateKey: "NON_API_ESCALATION",
   appointmentTemplateKey: "NON_API_APPOINTMENT_REMINDER", appointmentRemindersEnabled: false, postAppointmentCheckEnabled: true, quietWindowMinutes: "10",
+  batchingMode: "OFF", maxBatchesPerSlot: "3",
   slaBreachAlertsEnabled: true, slaBreachMaxPerOrder: "2",
   dailyDigestEnabled: false, dailyDigestAt: "19:00", dailyDigestSkipWhenEmpty: true,
 };
@@ -84,6 +89,8 @@ function toDraft(lab: LabConfig): Draft {
     appointmentRemindersEnabled: lab.appointmentRemindersEnabled ?? false,
     postAppointmentCheckEnabled: lab.postAppointmentCheckEnabled ?? true,
     quietWindowMinutes: String(lab.quietWindowMinutes ?? 10),
+    batchingMode: lab.batchingMode ?? "OFF",
+    maxBatchesPerSlot: String(lab.maxBatchesPerSlot ?? 3),
     slaBreachAlertsEnabled: lab.slaBreachAlertsEnabled ?? true,
     slaBreachMaxPerOrder: String(lab.slaBreachMaxPerOrder ?? 2),
     dailyDigestEnabled: lab.dailyDigestEnabled ?? false,
@@ -295,6 +302,8 @@ export function NonApiLabConfigPanel() {
       appointmentRemindersEnabled: draft.appointmentRemindersEnabled,
       postAppointmentCheckEnabled: draft.postAppointmentCheckEnabled,
       quietWindowMinutes: Number(draft.quietWindowMinutes),
+      batchingMode: draft.batchingMode,
+      maxBatchesPerSlot: Number(draft.maxBatchesPerSlot),
       slaBreachAlertsEnabled: draft.slaBreachAlertsEnabled,
       slaBreachMaxPerOrder: Number(draft.slaBreachMaxPerOrder),
       dailyDigestEnabled: draft.dailyDigestEnabled,
@@ -579,7 +588,7 @@ export function NonApiLabConfigPanel() {
                     {g.subject || g.jid}{g.sendEnabled ? "" : " — sending off"}
                   </option>
                 ))}
-              </select></Field><p className="text-[11px] text-zinc-500 -mt-2">Picked from the {groups.length} groups the gateway can actually see, so the id is never typed. A group still needs sending switched on under Settings &rarr; WhatsApp before anything leaves.</p><p className="text-[11px] text-zinc-500 -mt-2">The provider&apos;s ops group, so a reply is visible to their whole desk. Required for API labs too — that is where breach alerts go. Sending stays off until the group is enabled under Settings → WhatsApp.</p><Field label="Lab WhatsApp number (fallback, used only without a group)"><input value={draft.whatsappNumber} onChange={(e) => update("whatsappNumber", e.target.value)} placeholder="+9198…" className={inputClass} /></Field><div className="grid grid-cols-2 gap-3"><Field label="Lab manager (name)"><input value={draft.managerName} onChange={(e) => update("managerName", e.target.value)} placeholder="Optional" className={inputClass} /></Field><Field label="Lab manager WhatsApp"><input value={draft.managerWhatsapp} onChange={(e) => update("managerWhatsapp", e.target.value)} placeholder="+9198…" className={inputClass} /></Field></div><p className="text-[11px] text-zinc-500 -mt-2">Rules set to “send to the lab manager” (the final reminder) go here; without a number they go to the group.</p><div className="max-w-[14rem]"><Field label="Quiet window (minutes)"><input required type="number" min="0" max="240" value={draft.quietWindowMinutes} onChange={(e) => update("quietWindowMinutes", e.target.value)} className={inputClass} /></Field></div><p className="text-[11px] text-zinc-500 -mt-2">Minimum gap between two messages about the same order. What is sent, and when, is set on the Message Rules page.</p><label className="flex items-center gap-2 text-sm text-zinc-300"><input type="checkbox" checked={draft.isActive} onChange={(e) => update("isActive", e.target.checked)} className="accent-blue-500" /> Enable automation for this lab</label>{error && <div className="rounded-md bg-rose-500/10 text-rose-300 text-sm px-3 py-2">{error}</div>}</div><div className="px-5 py-4 border-t border-zinc-800 flex justify-end gap-2"><button type="button" onClick={() => setOpen(false)} className="px-3 py-2 text-sm text-zinc-400 hover:text-zinc-200">Cancel</button><button disabled={saving} className="rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-60 text-white font-semibold text-sm px-4 py-2">{saving ? "Saving…" : "Save configuration"}</button></div></form></div></div>}
+              </select></Field><p className="text-[11px] text-zinc-500 -mt-2">Picked from the {groups.length} groups the gateway can actually see, so the id is never typed. A group still needs sending switched on under Settings &rarr; WhatsApp before anything leaves.</p><p className="text-[11px] text-zinc-500 -mt-2">The provider&apos;s ops group, so a reply is visible to their whole desk. Required for API labs too — that is where breach alerts go. Sending stays off until the group is enabled under Settings → WhatsApp.</p><Field label="Lab WhatsApp number (fallback, used only without a group)"><input value={draft.whatsappNumber} onChange={(e) => update("whatsappNumber", e.target.value)} placeholder="+9198…" className={inputClass} /></Field><div className="grid grid-cols-2 gap-3"><Field label="Lab manager (name)"><input value={draft.managerName} onChange={(e) => update("managerName", e.target.value)} placeholder="Optional" className={inputClass} /></Field><Field label="Lab manager WhatsApp"><input value={draft.managerWhatsapp} onChange={(e) => update("managerWhatsapp", e.target.value)} placeholder="+9198…" className={inputClass} /></Field></div><p className="text-[11px] text-zinc-500 -mt-2">Rules set to “send to the lab manager” (the final reminder) go here; without a number they go to the group.</p><div className="max-w-[14rem]"><Field label="Quiet window (minutes)"><input required type="number" min="0" max="240" value={draft.quietWindowMinutes} onChange={(e) => update("quietWindowMinutes", e.target.value)} className={inputClass} /></Field></div><p className="text-[11px] text-zinc-500 -mt-2">Minimum gap between two messages about the same order. What is sent, and when, is set on the Message Rules page.</p><div className="grid grid-cols-2 gap-3"><Field label="Combined messages"><select value={draft.batchingMode} onChange={(e) => update("batchingMode", e.target.value as Draft["batchingMode"])} className={inputClass}><option value="OFF">Off — one message per order</option><option value="SHADOW">Preview only — record, don&apos;t change sends</option><option value="LIVE">On — combine at :00 / :30</option></select></Field><Field label="Max combined messages per slot"><input required type="number" min="1" max="10" value={draft.maxBatchesPerSlot} onChange={(e) => update("maxBatchesPerSlot", e.target.value)} className={inputClass} /></Field></div><p className="text-[11px] text-zinc-500 -mt-2">On: follow-ups for several orders go as one numbered message per ask (status check, phlebo, reports…), at :00 and :30 (reports at 10, 2 and 6). New-order messages and urgent ones still go straight away. Labs can reply “1 done, 2 not home”.</p>{draft.labId && <CombinedMessages labId={Number(draft.labId)} />}<label className="flex items-center gap-2 text-sm text-zinc-300"><input type="checkbox" checked={draft.isActive} onChange={(e) => update("isActive", e.target.checked)} className="accent-blue-500" /> Enable automation for this lab</label>{error && <div className="rounded-md bg-rose-500/10 text-rose-300 text-sm px-3 py-2">{error}</div>}</div><div className="px-5 py-4 border-t border-zinc-800 flex justify-end gap-2"><button type="button" onClick={() => setOpen(false)} className="px-3 py-2 text-sm text-zinc-400 hover:text-zinc-200">Cancel</button><button disabled={saving} className="rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-60 text-white font-semibold text-sm px-4 py-2">{saving ? "Saving…" : "Save configuration"}</button></div></form></div></div>}
       {toast && <div className="fixed z-[60] left-1/2 bottom-6 -translate-x-1/2 rounded-lg bg-zinc-100 text-zinc-950 px-4 py-2 text-sm font-medium shadow-lg">{toast}</div>}
     </div>
   );
@@ -729,5 +738,42 @@ function Pagination({ page, pageCount, onPage }: { page: number; pageCount: numb
       {button("»", pageCount, page === pageCount)}
       <span className="ml-2 text-zinc-500">Page {page} of {pageCount}</span>
     </div>
+  );
+}
+
+type CombinedMessage = { id: string; intent: string; shadow: boolean; slotAt: string; itemCount: number; text: string; createdAt: string };
+
+const INTENT_LABEL: Record<string, string> = {
+  STATUS: "Status check", PHLEBO: "Assign a phlebo", ETA: "Phlebo on time?", UNCONFIRMED: "Awaiting confirmation",
+  REPORT: "Reports pending", OVERDUE: "Running late", ESCALATION: "Manager escalation",
+};
+
+/** The lab's recent combined messages — sent (On) or recorded only (Preview). */
+function CombinedMessages({ labId }: { labId: number }) {
+  const [rows, setRows] = useState<CombinedMessage[] | null>(null);
+  const [openId, setOpenId] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`/api/non-api-labs/${labId}/batches`).then((r) => (r.ok ? r.json() : { batches: [] }))
+      .then((d) => { if (!cancelled) setRows(d.batches ?? []); }).catch(() => { if (!cancelled) setRows([]); });
+    return () => { cancelled = true; };
+  }, [labId]);
+  if (!rows || rows.length === 0) return null;
+  return (
+    <details className="rounded-lg border border-zinc-800 bg-zinc-900/40 px-3 py-2 -mt-1">
+      <summary className="cursor-pointer text-xs text-zinc-300">Recent combined messages ({rows.length})</summary>
+      <ul className="mt-2 space-y-1">
+        {rows.map((b) => (
+          <li key={b.id}>
+            <button type="button" onClick={() => setOpenId(openId === b.id ? null : b.id)} className="w-full text-left text-xs text-zinc-400 hover:text-zinc-200">
+              {new Date(b.slotAt).toLocaleString("en-IN", { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" })}
+              {" · "}{INTENT_LABEL[b.intent] ?? b.intent}{" · "}{b.itemCount} order{b.itemCount === 1 ? "" : "s"}
+              {b.shadow && <span className="ml-1.5 rounded bg-zinc-800 px-1 text-[10px] text-zinc-400">preview</span>}
+            </button>
+            {openId === b.id && <pre className="mt-1 whitespace-pre-wrap break-words rounded bg-zinc-950/60 p-2 text-[11px] leading-relaxed text-zinc-300">{b.text}</pre>}
+          </li>
+        ))}
+      </ul>
+    </details>
   );
 }

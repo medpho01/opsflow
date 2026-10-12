@@ -17,11 +17,12 @@
 import { Prisma, type NonApiLabConfig } from "@prisma/client";
 import prisma from "@/lib/db/client";
 import { resolveLabTarget } from "@/lib/non-api-labs/target";
-import { ensureTemplate, renderLabTemplate, type TemplateVariables } from "@/lib/non-api-labs/templates";
+import { BATCH_GENERIC_TEMPLATE, BATCH_TEMPLATE_BY_INTENT, ensureTemplate, renderLabTemplate, type TemplateVariables } from "@/lib/non-api-labs/templates";
 import { confirmationUrl } from "@/lib/non-api-labs/confirmation-link";
 import { contactVariables, type OrderContactDetails } from "@/lib/non-api-labs/order-details";
 import { newConversationStatus } from "./evaluate";
-import { durationText, formatDate, formatDateTime, formatTime } from "./format";
+import { TIME_ZONE, durationText, formatDate, formatDateTime, formatTime } from "./format";
+import { currentSlot, itemLine, releaseAt } from "./batching";
 import type { MessageRule, RuleOrder } from "./types";
 
 /** Latest value the lab gave for each fact kind, for this order. */
@@ -102,18 +103,11 @@ export type DeliverOrderInput = {
 
 export type DeliverOutcome = { sent: true; communicationId: string } | { sent: false; reason: string };
 
-export async function deliverOrderMessage(input: DeliverOrderInput): Promise<DeliverOutcome> {
-  const { rule, order, config, contact, facts, occurrence, moment, now } = input;
-
-  const template = await ensureTemplate(rule.templateKey);
-  if (!template.isActive) return { sent: false, reason: `Message "${template.name}" is paused` };
-
-  const toManager = rule.recipient === "MANAGER";
-  const managerMissing = toManager && !config.managerWhatsapp;
-  const target = await resolveLabTarget(config, toManager ? config.managerWhatsapp : null);
-
-  // The conversation: found, or opened now. Its snapshot keeps the details the
-  // lab was sent, for the timeline and for poll acknowledgements.
+/**
+ * The order's conversation: found, or opened now. Its snapshot keeps the details
+ * the lab was sent, for the timeline. An introduction refreshes the snapshot.
+ */
+export async function ensureConversation(order: RuleOrder, rule: MessageRule, contact: OrderContactDetails | null, now: Date) {
   const snapshot = {
     orderId: order.id, labId: order.labId, patientName: order.patientName,
     appointmentTime: order.appointmentTime?.toISOString() ?? null,
@@ -147,6 +141,19 @@ export async function deliverOrderMessage(input: DeliverOrderInput): Promise<Del
       },
     });
   }
+  return workflow;
+}
+
+export async function deliverOrderMessage(input: DeliverOrderInput): Promise<DeliverOutcome> {
+  const { rule, order, config, contact, facts, occurrence, moment, now } = input;
+
+  const template = await ensureTemplate(rule.templateKey);
+  if (!template.isActive) return { sent: false, reason: `Message "${template.name}" is paused` };
+
+  const toManager = rule.recipient === "MANAGER";
+  const managerMissing = toManager && !config.managerWhatsapp;
+  const target = await resolveLabTarget(config, toManager ? config.managerWhatsapp : null);
+  const workflow = await ensureConversation(order, rule, contact, now);
 
   const tokenExpiry = new Date(Math.max(
     (order.appointmentTime?.getTime() ?? now.getTime()) + TOKEN_GRACE_MINUTES * 60_000,
@@ -271,4 +278,155 @@ export async function deliverSummary(input: DeliverSummaryInput): Promise<Delive
   });
   transcript(`${destinationLabel(config, target.kind, false)}: ${template.name} — ${variables.order_count ?? "?"} order(s)`);
   return { sent: true, communicationId, text };
+}
+
+// ── Combined messages ────────────────────────────────────────────────────
+
+export type BatchItemInput = {
+  rule: MessageRule;
+  order: RuleOrder;
+  contact: OrderContactDetails | null;
+  facts: FactValues;
+  occurrence: number;
+  moment: Date;
+};
+
+type StoredBatchItem = { n: number; orderId: number; ruleId: string; occurrence: number; communicationId: string | null; line: string };
+
+const ordersWord = (count: number) => (count === 1 ? "order" : "orders");
+
+async function batchLine(intent: string, n: number, item: BatchItemInput, now: Date): Promise<string> {
+  const { order, contact, facts, rule, moment } = item;
+  const phleboName = order.phleboName?.trim() || facts.phlebo_name;
+  const phleboPhone = order.phleboNumber?.trim() || facts.phlebo_phone;
+  const needsLink = intent === "UNCONFIRMED" || intent === "ESCALATION";
+  return itemLine(intent, {
+    n, orderId: order.id, patientName: order.patientName, appointment: order.appointmentTime,
+    area: contact?.area ?? null,
+    phlebo: [phleboName, phleboPhone].filter(Boolean).join(" ") || null,
+    confirmUrl: needsLink ? await confirmationUrl(order.id) : null,
+    createdAt: order.createdAt, milestone: rule.milestoneLabel, dueAt: moment,
+  }, now, TIME_ZONE());
+}
+
+function batchVariables(config: NonApiLabConfig, lines: string[], title: string): TemplateVariables {
+  return {
+    lab_name: config.labName, manager_name: config.managerName || "team",
+    count: String(lines.length), orders_word: ordersWord(lines.length),
+    items: lines.join("\n"), batch_title: title,
+  };
+}
+
+export type DeliverBatchInput = { config: NonApiLabConfig; intent: string; items: BatchItemInput[]; now: Date };
+export type BatchOutcome = { sent: true; batchId: string; communicationIds: string[] } | { sent: false; reason: string };
+
+/**
+ * One combined message about several orders of one lab. Every order still gets
+ * its own message-log row, ledger row and timeline event (so repeats, "stop
+ * when answered" and the order timeline work exactly as for single messages);
+ * they share one WhatsApp outbound, numbered in the order listed.
+ */
+export async function deliverBatch(input: DeliverBatchInput): Promise<BatchOutcome> {
+  const { config, intent, now } = input;
+  const items = [...input.items].sort((a, b) =>
+    (a.order.appointmentTime?.getTime() ?? 0) - (b.order.appointmentTime?.getTime() ?? 0) || a.order.id - b.order.id);
+  const templateKey = BATCH_TEMPLATE_BY_INTENT[intent] ?? BATCH_GENERIC_TEMPLATE;
+  const template = await ensureTemplate(templateKey);
+  if (!template.isActive) return { sent: false, reason: `Message "${template.name}" is paused` };
+
+  const toManager = intent === "ESCALATION";
+  const managerMissing = toManager && !config.managerWhatsapp;
+  const target = await resolveLabTarget(config, toManager ? config.managerWhatsapp : null);
+  const conversations = new Map<number, string>();
+  for (const item of items) conversations.set(item.order.id, (await ensureConversation(item.order, item.rule, item.contact, now)).id);
+  const lines = await Promise.all(items.map((item, index) => batchLine(intent, index + 1, item, now)));
+  const text = renderLabTemplate(template.body, batchVariables(config, lines, items[0].rule.name));
+  const slotAt = currentSlot(now, TIME_ZONE());
+
+  const stored: StoredBatchItem[] = [];
+  let batchId = "";
+  await prisma.$transaction(async (tx) => {
+    const outbound = await tx.waOutbound.create({ data: { targetJid: target.targetJid, text, groupId: target.groupId, createdAt: now } });
+    for (const [index, item] of items.entries()) {
+      const { rule, order, occurrence } = item;
+      const conversationId = conversations.get(order.id)!;
+      const type = rule.action === "ESCALATE" ? "ESCALATION" : "REMINDER";
+      const communication = await tx.labCommunication.create({
+        data: {
+          workflowId: conversationId, labId: order.labId, orderId: order.id, type, status: "QUEUED",
+          recipient: target.targetJid, templateKey, batchOutboundId: outbound.id,
+          templateVariables: { order_id: String(order.id), combined: intent, item: String(index + 1), of: String(items.length) },
+          ruleId: rule.id, idempotencyKey: `rules:${rule.id}:${order.id}:${occurrence}`, createdAt: now,
+        },
+      });
+      stored.push({ n: index + 1, orderId: order.id, ruleId: rule.id, occurrence, communicationId: communication.id, line: lines[index] });
+      await tx.providerMessageLedger.create({
+        data: {
+          ruleId: rule.id, ruleVersion: rule.version, entityType: "ORDER", entityId: order.id, labId: order.labId,
+          occurrence, outcome: "SENT", shadow: false, communicationId: communication.id, createdAt: now,
+        },
+      });
+      if (rule.action === "ESCALATE") {
+        await tx.labCommunicationWorkflow.update({ where: { id: conversationId }, data: { status: "ESCALATED" } });
+        await tx.labCommunicationEscalation.upsert({
+          where: { workflowId_level: { workflowId: conversationId, level: rule.priority } },
+          create: {
+            workflowId: conversationId, level: rule.priority, status: "NOTIFIED", recipient: target.targetJid, notifiedAt: now,
+            reason: `Rule "${rule.name}" escalated in a combined message; ${managerMissing ? "no manager on file, notified the lab" : "notified the lab manager"}`,
+          },
+          update: { notifiedAt: now, recipient: target.targetJid, status: "NOTIFIED" },
+        });
+      }
+      await tx.labCommunicationOrderEvent.create({
+        data: {
+          workflowId: conversationId,
+          type: rule.action === "ESCALATE" ? "ESCALATION_TRIGGERED" : "REMINDER_SENT",
+          actorType: "SYSTEM",
+          payload: {
+            ruleId: rule.id, ruleName: rule.name, occurrence, communicationId: communication.id, outboundId: outbound.id,
+            recipient: target.targetJid, combined: { intent, item: index + 1, of: items.length },
+          } as Prisma.InputJsonValue,
+          occurredAt: now,
+        },
+      });
+    }
+    const batch = await tx.providerBatch.create({
+      data: {
+        labId: config.labId, intent, slotAt, shadow: false, outboundId: outbound.id, recipient: target.targetJid,
+        itemCount: items.length, items: stored as unknown as Prisma.InputJsonValue, text, createdAt: now,
+      },
+    });
+    batchId = batch.id;
+  });
+
+  if (managerMissing) {
+    await prisma.alert.create({
+      data: {
+        alertType: "ESCALATION", severity: "URGENT", channel: "IN_APP", status: "PENDING",
+        entityType: "non_api_lab", entityId: config.labId,
+        message: `${config.labName} has no manager WhatsApp configured — ${items.length} escalation(s) went to the lab instead.`,
+        metadata: { orderIds: items.map((i) => i.order.id) },
+      },
+    }).catch(() => undefined);
+  }
+  transcript(`${destinationLabel(config, target.kind, toManager)}: ${template.name} — ${items.length} ${ordersWord(items.length)} (${items.map((i) => i.order.id).join(", ")})`);
+  return { sent: true, batchId, communicationIds: stored.map((s) => s.communicationId!) };
+}
+
+/**
+ * SHADOW: the lab still got a message per order; record the combined message
+ * those would have made, so ops can compare before switching the lab LIVE.
+ * Grouped by the slot the item would have gone out in.
+ */
+export async function recordShadowBatch(config: NonApiLabConfig, intent: string, item: BatchItemInput, communicationId: string, now: Date) {
+  const slotAt = releaseAt(intent, now, TIME_ZONE());
+  const existing = await prisma.providerBatch.findFirst({ where: { labId: config.labId, intent, slotAt, shadow: true } });
+  const items = ((existing?.items ?? []) as unknown as StoredBatchItem[]).filter((stored) => stored.orderId !== item.order.id);
+  const n = items.length + 1;
+  items.push({ n, orderId: item.order.id, ruleId: item.rule.id, occurrence: item.occurrence, communicationId, line: await batchLine(intent, n, item, now) });
+  const template = await ensureTemplate(BATCH_TEMPLATE_BY_INTENT[intent] ?? BATCH_GENERIC_TEMPLATE);
+  const text = renderLabTemplate(template.body, batchVariables(config, items.map((stored) => stored.line), item.rule.name));
+  const data = { itemCount: items.length, items: items as unknown as Prisma.InputJsonValue, text };
+  if (existing) await prisma.providerBatch.update({ where: { id: existing.id }, data });
+  else await prisma.providerBatch.create({ data: { ...data, labId: config.labId, intent, slotAt, shadow: true, recipient: "", createdAt: now } });
 }

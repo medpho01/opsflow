@@ -27,6 +27,15 @@
         "dev"
       ],
       "autoPort": true
+    },
+    {
+      "name": "opsflow-dev-scratch",
+      "runtimeExecutable": "/bin/sh",
+      "runtimeArgs": [
+        "-c",
+        "DATABASE_URL=postgresql://maverick@localhost:5432/opsflow_comms_scratch?schema=taskos SOURCE_DATABASE_URL=postgresql://maverick@localhost:5432/labstack_sim PATH=/Users/maverick/.nvm/versions/node/v22.14.0/bin:$PATH exec node node_modules/next/dist/bin/next dev -p 3100"
+      ],
+      "port": 3100
     }
   ]
 }

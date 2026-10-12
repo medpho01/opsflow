@@ -18,6 +18,7 @@
  */
 import prisma from "@/lib/db/client";
 import { extractFacts } from "./reply-extract";
+import { splitBatchReply } from "./batching";
 import { recordAnswered } from "./engine";
 import { labstackWorkerQuery } from "@/lib/db/labstack";
 
@@ -99,36 +100,101 @@ export async function runReplyPass(now = new Date()): Promise<ReplyPassResult> {
     const labId = labByGroup.get(message.groupId)!;
     if (!text) continue;
     try {
+      // A reply to a combined message: each numbered part is about its own order.
+      const combined = await attributeToBatch(message, labId, text);
+      if (combined) {
+        for (const [n, said] of combined.parts) {
+          const item = combined.items.find((i) => i.n === n);
+          if (!item) continue;
+          result.attributed += 1;
+          result.facts += await applyReply(message, labId, { orderId: item.orderId, via: combined.via, ruleId: item.ruleId, context: item.line }, said, text);
+        }
+        continue;
+      }
       const match = await attribute(message, labId);
       if (!match) continue;
       result.attributed += 1;
-      const { facts, extractor } = await extractFacts(text, match.context);
-      if (facts.length > 0) {
-        await prisma.providerOrderFact.createMany({
-          data: facts.map((fact) => ({
-            orderId: match.orderId, labId, kind: fact.kind, value: fact.value, confidence: fact.confidence,
-            sourceMessageId: message.id, sourceText: text.slice(0, 1000), attributedBy: match.via, extractor,
-            createdAt: message.createdAt,
-          })),
-        });
-        result.facts += facts.length;
-      }
-      const conversation = await prisma.labCommunicationWorkflow.findUnique({ where: { orderId: match.orderId } });
-      if (conversation) {
-        await prisma.labCommunicationOrderEvent.create({
-          data: {
-            workflowId: conversation.id, type: "PROVIDER_NOTE", actorType: "LAB",
-            payload: { source: "REPLY", via: match.via, sender: message.sender, text: text.slice(0, 500), facts: facts.map((f) => ({ kind: f.kind, value: f.value })) },
-            occurredAt: message.createdAt,
-          },
-        });
-      }
-      // The lab answered: the rule that asked stops repeating.
-      if (match.ruleId) await recordAnswered(match.ruleId, match.orderId, labId, `Reply: ${text.slice(0, 120)}`, message.createdAt);
+      result.facts += await applyReply(message, labId, match, text, text);
     } catch (error) {
       console.error(`[Replies] message ${message.id} failed:`, error instanceof Error ? error.message : error);
     }
   }
   await prisma.providerCommsSettings.update({ where: { id: "default" }, data: { replyWatermark: messages[messages.length - 1].createdAt } });
   return result;
+}
+
+type ReplyMessage = { id: string; sender: string; createdAt: Date };
+
+/**
+ * What one reply (or one numbered part of it) says about one order: facts,
+ * a note on the order's timeline, and "answered" for the rule that asked so
+ * its repeats stop. Returns the number of facts recorded.
+ */
+async function applyReply(message: ReplyMessage, labId: number, match: Attribution, said: string, fullText: string): Promise<number> {
+  const { facts, extractor } = await extractFacts(said, match.context);
+  if (facts.length > 0) {
+    await prisma.providerOrderFact.createMany({
+      data: facts.map((fact) => ({
+        orderId: match.orderId, labId, kind: fact.kind, value: fact.value, confidence: fact.confidence,
+        sourceMessageId: message.id, sourceText: fullText.slice(0, 1000), attributedBy: match.via, extractor,
+        createdAt: message.createdAt,
+      })),
+    });
+  }
+  const conversation = await prisma.labCommunicationWorkflow.findUnique({ where: { orderId: match.orderId } });
+  if (conversation) {
+    await prisma.labCommunicationOrderEvent.create({
+      data: {
+        workflowId: conversation.id, type: "PROVIDER_NOTE", actorType: "LAB",
+        payload: {
+          source: "REPLY", via: match.via, sender: message.sender, text: said.slice(0, 500),
+          ...(said !== fullText ? { fullText: fullText.slice(0, 500) } : {}),
+          facts: facts.map((f) => ({ kind: f.kind, value: f.value })),
+        },
+        occurredAt: message.createdAt,
+      },
+    });
+  }
+  // The lab answered: the rule that asked stops repeating.
+  if (match.ruleId) await recordAnswered(match.ruleId, match.orderId, labId, `Reply: ${said.slice(0, 120)}`, message.createdAt);
+  return facts.length;
+}
+
+type BatchItem = { n: number; orderId: number; ruleId: string; line: string };
+
+/**
+ * Is this a reply to a combined message? Yes when it quotes one, or when the
+ * lab's latest message from us was a combined one (sent in the last 3 h) and
+ * the reply reads as numbered parts ("1 done, 2 not home") or "all …".
+ * Returns the parts it could place; a reply that quotes a combined message
+ * but cannot be placed returns no parts (never guessed onto one order).
+ */
+async function attributeToBatch(
+  message: { replyToWaId: string | null; createdAt: Date },
+  labId: number,
+  text: string,
+): Promise<{ items: BatchItem[]; parts: Map<number, string>; via: Attribution["via"] } | null> {
+  let batch: { items: unknown; createdAt: Date } | null = null;
+  let via: Attribution["via"] = "REPLY_TO";
+  if (message.replyToWaId) {
+    const outbound = await prisma.waOutbound.findFirst({ where: { sentWaMsgId: message.replyToWaId }, select: { id: true } });
+    batch = outbound ? await prisma.providerBatch.findUnique({ where: { outboundId: outbound.id } }) : null;
+    if (!batch) return null; // quotes a single-order message: the usual path
+  } else {
+    batch = await prisma.providerBatch.findFirst({
+      where: { labId, shadow: false, createdAt: { gte: new Date(message.createdAt.getTime() - ONLY_OPEN_WINDOW_MS), lte: message.createdAt } },
+      orderBy: { createdAt: "desc" },
+    });
+    if (!batch) return null;
+    const laterSingle = await prisma.labCommunication.findFirst({
+      where: { labId, orderId: { not: null }, batchOutboundId: null, waOutboundId: { not: null }, createdAt: { gt: batch.createdAt, lte: message.createdAt } },
+      select: { id: true },
+    });
+    if (laterSingle) return null; // a single-order message came after it
+    via = "ONLY_OPEN";
+  }
+  const items = batch.items as BatchItem[];
+  const parts = splitBatchReply(text, items);
+  if (via === "ONLY_OPEN" && parts.size === 0) return null;
+  return { items, parts, via };
 }

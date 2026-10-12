@@ -20,7 +20,8 @@ import { hasWhatsAppTarget } from "@/lib/non-api-labs/target";
 import { fetchOrderContactDetails } from "@/lib/non-api-labs/order-details";
 import { isAwaitingConfirmation } from "@/lib/non-api-labs/source-check";
 import { decideRule, inScope, planOrder, summaryDue, summaryMatches, summaryOccurrence, triggerMoment, conditionMatches } from "./evaluate";
-import { deliverOrderMessage, deliverSummary, type FactValues } from "./deliver";
+import { deliverBatch, deliverOrderMessage, deliverSummary, recordShadowBatch, type BatchItemInput, type FactValues } from "./deliver";
+import { batchIntentOf, currentSlot, intentRank, releaseAt, type BatchingMode } from "./batching";
 import { buildEntries, summaryVariables } from "./summary";
 import { ensureMigratedToRules } from "./migrate";
 import { TIME_ZONE } from "./format";
@@ -177,10 +178,14 @@ export async function loadFacts(orderIds: number[]): Promise<Map<number, Facts>>
 
 // ── The pass ─────────────────────────────────────────────────────────────
 
-export type RulesPassResult = { orders: number; sent: number; summaries: number; missed: number; skipped: number; confirmed: number; failed: number };
+export type RulesPassResult = {
+  orders: number; sent: number; summaries: number; missed: number; skipped: number; confirmed: number; failed: number;
+  /** Combined messages sent, and items held for the next slot by a lab's per-slot cap. */
+  combined: number; held: number;
+};
 
 export async function runMessageRulesPass(now = new Date()): Promise<RulesPassResult> {
-  const result: RulesPassResult = { orders: 0, sent: 0, summaries: 0, missed: 0, skipped: 0, confirmed: 0, failed: 0 };
+  const result: RulesPassResult = { orders: 0, sent: 0, summaries: 0, missed: 0, skipped: 0, confirmed: 0, failed: 0, combined: 0, held: 0 };
   await ensureMigratedToRules();
   const [rules, labs] = await Promise.all([loadActiveRules(), loadLiveLabs()]);
   if (rules.length === 0 || labs.size === 0) return result;
@@ -198,7 +203,13 @@ export async function runMessageRulesPass(now = new Date()): Promise<RulesPassRe
 
   const timeZone = TIME_ZONE();
   const orderRules = rules.filter((rule) => rule.kind === "ORDER");
-  const sends: Array<{ order: RuleOrder; rule: MessageRule; occurrence: number; moment: Date }> = [];
+  const modeOf = (labId: number) => (labs.get(labId)?.config.batchingMode ?? "OFF") as BatchingMode;
+  // LIVE labs: a combinable item waits for its intent's next slot.
+  const slotted = (rule: MessageRule, dueAt: Date) => {
+    const intent = batchIntentOf(rule);
+    return intent ? releaseAt(intent, dueAt, timeZone) : null;
+  };
+  const sends: Send[] = [];
   for (const order of orders) {
     const live = labs.get(order.labId);
     const plan = planOrder(orderRules, order, {
@@ -208,29 +219,37 @@ export async function runMessageRulesPass(now = new Date()): Promise<RulesPassRe
       now,
       timeZone,
       ledgerFor: (ruleId) => ledger.get(`${ruleId}:${order.id}`) ?? EMPTY_LEDGER,
+      releaseAt: modeOf(order.labId) === "LIVE" ? slotted : undefined,
     });
     for (const { rule, decision } of plan.misses) {
       await writeLedger(rule, "ORDER", order.id, order.labId, decision.occurrence, "MISSED", decision.reason, now);
       result.missed += 1;
     }
     if (plan.send && live && sends.length < MAX_SENDS_PER_PASS) {
-      sends.push({ order, rule: plan.send.rule, occurrence: plan.send.decision.occurrence, moment: plan.send.decision.moment });
+      const rule = plan.send.rule;
+      sends.push({ order, rule, occurrence: plan.send.decision.occurrence, moment: plan.send.decision.moment, intent: modeOf(order.labId) === "LIVE" ? batchIntentOf(rule) : null });
     }
   }
 
   if (sends.length > 0) {
     const details = await fetchOrderContactDetails(sends.map((s) => s.order.id)).catch(() => null);
-    for (const send of sends) {
+    const itemOf = (send: Send) => ({
+      ...send, contact: details?.get(send.order.id) ?? null, facts: (facts.get(send.order.id) ?? NO_FACTS).values,
+    });
+    await deliverCombined(sends.filter((send) => send.intent), labs, itemOf, now, result);
+    for (const send of sends.filter((s) => !s.intent)) {
       try {
-        const outcome = await deliverOrderMessage({
-          ...send,
-          config: labs.get(send.order.labId)!.config,
-          contact: details?.get(send.order.id) ?? null,
-          facts: (facts.get(send.order.id) ?? NO_FACTS).values,
-          now,
-        });
-        if (outcome.sent) result.sent += 1;
-        else {
+        const config = labs.get(send.order.labId)!.config;
+        const item = itemOf(send);
+        const outcome = await deliverOrderMessage({ ...item, config, now });
+        if (outcome.sent) {
+          result.sent += 1;
+          const shadowIntent = modeOf(send.order.labId) === "SHADOW" ? batchIntentOf(send.rule) : null;
+          if (shadowIntent) {
+            await recordShadowBatch(config, shadowIntent, item, outcome.communicationId, now)
+              .catch((error) => console.error("[MessageRules] shadow batch:", error instanceof Error ? error.message : error));
+          }
+        } else {
           await writeLedger(send.rule, "ORDER", send.order.id, send.order.labId, send.occurrence, "SKIPPED", outcome.reason, now);
           result.skipped += 1;
         }
@@ -388,4 +407,44 @@ export async function summaryForLab(ruleId: string, labId: number, options: { se
   // A manual send is its own occurrence, so it never uses up the day's slot.
   const outcome = await deliverSummary({ rule, config: live.config, variables, occurrence: -Math.floor(now.getTime() / 1000), now });
   return { text: outcome.text ?? null, orders: matched.length, sent: outcome.sent };
+}
+
+type Send = { order: RuleOrder; rule: MessageRule; occurrence: number; moment: Date; intent: string | null };
+
+/**
+ * LIVE labs: one message per lab and intent for everything due at this slot.
+ * A lab gets at most `maxBatchesPerSlot` combined messages per slot; the rest
+ * (lowest-ranked intents) wait for the next one — their catch-up window
+ * allows for it.
+ */
+async function deliverCombined(
+  sends: Send[], labs: Map<number, LiveLab>, itemOf: (send: Send) => BatchItemInput, now: Date, result: RulesPassResult,
+) {
+  if (sends.length === 0) return;
+  const byLab = new Map<number, Map<string, Send[]>>();
+  for (const send of sends) {
+    const intents = byLab.get(send.order.labId) ?? new Map<string, Send[]>();
+    intents.set(send.intent!, [...(intents.get(send.intent!) ?? []), send]);
+    byLab.set(send.order.labId, intents);
+  }
+  const slotStart = currentSlot(now, TIME_ZONE());
+  for (const [labId, intents] of byLab) {
+    const config = labs.get(labId)!.config;
+    const already = await prisma.providerBatch.count({ where: { labId, shadow: false, createdAt: { gte: slotStart } } });
+    let allowance = Math.max(0, config.maxBatchesPerSlot - already);
+    for (const [intent, group] of [...intents].sort((a, b) => intentRank(a[0]) - intentRank(b[0]))) {
+      if (allowance <= 0) { result.held += group.length; continue; }
+      try {
+        const outcome = await deliverBatch({ config, intent, items: group.map(itemOf), now });
+        if (outcome.sent) { result.combined += 1; result.sent += group.length; allowance -= 1; }
+        else {
+          for (const send of group) await writeLedger(send.rule, "ORDER", send.order.id, labId, send.occurrence, "SKIPPED", outcome.reason, now);
+          result.skipped += group.length;
+        }
+      } catch (error) {
+        result.failed += group.length;
+        console.error(`[MessageRules] combined ${intent} for lab ${labId} failed:`, error instanceof Error ? error.message : error);
+      }
+    }
+  }
 }

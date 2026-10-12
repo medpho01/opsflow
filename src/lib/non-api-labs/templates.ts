@@ -27,6 +27,20 @@ export const NON_API_PHLEBO_ETA_TEMPLATE = "NON_API_PHLEBO_ETA";
 export const NON_API_REPORT_CHASE_TEMPLATE = "NON_API_REPORT_CHASE";
 export const PROVIDER_PENDING_REPORTS_TEMPLATE = "PROVIDER_PENDING_REPORTS";
 
+// Combined messages (provider-rules/batching.ts): one ask about several orders.
+// {{items}} is the numbered list, one line per order, written by the engine.
+export const BATCH_TEMPLATE_BY_INTENT: Record<string, string> = {
+  STATUS: "BATCH_STATUS_CHECK",
+  PHLEBO: "BATCH_ASSIGN_PHLEBO",
+  ETA: "BATCH_PHLEBO_ETA",
+  UNCONFIRMED: "BATCH_UNCONFIRMED",
+  REPORT: "BATCH_REPORT_CHASE",
+  OVERDUE: "BATCH_OVERDUE",
+  ESCALATION: "BATCH_ESCALATION",
+};
+export const BATCH_GENERIC_TEMPLATE = "BATCH_GENERIC";
+export const BATCH_VARIABLES = ["lab_name", "manager_name", "count", "orders_word", "items", "batch_title"] as const;
+
 // Order details every template may use. `lab_name` has always been supplied to
 // the renderer by workflow.ts but was missing from this list, so a template
 // using {{lab_name}} was rejected at save time even though it rendered fine.
@@ -283,6 +297,51 @@ export const DEFAULT_PROVIDER_PENDING_REPORTS_BODY = `📋 *Reports pending – 
 
 Please share these reports as soon as possible. Thank you!`;
 
+const BATCH_DEFAULT_BODIES: Record<string, { name: string; body: string }> = {
+  BATCH_STATUS_CHECK: { name: "Combined: status check", body: `🔎 *Status check · {{count}} {{orders_word}}*
+
+{{items}}
+
+Reply: *1 collected, 2 not home, 3 at 5 pm*
+or *all collected*` },
+  BATCH_ASSIGN_PHLEBO: { name: "Combined: assign a phlebo", body: `🧑‍⚕️ *Phlebo not assigned · {{count}} {{orders_word}}*
+
+{{items}}
+
+Reply with the name and number:
+*1 Ramesh 98xxxxxx01, 2 Suresh 98xxxxxx02*` },
+  BATCH_PHLEBO_ETA: { name: "Combined: phlebo on time?", body: `🚗 *Phlebo on time? · {{count}} {{orders_word}}*
+
+{{items}}
+
+Reply with the ETA: *1 by 10:30, 2 on the way*` },
+  BATCH_UNCONFIRMED: { name: "Combined: awaiting confirmation", body: `⏰ *Awaiting confirmation · {{count}} {{orders_word}}*
+
+{{items}}
+
+Tap each link to confirm.` },
+  BATCH_REPORT_CHASE: { name: "Combined: reports pending", body: `📄 *Reports pending · {{count}}*
+
+{{items}}
+
+Reply: *1 shared, 2 by 6 pm*` },
+  BATCH_OVERDUE: { name: "Combined: running late", body: `⚠️ *Running late · {{count}} {{orders_word}}*
+
+{{items}}
+
+Please update these in LabStack, or reply with the status.` },
+  BATCH_ESCALATION: { name: "Combined: manager escalation", body: `Hello {{manager_name}}, {{lab_name}} has not yet confirmed {{count}} {{orders_word}}:
+
+{{items}}
+
+Please confirm today — each link opens the order.` },
+  BATCH_GENERIC: { name: "Combined: other rules", body: `*{{batch_title}} · {{count}} {{orders_word}}*
+
+{{items}}
+
+Reply with the number and the update, e.g. *1 done*.` },
+};
+
 export const TEMPLATE_DEFAULTS: Record<string, { name: string; body: string }> = {
   [NON_API_NEW_ORDER_TEMPLATE]: { name: "Non-API lab: new order", body: DEFAULT_NON_API_NEW_ORDER_BODY },
   [NON_API_REMINDER_TEMPLATE]: { name: "Non-API lab: reminder (1 hour)", body: DEFAULT_NON_API_REMINDER_BODY },
@@ -300,6 +359,7 @@ export const TEMPLATE_DEFAULTS: Record<string, { name: string; body: string }> =
   [NON_API_PHLEBO_ETA_TEMPLATE]: { name: "Phlebo on time? (ETA)", body: DEFAULT_NON_API_PHLEBO_ETA_BODY },
   [NON_API_REPORT_CHASE_TEMPLATE]: { name: "Report chase", body: DEFAULT_NON_API_REPORT_CHASE_BODY },
   [PROVIDER_PENDING_REPORTS_TEMPLATE]: { name: "Pending reports (daily list)", body: DEFAULT_PROVIDER_PENDING_REPORTS_BODY },
+  ...BATCH_DEFAULT_BODIES,
 };
 
 // ── Upgrading untouched defaults ─────────────────────────────────────────
@@ -442,6 +502,8 @@ const CONFIRMATION_RULES: TemplateRules = {
  * deadline, so it isn't held to the confirmation template's required set.
  */
 const TEMPLATE_RULES: Record<string, TemplateRules> = {
+  ...Object.fromEntries(Object.values(BATCH_TEMPLATE_BY_INTENT).concat(BATCH_GENERIC_TEMPLATE)
+    .map((key) => [key, { allowed: BATCH_VARIABLES, required: ["items"] } satisfies TemplateRules])),
   [NON_API_NEW_ORDER_TEMPLATE]: CONFIRMATION_RULES,
   [NON_API_REMINDER_TEMPLATE]: CONFIRMATION_RULES,
   [NON_API_URGENT_REMINDER_TEMPLATE]: CONFIRMATION_RULES,

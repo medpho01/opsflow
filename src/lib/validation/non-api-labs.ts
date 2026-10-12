@@ -22,6 +22,8 @@ export type NonApiLabConfigInput = {
   appointmentRemindersEnabled?: unknown;
   postAppointmentCheckEnabled?: unknown;
   quietWindowMinutes?: unknown;
+  batchingMode?: unknown;
+  maxBatchesPerSlot?: unknown;
   slaBreachAlertsEnabled?: unknown;
   slaBreachTemplateKey?: unknown;
   slaBreachMaxPerOrder?: unknown;
@@ -51,6 +53,8 @@ export type ValidatedNonApiLabConfig = {
   appointmentRemindersEnabled: boolean;
   postAppointmentCheckEnabled: boolean;
   quietWindowMinutes: number;
+  batchingMode: "OFF" | "SHADOW" | "LIVE";
+  maxBatchesPerSlot: number;
   slaBreachAlertsEnabled: boolean;
   slaBreachTemplateKey: string;
   slaBreachMaxPerOrder: number;
@@ -211,6 +215,13 @@ export function validateNonApiLabConfig(input: NonApiLabConfigInput):
     errors.quietWindowMinutes = "must be a whole number of minutes between 0 and 240";
   }
 
+  // Combined messages: OFF / SHADOW (record only) / LIVE.
+  const batchingMode = input.batchingMode ?? "OFF";
+  if (batchingMode !== "OFF" && batchingMode !== "SHADOW" && batchingMode !== "LIVE") errors.batchingMode = "must be OFF, SHADOW or LIVE";
+  const rawPerSlot = input.maxBatchesPerSlot ?? 3;
+  const perSlot = typeof rawPerSlot === "number" ? rawPerSlot : Number(rawPerSlot);
+  if (!Number.isInteger(perSlot) || perSlot < 1 || perSlot > 10) errors.maxBatchesPerSlot = "must be a whole number between 1 and 10";
+
   if (
     confirmationSlaMinutes !== null && reminderSlaMinutes !== null && escalationSlaMinutes !== null &&
     !(confirmationSlaMinutes < reminderSlaMinutes && reminderSlaMinutes < escalationSlaMinutes)
@@ -242,6 +253,8 @@ export function validateNonApiLabConfig(input: NonApiLabConfigInput):
       appointmentRemindersEnabled,
       postAppointmentCheckEnabled,
       quietWindowMinutes: quietWindowNumber,
+      batchingMode: batchingMode as "OFF" | "SHADOW" | "LIVE",
+      maxBatchesPerSlot: perSlot,
       slaBreachAlertsEnabled,
       slaBreachTemplateKey:
         typeof input.slaBreachTemplateKey === "string" && input.slaBreachTemplateKey.trim()

@@ -270,6 +270,31 @@ The ledger stays the source of truth for "was item X of rule Y sent".
 Each phase is useful alone, and each is behind per-lab flags and shadow mode,
 so the current setup keeps working while a pilot runs.
 
+## Phase 1 status (12 Oct 2026): built
+
+- Per lab: **Combined messages** = Off / Preview only (SHADOW) / On (LIVE), and
+  a cap of combined messages per slot (default 3), on the Lab Config form,
+  with the lab's recent combined messages (sent or preview) listed below it.
+- Rules still decide per order; on a LIVE lab a combinable item waits for its
+  slot (`provider-rules/batching.ts`) and goes out with the lab's other items
+  for the same ask. Each order keeps its own ledger row, message-log row and
+  timeline event, so repeats, stop-on-answer and retroactive edits are
+  unchanged. Catch-up counts from the slot, plus 60 min of slack.
+- Not combined: new-order messages (unlike the table above, intros stay
+  per order in Phase 1, because they carry the full details and the confirmation
+  link), P0 rules, and summaries.
+- Replies: quoting a combined message, or replying right after one, is split
+  per number ("1 done, 2 not home"), by order id, or "all …"; each part is read
+  into facts for its order and stops that order's repeats. A reply that quotes
+  a combined message but cannot be placed is not guessed.
+- Templates: `BATCH_*` (one per ask) on the Templates page; the per-order
+  line format is fixed in code so numbering can't break.
+- Tests: unit tests, scenarios 13–16 (`npm run test:comms`), and
+  `COMBINED=1 npm run demo:comms` for the demo labs with full message text.
+- Watch: with combined messages on, "Pending reports — morning list" (10:00)
+  and the combined report chase (10:00 / 14:00 / 18:00) cover the same
+  orders. Keep one of the two on for such labs.
+
 ## Decisions (12 Oct 2026)
 
 1. **Moving the stage: humans, for now.** No LabStack action links or write

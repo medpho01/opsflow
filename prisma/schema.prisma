@@ -935,6 +935,28 @@ enum WaOutboundStatus {
   FAILED
 }
 
+/// One combined message to a lab: several orders, one ask ("status check · 3
+/// orders"). Items are numbered as sent, so a reply like "1 done, 2 not home" maps
+/// back to orders. shadow = recorded only (the lab got per-order messages).
+model ProviderBatch {
+  id         String   @id @default(cuid())
+  labId      Int
+  intent     String // STATUS, PHLEBO, ETA, UNCONFIRMED, REPORT, OVERDUE, ESCALATION, or RULE:<id>
+  slotAt     DateTime // the fixed slot it belongs to
+  shadow     Boolean  @default(false)
+  outboundId String?  @unique // the WhatsApp message (null in shadow)
+  recipient  String
+  itemCount  Int
+  items      Json // [{ n, orderId, ruleId, occurrence, communicationId }]
+  text       String
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([labId, intent, slotAt, shadow])
+  @@index([labId, createdAt])
+  @@map("provider_batches")
+}
+
 /// Who is behind a WhatsApp id. Groups address members by LID (an anonymous
 /// number, e.g. 157140018823280) or by phone, and @-mentions carry whichever the
 /// sender's app used, so a mention can only be named once we know that id's
@@ -1492,6 +1514,12 @@ model NonApiLabConfig {
   // lib/provider-comms/sla-breach.ts explains why applying this to them would
   // suppress nearly every alert for a busy lab.
   quietWindowMinutes          Int                @default(10)
+  // Combined messages (provider-rules/batching.ts): OFF = one message per order
+  // (as before); SHADOW = still one per order, plus a record of the combined
+  // message that would have gone; LIVE = combined, at fixed slots.
+  batchingMode                String             @default("OFF")
+  // At most this many combined messages per slot (:00 / :30); the rest wait for the next.
+  maxBatchesPerSlot           Int                @default(3)
   // Message this lab when an OpsFlow task for one of its orders breaches SLA.
   // Applies to API and NON_API labs alike; off by lab, not by integration type.
   slaBreachAlertsEnabled      Boolean            @default(false)
@@ -1786,6 +1814,9 @@ model LabCommunication {
   // foreign key: deleting a rule must not erase what it already sent.
   ruleId            String?
   waOutboundId      String?                 @unique
+  // Set when this order went out inside a combined message (one outbound for many
+  // orders, so waOutboundId cannot be used); the gateway marks both.
+  batchOutboundId   String?
   providerMessageId String?                 @unique
   idempotencyKey    String                  @unique
   sentAt            DateTime?
@@ -1806,6 +1837,7 @@ model LabCommunication {
   // Drives the per-order breach cap ("have we already told this lab about
   // order N?"), which is the only repetition guard on the breach path.
   @@index([labId, createdAt])
+  @@index([batchOutboundId])
   @@map("lab_communications")
 }
 

@@ -74,7 +74,7 @@ async function resetOpsFlow(migrate = true) {
   await prisma.$executeRawUnsafe(`TRUNCATE taskos.provider_message_ledger, taskos.provider_message_rules, taskos.provider_order_facts,
     taskos.wa_polls, taskos.wa_messages, taskos.wa_outbound, taskos.lab_communications, taskos.lab_communication_workflows,
     taskos.non_api_lab_configs, taskos.wa_groups, taskos.provider_comms_settings, taskos.lab_communication_templates,
-    taskos.provider_communication_rules, taskos.sla_milestone_configs, taskos.lab_scheduled_actions CASCADE`);
+    taskos.provider_communication_rules, taskos.sla_milestone_configs, taskos.lab_scheduled_actions, taskos.provider_batches CASCADE`);
   for (const lab of Object.values(LABS)) {
     await prisma.waGroup.create({ data: { jid: lab.jid, subject: `LS<>${lab.name}`, active: true, sendEnabled: true, isMember: true } });
     await prisma.nonApiLabConfig.create({ data: {
@@ -121,9 +121,11 @@ async function labReplies(lab: LabKey, when: string, text: string, quotingOrder?
   let replyToWaId: string | null = null;
   if (quotingOrder) {
     const ours = await prisma.labCommunication.findFirst({ where: { orderId: quotingOrder }, orderBy: { createdAt: "desc" } });
-    if (ours?.waOutboundId) {
-      replyToWaId = `sim-out-${ours.waOutboundId}`;
-      await prisma.waOutbound.update({ where: { id: ours.waOutboundId }, data: { sentWaMsgId: replyToWaId, status: "SENT", sentAt: at(when) } });
+    // A single-order message, or the combined message the order went out in.
+    const outboundId = ours?.waOutboundId ?? ours?.batchOutboundId;
+    if (outboundId) {
+      replyToWaId = `sim-out-${outboundId}`;
+      await prisma.waOutbound.update({ where: { id: outboundId }, data: { sentWaMsgId: replyToWaId, status: "SENT", sentAt: at(when) } });
     }
   }
   await prisma.waMessage.create({ data: {
@@ -132,6 +134,16 @@ async function labReplies(lab: LabKey, when: string, text: string, quotingOrder?
     // The gateway fills orderIds with the real orders a message names; do the same here.
     orderIds: [...aliases.keys()].filter((id) => text.includes(String(id))),
   } });
+}
+
+async function setBatching(lab: LabKey, mode: "OFF" | "SHADOW" | "LIVE", maxBatchesPerSlot = 3) {
+  await prisma.nonApiLabConfig.update({ where: { labId: LABS[lab].labId }, data: { batchingMode: mode, maxBatchesPerSlot } });
+}
+
+async function expectFacts(orderId: number, kinds: string[]) {
+  const have = new Set((await prisma.providerOrderFact.findMany({ where: { orderId }, select: { kind: true } })).map((f) => f.kind));
+  const missing = kinds.filter((kind) => !have.has(kind));
+  if (missing.length) throw new Error(`${aliases.get(orderId)}: expected facts ${missing.join(", ")}, have ${[...have].join(", ") || "none"}`);
 }
 
 async function setRule(builtInKey: string, change: Record<string, unknown>) {
@@ -153,11 +165,16 @@ async function collect() {
     const destination = lab ? `${labName} group` : `${labName} manager`;
     let what: string;
     let short: string;
+    let batch;
     if (communication) {
       const rule = communication.ruleId ? await prisma.providerMessageRule.findUnique({ where: { id: communication.ruleId } }) : null;
       const about = communication.orderId ? ` · ${aliases.get(communication.orderId) ?? `order #${communication.orderId}`}` : "";
       what = `${rule?.name ?? communication.templateKey}${about}`;
       short = `${rule?.builtInKey ?? rule?.name}${about}`;
+    } else if ((batch = await prisma.providerBatch.findUnique({ where: { outboundId: row.id } }))) {
+      const names = (batch.items as Array<{ orderId: number }>).map((item) => aliases.get(item.orderId) ?? `#${item.orderId}`);
+      what = `combined ${batch.intent} · ${batch.itemCount} order(s): ${names.join(", ")}`;
+      short = `COMBINED ${batch.intent} [${names.join(",")}]`;
     } else {
       what = `reply: “${row.text.split("\n")[0].replace(/\(.*?\)/g, "(…)")}”`;
       short = "ack";
@@ -351,6 +368,66 @@ const scenarios: Scenario[] = [
       "11:00 Sample delivered to lab overdue · order-12-collected",
       "12:00 Sample delivered to lab overdue · order-12-collected",
       "13:00 Sample delivered to lab overdue · order-12-collected",
+    ],
+  },
+  {
+    name: "13. Combined: 3 status checks due 9:05–9:20 go as ONE message at 9:30; a numbered reply lands on each order",
+    run: async () => {
+      await setBatching("A", "LIVE");
+      const a = await createOrder({ status: "ORDER_SCHEDULED", placed: "-2d 10:00", appointment: "08:35", alias: "o13a" });
+      const b = await createOrder({ status: "ORDER_SCHEDULED", placed: "-2d 10:00", appointment: "08:40", alias: "o13b" });
+      await createOrder({ status: "ORDER_SCHEDULED", placed: "-2d 10:00", appointment: "08:50", alias: "o13c" });
+      await run("09:00", "09:35");
+      await labReplies("A", "09:40", "1 collected, 2 patient not available, 3 at 5 pm", a);
+      await run("09:45", "10:30", 15);
+      await expectFacts(a, ["sample_collected"]);
+      await expectFacts(b, ["patient_unavailable"]);
+    },
+    expect: ["09:30 COMBINED STATUS [o13a,o13b,o13c]"],
+  },
+  {
+    name: "14. Combined phlebo asks repeat every 30 min — an order the lab answered drops out of the next one",
+    run: async () => {
+      await setBatching("A", "LIVE");
+      await setRule("ASSIGN_PHLEBO", { isActive: true });
+      const a = await createOrder({ status: "ORDER_SCHEDULED", placed: "-1d 10:00", appointment: "11:10", alias: "o14a" });
+      await createOrder({ status: "ORDER_SCHEDULED", placed: "-1d 10:00", appointment: "11:20", alias: "o14b" });
+      await run("09:00", "09:40");
+      await labReplies("A", "09:45", "1 Ramesh 9876543210 will go", a);
+      await run("09:50", "10:45");
+    },
+    expect: [
+      "09:00 NEW_ORDER · o14a", "09:00 NEW_ORDER · o14b",
+      "09:30 COMBINED PHLEBO [o14a,o14b]", "10:00 COMBINED PHLEBO [o14b]", "10:30 COMBINED PHLEBO [o14b]",
+    ],
+  },
+  {
+    name: "15. Preview only (SHADOW): labs still get one message per order; the combined one is recorded",
+    run: async () => {
+      await setBatching("A", "SHADOW");
+      for (const [alias, appointment] of [["o15a", "08:35"], ["o15b", "08:40"], ["o15c", "08:50"]]) {
+        await createOrder({ status: "ORDER_SCHEDULED", placed: "-2d 10:00", appointment, alias });
+      }
+      await run("09:00", "09:35");
+      const shadow = await prisma.providerBatch.findMany({ where: { shadow: true } });
+      if (shadow.length !== 1 || shadow[0].itemCount !== 3 || shadow[0].intent !== "STATUS") {
+        throw new Error(`expected one preview STATUS batch of 3, got ${JSON.stringify(shadow.map((s) => [s.intent, s.itemCount]))}`);
+      }
+    },
+    expect: ["09:05 STATUS_CHECK · o15a", "09:10 STATUS_CHECK · o15b", "09:20 STATUS_CHECK · o15c"],
+  },
+  {
+    name: "16. At most N combined messages per slot (here 1): the lower-ranked ask waits for the next slot; new-order messages are never combined",
+    run: async () => {
+      await setBatching("A", "LIVE", 1);
+      await createOrder({ placed: "08:20", appointment: "+1d 08:00", alias: "o16a" });
+      await createOrder({ placed: "08:25", appointment: "+1d 09:00", alias: "o16b" });
+      await createOrder({ status: "ORDER_SCHEDULED", placed: "-2d 10:00", appointment: "08:45", alias: "o16c" });
+      await run("08:20", "10:15");
+    },
+    expect: [
+      "08:20 NEW_ORDER · o16a", "08:25 NEW_ORDER · o16b",
+      "09:30 COMBINED STATUS [o16c]", "10:00 COMBINED UNCONFIRMED [o16a,o16b]",
     ],
   },
 ];

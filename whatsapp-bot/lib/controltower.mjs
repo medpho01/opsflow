@@ -127,6 +127,20 @@ export async function syncGroups(pairs, preActiveJids = null, accountNumber = nu
             WHERE "waOutboundId" = ANY($1::text[]) AND status = 'QUEUED'`,
           [cancelled]
         );
+        // Orders sent inside a combined message point at it via "batchOutboundId".
+        // In a savepoint: a failure here must not abort the number change.
+        await client.query("SAVEPOINT combined_items");
+        try {
+          await client.query(
+            `UPDATE lab_communications SET status = 'FAILED', "failedAt" = now(), "updatedAt" = now()
+              WHERE "batchOutboundId" = ANY($1::text[]) AND status = 'QUEUED'`,
+            [cancelled]
+          );
+          await client.query("RELEASE SAVEPOINT combined_items");
+        } catch (e) {
+          await client.query("ROLLBACK TO SAVEPOINT combined_items");
+          console.error("mirror combined messages:", e.message);
+        }
       }
     }
     // 3. Register the number's current groups. Classification (role, store /
@@ -936,6 +950,24 @@ export async function reclaimStalledSends({ olderThanMinutes = 5, maxAttempts = 
   return r.rows.length;
 }
 
+/**
+ * A combined message (several orders, one WhatsApp message): each order's
+ * lab_communications row points at it through "batchOutboundId". Mirrored on
+ * its own and never thrown, so it can never change the outbound's own state.
+ */
+async function markBatchItems(outboundId, status) {
+  try {
+    await taskosQuery(
+      status === "SENT"
+        ? `UPDATE lab_communications SET status='SENT', "sentAt"=COALESCE("sentAt", now()), "updatedAt"=now()
+            WHERE "batchOutboundId"=$1 AND status='QUEUED'`
+        : `UPDATE lab_communications SET status='FAILED', "failedAt"=now(), "updatedAt"=now()
+            WHERE "batchOutboundId"=$1 AND status='QUEUED'`,
+      [outboundId]
+    );
+  } catch (e) { console.error("mirror combined message:", e.message); }
+}
+
 /** Mirror a failed outbound onto its lab_communications row, which otherwise
  *  stays QUEUED forever and makes the order timeline read "queued". */
 async function markCommunicationFailed(outboundId) {
@@ -946,6 +978,7 @@ async function markCommunicationFailed(outboundId) {
       [outboundId]
     );
   } catch (e) { console.error("mirror failure:", e.message); }
+  await markBatchItems(outboundId, "FAILED");
 }
 
 export const AUTOMATED_INTENT = "AUTOMATED";
@@ -1057,6 +1090,7 @@ export async function drainOutbound(send, { limit = 5, sendPoll = null } = {}) {
          WHERE "waOutboundId"=$1 AND status='QUEUED'`,
         [row.id]
       );
+      await markBatchItems(row.id, "SENT");
       // A poll rides after the text, as its own message — WhatsApp has no way to
       // attach options to a text body. Sent AFTER the row is marked SENT so a
       // poll failure can never cause the message itself to be re-sent.

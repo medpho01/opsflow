@@ -45,10 +45,10 @@ export async function runNonApiLabTick(now = new Date()): Promise<void> {
 
     try {
       const pass = await runMessageRulesPass(now);
-      if (pass.sent || pass.summaries || pass.missed || pass.failed || pass.confirmed || pass.skipped) {
+      if (pass.sent || pass.summaries || pass.missed || pass.failed || pass.confirmed || pass.skipped || pass.held) {
         console.log(
-          `[MessageRules] orders=${pass.orders} sent=${pass.sent} summaries=${pass.summaries} missed=${pass.missed} ` +
-          `skipped=${pass.skipped} confirmed=${pass.confirmed} failed=${pass.failed}`,
+          `[MessageRules] orders=${pass.orders} sent=${pass.sent} combined=${pass.combined} held=${pass.held} summaries=${pass.summaries} ` +
+          `missed=${pass.missed} skipped=${pass.skipped} confirmed=${pass.confirmed} failed=${pass.failed}`,
         );
       }
     } catch (error) {

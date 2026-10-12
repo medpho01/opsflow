@@ -26,7 +26,7 @@ export type RuleDecision =
   /** Send occurrence N now. `needsConversation` = open one first. */
   | { kind: "SEND"; occurrence: number; moment: Date; needsConversation: boolean };
 
-const MS_PER_MIN = 60_000;
+export const MS_PER_MIN = 60_000;
 const addMinutes = (at: Date, minutes: number) => new Date(at.getTime() + minutes * MS_PER_MIN);
 
 /** The conversation state a newly opened conversation starts in, mirroring LabStack. */
@@ -107,7 +107,16 @@ export type DecideContext = {
   facts: ReadonlySet<string>;
   now: Date;
   timeZone: string;
+  /**
+   * When this rule's items go out in combined messages for this lab (batching
+   * LIVE): the slot an item due at `dueAt` goes out in. Absent or null: send
+   * as soon as due.
+   */
+  releaseAt?: (rule: MessageRule, dueAt: Date) => Date | null;
 };
+
+/** A combined item may wait this much past its catch-up window (slots, per-slot cap). */
+const BATCH_SLACK_MINUTES = 60;
 
 /** Scope checks shared by ORDER and SUMMARY rules. */
 export function inScope(rule: MessageRule, labId: number, lab: RuleLab | undefined): string | null {
@@ -165,14 +174,21 @@ export function decideRule(rule: MessageRule, order: RuleOrder, ctx: DecideConte
   const moment = triggerMoment(rule.triggerCondition, order);
   if (occurrence === 1) {
     // Measured from the first moment the rule was ALLOWED to send, so a send
-    // window does not turn every overnight trigger into a miss.
+    // window does not turn every overnight trigger into a miss — and, for a
+    // combined message, from its slot, so waiting for the slot is never a miss.
     const allowedFrom = nextWindowOpening(rule, moment, timeZone);
-    const lateBy = (now.getTime() - allowedFrom.getTime()) / MS_PER_MIN;
-    if (lateBy > rule.catchUpMinutes) {
-      return { kind: "MISS", occurrence, moment, reason: `due ${Math.round(lateBy)} min ago, catch-up window is ${rule.catchUpMinutes} min` };
+    const release = ctx.releaseAt?.(rule, allowedFrom) ?? null;
+    if (release && now.getTime() < release.getTime()) return { kind: "WAIT", reason: `goes in the ${formatSlot(release, timeZone)} combined message` };
+    const lateBy = (now.getTime() - (release ?? allowedFrom).getTime()) / MS_PER_MIN;
+    const window = rule.catchUpMinutes + (release ? BATCH_SLACK_MINUTES : 0);
+    if (lateBy > window) {
+      return { kind: "MISS", occurrence, moment, reason: `due ${Math.round(lateBy)} min ago, catch-up window is ${window} min` };
     }
-  } else if (ledger.lastAt && now.getTime() - ledger.lastAt.getTime() < rule.repeatEveryMinutes! * MS_PER_MIN) {
-    return { kind: "WAIT", reason: "repeat interval not reached" };
+  } else if (ledger.lastAt) {
+    const dueAt = new Date(ledger.lastAt.getTime() + rule.repeatEveryMinutes! * MS_PER_MIN);
+    if (now.getTime() < dueAt.getTime()) return { kind: "WAIT", reason: "repeat interval not reached" };
+    const release = ctx.releaseAt?.(rule, dueAt) ?? null;
+    if (release && now.getTime() < release.getTime()) return { kind: "WAIT", reason: `goes in the ${formatSlot(release, timeZone)} combined message` };
   }
   if (!inSendWindow(rule, now, timeZone)) return { kind: "WAIT", reason: "outside the send window" };
 
@@ -251,4 +267,8 @@ export function summaryMatches(rule: MessageRule, order: RuleOrder, facts: Reado
   }
   if (!conditionMatches(rule.triggerCondition, order, now).matches) return false;
   return rule.factConditions.every((fact) => facts.has(fact.kind) === fact.present);
+}
+
+function formatSlot(at: Date, timeZone: string): string {
+  return new Intl.DateTimeFormat("en-IN", { hour: "numeric", minute: "2-digit", timeZone }).format(at);
 }

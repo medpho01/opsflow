@@ -96,13 +96,16 @@ async function prepareLabStack() {
 async function resetOpsFlow() {
   await prisma.$executeRawUnsafe(`TRUNCATE taskos.provider_message_ledger, taskos.provider_message_rules, taskos.provider_order_facts,
     taskos.wa_polls, taskos.wa_messages, taskos.wa_outbound, taskos.lab_communications, taskos.lab_communication_workflows,
-    taskos.non_api_lab_configs, taskos.wa_groups, taskos.provider_comms_settings, taskos.lab_communication_templates CASCADE`);
+    taskos.non_api_lab_configs, taskos.wa_groups, taskos.provider_comms_settings, taskos.lab_communication_templates,
+    taskos.provider_batches CASCADE`);
   for (const lab of Object.values(LABS)) {
     await prisma.waGroup.create({ data: { jid: lab.jid, subject: `LS<>${lab.name}`, active: true, sendEnabled: true, isMember: true } });
     await prisma.nonApiLabConfig.create({ data: {
       labId: lab.labId, labName: lab.name, waGroupJid: lab.jid, quietWindowMinutes: 10,
       managerName: `${lab.city} Manager`, managerWhatsapp: lab.manager,
       dailyDigestEnabled: true, appointmentRemindersEnabled: !!lab.pings, postAppointmentCheckEnabled: true,
+      // COMBINED=1: follow-ups go as combined messages (see provider-rules/batching.ts).
+      batchingMode: process.env.COMBINED ? "LIVE" : "OFF",
       createdAt: at("-1d 12:00"),
     } });
   }
@@ -216,11 +219,18 @@ async function collect() {
     const lab = groupLab ?? managerLab!;
     const rule = communication?.ruleId ? await prisma.providerMessageRule.findUnique({ where: { id: communication.ruleId } }) : null;
     if (rule) fired.set(rule.id, (fired.get(rule.id) ?? 0) + 1);
+    // A combined message: one outbound, one item per order (each credits its own rule).
+    const batch = communication ? null : await prisma.providerBatch.findUnique({ where: { outboundId: row.id } });
+    const batchItems = (batch?.items ?? []) as Array<{ orderId: number; ruleId: string }>;
+    for (const item of batchItems) fired.set(item.ruleId, (fired.get(item.ruleId) ?? 0) + 1);
     const about = communication?.orderId ? ` · ${aliasOf(communication.orderId)}` : "";
+    const title = batch
+      ? `Combined · ${batch.itemCount} order${batch.itemCount === 1 ? "" : "s"}: ${batchItems.map((i) => aliasOf(i.orderId)).join(", ")}`
+      : `${rule?.name ?? communication?.templateKey ?? "Message"}${about}`;
     entries.push({
       at: row.createdAt, kind: "message", lab, rule: rule?.name,
       to: groupLab ? `${LABS[lab].name} group` : `${LABS[lab].name} manager (personal)`,
-      title: `${rule?.name ?? communication?.templateKey ?? "Message"}${about}`,
+      title,
       text: row.text,
     });
   }
@@ -330,8 +340,9 @@ async function main() {
   console.log(silent.length ? `\n${silent.length} rule(s) never fired.` : `\nAll ${counts.length} rules fired · ${messages} messages.`);
 
   mkdirSync(".sim", { recursive: true });
-  writeFileSync(".sim/provider-comms-demo.html", html(counts));
-  console.log("Chat view: .sim/provider-comms-demo.html");
+  const out = process.env.COMBINED ? ".sim/provider-comms-demo-combined.html" : ".sim/provider-comms-demo.html";
+  writeFileSync(out, html(counts));
+  console.log(`Chat view: ${out}`);
   process.exitCode = silent.length ? 1 : 0;
 }
 

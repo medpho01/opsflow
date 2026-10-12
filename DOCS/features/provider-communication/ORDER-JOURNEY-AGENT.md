@@ -263,18 +263,23 @@ The ledger stays the source of truth for "was item X of rule Y sent".
 |---|---|---|---|
 | **1. Batching + short templates** (≈2 wks) | Outbox + slots, batch templates, numbered replies, batch reply reading, per-lab budget. Shadow per lab, then live. | Messages per order ↓, lab response rate ↑, time to first response ↓ | Response rate up on pilot labs; no missed urgent sends |
 | **2. Promises + auto-replies** (≈2 wks) | Commitments from replies, "after commitment due" timing, check-back rules, template acks, journey timeline, review queue | % promises kept, stuck orders ↓, misreads caught in review | Misread rate under the threshold in review |
-| **3. Escalation ladder + hand-off** (≈2 wks) | Mention assigned person, ops tasks with deep links, one-click call tasks, take over / snooze, Needs-attention board, lab scorecard | Time stuck per stage ↓, tasks closed per day | Ops agree the tasks are the right ones |
-| **4. Lab action links** (needs LabStack) | Collected / reschedule / report links in item lines | Stage changes made by labs from messages | LabStack API agreed |
-| **5. Assisted writes, then autonomy** | Bot proposes LabStack changes with one-click approval; auto-apply for safe transitions on proven labs; bot-placed calls | Approval rate, reversals | Per lab, per transition |
+| **3. Escalation ladder + hand-off** (≈2 wks) | Mention assigned person, ops tasks with deep links (humans move the stage), bot calls to lab managers, take over / snooze, Needs-attention board, lab scorecard | Time stuck per stage ↓, tasks closed per day | Ops agree the tasks are the right ones |
+| ~~**4. Lab action links**~~ deferred: humans move stages (decision 1) | Collected / reschedule / report links in item lines | Stage changes made by labs from messages | LabStack API agreed |
+| ~~**5. Assisted writes, then autonomy**~~ deferred | Bot proposes LabStack changes with one-click approval; auto-apply for safe transitions on proven labs; bot-placed calls | Approval rate, reversals | Per lab, per transition |
 
 Each phase is useful alone, and each is behind per-lab flags and shadow mode,
 so the current setup keeps working while a pilot runs.
 
-## Decisions needed
+## Decisions (12 Oct 2026)
 
-1. **LabStack**: will the LabStack team build action links (Phase 4) and a
-   narrow write API (Phase 5)? This decides how far "move the order" goes.
-2. **Slots**: fixed times (:00 / :30) or rolling 30-min windows? Fixed is
-   more predictable for labs; rolling is faster. Recommended: fixed.
-3. **Calls**: may the bot call lab managers in Phase 5, or only agents?
-4. **Pilot labs**: 3–5 labs with active groups and enough volume to measure.
+1. **Moving the stage: humans, for now.** No LabStack action links or write
+   API are planned. Stages move when the lab uses the confirmation link or an
+   ops agent acts on a task with a console deep link (Phase 3). Phases 4–5
+   become "later, if ever"; the bot's job is to get the right human to act
+   fast and to verify it happened.
+2. **Slots: fixed** (:00 / :30, report chase at 10:00 / 14:00 / 18:00).
+3. **Calls: the bot may call lab managers** (Exotel), within the call
+   guardrails (budget, hours, lab managers on file only). Moves from Phase 5
+   into Phase 3.
+4. Pilot labs: still to pick. Every capability ships OFF / SHADOW / LIVE per
+   lab, so the pilot is chosen at rollout.

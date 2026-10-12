@@ -23,7 +23,34 @@ export type SourceLab = {
   isActive: boolean;
   openOrders: number;
   fulfilledOrders: number;
+  /** LabStack's own API set-up: the provider and which order types go through it. */
+  apiProvider?: string | null;
+  isApiHomeSample?: boolean | null;
+  isApiCenterVisit?: boolean | null;
+  isApiPpmc?: boolean | null;
+  /** Orders placed (not cancelled) in the last 7 / 30 days, and the latest one. */
+  orders7d?: number;
+  orders30d?: number;
+  lastOrderAt?: Date | string | null;
 };
+
+/**
+ * How busy a lab is right now, from orders placed in the last 7 days (and 30
+ * for the quiet ones). Absolute bands: the point is to spot labs carrying
+ * current volume, whatever their lifetime size.
+ */
+export type Activity = "VERY_ACTIVE" | "ACTIVE" | "SOME" | "QUIET" | "DORMANT";
+export function activityOf(orders7d: number, orders30d: number): Activity {
+  if (orders7d >= 50) return "VERY_ACTIVE";
+  if (orders7d >= 10) return "ACTIVE";
+  if (orders7d >= 1) return "SOME";
+  return orders30d >= 1 ? "QUIET" : "DORMANT";
+}
+
+/** LabStack's answer to "does this lab take orders through an API?": an order type is switched to the API. */
+export function labstackIntegration(lab: Pick<SourceLab, "isApiHomeSample" | "isApiCenterVisit" | "isApiPpmc">): "API" | "NON_API" {
+  return lab.isApiHomeSample || lab.isApiCenterVisit || lab.isApiPpmc ? "API" : "NON_API";
+}
 
 /**
  * Where a lab stands, as one value a filter can match:
@@ -52,6 +79,14 @@ export type CatalogRow = {
   sourceActive: boolean;
   openOrders: number;
   fulfilledOrders: number;
+  /** From LabStack (the truth); config.integrationType is OpsFlow's own setting and may lag. */
+  integration: "API" | "NON_API";
+  apiProvider: string | null;
+  apiChannels: string[];
+  orders7d: number;
+  orders30d: number;
+  lastOrderAt: string | null;
+  activity: Activity;
   configured: boolean;
   orphaned?: boolean;
   config: NonApiLabConfig | null;
@@ -61,7 +96,7 @@ export type CatalogRow = {
   groupNotMember: boolean;
 };
 
-export type CatalogSort = "fulfilled" | "open" | "name" | "id";
+export type CatalogSort = "fulfilled" | "open" | "recent" | "name" | "id";
 export type CatalogQuery = {
   q?: string;
   status?: LabSetupStatus | "CONFIGURED" | "ALL";
@@ -92,10 +127,20 @@ export async function loadSourceLabs(fresh = false): Promise<SourceLab[]> {
            )::int AS "openOrders",
            -- Lifetime, not a window: the point is which labs carry the
            -- business, and a quiet fortnight should not bury a big one.
-           COUNT(o.id) FILTER (WHERE o."orderStatus" = 'REPORT_DELIVERED')::int AS "fulfilledOrders"
+           COUNT(o.id) FILTER (WHERE o."orderStatus" = 'REPORT_DELIVERED')::int AS "fulfilledOrders",
+           -- Recent volume. LabStack stores naive UTC, so compare against UTC.
+           COUNT(o.id) FILTER (
+             WHERE o."createdAt" >= (now() AT TIME ZONE 'UTC') - interval '7 days' AND o."orderStatus" <> 'CANCELED'
+           )::int AS "orders7d",
+           COUNT(o.id) FILTER (
+             WHERE o."createdAt" >= (now() AT TIME ZONE 'UTC') - interval '30 days' AND o."orderStatus" <> 'CANCELED'
+           )::int AS "orders30d",
+           MAX(o."createdAt") AS "lastOrderAt",
+           NULLIF(l."apiProvider"::text, 'NO_PROVIDER') AS "apiProvider",
+           l."isApiHomeSample", l."isApiCenterVisit", l."isApiPpmc"
       FROM public."Lab" l
       LEFT JOIN public."Order" o ON o."labId" = l.id
-     GROUP BY l.id, l."labName", l.city, l.active
+     GROUP BY l.id, l."labName", l.city, l.active, l."apiProvider", l."isApiHomeSample", l."isApiCenterVisit", l."isApiPpmc"
   `);
   cache = { at: Date.now(), labs };
   return labs;
@@ -115,7 +160,11 @@ export function buildRows(sourceLabs: SourceLab[], configs: NonApiLabConfig[], g
   const groupByJid = new Map(groups.map((group) => [group.jid, group]));
   const memberGroups = groups.filter((group) => group.isMember);
 
-  type RowSource = { labId: number; labName: string; city: string | null; sourceActive: boolean; openOrders: number; fulfilledOrders: number };
+  type RowSource = {
+    labId: number; labName: string; city: string | null; sourceActive: boolean; openOrders: number; fulfilledOrders: number;
+    integration: "API" | "NON_API"; apiProvider: string | null; apiChannels: string[];
+    orders7d: number; orders30d: number; lastOrderAt: string | null; activity: Activity;
+  };
   const row = (lab: RowSource, config: NonApiLabConfig | null, orphaned = false): CatalogRow => {
     const group = config?.waGroupJid ? groupByJid.get(config.waGroupJid) : undefined;
     const unknownGroup = !!config?.waGroupJid && !group;
@@ -138,10 +187,18 @@ export function buildRows(sourceLabs: SourceLab[], configs: NonApiLabConfig[], g
 
   // LabStack names carry stray whitespace ("  Ishan Pathology"), which would
   // sort them ahead of "A…" and break search-by-prefix.
-  const rows = sourceLabs.map((lab) => row({
-    labId: lab.id, labName: (lab.labName ?? "").trim(), city: lab.city?.trim() || null, sourceActive: lab.isActive,
-    openOrders: lab.openOrders, fulfilledOrders: lab.fulfilledOrders,
-  }, configByLabId.get(lab.id) ?? null));
+  const rows = sourceLabs.map((lab) => {
+    const orders7d = lab.orders7d ?? 0;
+    const orders30d = lab.orders30d ?? 0;
+    return row({
+      labId: lab.id, labName: (lab.labName ?? "").trim(), city: lab.city?.trim() || null, sourceActive: lab.isActive,
+      openOrders: lab.openOrders, fulfilledOrders: lab.fulfilledOrders,
+      integration: labstackIntegration(lab), apiProvider: lab.apiProvider ?? null,
+      apiChannels: [lab.isApiHomeSample && "Home sample", lab.isApiCenterVisit && "Centre visit", lab.isApiPpmc && "PPMC"].filter(Boolean) as string[],
+      orders7d, orders30d, lastOrderAt: lab.lastOrderAt ? new Date(lab.lastOrderAt).toISOString() : null,
+      activity: activityOf(orders7d, orders30d),
+    }, configByLabId.get(lab.id) ?? null);
+  });
 
   // A config whose lab vanished from LabStack still drives messages, so it
   // must stay visible here.
@@ -150,6 +207,8 @@ export function buildRows(sourceLabs: SourceLab[], configs: NonApiLabConfig[], g
     if (sourceIds.has(config.labId)) continue;
     rows.push(row({
       labId: config.labId, labName: config.labName, city: null, sourceActive: false, openOrders: 0, fulfilledOrders: 0,
+      integration: config.integrationType === "API" ? "API" : "NON_API", apiProvider: null, apiChannels: [],
+      orders7d: 0, orders30d: 0, lastOrderAt: null, activity: "DORMANT",
     }, config, true));
   }
   return rows;
@@ -177,7 +236,8 @@ export function queryCatalog(rows: CatalogRow[], query: CatalogQuery) {
   const scoped = rows.filter((row) =>
     matchesQuery(row, query.q ?? "")
     && (query.includeInactive || row.sourceActive || row.configured)
-    && (!query.type || query.type === "ALL" || row.config?.integrationType === query.type));
+    // LabStack's set-up, not OpsFlow's: an unconfigured lab has no config to ask.
+    && (!query.type || query.type === "ALL" || row.integration === query.type));
 
   const statusCounts = Object.fromEntries(LAB_SETUP_STATUSES.map((status) => [status, 0])) as Record<LabSetupStatus, number>;
   for (const row of scoped) statusCounts[row.status] += 1;
@@ -190,6 +250,8 @@ export function queryCatalog(rows: CatalogRow[], query: CatalogQuery) {
   const key = (row: CatalogRow): number | string =>
     sort === "fulfilled" ? row.fulfilledOrders
       : sort === "open" ? row.openOrders
+        // Last 7 days, with the 30-day count breaking ties among the quiet.
+        : sort === "recent" ? row.orders7d * 100_000 + row.orders30d
         : sort === "id" ? row.labId
           : row.labName.toLowerCase();
   filtered.sort((a, b) => {

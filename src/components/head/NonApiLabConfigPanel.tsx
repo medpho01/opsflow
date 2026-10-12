@@ -101,7 +101,8 @@ function toDraft(lab: LabConfig): Draft {
 
 type SetupStatus = "NOT_CONFIGURED" | "NEEDS_GROUP" | "PAUSED" | "SENDING_OFF" | "LIVE";
 type StatusFilter = "ALL" | "CONFIGURED" | SetupStatus;
-type SortKey = "fulfilled" | "open" | "name" | "id";
+type SortKey = "fulfilled" | "open" | "recent" | "name" | "id";
+type Activity = "VERY_ACTIVE" | "ACTIVE" | "SOME" | "QUIET" | "DORMANT";
 
 /** One lab as LabStack knows it, plus our config for it when there is one. */
 type CatalogRow = {
@@ -112,6 +113,15 @@ type CatalogRow = {
   openOrders: number;
   /** Lifetime REPORT_DELIVERED orders — the measure of how much this lab matters. */
   fulfilledOrders: number;
+  /** LabStack's own set-up (the truth): API when an order type is switched to the lab's API. */
+  integration: "API" | "NON_API";
+  apiProvider: string | null;
+  apiChannels: string[];
+  /** Orders placed (not cancelled) in the last 7 / 30 days. */
+  orders7d: number;
+  orders30d: number;
+  lastOrderAt: string | null;
+  activity: Activity;
   configured: boolean;
   orphaned?: boolean;
   config: LabConfig | null;
@@ -170,6 +180,7 @@ const STATUS_TONES: Record<SetupStatus, string> = {
 const SORT_OPTIONS: Array<{ key: SortKey; label: string; dir: "asc" | "desc" }> = [
   { key: "fulfilled", label: "Most orders fulfilled", dir: "desc" },
   { key: "open", label: "Most open orders", dir: "desc" },
+  { key: "recent", label: "Most orders, last 7 days", dir: "desc" },
   { key: "name", label: "Name (A–Z)", dir: "asc" },
   { key: "id", label: "Lab ID", dir: "asc" },
 ];
@@ -277,6 +288,8 @@ export function NonApiLabConfigPanel() {
           ...EMPTY_DRAFT,
           labId: String(row.labId),
           labName: row.labName,
+          // How LabStack sends this lab its orders.
+          integrationType: row.integration,
           // Prefilled from the gateway's own group list, so the commonest case
           // needs no typing at all.
           waGroupJid: row.suggestedGroup?.jid ?? "",
@@ -439,8 +452,8 @@ export function NonApiLabConfigPanel() {
           className={selectClass}
         >
           <option value="ALL">Any order channel</option>
-          <option value="NON_API">Orders over WhatsApp</option>
-          <option value="API">Orders through the API</option>
+          <option value="NON_API">Not API-integrated (LabStack)</option>
+          <option value="API">API-integrated (LabStack)</option>
         </select>
         <label className="flex items-center gap-2 text-xs text-zinc-400 px-1">
           <input
@@ -493,6 +506,7 @@ export function NonApiLabConfigPanel() {
             <th className="px-4 py-2.5">Lab</th>
             <SortHeader label="Fulfilled" sortKey="fulfilled" filters={filters} onSort={setFilters} title="Lifetime orders with the report delivered" />
             <SortHeader label="Open" sortKey="open" filters={filters} onSort={setFilters} title="Orders not yet delivered or cancelled" />
+            <SortHeader label="Recent orders" sortKey="recent" filters={filters} onSort={setFilters} title="Orders placed in the last 7 days (and 30 days), cancelled ones excluded" />
             <th className="px-3 py-2.5">Status</th>
             <th className="px-3 py-2.5">Receives orders</th>
             <th className="px-3 py-2.5">WhatsApp group</th>
@@ -514,6 +528,7 @@ export function NonApiLabConfigPanel() {
               </td>
               <td className="px-3 py-3 tabular-nums text-zinc-200">{formatCount(row.fulfilledOrders)}</td>
               <td className="px-3 py-3 tabular-nums text-zinc-400">{formatCount(row.openOrders)}</td>
+              <td className="px-3 py-3"><RecentActivity row={row} /></td>
               <td className="px-3 py-3">
                 <span className={`whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium ${STATUS_TONES[row.status]}`}>{STATUS_LABELS[row.status]}</span>
               </td>
@@ -523,6 +538,7 @@ export function NonApiLabConfigPanel() {
                   onPick={(next) => setIntegration(row, next)}
                   labName={row.labName}
                 />
+                <LabStackIntegration row={row} />
               </td>
               <td className="px-3 py-3 max-w-[16rem]">
                 {cfg?.waGroupJid ? <>
@@ -775,5 +791,45 @@ function CombinedMessages({ labId }: { labId: number }) {
         ))}
       </ul>
     </details>
+  );
+}
+
+const ACTIVITY: Record<Activity, { label: string; tone: string }> = {
+  VERY_ACTIVE: { label: "Very active", tone: "bg-emerald-500/15 text-emerald-300" },
+  ACTIVE: { label: "Active", tone: "bg-sky-500/15 text-sky-300" },
+  SOME: { label: "Some", tone: "bg-zinc-700/50 text-zinc-300" },
+  QUIET: { label: "Quiet", tone: "bg-transparent text-zinc-500" },
+  DORMANT: { label: "Dormant", tone: "bg-transparent text-zinc-600" },
+};
+
+/** How busy the lab is right now: a band, then the counts behind it. */
+function RecentActivity({ row }: { row: CatalogRow }) {
+  const band = ACTIVITY[row.activity] ?? ACTIVITY.DORMANT;
+  const last = row.lastOrderAt
+    ? new Date(row.lastOrderAt).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "2-digit" })
+    : null;
+  return (
+    <div className="whitespace-nowrap">
+      <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${band.tone}`}>{band.label}</span>
+      <div className="mt-1 text-[11px] tabular-nums text-zinc-500">
+        {row.orders7d > 0 || row.orders30d > 0
+          ? <><span className="text-zinc-300">{formatCount(row.orders7d)}</span> · 7d &nbsp;{formatCount(row.orders30d)} · 30d</>
+          : last ? <>last order {last}</> : <>no orders yet</>}
+      </div>
+    </div>
+  );
+}
+
+/** What LabStack says about how this lab gets orders — flagged when OpsFlow's setting disagrees. */
+function LabStackIntegration({ row }: { row: CatalogRow }) {
+  const provider = row.apiProvider ? row.apiProvider.replace(/_/g, " ").toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase()) : null;
+  const text = row.integration === "API"
+    ? `LabStack: API${provider ? ` · ${provider}` : ""}${row.apiChannels.length ? ` (${row.apiChannels.join(", ")})` : ""}`
+    : `LabStack: no API${provider ? ` (${provider} set, no order type on it)` : ""}`;
+  const mismatch = !!row.config && row.config.integrationType !== row.integration;
+  return (
+    <div className={`mt-1 text-[11px] ${mismatch ? "text-amber-400" : "text-zinc-500"}`} title={mismatch ? "OpsFlow's setting differs from LabStack's" : undefined}>
+      {mismatch ? "⚠ " : ""}{text}
+    </div>
   );
 }

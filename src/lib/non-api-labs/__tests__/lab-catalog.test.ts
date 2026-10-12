@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import type { NonApiLabConfig } from "@prisma/client";
-import { buildRows, queryCatalog, type GroupOption, type SourceLab } from "../lab-catalog";
+import { activityOf, buildRows, labstackIntegration, queryCatalog, type GroupOption, type SourceLab } from "../lab-catalog";
 
 const lab = (id: number, labName: string, fulfilledOrders: number, extra: Partial<SourceLab> = {}): SourceLab => ({
   id, labName, city: "Pune", isActive: true, openOrders: 0, fulfilledOrders, ...extra,
@@ -78,5 +78,40 @@ describe("lab catalogue", () => {
   it("keeps a config whose lab vanished from LabStack", () => {
     const orphanRows = buildRows([], [config(77)], []);
     assert.equal(orphanRows[0].orphaned, true);
+  });
+});
+
+describe("lab catalogue — LabStack's API set-up and recent activity", () => {
+  const sourceLabs = [
+    lab(10, "Api Lab", 100, { apiProvider: "ORANGE_HEALTH", isApiHomeSample: true, orders7d: 80, orders30d: 300 }),
+    lab(11, "Provider No Flags", 50, { apiProvider: "ONE_MG", orders7d: 0, orders30d: 4 }),
+    lab(12, "WhatsApp Lab", 900, { orders7d: 12, orders30d: 40 }),
+    lab(13, "Sleepy Lab", 2000, { orders7d: 0, orders30d: 0, lastOrderAt: "2026-01-02T00:00:00Z" }),
+  ];
+  // Lab 12 is configured in OpsFlow as API by mistake; LabStack says otherwise.
+  const catalog = buildRows(sourceLabs, [config(12, { integrationType: "API" })], [group("g12@g.us")]);
+  const idsOf = (result: ReturnType<typeof queryCatalog>) => result.labs.map((row) => row.labId);
+
+  it("API means an order type is switched to the lab's API, not just a provider on file", () => {
+    assert.equal(labstackIntegration({ isApiHomeSample: true }), "API");
+    assert.equal(labstackIntegration({ isApiHomeSample: false, isApiCenterVisit: false, isApiPpmc: false }), "NON_API");
+  });
+
+  it("filters on LabStack's set-up — unconfigured labs included, OpsFlow's setting ignored", () => {
+    assert.deepEqual(idsOf(queryCatalog(catalog, { type: "API" })), [10]);
+    assert.deepEqual(idsOf(queryCatalog(catalog, { type: "NON_API" })).sort(), [11, 12, 13]);
+  });
+
+  it("bands labs by orders in the last 7 days", () => {
+    assert.equal(activityOf(80, 300), "VERY_ACTIVE");
+    assert.equal(activityOf(12, 40), "ACTIVE");
+    assert.equal(activityOf(3, 3), "SOME");
+    assert.equal(activityOf(0, 4), "QUIET");
+    assert.equal(activityOf(0, 0), "DORMANT");
+    assert.deepEqual(Object.fromEntries(catalog.map((row) => [row.labId, row.activity])), { 10: "VERY_ACTIVE", 11: "QUIET", 12: "ACTIVE", 13: "DORMANT" });
+  });
+
+  it("sorts by recent orders, busiest first, the 30-day count breaking ties", () => {
+    assert.deepEqual(idsOf(queryCatalog(catalog, { sort: "recent" })), [10, 12, 11, 13]);
   });
 });

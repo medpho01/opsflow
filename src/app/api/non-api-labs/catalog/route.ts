@@ -22,7 +22,7 @@ import {
   LAB_SETUP_STATUSES, type CatalogQuery, type CatalogSort,
 } from "@/lib/non-api-labs/lab-catalog";
 
-const SORTS: CatalogSort[] = ["fulfilled", "open", "name", "id"];
+const SORTS: CatalogSort[] = ["fulfilled", "open", "recent", "name", "id"];
 
 function parseQuery(params: URLSearchParams): CatalogQuery {
   const status = params.get("status") ?? "ALL";

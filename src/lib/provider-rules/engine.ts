@@ -437,7 +437,17 @@ async function deliverCombined(
       try {
         const outcome = await deliverBatch({ config, intent, items: group.map(itemOf), now });
         if (outcome.sent) { result.combined += 1; result.sent += group.length; allowance -= 1; }
-        else {
+        else if (outcome.sendSingly) {
+          // The combined template is paused: these orders go as single messages.
+          for (const send of group) {
+            const single = await deliverOrderMessage({ ...itemOf(send), config, now });
+            if (single.sent) result.sent += 1;
+            else {
+              await writeLedger(send.rule, "ORDER", send.order.id, labId, send.occurrence, "SKIPPED", single.reason, now);
+              result.skipped += 1;
+            }
+          }
+        } else {
           for (const send of group) await writeLedger(send.rule, "ORDER", send.order.id, labId, send.occurrence, "SKIPPED", outcome.reason, now);
           result.skipped += group.length;
         }

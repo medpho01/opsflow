@@ -430,6 +430,21 @@ const scenarios: Scenario[] = [
       "09:30 COMBINED STATUS [o16c]", "10:00 COMBINED UNCONFIRMED [o16a,o16b]",
     ],
   },
+  {
+    name: "17. A paused combined template never drops messages: those orders go as single messages at the slot",
+    run: async () => {
+      await setBatching("A", "LIVE");
+      await prisma.labCommunicationTemplate.upsert({
+        where: { key: "BATCH_STATUS_CHECK" },
+        create: { key: "BATCH_STATUS_CHECK", name: "Combined: status check", body: "{{items}}", isActive: false },
+        update: { isActive: false },
+      });
+      await createOrder({ status: "ORDER_SCHEDULED", placed: "-2d 10:00", appointment: "08:35", alias: "o17a" });
+      await createOrder({ status: "ORDER_SCHEDULED", placed: "-2d 10:00", appointment: "08:40", alias: "o17b" });
+      await run("09:00", "09:35");
+    },
+    expect: ["09:30 STATUS_CHECK · o17a", "09:30 STATUS_CHECK · o17b"],
+  },
 ];
 
 // ── Runner ───────────────────────────────────────────────────────────────

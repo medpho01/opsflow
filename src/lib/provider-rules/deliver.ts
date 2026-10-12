@@ -318,7 +318,9 @@ function batchVariables(config: NonApiLabConfig, lines: string[], title: string)
 }
 
 export type DeliverBatchInput = { config: NonApiLabConfig; intent: string; items: BatchItemInput[]; now: Date };
-export type BatchOutcome = { sent: true; batchId: string; communicationIds: string[] } | { sent: false; reason: string };
+export type BatchOutcome =
+  | { sent: true; batchId: string; communicationIds: string[] }
+  | { sent: false; reason: string; /** Send the items as single messages instead (the combined template is paused). */ sendSingly?: boolean };
 
 /**
  * One combined message about several orders of one lab. Every order still gets
@@ -332,7 +334,7 @@ export async function deliverBatch(input: DeliverBatchInput): Promise<BatchOutco
     (a.order.appointmentTime?.getTime() ?? 0) - (b.order.appointmentTime?.getTime() ?? 0) || a.order.id - b.order.id);
   const templateKey = BATCH_TEMPLATE_BY_INTENT[intent] ?? BATCH_GENERIC_TEMPLATE;
   const template = await ensureTemplate(templateKey);
-  if (!template.isActive) return { sent: false, reason: `Message "${template.name}" is paused` };
+  if (!template.isActive) return { sent: false, reason: `Message "${template.name}" is paused`, sendSingly: true };
 
   const toManager = intent === "ESCALATION";
   const managerMissing = toManager && !config.managerWhatsapp;

@@ -136,6 +136,11 @@ export const SAMPLE_VALUES: Record<string, string> = {
   sla_overdue_by: "1h 20m",
   sla_attempt_no: "2",
   sla_attempts_remaining: "1",
+  // Combined messages: the engine writes {{items}}, one line per order.
+  count: "3",
+  orders_word: "orders",
+  items: "1. #73142 · Sharma · 7:00 am\n2. #73155 · Verma · 7:30 am\n3. #73160 · Iyer · 8:00 am",
+  batch_title: "Your rule (sample)",
 };
 
 /** Render a body with sample values, leaving unknown variables visible. */

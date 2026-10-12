@@ -145,11 +145,13 @@ export function TemplateLibrary() {
         <div className="rounded-xl border border-zinc-800 overflow-hidden">
           {loading ? <div className="p-6 text-sm text-zinc-500">Loading…</div> : templates.map((template) => {
             const ruleCount = rules.filter((r) => r.templateKey === template.key && r.isActive).length;
+            const usage = isCombined(template.key) ? "used automatically when messages are combined"
+              : ruleCount > 0 ? `used by ${ruleCount} active rule${ruleCount > 1 ? "s" : ""}` : "not used by an active rule";
             return (
               <button key={template.key} type="button" onClick={() => setSelected(template.key)}
                 className={`block w-full border-b border-zinc-800/60 px-3 py-2.5 text-left last:border-b-0 ${selected === template.key ? "bg-blue-500/10" : "hover:bg-zinc-900/60"}`}>
                 <div className={`text-sm ${template.isActive ? "text-zinc-100" : "text-zinc-500 line-through"}`}>{template.name}</div>
-                <div className="text-[11px] text-zinc-500">{ruleCount > 0 ? `used by ${ruleCount} active rule${ruleCount > 1 ? "s" : ""}` : "not used by an active rule"}</div>
+                <div className="text-[11px] text-zinc-500">{usage}</div>
               </button>
             );
           })}
@@ -181,12 +183,13 @@ export function TemplateLibrary() {
                 <button onClick={() => void toggle(current)} className="rounded-lg border border-zinc-700 px-3 py-2 text-xs text-zinc-300 hover:text-zinc-100">
                   {current.isActive ? "Pause this message" : "Resume this message"}
                 </button>
-                {!usedBy.length && <button onClick={() => void remove(current)} className="text-xs text-zinc-500 hover:text-rose-400">Delete</button>}
+                {!usedBy.length && !isCombined(current.key) && <button onClick={() => void remove(current)} className="text-xs text-zinc-500 hover:text-rose-400">Delete</button>}
                 {notice && <span className={`text-xs ${notice.tone === "ok" ? "text-emerald-300" : "text-rose-300"}`}>{notice.text}</span>}
               </div>
               <div className="text-[11px] text-zinc-500">
-                {usedBy.length ? <>Sent by: {usedBy.map((r) => r.name).join(" · ")}</> : "No rule sends this message yet."}
-                {!current.isActive && " Paused: rules that send it skip it."}
+                {isCombined(current.key)
+                  ? <>Used for labs with Combined messages on (Lab Config): {"{{items}}"} is the numbered list, one line per order.{!current.isActive && " Paused: these orders go as single messages instead."}</>
+                  : <>{usedBy.length ? <>Sent by: {usedBy.map((r) => r.name).join(" · ")}</> : "No rule sends this message yet."}{!current.isActive && " Paused: rules that send it skip it."}</>}
               </div>
             </div>
             <div className="space-y-3">
@@ -214,3 +217,8 @@ export function TemplateLibrary() {
 }
 
 const inputClass = "w-full rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-blue-500";
+
+/** Combined-message templates (provider-rules/batching.ts): chosen by the engine, not by a rule. */
+function isCombined(key: string) {
+  return key.startsWith("BATCH_");
+}

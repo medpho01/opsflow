@@ -327,6 +327,24 @@ From the chat review (CHAT-REVIEW-OCT-2026.md):
   their ask's next slot, never sent at an odd hour; combined items may now
   carry over a day instead of being dropped.
 
+## No per-lab configuration (20 Oct 2026)
+
+Whatever messages we run go to every lab; nothing to set per lab.
+- **One standard set** (`provider-rules/standard-set.ts`), applied once on
+  deploy: on for all labs: new order, reminders 1 h / 3 h, final reminder to
+  the manager 5 h, unconfirmed 2 h before, assign a phlebo, status check,
+  report chase, tomorrow's list. Off: "unconfirmed" 24 h / 30 min / 10 min
+  pings, "phlebo on time?", the 10:00 pending-reports list, and every rule
+  converted from the old system (deadline watchers, timed rules, per-lab
+  copies), whose send history is carried over to the rule that replaces
+  it so nothing is sent twice. Later changes on Message Rules are global and
+  stick.
+- **Combined messages for every lab**, with fixed caps (3 per slot, 8 per day).
+  The per-lab switch stays in the data for tests only; it is not on Lab Config.
+- **Coordinators are automatic:** the most active lab-side writer in the
+  group over the last 30 days (LabStack team excluded). Lab Config shows who,
+  and naming someone else is optional.
+
 ## Toward 95% autonomy
 
 The goal (20 Oct 2026): the bot runs ~95% of orders end to end, like a full

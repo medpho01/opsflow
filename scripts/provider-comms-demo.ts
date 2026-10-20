@@ -301,11 +301,8 @@ async function main() {
   await resetOpsFlow();
   for (const b of BEFORE) await place(b.alias, b.order, at(b.placed));
 
-  // The first tick seeds the rules; then the communications that start paused are switched on.
+  // The first tick seeds the rules and applies the standard message set (the same for every lab).
   await runNonApiLabTick(at("-1d 16:55"));
-  for (const key of ["ASSIGN_PHLEBO", "PHLEBO_ETA", "REPORT_CHASE", "SUMMARY_PENDING_REPORTS"]) {
-    await prisma.providerMessageRule.update({ where: { builtInKey: key }, data: { isActive: true, version: { increment: 1 } } });
-  }
 
   console.log("\nDemo labs:");
   for (const lab of Object.values(LABS)) console.log(`  • ${lab.name} — ${lab.theme}`);
@@ -336,8 +333,8 @@ async function main() {
   const counts = rules.map((r) => ({ name: r.name, kind: r.kind, count: fired.get(r.id) ?? 0, active: r.isActive }));
   console.log("\n━━━━━━━━ Rules and how often they fired ━━━━━━━━");
   for (const r of counts) console.log(`  ${r.count ? "✓" : "✗"} ${String(r.count).padStart(2)}  ${r.name}${r.active ? "" : " (paused)"}`);
-  const silent = counts.filter((r) => r.count === 0);
-  console.log(silent.length ? `\n${silent.length} rule(s) never fired.` : `\nAll ${counts.length} rules fired · ${messages} messages.`);
+  const silent = counts.filter((r) => r.count === 0 && r.active);
+  console.log(silent.length ? `\n${silent.length} active rule(s) never fired.` : `\nAll ${counts.filter((r) => r.active).length} active rules fired · ${messages} messages.`);
 
   mkdirSync(".sim", { recursive: true });
   const out = process.env.COMBINED ? ".sim/provider-comms-demo-combined.html" : ".sim/provider-comms-demo.html";

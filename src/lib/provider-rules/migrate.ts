@@ -17,6 +17,7 @@
 import { Prisma, type NonApiLabConfig, type ProviderMessageRule } from "@prisma/client";
 import prisma from "@/lib/db/client";
 import { BUILT_IN_RULES, LEGACY_RUNG_TO_BUILT_IN, OPEN_CONVERSATION } from "./builtins";
+import { applyStandardSet } from "./standard-set";
 import { localDayKey } from "./evaluate";
 import { TIME_ZONE } from "./format";
 import type { RuleCondition } from "./types";
@@ -403,7 +404,10 @@ export async function ensureMigratedToRules(): Promise<Report | null> {
     data: { description: BUILT_IN_RULES.find((rule) => rule.builtInKey === "STATUS_CHECK")!.description },
   });
   const settings = await prisma.providerCommsSettings.upsert({ where: { id: "default" }, update: {}, create: { id: "default" } });
-  if (settings.rulesMigratedAt) return null;
+  if (settings.rulesMigratedAt) {
+    await applyStandardSet();
+    return null;
+  }
 
   const report: Report = { seeded: 0, cloned: 0, converted: 0, imported: 0, retired: 0, notes: [] };
   // A rules engine that ran before this migration (Oct 2026 stage 1) left
@@ -420,5 +424,6 @@ export async function ensureMigratedToRules(): Promise<Report | null> {
 
   await prisma.providerCommsSettings.update({ where: { id: "default" }, data: { rulesMigratedAt: new Date(), messageRulesMode: "LIVE" } });
   console.log(`[MessageRules] Moved to message rules: ${JSON.stringify(report)}`);
+  await applyStandardSet();
   return report;
 }

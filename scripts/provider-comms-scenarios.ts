@@ -86,6 +86,8 @@ async function resetOpsFlow(migrate = true) {
   }
   // A tick at the start runs the one-time move to rules (seeds the built-ins).
   if (migrate) await runNonApiLabTick(at("-30d 09:00"));
+  // Scenarios 1–12 test rule behaviour one message per order; 13+ switch combining on.
+  await prisma.nonApiLabConfig.updateMany({ data: { batchingMode: "OFF" } });
 }
 
 // ── Scenario steps ───────────────────────────────────────────────────────
@@ -313,7 +315,7 @@ const scenarios: Scenario[] = [
     expect: ["09:00 NEW_ORDER · order-10"],
   },
   {
-    name: "11. Upgrade from the old scheduler — history carries over, nothing is sent twice",
+    name: "11. Upgrade from the old scheduler — history carries over (also onto the standard set), nothing is sent twice; both labs then get the same standard messages",
     upgrade: true,
     run: async () => {
       // Before the upgrade. Lab A: first reminder at 30 min (already sent for order-11a),
@@ -349,7 +351,11 @@ const scenarios: Scenario[] = [
       const queued = await prisma.labScheduledAction.findUniqueOrThrow({ where: { idempotencyKey: "sim-legacy-step" } });
       if (queued.status !== "SUPPRESSED") throw new Error(`old scheduler step still ${queued.status}`);
     },
-    expect: ["12:00 REMINDER_3H · order-11a", "14:00 ESCALATION_5H · order-11a"],
+    expect: [
+      // Lab A's own 30-min reminder and lab B's custom nudge were already sent: carried over, not repeated.
+      "12:00 COMBINED UNCONFIRMED [order-11a]", "12:00 COMBINED UNCONFIRMED [order-11b]",
+      "14:00 COMBINED ESCALATION [order-11a]", "14:00 COMBINED ESCALATION [order-11b]",
+    ],
   },
   {
     name: "12. 'Sample delivered within 3 h of collection' — only after collection and after the appointment (repairs the earlier conversion)",
@@ -465,6 +471,32 @@ const scenarios: Scenario[] = [
       await run("09:00", "11:05");
     },
     expect: ["11:00 STATUS_CHECK · o17a", "11:00 STATUS_CHECK · o17b"],
+  },
+  {
+    name: "18. One standard message set for every lab — no per-lab switches; applied once, later global edits stick",
+    upgrade: true,
+    run: async () => {
+      // An install with per-lab switches from the old system: pings for lab A only, status check off for B.
+      await prisma.nonApiLabConfig.update({ where: { labId: LABS.A.labId }, data: { appointmentRemindersEnabled: true } });
+      await prisma.nonApiLabConfig.update({ where: { labId: LABS.B.labId }, data: { postAppointmentCheckEnabled: false } });
+      await runNonApiLabTick(at("09:00")); // the move to rules, then the standard set
+      const rules = Object.fromEntries((await prisma.providerMessageRule.findMany({ where: { builtInKey: { not: null } } }))
+        .map((r) => [r.builtInKey!, r]));
+      const on = ["NEW_ORDER", "REMINDER_1H", "REMINDER_3H", "ESCALATION_5H", "APPT_2H", "STATUS_CHECK", "ASSIGN_PHLEBO", "REPORT_CHASE", "SUMMARY_TOMORROW"];
+      const off = ["APPT_24H", "APPT_30M", "APPT_10M", "PHLEBO_ETA", "SUMMARY_PENDING_REPORTS"];
+      for (const key of on) {
+        const r = rules[key];
+        if (!r?.isActive || (r.allowedLabIds as number[]).length || (r.excludedLabIds as number[]).length) throw new Error(`${key} should be on for every lab`);
+      }
+      for (const key of off) if (rules[key]?.isActive) throw new Error(`${key} should be off`);
+      const labs = await prisma.nonApiLabConfig.findMany();
+      if (labs.some((l) => l.batchingMode !== "LIVE")) throw new Error("every lab should get combined messages");
+      // A later global edit on Message Rules is kept: the set never re-applies.
+      await prisma.providerMessageRule.update({ where: { builtInKey: "APPT_24H" }, data: { isActive: true } });
+      await runNonApiLabTick(at("09:05"));
+      if (!(await prisma.providerMessageRule.findUniqueOrThrow({ where: { builtInKey: "APPT_24H" } })).isActive) throw new Error("a later edit was overwritten");
+    },
+    expect: [],
   },
 ];
 

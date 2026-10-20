@@ -1519,7 +1519,7 @@ model NonApiLabConfig {
   // Combined messages (provider-rules/batching.ts): OFF = one message per order
   // (as before); SHADOW = still one per order, plus a record of the combined
   // message that would have gone; LIVE = combined, at fixed slots.
-  batchingMode                String             @default("OFF")
+  batchingMode                String             @default("LIVE")
   // At most this many combined messages per slot (:00 / :30); the rest wait for the next.
   maxBatchesPerSlot           Int                @default(3)
   // The lab's people to @mention in every bot message, [{ jid, name }], picked from
@@ -1751,6 +1751,9 @@ model ProviderCommsSettings {
   /// When the one-time move to message rules ran (built-ins seeded, per-lab
   /// digest settings and deadline watchers converted, past sends imported).
   rulesMigratedAt    DateTime?
+  // When the standard message set (provider-rules/standard-set.ts) was applied to
+  // every lab: one set for all labs, no per-lab switches.
+  standardSetAt      DateTime?
   /// How far inbound lab messages have been read for reply understanding.
   replyWatermark     DateTime?
   updatedAt          DateTime @updatedAt @db.Timestamptz(3)

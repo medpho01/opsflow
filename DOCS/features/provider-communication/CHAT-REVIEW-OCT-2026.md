@@ -180,7 +180,7 @@ contact, plus a short reply in the group: "Noted — informing the team now."
 
 | Step | What | Where |
 |---|---|---|
-| Now (config) | Deploy b4f9c3d+ (pre-appointment fix, no polls). For these labs: combined messages **On**, send window 08:30–20:00 on all follow-up rules; pause "SLA missed" watchers and the 10:00 pending-reports list (the combined report chase covers it). | Lab Config, Message Rules |
+| Now | Deploy. No configuration: one standard message set for every lab, applied automatically (see ORDER-JOURNEY-AGENT.md, "No per-lab configuration"). | — |
 | Build 1 | Lab coordinator (@mention) per lab; follow-ups as quote-replies naming only open items; daily rhythm slots per lab; caps per day | provider-rules (batching, templates), Lab Config |
 | Build 2 | Step back for people: team message about an order → bot pauses that order; team active → hold non-urgent. Skip new-order message when the team posted the patient. | replies pass (team messages), engine |
 | Build 3 | Handover after 2 misses: OpsFlow task + one-tap send/call; lab-raised problems → task | engine, tasks, console |

@@ -23,6 +23,7 @@ import { contactVariables, type OrderContactDetails } from "@/lib/non-api-labs/o
 import { newConversationStatus } from "./evaluate";
 import { TIME_ZONE, durationText, formatDate, formatDateTime, formatTime } from "./format";
 import { currentSlot, itemLine, releaseAt } from "./batching";
+import { coordinatorsFor } from "@/lib/wa/coordinators";
 import type { MessageRule, RuleOrder } from "./types";
 
 /** Latest value the lab gave for each fact kind, for this order. */
@@ -309,18 +310,19 @@ async function batchLine(intent: string, n: number, item: BatchItemInput, now: D
   }, now, TIME_ZONE());
 }
 
-type Coordinator = { jid: string; name?: string };
-
-/** The lab's coordinators as "@<number>" tokens (the gateway turns them into real mentions) and their jids. */
-export function coordinatorMentions(config: Pick<NonApiLabConfig, "coordinators">): { text: string; jids: string[] } {
-  const list = (Array.isArray(config.coordinators) ? config.coordinators : []) as Coordinator[];
-  const valid = list.filter((c) => typeof c?.jid === "string" && c.jid.includes("@"));
-  return { text: valid.map((c) => `@${c.jid.split("@")[0]}`).join(" ") || "Team", jids: valid.map((c) => c.jid) };
+/**
+ * The lab's coordinators — named on Lab Config, else the most active lab-side
+ * writer in its group — as "@<number>" tokens (the gateway turns them into real
+ * mentions) and their jids. Nobody to mention: "Team".
+ */
+async function coordinatorMentions(config: NonApiLabConfig, now: Date): Promise<{ text: string; jids: string[] }> {
+  const people = await coordinatorsFor(config, now);
+  return { text: people.map((c) => `@${c.jid.split("@")[0]}`).join(" ") || "Team", jids: people.map((c) => c.jid) };
 }
 
-function batchVariables(config: NonApiLabConfig, lines: string[], title: string): TemplateVariables {
+function batchVariables(config: NonApiLabConfig, lines: string[], title: string, coordinator: string): TemplateVariables {
   return {
-    lab_name: config.labName, manager_name: config.managerName || "team", coordinator: coordinatorMentions(config).text,
+    lab_name: config.labName, manager_name: config.managerName || "team", coordinator,
     count: String(lines.length), orders_word: ordersWord(lines.length),
     items: lines.join("\n"), batch_title: title,
   };
@@ -379,7 +381,7 @@ export async function deliverBatch(input: DeliverBatchInput): Promise<BatchOutco
   for (const item of items) conversations.set(item.order.id, (await ensureConversation(item.order, item.rule, item.contact, now)).id);
   // A manager escalation goes to a personal chat: no coordinator mention, no quoting.
   const followUp = toManager ? null : await findFollowUp(config.labId, intent, items.map((i) => i.order.id), now);
-  const mention = coordinatorMentions(config);
+  const mention = await coordinatorMentions(config, now);
   let numbers: number[];
   let lines: string[];
   let text: string;
@@ -395,7 +397,7 @@ export async function deliverBatch(input: DeliverBatchInput): Promise<BatchOutco
   } else {
     numbers = items.map((_, index) => index + 1);
     lines = await Promise.all(items.map((item, index) => batchLine(intent, index + 1, item, now)));
-    text = renderLabTemplate(template.body, batchVariables(config, lines, items[0].rule.name));
+    text = renderLabTemplate(template.body, batchVariables(config, lines, items[0].rule.name, mention.text));
   }
   const slotAt = currentSlot(now, TIME_ZONE());
 
@@ -489,7 +491,7 @@ export async function recordShadowBatch(config: NonApiLabConfig, intent: string,
   const n = items.length + 1;
   items.push({ n, orderId: item.order.id, ruleId: item.rule.id, occurrence: item.occurrence, communicationId, line: await batchLine(intent, n, item, now) });
   const template = await ensureTemplate(BATCH_TEMPLATE_BY_INTENT[intent] ?? BATCH_GENERIC_TEMPLATE);
-  const text = renderLabTemplate(template.body, batchVariables(config, items.map((stored) => stored.line), item.rule.name));
+  const text = renderLabTemplate(template.body, batchVariables(config, items.map((stored) => stored.line), item.rule.name, (await coordinatorMentions(config, now)).text));
   const data = { itemCount: items.length, items: items as unknown as Prisma.InputJsonValue, text };
   if (existing) await prisma.providerBatch.update({ where: { id: existing.id }, data });
   else await prisma.providerBatch.create({ data: { ...data, labId: config.labId, intent, slotAt, shadow: true, recipient: "", createdAt: now } });

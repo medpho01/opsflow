@@ -11,7 +11,7 @@
  * The formatting helpers are pure and exported for tests; the read is one
  * batched, primary-key-bounded query on the API pool.
  */
-import { labstack, labstackOr } from "@/lib/db/labstack";
+import { labstackOr, labstackWorkerQuery } from "@/lib/db/labstack";
 
 export type OrderContactDetails = {
   orderId: number;
@@ -147,7 +147,7 @@ type DetailsRow = {
   tests: string | null;
 };
 
-const DETAILS_DEADLINE_MS = 5_000;
+const DETAILS_DEADLINE_MS = 20_000;
 
 /**
  * Contact details for a batch of orders, keyed by order id.
@@ -159,7 +159,9 @@ export async function fetchOrderContactDetails(ids: number[]): Promise<Map<numbe
   const unique = Array.from(new Set(ids.filter((id) => Number.isInteger(id))));
   if (unique.length === 0) return new Map();
 
-  const query = labstack.$queryRawUnsafe<DetailsRow[]>(
+  // The background (worker) pool, with its own breaker: the message engine must
+  // not lose order details because a busy screen tripped the shared API breaker.
+  const query = labstackWorkerQuery<DetailsRow>(
     `SELECT o.id,
             u.mobile,
             p."unitFloorBuilding", p.address, p.locality, p.city, p.pincode::text AS pincode,
@@ -189,9 +191,9 @@ export async function fetchOrderContactDetails(ids: number[]): Promise<Map<numbe
        LEFT JOIN public."Profile" p ON p."profileUserId" = o."userId"
        LEFT JOIN public."Store" s   ON s.id = o."storeId"
       WHERE o.id = ANY($1::int[])`,
-    unique,
+    [unique],
   );
-  const rows = await labstackOr<DetailsRow[] | null>(query, null, DETAILS_DEADLINE_MS, { breakerKey: "api" });
+  const rows = await labstackOr<DetailsRow[] | null>(query, null, DETAILS_DEADLINE_MS, { breakerKey: "worker-details" });
   if (rows === null) return null;
 
   return new Map(rows.map((row) => {

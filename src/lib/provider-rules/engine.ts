@@ -233,6 +233,14 @@ export async function runMessageRulesPass(now = new Date()): Promise<RulesPassRe
 
   if (sends.length > 0) {
     const details = await fetchOrderContactDetails(sends.map((s) => s.order.id)).catch(() => null);
+    // Never send with "not on file" placeholders: an order whose details could
+    // not be read waits for the next pass (nothing is recorded, so it stays due).
+    const unread = sends.filter((send) => !details?.has(send.order.id));
+    if (unread.length) {
+      result.held += unread.length;
+      console.warn(`[MessageRules] order details unavailable for ${unread.length} order(s) — trying again next pass`);
+      sends.splice(0, sends.length, ...sends.filter((send) => details?.has(send.order.id)));
+    }
     const itemOf = (send: Send) => ({
       ...send, contact: details?.get(send.order.id) ?? null, facts: (facts.get(send.order.id) ?? NO_FACTS).values,
     });
@@ -303,6 +311,7 @@ async function runSummaries(
       try {
         const outcome = await sendSummary(rule, config, orders.filter((o) => o.labId === lab.labId), facts, now, occurrence);
         if (outcome === "sent") count += 1;
+        else if (outcome === RETRY) result.held += 1;
         else await writeLedger(rule, "LAB_SUMMARY", lab.labId, lab.labId, occurrence, "SKIPPED", outcome, now);
       } catch (error) {
         result.failed += 1;
@@ -313,17 +322,22 @@ async function runSummaries(
   return count;
 }
 
+const RETRY = "retry: order details unavailable";
+
 async function summaryText(rule: MessageRule, config: NonApiLabConfig, labOrders: RuleOrder[], facts: Map<number, Facts>, now: Date) {
   const timeZone = TIME_ZONE();
   const matched = labOrders.filter((order) => summaryMatches(rule, order, (facts.get(order.id) ?? NO_FACTS).kinds, now, timeZone));
   const details = matched.length ? await fetchOrderContactDetails(matched.map((o) => o.id)).catch(() => null) : null;
+  const unavailable = matched.length > 0 && details === null;
   const entries = await buildEntries(matched, details);
-  return { matched, variables: summaryVariables(config.labName, rule, entries, now, timeZone) };
+  return { matched, unavailable, variables: summaryVariables(config.labName, rule, entries, now, timeZone) };
 }
 
 async function sendSummary(rule: MessageRule, config: NonApiLabConfig, labOrders: RuleOrder[], facts: Map<number, Facts>, now: Date, occurrence: number): Promise<"sent" | string> {
-  const { matched, variables } = await summaryText(rule, config, labOrders, facts, now);
+  const { matched, unavailable, variables } = await summaryText(rule, config, labOrders, facts, now);
   if (matched.length === 0 && rule.skipWhenEmpty) return "nothing to list";
+  // Same as single messages: no list full of "not on file" — try again next pass.
+  if (unavailable) return RETRY;
   const outcome = await deliverSummary({ rule, config, variables, occurrence, now });
   return outcome.sent ? "sent" : outcome.reason;
 }

@@ -46,7 +46,7 @@ export function ConnectionsPage({ initialTab }: { initialTab: Tab }) {
         <ol className="mt-2 list-decimal pl-5 space-y-1 text-zinc-400">
           <li>Add the ops WhatsApp number{gw?.connectedNumber ? <> (+{gw.connectedNumber})</> : null} to their WhatsApp group.</li>
           <li>Find the lab or store below (or the group under <b className="text-zinc-300">WhatsApp groups → Not connected yet</b>) and click <b className="text-zinc-200">Connect</b>.</li>
-          <li>Confirm the suggested match. Done: the group is read, and a lab gets its messages. Optional: the lab manager&apos;s number (Labs → Edit).</li>
+          <li>Confirm the suggested match. Done: the group is read, and a lab gets its messages and is active. Optional, later: the lab manager&apos;s number or coordinators (Labs → Edit).</li>
         </ol>
       </details>
 

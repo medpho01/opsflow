@@ -282,26 +282,14 @@ export function NonApiLabConfigPanel() {
   }
 
   /**
-   * Open the editor for a lab from the catalogue.
-   *
-   * There is no "add" path any more. A lab that has never been configured is
-   * still a real lab in LabStack, so its id and name are taken from there and
-   * only the parts OpsFlow owns are editable.
+   * Open the editor for a connected lab. A lab is set up by Connect (one step,
+   * the same as on a group) — the editor only changes what Connect does not
+   * set: manager, coordinators, quiet window, pause.
    */
   function editLab(row: CatalogRow) {
-    setEditingLabId(row.configured ? row.labId : null);
-    setDraft(row.config
-      ? toDraft(row.config)
-      : {
-          ...EMPTY_DRAFT,
-          labId: String(row.labId),
-          labName: row.labName,
-          // How LabStack sends this lab its orders.
-          integrationType: row.integration,
-          // Prefilled from the gateway's own group list, so the commonest case
-          // needs no typing at all.
-          waGroupJid: row.suggestedGroup?.jid ?? "",
-        });
+    if (!row.config) return;
+    setEditingLabId(row.labId);
+    setDraft(toDraft(row.config));
     setError(null);
     setOpen(true);
   }
@@ -370,11 +358,7 @@ export function NonApiLabConfigPanel() {
    * governs the dialog rather than by a second copy of it here.
    */
   async function setIntegration(row: CatalogRow, integrationType: "API" | "NON_API") {
-    if (!row.configured || !row.config) {
-      editLab(row);
-      return;
-    }
-    if (row.config.integrationType === integrationType) return;
+    if (!row.config || row.config.integrationType === integrationType) return;
 
     const previous = row.config.integrationType;
     setLabs((current) => current.map((item) =>
@@ -397,11 +381,7 @@ export function NonApiLabConfigPanel() {
   }
 
   async function toggleActive(row: CatalogRow) {
-    if (!row.configured || !row.config) {
-      flash("Add a WhatsApp target first");
-      editLab(row);
-      return;
-    }
+    if (!row.config) return;
     const next = !row.config.isActive;
     // Optimistic: the switch should move under the finger, not after a round trip.
     setLabs((current) => current.map((item) =>
@@ -429,7 +409,7 @@ export function NonApiLabConfigPanel() {
 
   return (
     <div>
-      <p className="mb-3 text-xs text-zinc-500">Every LabStack lab, busiest first. Connect a lab to its WhatsApp group and it gets the standard messages; Edit for the manager&apos;s number or to pause a lab.</p>
+      <p className="mb-3 text-xs text-zinc-500">Every LabStack lab, busiest first. <b className="text-zinc-300">Connect</b> is the one step: pick the lab&apos;s WhatsApp group and it gets the standard messages. Edit afterwards for the manager&apos;s number, coordinators or to pause.</p>
 
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <input
@@ -521,7 +501,6 @@ export function NonApiLabConfigPanel() {
           </tr></thead>
           <tbody>{labs.map((row) => {
             const cfg = row.config;
-            const isApi = cfg?.integrationType === "API";
             return (
             <tr key={row.labId} className="border-b border-zinc-800/60 hover:bg-zinc-900/40">
               <td className="px-4 py-3">
@@ -539,11 +518,7 @@ export function NonApiLabConfigPanel() {
                 <span className={`whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium ${STATUS_TONES[row.status]}`}>{STATUS_LABELS[row.status]}</span>
               </td>
               <td className="px-3 py-3">
-                <IntegrationPicker
-                  value={cfg?.integrationType ?? null}
-                  onPick={(next) => setIntegration(row, next)}
-                  labName={row.labName}
-                />
+                {cfg && <IntegrationPicker value={cfg.integrationType} onPick={(next) => setIntegration(row, next)} labName={row.labName} />}
                 <LabStackIntegration row={row} />
               </td>
               <td className="px-3 py-3 max-w-[16rem]">
@@ -555,14 +530,12 @@ export function NonApiLabConfigPanel() {
                   : cfg?.whatsappNumber ? <div className="font-mono text-[11px] text-zinc-400">DM {cfg.whatsappNumber}</div>
                   : <div className="flex items-center gap-2">
                       {row.suggestedGroup ? <span className="text-[11px] text-zinc-500 truncate" title={row.suggestedGroup.subject}>Suggested: {row.suggestedGroup.subject}</span> : <span className="text-xs text-zinc-600">—</span>}
-                      <button onClick={() => setPickingFor(row)} className="shrink-0 text-xs font-medium text-blue-400 hover:text-blue-300">Connect</button>
+                      <button onClick={() => setPickingFor(row)} className="shrink-0 rounded-md bg-blue-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-blue-500">Connect</button>
                     </div>}
               </td>
-              <td className="px-3 py-3"><Toggle on={isLive(row)} disabled={!row.configured} onClick={() => toggleActive(row)} label={row.labName} /></td>
+              <td className="px-3 py-3">{row.configured ? <Toggle on={isLive(row)} onClick={() => toggleActive(row)} label={row.labName} /> : <span className="text-xs text-zinc-600">—</span>}</td>
               <td className="px-4 py-3 text-right">
-                <button onClick={() => editLab(row)} className="text-xs font-medium text-blue-400 hover:text-blue-300">
-                  {row.configured ? "Edit" : "Configure"}
-                </button>
+                {row.configured && <button onClick={() => editLab(row)} className="text-xs font-medium text-blue-400 hover:text-blue-300">Edit</button>}
               </td>
             </tr>);
           })}</tbody>
@@ -592,7 +565,7 @@ export function NonApiLabConfigPanel() {
           onDone={(message) => { setPickingFor(null); flash(message); void load(); }}
         />
       )}
-      {open && <div className="fixed inset-0 z-50 bg-black/65 p-4 overflow-y-auto"><div className="max-w-xl mx-auto my-8 rounded-xl border border-zinc-700 bg-zinc-950 shadow-2xl"><form onSubmit={save}><div className="px-5 py-4 border-b border-zinc-800 flex justify-between items-center"><div><h2 className="font-semibold text-zinc-100">{editingLabId ? "Edit lab" : "Configure a lab"}</h2><p className="text-xs text-zinc-500 mt-0.5">This never modifies LabStack&apos;s source lab record.</p></div><button type="button" onClick={() => setOpen(false)} className="text-zinc-500 hover:text-zinc-200">✕</button></div><div className="p-5 space-y-4"><div className="grid grid-cols-3 gap-3"><Field label="Lab ID"><input disabled type="number" value={draft.labId} className={inputClass} /></Field><div className="col-span-2"><Field label="Lab name"><input disabled value={draft.labName} className={inputClass} /></Field></div></div><p className="text-[11px] text-zinc-500 -mt-1">Both come from LabStack and are read-only here. Everything below is OpsFlow&apos;s own configuration.</p><div>
+      {open && <div className="fixed inset-0 z-50 bg-black/65 p-4 overflow-y-auto"><div className="max-w-xl mx-auto my-8 rounded-xl border border-zinc-700 bg-zinc-950 shadow-2xl"><form onSubmit={save}><div className="px-5 py-4 border-b border-zinc-800 flex justify-between items-center"><div><h2 className="font-semibold text-zinc-100">Edit lab</h2><p className="text-xs text-zinc-500 mt-0.5">This never modifies LabStack&apos;s source lab record.</p></div><button type="button" onClick={() => setOpen(false)} className="text-zinc-500 hover:text-zinc-200">✕</button></div><div className="p-5 space-y-4"><div className="grid grid-cols-3 gap-3"><Field label="Lab ID"><input disabled type="number" value={draft.labId} className={inputClass} /></Field><div className="col-span-2"><Field label="Lab name"><input disabled value={draft.labName} className={inputClass} /></Field></div></div><p className="text-[11px] text-zinc-500 -mt-1">Both come from LabStack and are read-only here. Everything below is OpsFlow&apos;s own configuration.</p><div>
                 <div className="text-xs font-medium text-zinc-300 mb-2">How does this lab receive orders?</div>
                 <div className="grid grid-cols-2 gap-2">
                   {([
@@ -630,30 +603,18 @@ export function NonApiLabConfigPanel() {
  * How a lab receives orders, as a two-way choice in the row.
  *
  * This is the field that decides whether a lab gets the confirmation ladder,
- * so it is worth setting without opening a dialog. An unconfigured lab shows
- * "Set up" instead: there is no config to PATCH yet, and one cannot be created
- * without a WhatsApp target, so the click hands over to the editor.
+ * so it is worth setting without opening a dialog. Connect sets it from
+ * LabStack to begin with, so a lab that is not connected yet shows nothing.
  */
 function IntegrationPicker({
   value,
   onPick,
   labName,
 }: {
-  value: "API" | "NON_API" | null;
+  value: "API" | "NON_API";
   onPick: (next: "API" | "NON_API") => void;
   labName: string;
 }) {
-  if (!value) {
-    return (
-      <button
-        type="button"
-        onClick={() => onPick("NON_API")}
-        className="rounded border border-dashed border-zinc-700 px-2 py-1 text-[11px] text-zinc-500 hover:border-blue-500 hover:text-blue-300"
-      >
-        Set up
-      </button>
-    );
-  }
   const options = [
     { key: "NON_API" as const, label: "WhatsApp", hint: `${labName} gets the confirmation ladder and breach alerts` },
     { key: "API" as const, label: "API", hint: `${labName} already receives orders over the API — breach alerts only` },
@@ -682,29 +643,22 @@ function IntegrationPicker({
   );
 }
 
-/**
- * Active switch.
- *
- * Disabled until the lab is configured, because a lab with no WhatsApp target
- * cannot be activated — the config validator rejects it. Clicking the disabled
- * switch still opens the editor rather than doing nothing, which is why the
- * wrapper stays clickable and only the visual reads as inert.
- */
-function Toggle({ on, disabled, onClick, label }: { on: boolean; disabled?: boolean; onClick: () => void; label: string }) {
+/** Active switch — only for a connected lab; one that is not has nothing to pause. */
+function Toggle({ on, onClick, label }: { on: boolean; onClick: () => void; label: string }) {
   return (
     <button
       type="button"
       role="switch"
       aria-checked={on}
       aria-label={`${on ? "Deactivate" : "Activate"} ${label}`}
-      title={disabled ? "Configure a WhatsApp target first" : on ? "Active — click to pause" : "Paused — click to activate"}
+      title={on ? "Active — click to pause" : "Paused — click to activate"}
       onClick={onClick}
       className={`relative inline-flex h-5 w-9 items-center rounded-full transition ${
-        on ? "bg-emerald-500" : disabled ? "bg-zinc-800" : "bg-zinc-700"
+        on ? "bg-emerald-500" : "bg-zinc-700"
       }`}
     >
       <span
-        className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition ${on ? "translate-x-[1.15rem]" : "translate-x-1"} ${disabled ? "opacity-50" : ""}`}
+        className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition ${on ? "translate-x-[1.15rem]" : "translate-x-1"}`}
       />
     </button>
   );

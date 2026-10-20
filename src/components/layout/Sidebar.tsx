@@ -151,7 +151,7 @@ const navItems: NavItem[] = [
       // First because it is the "what is happening right now" screen; the rest
       // are configuration you visit when something on this board is wrong.
       { label: "Today & Tomorrow", href: "/head/non-api-labs/board" },
-      { label: "Lab Config", href: "/head/non-api-labs/lab-config" },
+      { label: "Connections", href: "/head/connections" },
       { label: "Message Rules", href: "/head/non-api-labs/message-rules" },
       { label: "Templates", href: "/head/non-api-labs/templates" },
     ],

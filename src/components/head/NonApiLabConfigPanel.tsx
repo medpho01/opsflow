@@ -1,5 +1,6 @@
 "use client";
 
+import { PickGroupDialog } from "@/components/head/connections/PickGroupDialog";
 import { FormEvent, useCallback, useEffect, useState } from "react";
 
 type LabConfig = {
@@ -221,6 +222,8 @@ export function NonApiLabConfigPanel() {
   const [draft, setDraft] = useState<Draft>(EMPTY_DRAFT);
   const [editingLabId, setEditingLabId] = useState<number | null>(null);
   const [open, setOpen] = useState(false);
+  // Connect a WhatsApp group to a lab that has none (the same one step as on a group).
+  const [pickingFor, setPickingFor] = useState<CatalogRow | null>(null);
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -426,11 +429,7 @@ export function NonApiLabConfigPanel() {
 
   return (
     <div>
-      <div className="mb-5">
-        <div className="text-xs text-zinc-500 mb-1">Provider communication</div>
-        <h1 className="text-2xl font-semibold tracking-tight text-zinc-100">Lab configuration</h1>
-        <p className="text-sm text-zinc-400 mt-1 max-w-2xl">Choose which labs get WhatsApp messages, which group they go to, and what they receive. Sorted by lifetime orders fulfilled, so the labs that matter most come first.</p>
-      </div>
+      <p className="mb-3 text-xs text-zinc-500">Every LabStack lab, busiest first. Connect a lab to its WhatsApp group and it gets the standard messages; Edit for the manager&apos;s number or to pause a lab.</p>
 
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <input
@@ -554,8 +553,10 @@ export function NonApiLabConfigPanel() {
                   </div>
                 </>
                   : cfg?.whatsappNumber ? <div className="font-mono text-[11px] text-zinc-400">DM {cfg.whatsappNumber}</div>
-                  : row.suggestedGroup ? <div className="text-[11px] text-zinc-500 truncate" title={row.suggestedGroup.subject}>Suggested: {row.suggestedGroup.subject}</div>
-                  : <span className="text-xs text-zinc-600">—</span>}
+                  : <div className="flex items-center gap-2">
+                      {row.suggestedGroup ? <span className="text-[11px] text-zinc-500 truncate" title={row.suggestedGroup.subject}>Suggested: {row.suggestedGroup.subject}</span> : <span className="text-xs text-zinc-600">—</span>}
+                      <button onClick={() => setPickingFor(row)} className="shrink-0 text-xs font-medium text-blue-400 hover:text-blue-300">Connect</button>
+                    </div>}
               </td>
               <td className="px-3 py-3"><Toggle on={isLive(row)} disabled={!row.configured} onClick={() => toggleActive(row)} label={row.labName} /></td>
               <td className="px-4 py-3 text-right">
@@ -583,6 +584,14 @@ export function NonApiLabConfigPanel() {
           </div>
         )}
       </div>
+      {pickingFor && (
+        <PickGroupDialog
+          target={{ kind: "LAB", id: pickingFor.labId, name: pickingFor.labName }}
+          suggestedJid={pickingFor.suggestedGroup?.jid ?? null}
+          onClose={() => setPickingFor(null)}
+          onDone={(message) => { setPickingFor(null); flash(message); void load(); }}
+        />
+      )}
       {open && <div className="fixed inset-0 z-50 bg-black/65 p-4 overflow-y-auto"><div className="max-w-xl mx-auto my-8 rounded-xl border border-zinc-700 bg-zinc-950 shadow-2xl"><form onSubmit={save}><div className="px-5 py-4 border-b border-zinc-800 flex justify-between items-center"><div><h2 className="font-semibold text-zinc-100">{editingLabId ? "Edit lab" : "Configure a lab"}</h2><p className="text-xs text-zinc-500 mt-0.5">This never modifies LabStack&apos;s source lab record.</p></div><button type="button" onClick={() => setOpen(false)} className="text-zinc-500 hover:text-zinc-200">✕</button></div><div className="p-5 space-y-4"><div className="grid grid-cols-3 gap-3"><Field label="Lab ID"><input disabled type="number" value={draft.labId} className={inputClass} /></Field><div className="col-span-2"><Field label="Lab name"><input disabled value={draft.labName} className={inputClass} /></Field></div></div><p className="text-[11px] text-zinc-500 -mt-1">Both come from LabStack and are read-only here. Everything below is OpsFlow&apos;s own configuration.</p><div>
                 <div className="text-xs font-medium text-zinc-300 mb-2">How does this lab receive orders?</div>
                 <div className="grid grid-cols-2 gap-2">

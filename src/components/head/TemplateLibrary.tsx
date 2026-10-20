@@ -188,7 +188,7 @@ export function TemplateLibrary() {
               </div>
               <div className="text-[11px] text-zinc-500">
                 {isCombined(current.key)
-                  ? <>Used for labs with Combined messages on (Lab Config): {"{{items}}"} is the numbered list, one line per order.{!current.isActive && " Paused: these orders go as single messages instead."}</>
+                  ? <>Used for every lab: {"{{items}}"} is the numbered list, one line per order.{!current.isActive && " Paused: these orders go as single messages instead."}</>
                   : <>{usedBy.length ? <>Sent by: {usedBy.map((r) => r.name).join(" · ")}</> : "No rule sends this message yet."}{!current.isActive && " Paused: rules that send it skip it."}</>}
               </div>
             </div>

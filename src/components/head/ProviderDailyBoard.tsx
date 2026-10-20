@@ -136,7 +136,7 @@ export function ProviderDailyBoard() {
 
       {labs.length === 0 ? (
         <div className="rounded-xl border border-zinc-800 p-10 text-center text-sm text-zinc-400">
-          No providers are configured yet. Add one under Lab Config.
+          No providers are connected yet. Connect one under Connections.
         </div>
       ) : (
         <div className="overflow-x-auto rounded-xl border border-zinc-800">

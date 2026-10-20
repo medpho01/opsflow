@@ -181,7 +181,7 @@ export function ProviderOrdersPage({ labId }: { labId: number }) {
             </div>
             <div className="flex gap-2">
               <Link
-                href="/head/non-api-labs/lab-config"
+                href="/head/connections?tab=labs"
                 className="rounded-lg border border-zinc-700 px-3 py-2 text-xs text-zinc-400 hover:text-zinc-200"
               >
                 Lab config

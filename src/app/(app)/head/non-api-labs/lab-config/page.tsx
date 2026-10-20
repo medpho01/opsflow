@@ -1,9 +1,6 @@
-import { NonApiLabConfigPanel } from "@/components/head/NonApiLabConfigPanel";
+import { redirect } from "next/navigation";
 
-export const metadata = { title: "Lab Config | OpsFlow" };
-
-// Configuration only. Delivery deadlines live in each lab's Edit dialog; order
-// activity belongs on the board, not here.
+// Lab Config is the Labs tab of Connections now (labs, stores and their groups in one place).
 export default function LabConfigPage() {
-  return <NonApiLabConfigPanel />;
+  redirect("/head/connections?tab=labs");
 }

@@ -1,3 +1,5 @@
+import { whatsappDigits } from "@/lib/wa/phone";
+
 const PHONE_DIGITS = /^\d{8,15}$/;
 // WhatsApp group jid: "<digits>@g.us", or the legacy "<creator>-<created>@g.us".
 const GROUP_JID = /^\d+(-\d+)?@g\.us$/i;
@@ -86,9 +88,9 @@ function optionalText(value: unknown, field: string, errors: Record<string, stri
 function normalizePhone(value: unknown, field: string, errors: Record<string, string>): string | null {
   const text = optionalText(value, field, errors);
   if (text === null) return null;
-  const digits = text.replace(/\D/g, "");
-  if (!PHONE_DIGITS.test(digits)) {
-    errors[field] = "must include an 8–15 digit phone number with country code";
+  const digits = whatsappDigits(text);
+  if (!PHONE_DIGITS.test(digits) || digits.length < 11) {
+    errors[field] = "must be a valid mobile number (add the country code if it is not Indian)";
     return null;
   }
   return `+${digits}`;

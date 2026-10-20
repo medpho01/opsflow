@@ -33,6 +33,7 @@
  * rather than either silently dropping the message or silently sending it.
  */
 import prisma from "@/lib/db/client";
+import { personJid } from "@/lib/wa/phone";
 
 export type LabTargetKind = "GROUP" | "DM";
 
@@ -68,7 +69,7 @@ export function hasWhatsAppTarget(config: AddressableLabConfig): boolean {
 
 /** `+91 98765 43210` → `919876543210@s.whatsapp.net`. */
 export function toDirectJid(number: string): string {
-  return `${number.replace(/\D/g, "")}@s.whatsapp.net`;
+  return personJid(number);
 }
 
 /**

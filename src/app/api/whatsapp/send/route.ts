@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { whatsappDigits } from "@/lib/wa/phone";
 import prisma from "@/lib/db/client";
 import { getSessionFromRequest } from "@/lib/auth/session";
 import { normalizeMentions } from "@/lib/wa/mentions";
@@ -38,8 +39,8 @@ export async function POST(request: NextRequest) {
     targetJid = group.jid;
     groupId = group.id;
   } else if (body.toNumber) {
-    const digits = String(body.toNumber).replace(/\D/g, "");
-    if (digits.length < 8) return NextResponse.json({ error: "enter a valid number with country code" }, { status: 400 });
+    const digits = whatsappDigits(String(body.toNumber));
+    if (digits.length < 11) return NextResponse.json({ error: "enter a valid number (with country code if it is not Indian)" }, { status: 400 });
     targetJid = `${digits}@s.whatsapp.net`;
   } else {
     return NextResponse.json({ error: "provide groupId or toNumber" }, { status: 400 });
@@ -47,12 +48,25 @@ export async function POST(request: NextRequest) {
 
   const quotedWaId = body?.quotedWaMsgId ? String(body.quotedWaMsgId) : null;
   const mentions = normalizeMentions(body?.mentions);
-  await prisma.waOutbound.create({
+  const outbound = await prisma.waOutbound.create({
     data: {
       targetJid, text, groupId, createdById: user.id, quotedWaId,
       ...(mentions.length ? { mentions } : {}),
       ...(media ? { mediaMime: media.mime, mediaName: media.name, mediaBytes: media.bytes } : {}),
     },
   });
-  return NextResponse.json({ ok: true, queuedTo: targetJid });
+  return NextResponse.json({ ok: true, queuedTo: targetJid, id: outbound.id });
+}
+
+// GET /api/whatsapp/send?id=… — what happened to a message sent from the
+// console: QUEUED / SENDING / SENT, or FAILED with the gateway's reason.
+export async function GET(request: NextRequest) {
+  const user = await getSessionFromRequest(request);
+  if (!user || (user.role !== UserRole.OPS_HEAD && user.role !== UserRole.OPS_AGENT))
+    return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
+  const id = request.nextUrl.searchParams.get("id");
+  if (!id) return NextResponse.json({ error: "id is required" }, { status: 400 });
+  const row = await prisma.waOutbound.findFirst({ where: { id, createdById: user.id }, select: { status: true, error: true } });
+  if (!row) return NextResponse.json({ error: "not found" }, { status: 404 });
+  return NextResponse.json(row);
 }

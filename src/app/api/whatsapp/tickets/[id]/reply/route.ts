@@ -1,3 +1,4 @@
+import { whatsappDigits } from "@/lib/wa/phone";
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/db/client";
 import labstack, { labstackOr } from "@/lib/db/labstack";
@@ -68,8 +69,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     targetGroupId = lab.id;
     nextStatus = "WAITING_LAB";
   } else if (target === "other") {
-    const digits = String(body?.toNumber || "").replace(/\D/g, "");
-    if (digits.length < 8) return NextResponse.json({ error: "enter a valid number with country code" }, { status: 400 });
+    const digits = whatsappDigits(String(body?.toNumber || ""));
+    if (digits.length < 11) return NextResponse.json({ error: "enter a valid number (with country code if it is not Indian)" }, { status: 400 });
     targetJid = `${digits}@s.whatsapp.net`;
   } else {
     return NextResponse.json({ error: "target must be store, lab, or other" }, { status: 400 });

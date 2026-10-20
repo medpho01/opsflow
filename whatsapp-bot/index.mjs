@@ -162,6 +162,15 @@ function startLoops() {
       content = { text };
     }
     if (mentions && mentions.length) content.mentions = mentions;
+    // A person (not a group): make sure the number is on WhatsApp and use the
+    // address WhatsApp gives back. Otherwise a wrong or non-WhatsApp number is
+    // "sent" and silently never arrives; now it fails with a reason the console shows.
+    if (jid.endsWith("@s.whatsapp.net")) {
+      const number = jid.split("@")[0];
+      const [found] = await currentSock.onWhatsApp(number).catch(() => []);
+      if (!found?.exists) throw new Error(`${number} is not on WhatsApp — check the number and its country code`);
+      jid = found.jid || jid;
+    }
     const r = await currentSock.sendMessage(jid, content, quoted ? { quoted } : {});
     await new Promise((res) => setTimeout(res, 1200)); // human-paced spacing
     return r?.key?.id;

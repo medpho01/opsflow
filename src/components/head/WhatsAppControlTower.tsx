@@ -461,8 +461,19 @@ export function WhatsAppControlTower({ canAdmin = true }: { canAdmin?: boolean }
     setNcBusy(false);
     const d = await res.json().catch(() => ({}));
     if (!res.ok) return flash(d.error || "Send failed");
-    flash("New conversation queued");
+    flash("Sending…");
     setNewChat(false); setNcText(""); setNcNumber(""); setNcGroupId(""); setNcMentions([]); loadConvos();
+    // Say what actually happened: sent, or why not (e.g. the number is not on WhatsApp).
+    if (d.id) void followSend(d.id, d.queuedTo);
+  }
+  async function followSend(id: string, to: string) {
+    for (let i = 0; i < 10; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      const r = await fetch(`/api/whatsapp/send?id=${encodeURIComponent(id)}`).then((x) => (x.ok ? x.json() : null)).catch(() => null);
+      if (r?.status === "SENT") return flash(`Sent ✓ to ${String(to).split("@")[0]}`);
+      if (r?.status === "FAILED") return flash(`Not sent: ${r.error || "the gateway could not send it"}`);
+    }
+    flash("Still queued — is the WhatsApp gateway connected?");
   }
   async function setStatus(status: string) {
     if (!activeId) return;
@@ -558,11 +569,11 @@ export function WhatsAppControlTower({ canAdmin = true }: { canAdmin?: boolean }
             <label className="text-[11px] uppercase tracking-wide text-zinc-500 font-semibold">Send to a group</label>
             <select value={ncGroupId} onChange={(e) => { setNcGroupId(e.target.value); if (e.target.value) setNcNumber(""); }} className="bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-100 focus:border-blue-500 outline-none">
               <option value="">— pick a group —</option>
-              {ncGroups.map((g) => <option key={g.id} value={g.id}>{short(g.subject)}{!g.sendEnabled ? " (sending off)" : ""}</option>)}
+              {ncGroups.map((g) => <option key={g.id} value={g.id}>{short(g.subject)}{!g.sendEnabled ? " (bot messages off)" : ""}</option>)}
             </select>
             <div className="text-center text-[11px] text-zinc-600">or</div>
             <label className="text-[11px] uppercase tracking-wide text-zinc-500 font-semibold">A phone number</label>
-            <input value={ncNumber} onChange={(e) => { setNcNumber(e.target.value.replace(/[^\d+]/g, "")); if (e.target.value) setNcGroupId(""); }} placeholder="With country code, e.g. 9198…" className="bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-100 focus:border-blue-500 outline-none" />
+            <input value={ncNumber} onChange={(e) => { setNcNumber(e.target.value.replace(/[^\d+]/g, "")); if (e.target.value) setNcGroupId(""); }} placeholder="e.g. 98765 43210 (add country code if not Indian)" className="bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-100 focus:border-blue-500 outline-none" />
             {ncMentions.length > 0 && (
               <div className="flex flex-wrap items-center gap-1.5">
                 {ncMentions.map((m) => (

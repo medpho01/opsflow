@@ -46,6 +46,8 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
     if (!parsed.ok) return NextResponse.json({ error: "Invalid lab configuration", code: "VALIDATION_ERROR", requestId, details: parsed.errors }, { status: 400 });
 
     const lab = await prisma.nonApiLabConfig.update({ where: { labId }, data: { ...parsed.data, updatedById: user.id } });
+    // Choosing a lab's group here is the decision to message it: bot messages go on for it.
+    if (lab.waGroupJid && lab.isActive) await prisma.waGroup.updateMany({ where: { jid: lab.waGroupJid }, data: { sendEnabled: true, active: true } });
     return NextResponse.json({ lab });
   } catch (error) {
     return NextResponse.json(logAndBuildErrorBody({ requestId, scope: "NonApiLabAPI.PUT", code: "UPDATE_ERROR", userMessage: "Failed to update non-API lab configuration", error }), { status: 500 });

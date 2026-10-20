@@ -1053,7 +1053,9 @@ export async function drainOutbound(send, { limit = 5, sendPoll = null } = {}) {
   for (const row of rows) {
     // a group target must be send-enabled; non-group (raw number) sends are allowed
     // attempts was already incremented by the claim above.
-    if (row.groupId && !row.sendEnabled) {
+    // The per-group switch guards against automation, not people: a message a team
+    // member typed in the console (createdById set) always goes.
+    if (row.groupId && !row.sendEnabled && row.createdById == null) {
       const reason = `sending disabled for group "${row.subject}"`;
       await taskosQuery(`UPDATE wa_outbound SET status='FAILED', error=$2 WHERE id=$1`, [row.id, reason]);
       await markCommunicationFailed(row.id);

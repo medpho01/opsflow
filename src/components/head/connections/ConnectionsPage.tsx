@@ -30,7 +30,7 @@ export function ConnectionsPage({ initialTab }: { initialTab: Tab }) {
   const linked = gw?.status === "CONNECTED";
 
   return (
-    <div className="max-w-7xl">
+    <div className="p-6 max-w-7xl">
       <div className="flex flex-wrap items-start gap-3 mb-4">
         <div>
           <h1 className="text-2xl font-semibold text-zinc-100 tracking-tight">Connections</h1>

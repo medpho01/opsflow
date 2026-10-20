@@ -329,7 +329,8 @@ async function summaryText(rule: MessageRule, config: NonApiLabConfig, labOrders
   const matched = labOrders.filter((order) => summaryMatches(rule, order, (facts.get(order.id) ?? NO_FACTS).kinds, now, timeZone));
   const details = matched.length ? await fetchOrderContactDetails(matched.map((o) => o.id)).catch(() => null) : null;
   const unavailable = matched.length > 0 && details === null;
-  const entries = await buildEntries(matched, details);
+  const confirmedInChat = new Set(matched.filter((o) => (facts.get(o.id) ?? NO_FACTS).kinds.has("confirmed")).map((o) => o.id));
+  const entries = await buildEntries(matched, details, confirmedInChat);
   return { matched, unavailable, variables: summaryVariables(config.labName, rule, entries, now, timeZone) };
 }
 

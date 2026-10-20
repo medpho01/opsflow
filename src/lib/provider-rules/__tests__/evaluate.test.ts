@@ -86,6 +86,29 @@ describe("reminders", () => {
   });
 });
 
+describe("the confirmation ladder stops on a text 'ok'", () => {
+  const confirmed = new Set(["confirmed"]);
+  it("every rung gates on the `confirmed` reply fact", () => {
+    for (const key of ["REMINDER_1H", "REMINDER_3H", "ESCALATION_5H", "APPT_24H", "APPT_2H", "APPT_30M", "APPT_10M"]) {
+      const rule = builtIn(key);
+      assert.ok(rule.factConditions.some((f) => f.kind === "confirmed" && f.present === false), key);
+    }
+  });
+  it("one reply stops the next rungs, not only the one it answered", () => {
+    const o = order({ createdAt: at("2026-10-06T04:00:00Z") });
+    // 3 h 10 min after the order, still PENDING in LabStack, no reply: the 3 h reminder goes.
+    assert.equal(decide(builtIn("REMINDER_3H"), o, "2026-10-06T07:10:00Z").kind, "SEND");
+    // The lab wrote "ok" to the 1 h reminder: the 3 h reminder and the 5 h escalation stay quiet…
+    const skip3 = decide(builtIn("REMINDER_3H"), o, "2026-10-06T07:10:00Z", { facts: confirmed });
+    assert.equal(skip3.kind, "SKIP");
+    assert.match((skip3 as { reason: string }).reason, /confirmed/);
+    assert.equal(decide(builtIn("ESCALATION_5H"), o, "2026-10-06T09:10:00Z", { facts: confirmed }).kind, "SKIP");
+    assert.equal(decide(builtIn("APPT_2H"), o, "2026-10-07T01:00:30Z", { facts: confirmed }).kind, "SKIP");
+    // …while the status check after the visit still asks (confirmation ≠ collection).
+    assert.equal(decide(builtIn("STATUS_CHECK"), o, "2026-10-07T03:30:30Z", { facts: confirmed }).kind, "SEND");
+  });
+});
+
 describe("status check", () => {
   const preConfig = order({ createdAt: at("2026-09-20T00:00:00Z"), orderStatus: "ORDER_SCHEDULED", appointmentTime: at("2026-10-06T04:00:00Z") });
   it("goes 30 min after the appointment, opening a conversation if there is none", () => {

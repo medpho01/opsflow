@@ -18,13 +18,19 @@ import type { MessageRule, RuleOrder } from "./types";
 /** A WhatsApp message has no second page, so the list is capped, not paged. */
 export const SUMMARY_LIST_LIMIT = Number(process.env.PROVIDER_SUMMARY_LIST_LIMIT ?? 12);
 
-export type SummaryEntry = { order: RuleOrder; details: OrderContactDetails | null; confirmLink: string | null };
+export type SummaryEntry = {
+  order: RuleOrder;
+  details: OrderContactDetails | null;
+  confirmLink: string | null;
+  /** The lab said "ok" in the group (reply fact `confirmed`) but LabStack still shows it unconfirmed. */
+  confirmedInChat?: boolean;
+};
 
 /** The numbered list. `scope` decides how "when" reads: a time for one day, else date and time since. */
 export function orderListBlock(entries: SummaryEntry[], rule: Pick<MessageRule, "summaryScope">, now: Date, timeZone: string): string {
   if (entries.length === 0) return "No orders on this list.";
   const sameDay = rule.summaryScope === "APPOINTMENT_TOMORROW" || rule.summaryScope === "APPOINTMENT_TODAY";
-  const shown = entries.slice(0, SUMMARY_LIST_LIMIT).map(({ order, details, confirmLink }, index) => {
+  const shown = entries.slice(0, SUMMARY_LIST_LIMIT).map(({ order, details, confirmLink, confirmedInChat }, index) => {
     const when = !order.appointmentTime ? "no appointment"
       : sameDay ? formatTime(order.appointmentTime)
         : `${formatDate(order.appointmentTime)} ${formatTime(order.appointmentTime)}`;
@@ -43,7 +49,8 @@ export function orderListBlock(entries: SummaryEntry[], rule: Pick<MessageRule, 
     if (tests.length > 0) lines.push(...tests);
     else if (details?.tests) lines.push(`   🧪 ${details.tests}`);
     if (isAwaitingConfirmation(order.orderStatus)) {
-      lines.push(confirmLink ? `   ⚠️ _Not confirmed_ – ${confirmLink}` : "   ⚠️ _Not confirmed_");
+      const state = confirmedInChat ? "✅ _Confirmed in chat – not yet in LabStack_" : "⚠️ _Not confirmed_";
+      lines.push(confirmLink ? `   ${state} – ${confirmLink}` : `   ${state}`);
     }
     return lines.join("\n");
   });
@@ -62,14 +69,17 @@ async function safeConfirmationUrl(orderId: number): Promise<string | null> {
   }
 }
 
-/** Entries in list order: by appointment, soonest (or oldest) first. */
-export async function buildEntries(orders: RuleOrder[], details: Map<number, OrderContactDetails> | null): Promise<SummaryEntry[]> {
+/** Entries in list order: by appointment, soonest (or oldest) first. `confirmedInChat`: orders with a `confirmed` reply fact. */
+export async function buildEntries(
+  orders: RuleOrder[], details: Map<number, OrderContactDetails> | null, confirmedInChat: Set<number> = new Set(),
+): Promise<SummaryEntry[]> {
   const sorted = [...orders].sort((a, b) =>
     (a.appointmentTime?.getTime() ?? Infinity) - (b.appointmentTime?.getTime() ?? Infinity) || a.id - b.id);
   return Promise.all(sorted.map(async (order) => ({
     order,
     details: details?.get(order.id) ?? null,
     confirmLink: isAwaitingConfirmation(order.orderStatus) ? await safeConfirmationUrl(order.id) : null,
+    confirmedInChat: confirmedInChat.has(order.id),
   })));
 }
 

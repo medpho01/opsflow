@@ -74,6 +74,7 @@ const FACTS: Array<{ kind: string; label: string }> = [
   { kind: "eta", label: "an ETA" },
   { kind: "phlebo_name", label: "the phlebo's name" },
   { kind: "phlebo_phone", label: "the phlebo's number" },
+  { kind: "confirmed", label: "confirmed in the group" },
   { kind: "sample_collected", label: "sample collected" },
   { kind: "report_shared", label: "report shared" },
   { kind: "patient_unavailable", label: "patient not available" },

@@ -1446,6 +1446,9 @@ enum LabOrderEventType {
   // Something the provider told us that moves no state — an informational poll
   // answer, or the note that follows one. Recorded so the desk can read it.
   PROVIDER_NOTE
+  // The lab said "ok" in its WhatsApp group (reply fact `confirmed`). Distinct from
+  // LAB_ACCEPTED, which only the confirmation link or LabStack's status sets.
+  LAB_CONFIRMED_IN_CHAT
 }
 
 // Editable message content. The renderer validates every {{variable}} before
@@ -2091,7 +2094,7 @@ model ProviderOrderFact {
   orderId         Int
   labId           Int
   /// eta, phlebo_name, phlebo_phone, delay_reason, sample_collected,
-  /// patient_unavailable, new_appointment_time, report_shared, cannot_fulfil, note
+  /// patient_unavailable, new_appointment_time, report_shared, cannot_fulfil, confirmed, note
   kind            String
   value           String
   confidence      Float    @default(1)

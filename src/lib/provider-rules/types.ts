@@ -25,7 +25,7 @@ export type FactCondition = { kind: string; present: boolean };
 
 export const FACT_KINDS = [
   "eta", "phlebo_name", "phlebo_phone", "delay_reason", "sample_collected",
-  "patient_unavailable", "new_appointment_time", "report_shared", "cannot_fulfil", "note",
+  "patient_unavailable", "new_appointment_time", "report_shared", "cannot_fulfil", "confirmed", "note",
 ] as const;
 export type FactKind = (typeof FACT_KINDS)[number];
 

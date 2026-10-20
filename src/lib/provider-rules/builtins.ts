@@ -32,12 +32,22 @@ export type BuiltIn = Omit<Prisma.ProviderMessageRuleCreateInput, "ledger" | "tr
 
 const hours = (minutes: number) => (minutes % 60 === 0 ? `${minutes / 60} hour${minutes === 60 ? "" : "s"}` : `${minutes} min`);
 
+/**
+ * The confirmation ladder stops for an order the moment the lab says "ok" in
+ * the group (reply fact `confirmed`), not only when LabStack moves — one text
+ * reply answers every rung, not just the one it quoted.
+ */
+export const NOT_CONFIRMED_IN_CHAT = [{ kind: "confirmed", present: false }];
+/** Rules that chase a confirmation; all gate on NOT_CONFIRMED_IN_CHAT. */
+export const CONFIRMATION_LADDER_KEYS = ["REMINDER_1H", "REMINDER_3H", "ESCALATION_5H", "APPT_24H", "APPT_2H", "APPT_30M", "APPT_10M"];
+
 const reminder = (key: string, name: string, minutes: number, templateKey: string, priority: number, extra: Partial<BuiltIn> = {}): BuiltIn => ({
   builtInKey: key,
   name,
-  description: `Sent ${hours(minutes)} after the order while the lab has not confirmed it. Never after the appointment.`,
+  description: `Sent ${hours(minutes)} after the order while the lab has not confirmed it — in LabStack or by replying in the group. Never after the appointment.`,
   triggerCondition: { statusIn: AWAITING_STATUSES, minutesSinceCreated: minutes },
   conversationStatusIn: OPEN_CONVERSATION,
+  factConditions: NOT_CONFIRMED_IN_CHAT,
   onlyIfIntroduced: true,
   notAfterAppointment: true,
   templateKey,
@@ -48,9 +58,10 @@ const reminder = (key: string, name: string, minutes: number, templateKey: strin
 const appointmentPing = (key: string, name: string, minutesBefore: number, priority: number): BuiltIn => ({
   builtInKey: key,
   name,
-  description: `Sent ${hours(minutesBefore)} before the appointment if the lab still has not confirmed.`,
+  description: `Sent ${hours(minutesBefore)} before the appointment if the lab still has not confirmed — in LabStack or by replying in the group.`,
   triggerCondition: { statusIn: AWAITING_STATUSES, minutesBeforeAppointment: minutesBefore },
   conversationStatusIn: OPEN_CONVERSATION,
+  factConditions: NOT_CONFIRMED_IN_CHAT,
   onlyIfIntroduced: true,
   notAfterAppointment: true,
   templateKey: "NON_API_APPOINTMENT_REMINDER",

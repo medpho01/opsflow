@@ -121,10 +121,37 @@ export function currentSlot(now: Date, timeZone: string): Date {
 const ALL_RE = /^\s*(?:all|sab|sabhi|everything|all of them|all orders)\b[\s:,-]*(.*)$/i;
 
 /**
+ * Item numbers at the start of a token: "1", "1 2", "1 & 2", "1 and 2", "1/2",
+ * "1-4", "1–4", "1 to 4", "1 se 4 (tak)" and mixes of these ("1-3 5").
+ * Captures the number list and what follows it.
+ */
+const ITEMS_RE = /^#?(\d{1,2}(?:\s*(?:&|and|\/|-|–|—|to|se|tak|\s)\s*#?\d{1,2})*)(?:\s+tak\b)?\s*[:.)-]?\s*(.*)$/i;
+const RANGE_OPS = new Set(["-", "–", "—", "to", "se"]);
+
+/** "1-3 5" → [1, 2, 3, 5]; keeps only numbers that are items of this message. */
+export function expandItemNumbers(list: string, numbers: Set<number>): number[] {
+  const out: number[] = [];
+  let last: number | null = null;
+  let range = false;
+  for (const match of list.matchAll(/\d{1,2}|-|–|—|\b(?:to|se)\b/gi)) {
+    const token = match[0];
+    if (RANGE_OPS.has(token.toLowerCase())) { range = last != null; continue; }
+    const n = Number(token);
+    if (range && last != null && n > last) for (let i = last + 1; i < n; i += 1) out.push(i);
+    out.push(n);
+    last = n;
+    range = false;
+  }
+  return [...new Set(out)].filter((n) => numbers.has(n));
+}
+
+/**
  * Split a lab's reply into the part about each numbered item.
  *
  *   "1 done, 2 not home, 3 at 5 pm"  → {1: "done", 2: "not home", 3: "at 5 pm"}
  *   "1,2 collected. 3 rescheduled"     → {1: "collected", 2: "collected", 3: "rescheduled"}
+ *   "1-4 ok", "1 to 4 ok", "1 se 4 ok" → items 1..4: "ok"
+ *   "1-3, 5 ok"                        → items 1, 2, 3, 5: "ok"
  *   "all done"                         → every item: "done"
  *   "88704 done"                       → the item for order 88704
  *   anything, for a one-item message   → that item
@@ -156,11 +183,12 @@ export function splitBatchReply(text: string, items: Array<{ n: number; orderId:
       else pending.push(n);
       continue;
     }
-    // "1 done", "2) not home", "#3: at 5 pm", "1 & 2 collected", "1 2 collected"
-    const numbered = token.match(/^#?((?:\d{1,2}\s*(?:&|and|\/|\s)\s*)*\d{1,2})\s*[:.)-]?\s+(.+)$/i)
-      ?? token.match(/^#?(\d{1,2})\s*[:.)-]?$/);
+    // "1 done", "2) not home", "#3: at 5 pm", "1 & 2 collected", "1-4 ok", "1 to 4 ok", "1 2 collected"
+    let numbered = token.match(ITEMS_RE);
+    // "2 by 3 pm", "2-3 pm reaching": the second number is a time, not an item.
+    if (numbered && /^(?:am|pm|baje|o'?clock|min|mins|hrs?|hours?)\b/i.test(numbered[2] ?? "")) numbered = token.match(/^#?(\d{1,2})\s*[:.)-]?\s*(.*)$/);
     if (numbered) {
-      const ns = numbered[1].split(/\s*(?:&|and|\/|\s)\s*/i).map(Number).filter((n) => numbers.has(n));
+      const ns = expandItemNumbers(numbered[1], numbers);
       const said = numbered[2]?.trim();
       if (ns.length === 0) continue;
       if (said) { for (const n of [...pending, ...ns]) result.set(n, said); pending = []; }

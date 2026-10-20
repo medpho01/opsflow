@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { extractWithPatterns } from "../reply-extract";
 
 const facts = (text: string) => Object.fromEntries(extractWithPatterns(text).map((f) => [f.kind, f.value]));
+const asked = (text: string) => Object.fromEntries(extractWithPatterns(text, { confirmation: true }).map((f) => [f.kind, f.value]));
 
 describe("reading lab replies (pattern reader)", () => {
   it("phlebo name, number and ETA in one line", () => {
@@ -25,5 +26,31 @@ describe("reading lab replies (pattern reader)", () => {
   });
   it("anything else is kept as a note", () => {
     assert.deepEqual(facts("ok noted"), { note: "ok noted" });
+  });
+});
+
+describe("a yes to 'please confirm'", () => {
+  it("'ok', 'okay', 'done', 'confirmed', 'haan', 'ho jayega', 'will do', 'theek hai', 👍 confirm an unconfirmed ask", () => {
+    for (const text of ["ok", "Okay", "done", "confirmed", "Confirm", "haan", "ho jayega", "will do", "theek hai", "👍", "✅", "ok will do", "Ok done 👍"]) {
+      assert.equal(asked(text)["confirmed"], "yes", text);
+    }
+  });
+  it("is not read on asks that did not want a confirmation", () => {
+    assert.equal(facts("ok")["confirmed"], undefined);
+    assert.equal(facts("done")["confirmed"], undefined);
+    assert.deepEqual(facts("ok"), { note: "ok" });
+  });
+  it("a no is not a yes", () => {
+    assert.equal(asked("ok cannot do this one")["confirmed"], undefined);
+    assert.ok(asked("ok cannot do this one")["cannot_fulfil"]);
+    assert.equal(asked("done, patient not available")["confirmed"], undefined);
+    assert.equal(asked("nahi ho payega")["confirmed"], undefined);
+    assert.equal(asked("reschedule to tomorrow")["confirmed"], undefined);
+  });
+  it("keeps the other facts alongside", () => {
+    const got = asked("ok, phlebo Ramesh 9876543210 will reach by 9:15 am");
+    assert.equal(got["confirmed"], "yes");
+    assert.equal(got["phlebo_name"], "Ramesh");
+    assert.equal(got["eta"], "9:15 am");
   });
 });

@@ -16,7 +16,7 @@
  */
 import { Prisma, type NonApiLabConfig, type ProviderMessageRule } from "@prisma/client";
 import prisma from "@/lib/db/client";
-import { BUILT_IN_RULES, LEGACY_RUNG_TO_BUILT_IN, OPEN_CONVERSATION } from "./builtins";
+import { BUILT_IN_RULES, CONFIRMATION_LADDER_KEYS, LEGACY_RUNG_TO_BUILT_IN, NOT_CONFIRMED_IN_CHAT, OPEN_CONVERSATION } from "./builtins";
 import { applyStandardSet } from "./standard-set";
 import { alignExistingConnections } from "@/lib/wa/connect";
 import { localDayKey } from "./evaluate";
@@ -394,9 +394,29 @@ async function importLegacySends(convertedFrom: Map<string, ProviderMessageRule>
   if (rows.length) report.imported += (await prisma.providerMessageLedger.createMany({ data: rows, skipDuplicates: true })).count;
 }
 
+/**
+ * Ladder rules seeded before the `confirmed` reply fact existed (Oct 2026) chase
+ * on until LabStack moves. Gives them the gate; a no-op once done.
+ */
+async function gateLadderOnChatConfirmation() {
+  const rows = await prisma.providerMessageRule.findMany({
+    where: { builtInKey: { in: CONFIRMATION_LADDER_KEYS } }, select: { id: true, name: true, factConditions: true },
+  });
+  for (const row of rows) {
+    const current = Array.isArray(row.factConditions) ? (row.factConditions as Array<{ kind?: string }>) : [];
+    if (current.some((fact) => fact?.kind === "confirmed")) continue;
+    await prisma.providerMessageRule.update({
+      where: { id: row.id },
+      data: { factConditions: [...current, ...NOT_CONFIRMED_IN_CHAT] as unknown as Prisma.InputJsonValue, version: { increment: 1 } },
+    });
+    console.log(`[MessageRules] "${row.name}": now stops once the lab confirms in the group`);
+  }
+}
+
 /** Run the move once. Safe to call on every pass. */
 export async function ensureMigratedToRules(): Promise<Report | null> {
   await repairMilestoneRules();
+  await gateLadderOnChatConfirmation();
   // Polls were dropped (Oct 2026): labs answer in their own words. Clears any rule still
   // carrying one; a no-op after the first pass.
   await prisma.providerMessageRule.updateMany({ where: { pollKey: { not: null } }, data: { pollKey: null } });

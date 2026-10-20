@@ -10,6 +10,11 @@
  *   - puts the reply and its facts on the order's timeline;
  *   - marks the rule that asked as answered, so its repeats stop.
  *
+ * A reply to a combined message is split by item number (batching.ts). When
+ * it quotes one and nothing can be placed, every order in it gets the text as
+ * a note and the ask counts as answered — a lab that wrote back is never asked
+ * again as if it had not.
+ *
  * Tying a message to an order, most certain first:
  *   REPLY_TO   it quotes one of our messages about that order;
  *   ORDER_ID   it names an order of this lab (the gateway validated the id);
@@ -17,7 +22,8 @@
  * Otherwise the message stays in the WhatsApp console, unattributed.
  */
 import prisma from "@/lib/db/client";
-import { extractFacts } from "./reply-extract";
+import { asksConfirmation, extractFacts, type Ask } from "./reply-extract";
+import type { FactKind } from "./types";
 import { splitBatchReply } from "./batching";
 import { recordAnswered } from "./engine";
 import { labstackWorkerQuery } from "@/lib/db/labstack";
@@ -103,6 +109,17 @@ export async function runReplyPass(now = new Date()): Promise<ReplyPassResult> {
       // A reply to a combined message: each numbered part is about its own order.
       const combined = await attributeToBatch(message, labId, text);
       if (combined) {
+        if (combined.parts.size === 0) {
+          // Quoted a combined message but named no item we know: a note on every order in it.
+          // A bare "ok"/"done" (no numbers at all) is a yes to the whole ask; anything with
+          // numbers we failed to read is kept as text only — never guessed onto a fact.
+          const onlyKinds: FactKind[] = /\d/.test(text) ? [] : ["confirmed"];
+          for (const item of combined.items) {
+            result.attributed += 1;
+            result.facts += await applyReply(message, labId, { orderId: item.orderId, via: combined.via, ruleId: item.ruleId, context: item.line }, text, text, { onlyKinds, unparsed: true });
+          }
+          continue;
+        }
         for (const [n, said] of combined.parts) {
           const item = combined.items.find((i) => i.n === n);
           if (!item) continue;
@@ -124,14 +141,30 @@ export async function runReplyPass(now = new Date()): Promise<ReplyPassResult> {
 }
 
 type ReplyMessage = { id: string; sender: string; createdAt: Date };
+type ApplyOptions = {
+  /** Keep only these fact kinds (empty: record no facts, just the note). */
+  onlyKinds?: FactKind[];
+  /** The reply could not be split by item: the note says so. */
+  unparsed?: boolean;
+};
 
 /**
  * What one reply (or one numbered part of it) says about one order: facts,
  * a note on the order's timeline, and "answered" for the rule that asked so
  * its repeats stop. Returns the number of facts recorded.
  */
-async function applyReply(message: ReplyMessage, labId: number, match: Attribution, said: string, fullText: string): Promise<number> {
-  const { facts, extractor } = await extractFacts(said, match.context);
+async function applyReply(message: ReplyMessage, labId: number, match: Attribution, said: string, fullText: string, options: ApplyOptions = {}): Promise<number> {
+  const rule = match.ruleId ? await prisma.providerMessageRule.findUnique({ where: { id: match.ruleId }, select: { templateKey: true } }) : null;
+  const conversation = await prisma.labCommunicationWorkflow.findUnique({ where: { orderId: match.orderId } });
+  // "ok" is a confirmation when we asked for one: the quoted message did, or — with no
+  // message to go by — the order is still waiting for the lab to confirm.
+  const ask: Ask = {
+    confirmation: rule ? asksConfirmation(rule.templateKey)
+      : !!conversation && (conversation.status === "WAITING_FOR_LAB_CONFIRMATION" || conversation.status === "ESCALATED"),
+  };
+  const extracted = await extractFacts(said, match.context, ask);
+  const facts = options.onlyKinds ? extracted.facts.filter((f) => options.onlyKinds!.includes(f.kind)) : extracted.facts;
+  const extractor = extracted.extractor;
   if (facts.length > 0) {
     await prisma.providerOrderFact.createMany({
       data: facts.map((fact) => ({
@@ -141,7 +174,6 @@ async function applyReply(message: ReplyMessage, labId: number, match: Attributi
       })),
     });
   }
-  const conversation = await prisma.labCommunicationWorkflow.findUnique({ where: { orderId: match.orderId } });
   if (conversation) {
     await prisma.labCommunicationOrderEvent.create({
       data: {
@@ -149,11 +181,23 @@ async function applyReply(message: ReplyMessage, labId: number, match: Attributi
         payload: {
           source: "REPLY", via: match.via, sender: message.sender, text: said.slice(0, 500),
           ...(said !== fullText ? { fullText: fullText.slice(0, 500) } : {}),
+          ...(options.unparsed ? { unparsed: true } : {}),
           facts: facts.map((f) => ({ kind: f.kind, value: f.value })),
         },
         occurredAt: message.createdAt,
       },
     });
+    // Confirmed in the group — distinct from LAB_ACCEPTED, which LabStack (or the link) sets.
+    // The conversation stays where it is: humans move the order in LabStack.
+    if (facts.some((f) => f.kind === "confirmed")) {
+      await prisma.labCommunicationOrderEvent.create({
+        data: {
+          workflowId: conversation.id, type: "LAB_CONFIRMED_IN_CHAT", actorType: "LAB",
+          payload: { source: "REPLY", via: match.via, sender: message.sender, text: said.slice(0, 200) },
+          occurredAt: message.createdAt,
+        },
+      });
+    }
   }
   // The lab answered: the rule that asked stops repeating.
   if (match.ruleId) await recordAnswered(match.ruleId, match.orderId, labId, `Reply: ${said.slice(0, 120)}`, message.createdAt);
@@ -167,7 +211,8 @@ type BatchItem = { n: number; orderId: number; ruleId: string; line: string };
  * lab's latest message from us was a combined one (sent in the last 3 h) and
  * the reply reads as numbered parts ("1 done, 2 not home") or "all …".
  * Returns the parts it could place; a reply that quotes a combined message
- * but cannot be placed returns no parts (never guessed onto one order).
+ * but cannot be placed returns no parts — the caller notes it on every order
+ * in the batch rather than guessing one.
  */
 async function attributeToBatch(
   message: { replyToWaId: string | null; createdAt: Date },

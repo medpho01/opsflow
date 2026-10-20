@@ -18,6 +18,7 @@ import { Prisma, type NonApiLabConfig, type ProviderMessageRule } from "@prisma/
 import prisma from "@/lib/db/client";
 import { BUILT_IN_RULES, LEGACY_RUNG_TO_BUILT_IN, OPEN_CONVERSATION } from "./builtins";
 import { applyStandardSet } from "./standard-set";
+import { alignExistingConnections } from "@/lib/wa/connect";
 import { localDayKey } from "./evaluate";
 import { TIME_ZONE } from "./format";
 import type { RuleCondition } from "./types";
@@ -406,6 +407,7 @@ export async function ensureMigratedToRules(): Promise<Report | null> {
   const settings = await prisma.providerCommsSettings.upsert({ where: { id: "default" }, update: {}, create: { id: "default" } });
   if (settings.rulesMigratedAt) {
     await applyStandardSet();
+    await alignExistingConnections();
     return null;
   }
 
@@ -425,5 +427,6 @@ export async function ensureMigratedToRules(): Promise<Report | null> {
   await prisma.providerCommsSettings.update({ where: { id: "default" }, data: { rulesMigratedAt: new Date(), messageRulesMode: "LIVE" } });
   console.log(`[MessageRules] Moved to message rules: ${JSON.stringify(report)}`);
   await applyStandardSet();
+  await alignExistingConnections();
   return report;
 }

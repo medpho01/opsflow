@@ -1754,6 +1754,9 @@ model ProviderCommsSettings {
   // When the standard message set (provider-rules/standard-set.ts) was applied to
   // every lab: one set for all labs, no per-lab switches.
   standardSetAt      DateTime?
+  // When existing group <-> lab links (WhatsApp Settings and Lab Config) were
+  // aligned into one (lib/wa/connect.ts, alignExistingConnections).
+  connectionsAlignedAt DateTime?
   /// How far inbound lab messages have been read for reply understanding.
   replyWatermark     DateTime?
   updatedAt          DateTime @updatedAt @db.Timestamptz(3)

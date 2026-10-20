@@ -109,3 +109,67 @@ export async function syncLabGroup(labId: number, waGroupJid: string | null, isA
     }),
   ]);
 }
+
+/**
+ * One-time, on deploy: bring links made before Connect existed into one.
+ * Conservative — it never starts messaging anyone:
+ *   - a lab configured with a group (Lab Config): that group becomes the lab's
+ *     provider group and is read; the lab's messages are unchanged;
+ *   - a group mapped to a lab only in WhatsApp Settings: the lab gets a config
+ *     pointing at it with messages OFF (switch on in Lab Config);
+ *   - a lab pointing at a group mapped to a STORE: left as is, reported;
+ *   - two labs on one group: the most recently edited keeps it, reported.
+ */
+export async function alignExistingConnections(now = new Date()) {
+  const settings = await prisma.providerCommsSettings.upsert({ where: { id: "default" }, update: {}, create: { id: "default" } });
+  if (settings.connectionsAlignedAt) return null;
+  const report = { aligned: 0, createdPaused: 0, storeConflicts: [] as string[], duplicates: [] as string[] };
+
+  const configs = await prisma.nonApiLabConfig.findMany({ where: { waGroupJid: { not: null } }, orderBy: { updatedAt: "desc" } });
+  const claimed = new Set<string>();
+  for (const config of configs) {
+    const jid = config.waGroupJid!;
+    if (claimed.has(jid)) {
+      await prisma.nonApiLabConfig.update({ where: { labId: config.labId }, data: { waGroupJid: null } });
+      report.duplicates.push(`${config.labName} (#${config.labId}) let go of a group another lab uses`);
+      continue;
+    }
+    claimed.add(jid);
+    const group = await prisma.waGroup.findUnique({ where: { jid } });
+    if (!group) continue;
+    if (group.role === "SUPPORT" && group.storeId != null) {
+      report.storeConflicts.push(`${config.labName} (#${config.labId}) → "${group.subject}" is store #${group.storeId}'s group`);
+      continue;
+    }
+    await prisma.waGroup.update({
+      where: { id: group.id },
+      data: { role: "PROVIDER", labId: config.labId, storeId: null, ...(config.isActive ? { active: true } : {}) },
+    });
+    report.aligned += 1;
+  }
+
+  // Mapped to a lab only in WhatsApp Settings: the lab gets a (paused) config.
+  const configured = new Set((await prisma.nonApiLabConfig.findMany({ select: { labId: true } })).map((c) => c.labId));
+  const providerGroups = await prisma.waGroup.findMany({
+    where: { role: "PROVIDER", labId: { not: null }, archivedAt: null, jid: { notIn: [...claimed] } },
+    orderBy: { updatedAt: "desc" },
+  });
+  for (const group of providerGroups) {
+    if (configured.has(group.labId!)) continue;
+    const [lab] = await labstackWorkerQuery<LabRow>(
+      `SELECT "labName", "isApiHomeSample", "isApiCenterVisit", "isApiPpmc" FROM public."Lab" WHERE id = $1`, [group.labId],
+    ).catch(() => []);
+    await prisma.nonApiLabConfig.create({
+      data: {
+        labId: group.labId!, labName: (lab?.labName ?? group.subject).trim(), waGroupJid: group.jid, isActive: false,
+        integrationType: lab ? labstackIntegration(lab) : "NON_API",
+      } as Prisma.NonApiLabConfigUncheckedCreateInput,
+    });
+    configured.add(group.labId!);
+    report.createdPaused += 1;
+  }
+
+  await prisma.providerCommsSettings.update({ where: { id: "default" }, data: { connectionsAlignedAt: now } });
+  console.log(`[Connect] Existing group links aligned: ${JSON.stringify(report)}`);
+  return report;
+}

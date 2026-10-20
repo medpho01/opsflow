@@ -438,9 +438,9 @@ const scenarios: Scenario[] = [
     expect: ["09:05 STATUS_CHECK · o15a", "09:10 STATUS_CHECK · o15b", "09:20 STATUS_CHECK · o15c"],
   },
   {
-    name: "16. Day cap (here 1): the next ask waits for its slot TOMORROW — never sent at midnight; new-order messages are never combined",
+    name: "16. Day cap (here 2): new-order messages count toward it but are never held by it; the next ask waits for its slot TOMORROW — never sent at midnight",
     run: async () => {
-      await setBatching("A", "LIVE", 3, { maxMessagesPerDay: 1 });
+      await setBatching("A", "LIVE", 3, { maxMessagesPerDay: 2 });
       const a = await createOrder({ placed: "08:20", appointment: "+1d 08:00", alias: "o16a" });
       const b = await createOrder({ placed: "08:25", appointment: "+1d 09:00", alias: "o16b" });
       await createOrder({ status: "ORDER_SCHEDULED", placed: "-2d 10:00", appointment: "08:45", alias: "o16c" });
@@ -453,7 +453,8 @@ const scenarios: Scenario[] = [
       await run("+1d 10:50", "+1d 11:10");
     },
     expect: [
-      "08:20 NEW_ORDER · o16a", "08:25 NEW_ORDER · o16b",
+      // Placed 5 min apart: one new-order message when the 10-min gather window closes (1 of 2).
+      "08:30 COMBINED NEW_ORDER [o16a,o16b]",
       "10:00 COMBINED UNCONFIRMED [o16a,o16b]", "11:00 COMBINED STATUS [o16c,o16a,o16b]",
     ],
   },
@@ -487,7 +488,8 @@ const scenarios: Scenario[] = [
       if (skipped.length) throw new Error(`nothing should be skipped: ${skipped.map((r) => r.detail).join("; ")}`);
     },
     expect: [
-      "16:45 NEW_ORDER · o21-unconfirmed", "16:45 NEW_ORDER · o21-no-phlebo",
+      // The order noticed late goes at once; the fresh one 10 min after placement (new-order gather window).
+      "16:45 COMBINED NEW_ORDER [o21-no-phlebo]", "16:55 COMBINED NEW_ORDER [o21-unconfirmed]",
       "18:00 COMBINED UNCONFIRMED [o21-unconfirmed]", "20:00 COMBINED UNCONFIRMED FOLLOW-UP [o21-unconfirmed]",
       "19:00 SUMMARY_TOMORROW", "21:45 COMBINED ESCALATION [o21-unconfirmed]",
       "05:00 COMBINED UNCONFIRMED FOLLOW-UP [o21-unconfirmed]",
@@ -517,12 +519,12 @@ const scenarios: Scenario[] = [
       if (JSON.stringify(got) !== JSON.stringify(want)) throw new Error(`expected ${want.join(", ")}, got ${got.join(", ") || "none"}`);
     },
     expect: [
-      "09:00 NEW_ORDER · o22-unconfirmed", "09:00 NEW_ORDER · o22-no-phlebo",
+      "09:00 COMBINED NEW_ORDER [o22-no-phlebo]", "09:10 COMBINED NEW_ORDER [o22-unconfirmed]",
       "10:00 COMBINED UNCONFIRMED [o22-unconfirmed]", "12:00 COMBINED UNCONFIRMED FOLLOW-UP [o22-unconfirmed]",
       "14:00 COMBINED ESCALATION [o22-unconfirmed]",
       // Next day: the 2 h ping at its 12:00 slot, the phlebo ask at 12:30.
       "12:00 COMBINED UNCONFIRMED FOLLOW-UP [o22-unconfirmed]", "12:30 COMBINED PHLEBO [o22-no-phlebo]",
-      "09:00 NEW_ORDER · o22-capped",
+      "09:10 COMBINED NEW_ORDER [o22-capped]",
     ],
   },
   {
@@ -550,6 +552,46 @@ const scenarios: Scenario[] = [
       if (!(await prisma.providerMessageRule.findUniqueOrThrow({ where: { builtInKey: "APPT_24H" } })).isActive) throw new Error("a later edit was overwritten");
     },
     expect: [],
+  },
+  {
+    name: "23. Back-to-back orders: two placed 4 min apart go as ONE new-order message with a detail block and a confirm link each, @mentioning the coordinator; a later one goes alone, also with the mention",
+    run: async () => {
+      await setBatching("A", "LIVE", 3, { coordinators: [COORDINATOR] });
+      const a = await createOrder({ placed: "09:00", appointment: "+1d 08:00", alias: "o23a" });
+      const b = await createOrder({ placed: "09:04", appointment: "+1d 09:00", alias: "o23b" });
+      const c = await createOrder({ placed: "09:30", appointment: "+1d 10:00", alias: "o23c" });
+      await run("09:00", "09:45");
+      const combined = await prisma.providerBatch.findFirstOrThrow({ where: { intent: "NEW_ORDER", itemCount: 2 } });
+      const out = await prisma.waOutbound.findUniqueOrThrow({ where: { id: combined.outboundId! } });
+      const links = (out.text.match(/confirmation\//g) ?? []).length;
+      if (!out.text.startsWith(`@${COORDINATOR.jid.split("@")[0]} 🆕 new orders (2)`) || !out.text.includes(`#${a}`) || !out.text.includes(`#${b}`) || links !== 2
+        || JSON.stringify(out.mentions) !== JSON.stringify([COORDINATOR.jid]) || !out.text.includes("📞") || !out.text.includes("📍")) {
+        throw new Error(`combined new-order message not as expected (${links} links):\n${out.text}`);
+      }
+      const lone = await prisma.providerBatch.findFirstOrThrow({ where: { intent: "NEW_ORDER", itemCount: 1 } });
+      const loneOut = await prisma.waOutbound.findUniqueOrThrow({ where: { id: lone.outboundId! } });
+      if (!loneOut.text.startsWith(`@${COORDINATOR.jid.split("@")[0]} 🆕 *New order #${c}*`) || /Dear|Team LabStack/.test(loneOut.text)) {
+        throw new Error(`single new-order message not as expected:\n${loneOut.text}`);
+      }
+      // A numbered reply to the combined message lands on the right order.
+      await labReplies("A", "09:20", "2 can't do, address too far", a);
+      await run("09:50", "09:55"); // before a's 1 h reminder at the 10:00 slot
+      await expectFacts(b, ["cannot_fulfil"]);
+    },
+    expect: ["09:10 COMBINED NEW_ORDER [o23a,o23b]", "09:40 COMBINED NEW_ORDER [o23c]"],
+  },
+  {
+    name: "24. Night: an order placed at 23:30 waits for 08:00; one whose visit is within 3 h goes at once",
+    run: async () => {
+      await setBatching("A", "LIVE");
+      await createOrder({ placed: "23:30", appointment: "+1d 12:00", alias: "o24-morning" });
+      const urgent = await createOrder({ placed: "23:40", appointment: "+1d 01:30", alias: "o24-urgent" });
+      await run("23:30", "23:45");
+      // Cancelled right after, so the night's other asks about it (reminders, status check) stay out of this scenario.
+      await updateOrder(urgent, "23:46", { status: "CANCELED" });
+      await run("23:50", "+1d 08:05");
+    },
+    expect: ["23:40 COMBINED NEW_ORDER [o24-urgent]", "08:00 COMBINED NEW_ORDER [o24-morning]"],
   },
 ];
 

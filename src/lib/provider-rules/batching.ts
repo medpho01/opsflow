@@ -10,8 +10,10 @@
  *   2. …
  *   Reply: *1 done, 2 not home, 3 at 5 pm* — or *all done*
  *
- * Not combined: the new-order message (it carries the full details once),
- * urgent rules (P0) and anything for a lab with batching OFF.
+ * New orders combine too (intent NEW_ORDER, see new-order.ts): orders placed
+ * within a short gather window go as one "new orders (N)" message with the
+ * full detail block and a confirm link per order. Not combined: urgent rules
+ * (P0) and anything for a lab with batching OFF.
  *
  * Slots are a fixed daily rhythm per ask, inside the lab's working hours, so
  * labs learn when to expect us and are never messaged at 05:00 or 23:00 (see
@@ -24,7 +26,9 @@ import type { MessageRule } from "./types";
 
 export type BatchingMode = "OFF" | "SHADOW" | "LIVE";
 
-export const BATCH_INTENTS = ["ESCALATION", "PHLEBO", "ETA", "STATUS", "UNCONFIRMED", "OVERDUE", "REPORT"] as const;
+/** The new-order message: no slot, never held — gathered for a few minutes and combined (new-order.ts). */
+export const NEW_ORDER_INTENT = "NEW_ORDER";
+export const BATCH_INTENTS = [NEW_ORDER_INTENT, "ESCALATION", "PHLEBO", "ETA", "STATUS", "UNCONFIRMED", "OVERDUE", "REPORT"] as const;
 export type KnownIntent = (typeof BATCH_INTENTS)[number];
 
 const INTENT_BY_TEMPLATE: Record<string, KnownIntent> = {
@@ -44,7 +48,9 @@ const INTENT_BY_TEMPLATE: Record<string, KnownIntent> = {
  * a custom rule combines with itself only ("RULE:<id>").
  */
 export function batchIntentOf(rule: MessageRule): string | null {
-  if (rule.kind !== "ORDER" || rule.introduces || rule.priority === 0) return null;
+  if (rule.kind !== "ORDER") return null;
+  if (rule.introduces) return NEW_ORDER_INTENT;
+  if (rule.priority === 0) return null;
   // Timed close to the visit ("30 min before"): it cannot wait for a slot, or the
   // visit is over before it goes.
   const before = rule.triggerCondition?.minutesBeforeAppointment;
@@ -77,7 +83,7 @@ export const DAILY_SLOTS: Record<string, string[]> = {
 const DEFAULT_SLOTS = ["09:00", "13:00", "17:00"];
 export const slotsFor = (intent: string) => DAILY_SLOTS[intent] ?? DEFAULT_SLOTS;
 
-function localParts(at: Date, timeZone: string) {
+export function localParts(at: Date, timeZone: string) {
   const parts = new Intl.DateTimeFormat("en-GB", {
     year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false, timeZone,
   }).formatToParts(at);
@@ -86,7 +92,7 @@ function localParts(at: Date, timeZone: string) {
 }
 
 /** The instant at local h:m on the same local day as `at` (offset-safe for whole-hour/half-hour zones). */
-function atLocal(at: Date, timeZone: string, hour: number, minute: number): Date {
+export function atLocal(at: Date, timeZone: string, hour: number, minute: number): Date {
   const { hour: h, minute: m, second: s } = localParts(at, timeZone);
   const sinceMidnight = (h * 60 + m) * MS_PER_MIN + s * 1000 + at.getMilliseconds();
   return new Date(at.getTime() - sinceMidnight + (hour * 60 + minute) * MS_PER_MIN);
@@ -281,6 +287,11 @@ export type ItemLineData = {
   createdAt?: Date;
   milestone?: string | null;
   dueAt?: Date;
+  /** New-order block: the patient's details the lab needs to serve the order. */
+  mobile?: string | null;
+  address?: string | null;
+  mapUrl?: string | null;
+  tests?: string | null;
 };
 
 const firstName = (name: string | null) => (name || "Patient").trim().split(/\s+/)[0];
@@ -306,10 +317,25 @@ function ago(from: Date | undefined | null, now: Date): string {
   return hours < 48 ? `${hours} h` : `${Math.floor(hours / 24)} d`;
 }
 
-/** The single line (plus a link line where the ask needs one) for an order in a combined message. */
+/**
+ * The single line (plus a link line where the ask needs one) for an order in a
+ * combined message. A new order is the exception: a block — full name, visit,
+ * contact, address, map, tests and the confirm link — since this is the one
+ * message that must carry everything the lab needs.
+ */
 export function itemLine(intent: string, item: ItemLineData, now: Date, timeZone: string): string {
-  const head = `${item.n}. #${item.orderId} · ${firstName(item.patientName)}`;
   const when = shortWhen(item.appointment, now, timeZone);
+  if (intent === NEW_ORDER_INTENT) {
+    return [
+      `${item.n}. #${item.orderId} · ${(item.patientName || "Patient").trim()} · ${when}`,
+      item.mobile ? `    📞 ${item.mobile}` : "",
+      item.address ? `    📍 ${item.address}` : item.area ? `    📍 ${item.area}` : "",
+      item.mapUrl ? `    🗺️ ${item.mapUrl}` : "",
+      item.tests ? `    🧪 ${item.tests}` : "",
+      item.confirmUrl ? `    ${item.confirmUrl}` : "",
+    ].filter(Boolean).join("\n");
+  }
+  const head = `${item.n}. #${item.orderId} · ${firstName(item.patientName)}`;
   const link = item.confirmUrl ? `\n    ${item.confirmUrl}` : "";
   switch (intent) {
     case "PHLEBO": return `${head} · ${when}${item.area ? ` · ${item.area}` : ""}`;

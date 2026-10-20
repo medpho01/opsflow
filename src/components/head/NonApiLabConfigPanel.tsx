@@ -730,7 +730,7 @@ function Pagination({ page, pageCount, onPage }: { page: number; pageCount: numb
 type CombinedMessage = { id: string; intent: string; shadow: boolean; slotAt: string; itemCount: number; text: string; createdAt: string };
 
 const INTENT_LABEL: Record<string, string> = {
-  STATUS: "Status check", PHLEBO: "Assign a phlebo", ETA: "Phlebo on time?", UNCONFIRMED: "Awaiting confirmation",
+  NEW_ORDER: "New order", STATUS: "Status check", PHLEBO: "Assign a phlebo", ETA: "Phlebo on time?", UNCONFIRMED: "Awaiting confirmation",
   REPORT: "Reports pending", OVERDUE: "Running late", ESCALATION: "Manager escalation",
 };
 

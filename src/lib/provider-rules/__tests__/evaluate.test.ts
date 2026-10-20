@@ -240,8 +240,8 @@ describe("combined messages", () => {
     assert.equal(batchIntentOf(builtIn("REMINDER_3H")), "UNCONFIRMED");
     assert.equal(batchIntentOf(builtIn("ESCALATION_5H")), "ESCALATION");
     assert.equal(batchIntentOf(builtIn("REPORT_CHASE")), "REPORT");
-    // Never combined: the new-order message, urgent (P0) rules.
-    assert.equal(batchIntentOf(builtIn("NEW_ORDER")), null);
+    // New orders placed close together combine (new-order.ts); urgent (P0) rules never.
+    assert.equal(batchIntentOf(builtIn("NEW_ORDER")), "NEW_ORDER");
     assert.equal(batchIntentOf(builtIn("APPT_10M")), null);
     // Close to the visit: straight away, never held for a slot.
     assert.equal(batchIntentOf(builtIn("APPT_30M")), null);

@@ -113,7 +113,7 @@ describe("provider templates", () => {
     [
       "order_id", "patient_name", "appointment_date", "appointment_time", "location", "tests",
       "sla_deadline", "lab_name", "manager_name", "patient_mobile", "patient_address", "map_url",
-      "confirm_url", "accept_url", "reschedule_url", "reject_url",
+      "confirm_url", "accept_url", "reschedule_url", "reject_url", "coordinator",
     ].map((name) => [name, `<${name}>`]),
   );
 
@@ -124,11 +124,20 @@ describe("provider templates", () => {
     }
   });
 
-  it("the new-order message carries every detail the lab needs, and the link", () => {
+  it("the new-order message carries every detail the lab needs, and the link — short, to the coordinator, no 'Dear'", () => {
     const text = renderLabTemplate(DEFAULT_NON_API_NEW_ORDER_BODY, variables);
-    for (const name of ["patient_name", "patient_mobile", "patient_address", "map_url", "appointment_date", "appointment_time", "tests", "order_id", "confirm_url"]) {
+    for (const name of ["coordinator", "patient_name", "patient_mobile", "patient_address", "map_url", "appointment_date", "appointment_time", "tests", "order_id", "confirm_url"]) {
       assert.ok(text.includes(`<${name}>`), `missing ${name}`);
     }
+    assert.ok(text.startsWith("<coordinator>"));
+    assert.doesNotMatch(text, /Dear|Team LabStack/);
+    assert.ok(text.split("\n").length <= 6, "a one-line header, the detail lines, the link");
+  });
+
+  it("the 'Dear …' new-order body nobody edited moves to the short one", () => {
+    const dear = `Dear {{lab_name}},\n\nYou have a *new order* with the following details:\n\n👤 *Name:* {{patient_name}}\n📞 *Contact:* {{patient_mobile}}\n📍 *Address:* {{patient_address}}\n🗺️ {{map_url}}\n🗓️ *Appointment:* {{appointment_date}}, {{appointment_time}}\n🧪 *Tests:* {{tests}}\n🆔 *Order ID:* {{order_id}}\n\nPlease confirm this order here:\n{{confirm_url}}\n\n– Team LabStack`;
+    assert.ok(isSupersededDefault(NON_API_NEW_ORDER_TEMPLATE, dear));
+    assert.ok(!isSupersededDefault(NON_API_NEW_ORDER_TEMPLATE, dear.replace("Dear", "Hello")));
   });
 
   it("the status check may not be forced to carry a link", () => {

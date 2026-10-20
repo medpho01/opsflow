@@ -196,7 +196,9 @@ export function decideRule(rule: MessageRule, order: RuleOrder, ctx: DecideConte
     const release = ctx.releaseAt?.(rule, allowedFrom) ?? null;
     if (release && now.getTime() < release.getTime()) return { kind: "WAIT", reason: `goes in the ${formatSlot(release, timeZone)} combined message` };
     const lateBy = (now.getTime() - (release ?? allowedFrom).getTime()) / MS_PER_MIN;
-    const window = rule.catchUpMinutes + (release ? BATCH_SLACK_MINUTES : 0);
+    // No slack for an introduction: a new order has no slot and no cap holding it
+    // (new-order.ts), and its release is already the instant it was allowed to go.
+    const window = rule.catchUpMinutes + (release && !rule.introduces ? BATCH_SLACK_MINUTES : 0);
     if (lateBy > window) {
       return { kind: "MISS", occurrence, moment, reason: `due ${Math.round(lateBy)} min ago, catch-up window is ${window} min` };
     }

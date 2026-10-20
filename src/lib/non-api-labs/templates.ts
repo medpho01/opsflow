@@ -30,6 +30,7 @@ export const PROVIDER_PENDING_REPORTS_TEMPLATE = "PROVIDER_PENDING_REPORTS";
 // Combined messages (provider-rules/batching.ts): one ask about several orders.
 // {{items}} is the numbered list, one line per order, written by the engine.
 export const BATCH_TEMPLATE_BY_INTENT: Record<string, string> = {
+  NEW_ORDER: "BATCH_NEW_ORDER",
   STATUS: "BATCH_STATUS_CHECK",
   PHLEBO: "BATCH_ASSIGN_PHLEBO",
   ETA: "BATCH_PHLEBO_ETA",
@@ -113,7 +114,9 @@ export function usesMilestoneVariables(body: string): boolean {
   return SLA_MILESTONE_VARIABLES.some((variable) => body.includes(`{{${variable}}}`));
 }
 
-export const NON_API_NEW_ORDER_VARIABLES = [...ORDER_VARIABLES, ...ORDER_CONTACT_VARIABLES, ...ACTION_URL_VARIABLES] as const;
+// `coordinator`: the lab's coordinators as @mentions (provider-rules/deliver),
+// "Team" when nobody is known — the same token the combined messages open with.
+export const NON_API_NEW_ORDER_VARIABLES = [...ORDER_VARIABLES, ...ORDER_CONTACT_VARIABLES, ...ACTION_URL_VARIABLES, "coordinator"] as const;
 
 // Stored in the database on first use. It intentionally lives here (server
 // configuration bootstrap) rather than in a React component, and Ops can edit
@@ -122,7 +125,17 @@ export const NON_API_NEW_ORDER_VARIABLES = [...ORDER_VARIABLES, ...ORDER_CONTACT
 // The provider flow (agreed Oct 2026): one message per stage, WhatsApp
 // formatting, and a single action — the LabStack confirmation link. Confirming
 // there moves the order to ORDER_SCHEDULED, which is what stops the reminders.
-export const DEFAULT_NON_API_NEW_ORDER_BODY = `Dear {{lab_name}},
+// Short (the chat review's format): addressed to the coordinator, a one-line
+// header, the details the lab needs, the link — no "Dear", no sign-off.
+export const DEFAULT_NON_API_NEW_ORDER_BODY = `{{coordinator}} 🆕 *New order #{{order_id}}* · {{appointment_date}}, {{appointment_time}}
+👤 {{patient_name}} · 📞 {{patient_mobile}}
+📍 {{patient_address}}
+🗺️ {{map_url}}
+🧪 {{tests}}
+Confirm: {{confirm_url}}`;
+
+/** The new-order message as it read Oct 2026 ("Dear …", ~250 characters); unedited copies move to the short default above. */
+const LEGACY_DEAR_NEW_ORDER_BODY = `Dear {{lab_name}},
 
 You have a *new order* with the following details:
 
@@ -303,6 +316,12 @@ Please share these reports as soon as possible. Thank you!`;
 // Phase 1b (Oct 2026 chat review): short, addressed to the lab's coordinator
 // ({{coordinator}} = their @mentions), one line per order, follow-ups in-thread.
 const BATCH_DEFAULT_BODIES: Record<string, { name: string; body: string }> = {
+  // Several orders placed within minutes: one message, the full detail block per order.
+  BATCH_NEW_ORDER: { name: "Combined: new orders", body: `{{coordinator}} 🆕 new orders ({{count}})
+
+{{items}}
+
+Tap each link to confirm, or reply *1 can't do*` },
   BATCH_STATUS_CHECK: { name: "Combined: status check", body: `{{coordinator}} quick check — collected? ({{count}})
 
 {{items}}
@@ -473,7 +492,7 @@ Awaiting your confirmation: {{tomorrow_unconfirmed}}
 Please reply here if anything on tomorrow's list cannot be covered.`;
 
 const SUPERSEDED_DEFAULTS: Record<string, { bodies: string[]; names: string[] }> = {
-  [NON_API_NEW_ORDER_TEMPLATE]: { bodies: [LEGACY_NEW_ORDER_BODY], names: ["Non-API lab: new order"] },
+  [NON_API_NEW_ORDER_TEMPLATE]: { bodies: [LEGACY_NEW_ORDER_BODY, LEGACY_DEAR_NEW_ORDER_BODY], names: ["Non-API lab: new order"] },
   [NON_API_REMINDER_TEMPLATE]: { bodies: [LEGACY_REMINDER_BODY], names: ["Non-API lab: reminder"] },
   [NON_API_ESCALATION_TEMPLATE]: { bodies: [LEGACY_ESCALATION_BODY], names: ["Non-API lab: escalation (manager)"] },
   [NON_API_APPOINTMENT_TEMPLATE]: { bodies: [LEGACY_APPOINTMENT_BODY], names: ["Non-API lab: appointment reminder"] },

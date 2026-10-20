@@ -21,7 +21,8 @@ import { fetchOrderContactDetails } from "@/lib/non-api-labs/order-details";
 import { isAwaitingConfirmation } from "@/lib/non-api-labs/source-check";
 import { decideRule, inScope, planOrder, summaryDue, summaryMatches, summaryOccurrence, triggerMoment, conditionMatches } from "./evaluate";
 import { deliverBatch, deliverOrderMessage, deliverSummary, recordShadowBatch, type BatchItemInput, type FactValues } from "./deliver";
-import { batchIntentOf, currentSlot, intentRank, isSlotOpen, releaseAt, slotMissesVisit, startOfLocalDay, type BatchingMode } from "./batching";
+import { NEW_ORDER_INTENT, batchIntentOf, currentSlot, intentRank, isSlotOpen, releaseAt, slotMissesVisit, startOfLocalDay, type BatchingMode } from "./batching";
+import { newOrderReleaseAt } from "./new-order";
 import { buildEntries, summaryVariables } from "./summary";
 import { ensureMigratedToRules } from "./migrate";
 import { TIME_ZONE } from "./format";
@@ -204,10 +205,27 @@ export async function runMessageRulesPass(now = new Date()): Promise<RulesPassRe
   const timeZone = TIME_ZONE();
   const orderRules = rules.filter((rule) => rule.kind === "ORDER");
   const modeOf = (labId: number) => (labs.get(labId)?.config.batchingMode ?? "OFF") as BatchingMode;
+  // New orders gather for a few minutes (new-order.ts): the window starts at the
+  // earliest order of the lab still waiting for its message — decided without a
+  // release time, so "waiting" means exactly "would go now if released".
+  const gatherFrom = new Map<number, Date>();
+  for (const order of orders) {
+    for (const rule of orderRules.filter((r) => r.introduces)) {
+      const decision = decideRule(rule, order, {
+        lab: labs.get(order.labId)?.lab, conversation: conversations.get(order.id),
+        ledger: ledger.get(`${rule.id}:${order.id}`) ?? EMPTY_LEDGER,
+        facts: (facts.get(order.id) ?? NO_FACTS).kinds, now, timeZone,
+      });
+      const earliest = gatherFrom.get(order.labId);
+      if (decision.kind === "SEND" && (!earliest || order.createdAt < earliest)) gatherFrom.set(order.labId, order.createdAt);
+    }
+  }
   // LIVE labs: a combinable item waits for its intent's next slot — or, when
   // that slot would miss the order's visit, goes before the visit (releaseAt).
+  // A new order has no slot: it gathers, and waits for the morning at night.
   const slotted = (order: RuleOrder) => (rule: MessageRule, dueAt: Date) => {
     const intent = batchIntentOf(rule);
+    if (intent === NEW_ORDER_INTENT) return newOrderReleaseAt(dueAt, order.appointmentTime, gatherFrom.get(order.labId) ?? null, timeZone);
     return intent ? releaseAt(intent, dueAt, timeZone, order.appointmentTime) : null;
   };
   const sends: Send[] = [];
@@ -258,7 +276,8 @@ export async function runMessageRulesPass(now = new Date()): Promise<RulesPassRe
         if (outcome.sent) {
           result.sent += 1;
           const shadowIntent = modeOf(send.order.labId) === "SHADOW" ? batchIntentOf(send.rule) : null;
-          if (shadowIntent) {
+          // A new order has no slot to preview against; shadow records follow-up asks only.
+          if (shadowIntent && shadowIntent !== NEW_ORDER_INTENT) {
             await recordShadowBatch(config, shadowIntent, item, outcome.communicationId, now)
               .catch((error) => console.error("[MessageRules] shadow batch:", error instanceof Error ? error.message : error));
           }
@@ -454,18 +473,21 @@ async function deliverCombined(
     const already = await prisma.providerBatch.count({ where: { labId, shadow: false, createdAt: { gte: slotStart } } });
     let allowance = Math.max(0, config.maxBatchesPerSlot - already);
     // Per-day cap (manager escalations exempt): over it, items wait for tomorrow's first slot.
+    // New-order messages count in the day's total but are never held by it, nor
+    // by a slot or the per-slot cap: the lab must hear about an order promptly.
     let today = await prisma.providerBatch.count({ where: { labId, shadow: false, intent: { not: "ESCALATION" }, createdAt: { gte: dayStart } } });
     for (const [intent, pending] of [...intents].sort((a, b) => intentRank(a[0]) - intentRank(b[0]))) {
+      const uncapped = intent === NEW_ORDER_INTENT;
       // Only inside one of this ask's slots (a held item waits for the next one) —
       // except an item whose next slot would miss its visit: it goes now.
-      const group = isSlotOpen(intent, now, TIME_ZONE()) ? pending : pending.filter((send) => slotMissesVisit(intent, now, send.order.appointmentTime, TIME_ZONE()));
+      const group = uncapped || isSlotOpen(intent, now, TIME_ZONE()) ? pending : pending.filter((send) => slotMissesVisit(intent, now, send.order.appointmentTime, TIME_ZONE()));
       result.held += pending.length - group.length;
       if (group.length === 0) continue;
-      if (allowance <= 0) { result.held += group.length; continue; }
-      if (intent !== "ESCALATION" && today >= config.maxMessagesPerDay) { result.held += group.length; continue; }
+      if (!uncapped && allowance <= 0) { result.held += group.length; continue; }
+      if (!uncapped && intent !== "ESCALATION" && today >= config.maxMessagesPerDay) { result.held += group.length; continue; }
       try {
         const outcome = await deliverBatch({ config, intent, items: group.map(itemOf), now });
-        if (outcome.sent) { result.combined += 1; result.sent += group.length; allowance -= 1; if (intent !== "ESCALATION") today += 1; }
+        if (outcome.sent) { result.combined += 1; result.sent += group.length; if (!uncapped) allowance -= 1; if (intent !== "ESCALATION") today += 1; }
         else if (outcome.sendSingly) {
           // The combined template is paused: these orders go as single messages.
           for (const send of group) {

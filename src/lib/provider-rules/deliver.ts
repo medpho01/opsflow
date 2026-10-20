@@ -22,7 +22,7 @@ import { confirmationUrl } from "@/lib/non-api-labs/confirmation-link";
 import { contactVariables, type OrderContactDetails } from "@/lib/non-api-labs/order-details";
 import { newConversationStatus } from "./evaluate";
 import { TIME_ZONE, durationText, formatDate, formatDateTime, formatTime } from "./format";
-import { currentSlot, itemLine, releaseAt } from "./batching";
+import { NEW_ORDER_INTENT, currentSlot, itemLine, releaseAt } from "./batching";
 import { coordinatorsFor } from "@/lib/wa/coordinators";
 import type { MessageRule, RuleOrder } from "./types";
 
@@ -145,8 +145,40 @@ export async function ensureConversation(order: RuleOrder, rule: MessageRule, co
   return workflow;
 }
 
+type ActionToken = { action: "ACCEPT" | "RESCHEDULE" | "REJECT"; token: string; tokenHash: string };
+type SingleRender = { text: string; variables: TemplateVariables; tokens: ActionToken[]; tokenExpiry: Date };
+
+/**
+ * One order message from its template: the order's variables, fresh action
+ * tokens, the confirm link, and the coordinator @mention. An introduction
+ * (the new-order message) always opens with the mention — people answer
+ * people — even when an Ops-edited body left {{coordinator}} out.
+ */
+async function renderSingle(body: string, item: Omit<DeliverOrderInput, "config"> & { config: NonApiLabConfig }, coordinator: string): Promise<SingleRender> {
+  const { rule, order, config, contact, facts, occurrence, moment, now } = item;
+  const tokenExpiry = new Date(Math.max(
+    (order.appointmentTime?.getTime() ?? now.getTime()) + TOKEN_GRACE_MINUTES * 60_000,
+    now.getTime() + 24 * 3_600_000,
+  ));
+  const tokens: ActionToken[] = await Promise.all((["ACCEPT", "RESCHEDULE", "REJECT"] as const).map(async (action) => {
+    const token = bearerToken();
+    return { action, token, tokenHash: await sha256(token) };
+  }));
+  const variables: TemplateVariables = {
+    ...orderVariables(order, config, contact, facts, rule, occurrence, moment, now),
+    accept_url: actionUrl(tokens[0].token),
+    reschedule_url: actionUrl(tokens[1].token),
+    reject_url: actionUrl(tokens[2].token),
+    coordinator,
+  };
+  // Rendered with the link but stored without it (a fresh token per message).
+  let text = renderLabTemplate(body, { ...variables, confirm_url: await confirmationUrl(order.id) });
+  if (rule.introduces && !body.includes("{{coordinator}}")) text = `${coordinator} ${text}`;
+  return { text, variables, tokens, tokenExpiry };
+}
+
 export async function deliverOrderMessage(input: DeliverOrderInput): Promise<DeliverOutcome> {
-  const { rule, order, config, contact, facts, occurrence, moment, now } = input;
+  const { rule, order, config, occurrence, now } = input;
 
   const template = await ensureTemplate(rule.templateKey);
   if (!template.isActive) return { sent: false, reason: `Message "${template.name}" is paused` };
@@ -154,25 +186,11 @@ export async function deliverOrderMessage(input: DeliverOrderInput): Promise<Del
   const toManager = rule.recipient === "MANAGER";
   const managerMissing = toManager && !config.managerWhatsapp;
   const target = await resolveLabTarget(config, toManager ? config.managerWhatsapp : null);
-  const workflow = await ensureConversation(order, rule, contact, now);
+  const workflow = await ensureConversation(order, rule, input.contact, now);
 
-  const tokenExpiry = new Date(Math.max(
-    (order.appointmentTime?.getTime() ?? now.getTime()) + TOKEN_GRACE_MINUTES * 60_000,
-    now.getTime() + 24 * 3_600_000,
-  ));
-  const tokens = await Promise.all((["ACCEPT", "RESCHEDULE", "REJECT"] as const).map(async (action) => {
-    const token = bearerToken();
-    return { action, token, tokenHash: await sha256(token) };
-  }));
-
-  const variables: TemplateVariables = {
-    ...orderVariables(order, config, contact, facts, rule, occurrence, moment, now),
-    accept_url: actionUrl(tokens[0].token),
-    reschedule_url: actionUrl(tokens[1].token),
-    reject_url: actionUrl(tokens[2].token),
-  };
-  // Rendered with the link but stored without it (a fresh token per message).
-  const text = renderLabTemplate(template.body, { ...variables, confirm_url: await confirmationUrl(order.id) });
+  // A manager DM is a personal chat: nobody to @mention there.
+  const mention = toManager ? { text: "Team", jids: [] as string[] } : await coordinatorMentions(config, now);
+  const { text, variables, tokens, tokenExpiry } = await renderSingle(template.body, input, mention.text);
   const type = rule.introduces ? "INITIAL_NOTIFICATION" : rule.action === "ESCALATE" ? "ESCALATION" : "REMINDER";
   const conversationId = workflow.id;
 
@@ -191,7 +209,10 @@ export async function deliverOrderMessage(input: DeliverOrderInput): Promise<Del
     communicationId = communication.id;
     const outbound = await tx.waOutbound.create({
       // No polls: labs answer in their own words (replies.ts reads them).
-      data: { targetJid: target.targetJid, text, groupId: target.groupId, createdAt: now },
+      data: {
+        targetJid: target.targetJid, text, groupId: target.groupId, createdAt: now,
+        ...(mention.jids.length && text.includes(mention.text) ? { mentions: mention.jids } : {}),
+      },
     });
     await tx.labCommunication.update({ where: { id: communication.id }, data: { waOutboundId: outbound.id, status: "QUEUED" } });
     // The ledger row commits with the message: both or neither, so a crash
@@ -299,13 +320,14 @@ async function batchLine(intent: string, n: number, item: BatchItemInput, now: D
   const { order, contact, facts, rule, moment } = item;
   const phleboName = order.phleboName?.trim() || facts.phlebo_name;
   const phleboPhone = order.phleboNumber?.trim() || facts.phlebo_phone;
-  const needsLink = intent === "UNCONFIRMED" || intent === "ESCALATION";
+  const needsLink = intent === "UNCONFIRMED" || intent === "ESCALATION" || intent === NEW_ORDER_INTENT;
   return itemLine(intent, {
     n, orderId: order.id, patientName: order.patientName, appointment: order.appointmentTime,
     area: contact?.area ?? null,
     phlebo: [phleboName, phleboPhone].filter(Boolean).join(" ") || null,
     confirmUrl: needsLink ? await confirmationUrl(order.id) : null,
     createdAt: order.createdAt, milestone: rule.milestoneLabel, dueAt: moment,
+    mobile: contact?.patientMobile ?? null, address: contact?.address ?? null, mapUrl: contact?.mapUrl ?? null, tests: contact?.tests ?? null,
   }, now, TIME_ZONE());
 }
 
@@ -364,12 +386,20 @@ export type BatchOutcome =
  * its own message-log row, ledger row and timeline event (so repeats, "stop
  * when answered" and the order timeline work exactly as for single messages);
  * they share one WhatsApp outbound, numbered in the order listed.
+ *
+ * New orders (intent NEW_ORDER) are introductions: one order renders from the
+ * single new-order template (Ops-editable, with its action tokens); several
+ * render as "new orders (N)" with the full detail block per order. Either way
+ * it is recorded as a ProviderBatch, so a numbered reply lands on the right
+ * order and the message counts in the lab's day.
  */
 export async function deliverBatch(input: DeliverBatchInput): Promise<BatchOutcome> {
   const { config, intent, now } = input;
   const items = [...input.items].sort((a, b) =>
     (a.order.appointmentTime?.getTime() ?? 0) - (b.order.appointmentTime?.getTime() ?? 0) || a.order.id - b.order.id);
-  const templateKey = BATCH_TEMPLATE_BY_INTENT[intent] ?? BATCH_GENERIC_TEMPLATE;
+  const introduction = intent === NEW_ORDER_INTENT;
+  const loneIntroduction = introduction && items.length === 1;
+  const templateKey = loneIntroduction ? items[0].rule.templateKey : BATCH_TEMPLATE_BY_INTENT[intent] ?? BATCH_GENERIC_TEMPLATE;
   const template = await ensureTemplate(templateKey);
   if (!template.isActive) return { sent: false, reason: `Message "${template.name}" is paused`, sendSingly: true };
 
@@ -379,12 +409,19 @@ export async function deliverBatch(input: DeliverBatchInput): Promise<BatchOutco
   const conversations = new Map<number, string>();
   for (const item of items) conversations.set(item.order.id, (await ensureConversation(item.order, item.rule, item.contact, now)).id);
   // A manager escalation goes to a personal chat: no coordinator mention, no quoting.
-  const followUp = toManager ? null : await findFollowUp(config.labId, intent, items.map((i) => i.order.id), now);
+  // A new order is told once: never a follow-up of an earlier message.
+  const followUp = toManager || introduction ? null : await findFollowUp(config.labId, intent, items.map((i) => i.order.id), now);
   const mention = await coordinatorMentions(config, now);
   let numbers: number[];
   let lines: string[];
   let text: string;
-  if (followUp) {
+  let single: SingleRender | null = null;
+  if (loneIntroduction) {
+    numbers = [1];
+    lines = [await batchLine(intent, 1, items[0], now)];
+    single = await renderSingle(template.body, { ...items[0], config, now }, mention.text);
+    text = single.text;
+  } else if (followUp) {
     const original = new Map(followUp.items.map((item) => [item.orderId, item]));
     numbers = items.map((item) => original.get(item.order.id)!.n);
     lines = items.map((item) => original.get(item.order.id)!.line);
@@ -411,15 +448,22 @@ export async function deliverBatch(input: DeliverBatchInput): Promise<BatchOutco
         ...(!toManager && mention.jids.length ? { mentions: mention.jids } : {}),
       },
     });
+    if (single) {
+      await tx.labProviderActionToken.createMany({
+        data: single.tokens.map((entry) => ({ workflowId: conversations.get(items[0].order.id)!, action: entry.action, tokenHash: entry.tokenHash, expiresAt: single!.tokenExpiry })),
+      });
+    }
     for (const [index, item] of items.entries()) {
       const { rule, order, occurrence } = item;
       const conversationId = conversations.get(order.id)!;
-      const type = rule.action === "ESCALATE" ? "ESCALATION" : "REMINDER";
+      const type = rule.introduces ? "INITIAL_NOTIFICATION" : rule.action === "ESCALATE" ? "ESCALATION" : "REMINDER";
       const communication = await tx.labCommunication.create({
         data: {
           workflowId: conversationId, labId: order.labId, orderId: order.id, type, status: "QUEUED",
           recipient: target.targetJid, templateKey, batchOutboundId: outbound.id,
-          templateVariables: { order_id: String(order.id), combined: intent, item: String(numbers[index]), of: String(items.length), ...(followUp ? { followUpOf: followUp.rootId } : {}) },
+          templateVariables: single
+            ? single.variables
+            : { order_id: String(order.id), combined: intent, item: String(numbers[index]), of: String(items.length), ...(followUp ? { followUpOf: followUp.rootId } : {}) },
           ruleId: rule.id, idempotencyKey: `rules:${rule.id}:${order.id}:${occurrence}`, createdAt: now,
         },
       });
@@ -444,7 +488,7 @@ export async function deliverBatch(input: DeliverBatchInput): Promise<BatchOutco
       await tx.labCommunicationOrderEvent.create({
         data: {
           workflowId: conversationId,
-          type: rule.action === "ESCALATE" ? "ESCALATION_TRIGGERED" : "REMINDER_SENT",
+          type: rule.introduces ? "MESSAGE_QUEUED" : rule.action === "ESCALATE" ? "ESCALATION_TRIGGERED" : "REMINDER_SENT",
           actorType: "SYSTEM",
           payload: {
             ruleId: rule.id, ruleName: rule.name, occurrence, communicationId: communication.id, outboundId: outbound.id,

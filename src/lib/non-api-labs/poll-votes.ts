@@ -50,8 +50,8 @@ async function currentAckFor(label: string, action: LabProviderActionType | null
  * Answer the provider in their own group.
  *
  * Queued through wa_outbound rather than sent straight from the gateway, so it
- * inherits everything the ladder's own messages get: the per-group sendEnabled
- * guard, the signature, retries, and a row in lab_communications. The gateway
+ * inherits everything the ladder's own messages get:
+ * the signature, retries, and a row in lab_communications. The gateway
  * used to reply to REJECT/RESCHEDULE with a raw sendMessage, which had none of
  * those and left no trace that the provider had ever been asked.
  *

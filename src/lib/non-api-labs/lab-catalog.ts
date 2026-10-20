@@ -57,11 +57,10 @@ export function labstackIntegration(lab: Pick<SourceLab, "isApiHomeSample" | "is
  *   NOT_CONFIGURED  no OpsFlow config yet
  *   NEEDS_GROUP     configured, but nowhere it can actually send
  *   PAUSED          configured and switched off
- *   SENDING_OFF     its group exists, but sending is off for it
  *   LIVE            messages will go out
  */
-export type LabSetupStatus = "NOT_CONFIGURED" | "NEEDS_GROUP" | "PAUSED" | "SENDING_OFF" | "LIVE";
-export const LAB_SETUP_STATUSES: LabSetupStatus[] = ["LIVE", "SENDING_OFF", "PAUSED", "NEEDS_GROUP", "NOT_CONFIGURED"];
+export type LabSetupStatus = "NOT_CONFIGURED" | "NEEDS_GROUP" | "PAUSED" | "LIVE";
+export const LAB_SETUP_STATUSES: LabSetupStatus[] = ["LIVE", "PAUSED", "NEEDS_GROUP", "NOT_CONFIGURED"];
 
 export type GroupOption = {
   jid: string;
@@ -150,7 +149,6 @@ function statusOf(config: NonApiLabConfig | null, group: GroupOption | undefined
   if (!config) return "NOT_CONFIGURED";
   if ((!config.waGroupJid && !config.whatsappNumber) || unknownGroup || groupNotMember) return "NEEDS_GROUP";
   if (!config.isActive) return "PAUSED";
-  if (config.waGroupJid && group && !group.sendEnabled) return "SENDING_OFF";
   return "LIVE";
 }
 

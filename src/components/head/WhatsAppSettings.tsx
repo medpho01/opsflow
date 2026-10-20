@@ -164,7 +164,6 @@ export function WhatsAppSettings() {
                 <th className="px-3 py-2.5 font-semibold">Role</th>
                 <th className="px-3 py-2.5 font-semibold">Map (store/lab id)</th>
                 <th className="px-3 py-2.5 font-semibold text-center">Active</th>
-                <th className="px-3 py-2.5 font-semibold text-center">Send</th>
                 <th className="px-3 py-2.5 font-semibold text-center">Ask ID</th>
               </tr>
             </thead>
@@ -186,7 +185,6 @@ export function WhatsAppSettings() {
                     ) : <span className="text-zinc-600 text-xs">—</span>}
                   </td>
                   <td className="px-3 py-2.5 text-center"><Toggle on={g.active} onChange={(v) => patchGroup(g.id, { active: v })} /></td>
-                  <td className="px-3 py-2.5 text-center"><Toggle on={g.sendEnabled} onChange={(v) => patchGroup(g.id, { sendEnabled: v })} /></td>
                   <td className="px-3 py-2.5 text-center"><Toggle on={g.autoAskIdOnMissing} onChange={(v) => patchGroup(g.id, { autoAskIdOnMissing: v })} /></td>
                 </tr>
               ))}

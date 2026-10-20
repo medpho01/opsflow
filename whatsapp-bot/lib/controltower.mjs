@@ -772,7 +772,7 @@ export async function enqueueOutbound({ targetJid, text, groupId = null, ticketI
 
 /**
  * Drain queued outbound rows. `send(targetJid, text, quotedWaId)` must return
- * the sent WhatsApp message id (or throw). Respects per-group sendEnabled.
+ * the sent WhatsApp message id (or throw).
  */
 // Every message we send is signed so partners always know it came from ops.
 // Configurable via WA_SIGNATURE (set empty to disable). Italic in WhatsApp.
@@ -1053,14 +1053,6 @@ export async function drainOutbound(send, { limit = 5, sendPoll = null } = {}) {
   for (const row of rows) {
     // a group target must be send-enabled; non-group (raw number) sends are allowed
     // attempts was already incremented by the claim above.
-    // The per-group switch guards against automation, not people: a message a team
-    // member typed in the console (createdById set) always goes.
-    if (row.groupId && !row.sendEnabled && row.createdById == null) {
-      const reason = `sending disabled for group "${row.subject}"`;
-      await taskosQuery(`UPDATE wa_outbound SET status='FAILED', error=$2 WHERE id=$1`, [row.id, reason]);
-      await markCommunicationFailed(row.id);
-      continue;
-    }
     try {
       // Build a quoted stub so the reply threads under the original message.
       // WhatsApp only renders a quote when the quoted message lives in the SAME

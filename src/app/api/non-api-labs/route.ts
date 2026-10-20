@@ -37,8 +37,6 @@ export async function POST(request: NextRequest) {
     if (existing) return NextResponse.json({ error: "A configuration already exists for this LabStack lab", code: "CONFLICT", requestId }, { status: 409 });
 
     const lab = await prisma.nonApiLabConfig.create({ data: { ...parsed.data, createdById: user.id, updatedById: user.id } });
-    // Choosing a lab's group here is the decision to message it: bot messages go on for it.
-    if (lab.waGroupJid && lab.isActive) await prisma.waGroup.updateMany({ where: { jid: lab.waGroupJid }, data: { sendEnabled: true, active: true } });
     return NextResponse.json({ lab }, { status: 201 });
   } catch (error) {
     return NextResponse.json(logAndBuildErrorBody({ requestId, scope: "NonApiLabsAPI.POST", code: "CREATE_ERROR", userMessage: "Failed to save non-API lab configuration", error }), { status: 500 });

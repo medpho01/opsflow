@@ -569,7 +569,7 @@ export function WhatsAppControlTower({ canAdmin = true }: { canAdmin?: boolean }
             <label className="text-[11px] uppercase tracking-wide text-zinc-500 font-semibold">Send to a group</label>
             <select value={ncGroupId} onChange={(e) => { setNcGroupId(e.target.value); if (e.target.value) setNcNumber(""); }} className="bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-100 focus:border-blue-500 outline-none">
               <option value="">— pick a group —</option>
-              {ncGroups.map((g) => <option key={g.id} value={g.id}>{short(g.subject)}{!g.sendEnabled ? " (bot messages off)" : ""}</option>)}
+              {ncGroups.map((g) => <option key={g.id} value={g.id}>{short(g.subject)}</option>)}
             </select>
             <div className="text-center text-[11px] text-zinc-600">or</div>
             <label className="text-[11px] uppercase tracking-wide text-zinc-500 font-semibold">A phone number</label>
@@ -856,7 +856,6 @@ export function WhatsAppControlTower({ canAdmin = true }: { canAdmin?: boolean }
                   </div>
                   <button onClick={sendReply} disabled={busy} className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-semibold text-sm px-4 py-2.5 rounded-lg">Send ▸</button>
                 </div>
-                {detail.group && !detail.group.sendEnabled && <div className="text-[11px] text-amber-400">Sending is off for this group — enable it in Settings before replies actually send.</div>}
                 {detail.outbound && detail.outbound.length > 0 && (
                   <div className="flex flex-col gap-1 pt-1">
                     {detail.outbound.slice(0, 4).map((o) => (

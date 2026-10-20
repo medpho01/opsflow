@@ -105,7 +105,7 @@ function toDraft(lab: LabConfig): Draft {
   };
 }
 
-type SetupStatus = "NOT_CONFIGURED" | "NEEDS_GROUP" | "PAUSED" | "SENDING_OFF" | "LIVE";
+type SetupStatus = "NOT_CONFIGURED" | "NEEDS_GROUP" | "PAUSED" | "LIVE";
 type StatusFilter = "ALL" | "CONFIGURED" | SetupStatus;
 type SortKey = "fulfilled" | "open" | "recent" | "name" | "id";
 type Coordinator = { jid: string; name: string };
@@ -170,7 +170,6 @@ const DEFAULT_FILTERS: Filters = {
 
 const STATUS_LABELS: Record<SetupStatus, string> = {
   LIVE: "Live",
-  SENDING_OFF: "Sending off",
   PAUSED: "Paused",
   NEEDS_GROUP: "Needs a group",
   NOT_CONFIGURED: "Not configured",
@@ -178,7 +177,6 @@ const STATUS_LABELS: Record<SetupStatus, string> = {
 
 const STATUS_TONES: Record<SetupStatus, string> = {
   LIVE: "bg-emerald-500/10 text-emerald-300",
-  SENDING_OFF: "bg-amber-500/10 text-amber-300",
   PAUSED: "bg-zinc-700/40 text-zinc-300",
   NEEDS_GROUP: "bg-rose-500/10 text-rose-300",
   NOT_CONFIGURED: "bg-transparent text-zinc-500",
@@ -450,7 +448,7 @@ export function NonApiLabConfigPanel() {
         >
           {statusOption("ALL", "All labs")}
           {statusOption("CONFIGURED", "Configured", meta?.configuredCount)}
-          {(["LIVE", "SENDING_OFF", "PAUSED", "NEEDS_GROUP", "NOT_CONFIGURED"] as SetupStatus[]).map((status) => (
+          {(["LIVE", "PAUSED", "NEEDS_GROUP", "NOT_CONFIGURED"] as SetupStatus[]).map((status) => (
             <option key={status} value={status}>{STATUS_LABELS[status]}{statusCounts ? ` (${formatCount(statusCounts[status])})` : ""}</option>
           ))}
         </select>
@@ -610,10 +608,10 @@ export function NonApiLabConfigPanel() {
                 )}
                 {groups.map((g) => (
                   <option key={g.jid} value={g.jid}>
-                    {g.subject || g.jid}{g.sendEnabled ? "" : " — bot messages turn on when you save"}
+                    {g.subject || g.jid}
                   </option>
                 ))}
-              </select></Field><p className="text-[11px] text-zinc-500 -mt-2">Picked from the {groups.length} groups the gateway can actually see, so the id is never typed. Saving turns bot messages on for the chosen group.</p><p className="text-[11px] text-zinc-500 -mt-2">The provider&apos;s ops group, so a reply is visible to their whole desk. Required for API labs too — that is where breach alerts go. </p><Field label="Lab WhatsApp number (fallback, used only without a group)"><input value={draft.whatsappNumber} onChange={(e) => update("whatsappNumber", e.target.value)} placeholder="+9198…" className={inputClass} /></Field><div className="grid grid-cols-2 gap-3"><Field label="Lab manager (name)"><input value={draft.managerName} onChange={(e) => update("managerName", e.target.value)} placeholder="Optional" className={inputClass} /></Field><Field label="Lab manager WhatsApp"><input value={draft.managerWhatsapp} onChange={(e) => update("managerWhatsapp", e.target.value)} placeholder="+9198…" className={inputClass} /></Field></div><p className="text-[11px] text-zinc-500 -mt-2">Rules set to “send to the lab manager” (the final reminder) go here; without a number they go to the group.</p><div className="max-w-[14rem]"><Field label="Quiet window (minutes)"><input required type="number" min="0" max="240" value={draft.quietWindowMinutes} onChange={(e) => update("quietWindowMinutes", e.target.value)} className={inputClass} /></Field></div><p className="text-[11px] text-zinc-500 -mt-2">Minimum gap between two messages about the same order. What is sent, and when, is set on the Message Rules page.</p><p className="text-[11px] text-zinc-500">Messages are the same for every lab (Message Rules). Follow-ups for several orders go as one numbered message per ask, at set times in working hours, and reply to the earlier message.</p><CoordinatorPicker labId={draft.labId} groupJid={draft.waGroupJid} value={draft.coordinators} onChange={(next) => update("coordinators", next)} />{draft.labId && <CombinedMessages labId={Number(draft.labId)} />}<label className="flex items-center gap-2 text-sm text-zinc-300"><input type="checkbox" checked={draft.isActive} onChange={(e) => update("isActive", e.target.checked)} className="accent-blue-500" /> Enable automation for this lab</label>{error && <div className="rounded-md bg-rose-500/10 text-rose-300 text-sm px-3 py-2">{error}</div>}</div><div className="px-5 py-4 border-t border-zinc-800 flex justify-end gap-2"><button type="button" onClick={() => setOpen(false)} className="px-3 py-2 text-sm text-zinc-400 hover:text-zinc-200">Cancel</button><button disabled={saving} className="rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-60 text-white font-semibold text-sm px-4 py-2">{saving ? "Saving…" : "Save configuration"}</button></div></form></div></div>}
+              </select></Field><p className="text-[11px] text-zinc-500 -mt-2">Picked from the {groups.length} groups the gateway can actually see, so the id is never typed. </p><p className="text-[11px] text-zinc-500 -mt-2">The provider&apos;s ops group, so a reply is visible to their whole desk. Required for API labs too — that is where breach alerts go. </p><Field label="Lab WhatsApp number (fallback, used only without a group)"><input value={draft.whatsappNumber} onChange={(e) => update("whatsappNumber", e.target.value)} placeholder="+9198…" className={inputClass} /></Field><div className="grid grid-cols-2 gap-3"><Field label="Lab manager (name)"><input value={draft.managerName} onChange={(e) => update("managerName", e.target.value)} placeholder="Optional" className={inputClass} /></Field><Field label="Lab manager WhatsApp"><input value={draft.managerWhatsapp} onChange={(e) => update("managerWhatsapp", e.target.value)} placeholder="+9198…" className={inputClass} /></Field></div><p className="text-[11px] text-zinc-500 -mt-2">Rules set to “send to the lab manager” (the final reminder) go here; without a number they go to the group.</p><div className="max-w-[14rem]"><Field label="Quiet window (minutes)"><input required type="number" min="0" max="240" value={draft.quietWindowMinutes} onChange={(e) => update("quietWindowMinutes", e.target.value)} className={inputClass} /></Field></div><p className="text-[11px] text-zinc-500 -mt-2">Minimum gap between two messages about the same order. What is sent, and when, is set on the Message Rules page.</p><p className="text-[11px] text-zinc-500">Messages are the same for every lab (Message Rules). Follow-ups for several orders go as one numbered message per ask, at set times in working hours, and reply to the earlier message.</p><CoordinatorPicker labId={draft.labId} groupJid={draft.waGroupJid} value={draft.coordinators} onChange={(next) => update("coordinators", next)} />{draft.labId && <CombinedMessages labId={Number(draft.labId)} />}<label className="flex items-center gap-2 text-sm text-zinc-300"><input type="checkbox" checked={draft.isActive} onChange={(e) => update("isActive", e.target.checked)} className="accent-blue-500" /> Enable automation for this lab</label>{error && <div className="rounded-md bg-rose-500/10 text-rose-300 text-sm px-3 py-2">{error}</div>}</div><div className="px-5 py-4 border-t border-zinc-800 flex justify-end gap-2"><button type="button" onClick={() => setOpen(false)} className="px-3 py-2 text-sm text-zinc-400 hover:text-zinc-200">Cancel</button><button disabled={saving} className="rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-60 text-white font-semibold text-sm px-4 py-2">{saving ? "Saving…" : "Save configuration"}</button></div></form></div></div>}
       {toast && <div className="fixed z-[60] left-1/2 bottom-6 -translate-x-1/2 rounded-lg bg-zinc-100 text-zinc-950 px-4 py-2 text-sm font-medium shadow-lg">{toast}</div>}
     </div>
   );

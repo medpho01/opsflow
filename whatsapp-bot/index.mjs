@@ -517,9 +517,8 @@ async function start() {
 
         // The reply to a tap — "order confirmed" for ACCEPT, "tell us why" for
         // the other two — is composed by the console, not here. It used to be a
-        // raw sendMessage from this handler, which skipped the per-group
-        // sendEnabled guard, carried no signature, left no lab_communications
-        // row, and hardcoded wording Ops could not edit. The tick now renders it
+        // raw sendMessage from this handler, which carried no signature, left no
+        // lab_communications row, and hardcoded wording Ops could not edit. The tick now renders it
         // from a template and queues it like any other message; see
         // acknowledge() in lib/non-api-labs/poll-votes.ts.
       } catch (e) {

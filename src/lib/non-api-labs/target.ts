@@ -19,18 +19,8 @@
  * name. Group jids also carry "-" in the legacy `<creator>-<created>@g.us`
  * form, which the same strip destroys.
  *
- * ── The guard ────────────────────────────────────────────────────────────
- * The gateway's drain (whatsapp-bot/lib/controltower.mjs) refuses to send an
- * outbound row whose `groupId` points at a group with `sendEnabled = false`.
- * That guard is the only thing standing between an automation bug and a real
- * provider group, so a group send MUST carry `groupId` — a bare jid with a
- * null groupId would slip straight past it.
- *
- * So an unknown group jid is registered here as a wa_groups row with
- * `sendEnabled = false`: messages queue, the drain fails them with "sending
- * disabled for group …", and nothing reaches WhatsApp until a human turns
- * sending on for that group in the console. Safe by default, and visible —
- * rather than either silently dropping the message or silently sending it.
+ * An unknown group jid is registered here as a wa_groups row, so every group
+ * send carries its groupId (the console threads and labels by it).
  */
 import prisma from "@/lib/db/client";
 import { personJid } from "@/lib/wa/phone";
@@ -41,10 +31,8 @@ export interface LabTarget {
   kind: LabTargetKind;
   /** Address the gateway sends to: a group jid, or `<digits>@s.whatsapp.net`. */
   targetJid: string;
-  /** wa_groups row id for GROUP targets — required for the sendEnabled guard. */
+  /** wa_groups row id for GROUP targets. */
   groupId: string | null;
-  /** True when the group exists but sending has not been enabled for it yet. */
-  sendBlocked: boolean;
 }
 
 /** Minimal shape needed to address a lab — accepts a full NonApiLabConfig. */
@@ -85,7 +73,7 @@ export async function resolveLabTarget(
   override?: string | null,
 ): Promise<LabTarget> {
   if (override && !isGroupJid(override)) {
-    return { kind: "DM", targetJid: toDirectJid(override), groupId: null, sendBlocked: false };
+    return { kind: "DM", targetJid: toDirectJid(override), groupId: null };
   }
 
   const groupJid = (override && isGroupJid(override) ? override : config.waGroupJid)?.trim();
@@ -105,18 +93,17 @@ export async function resolveLabTarget(
         subject: `${config.labName} (provider)`,
         role: "PROVIDER",
         labId: config.labId,
-        sendEnabled: false,
         active: true,
         accountNumber: gateway?.connectedNumber ?? null,
         isMember: false,
       },
-      select: { id: true, sendEnabled: true },
+      select: { id: true },
     });
-    return { kind: "GROUP", targetJid: jid, groupId: group.id, sendBlocked: !group.sendEnabled };
+    return { kind: "GROUP", targetJid: jid, groupId: group.id };
   }
 
   if (config.whatsappNumber) {
-    return { kind: "DM", targetJid: toDirectJid(config.whatsappNumber), groupId: null, sendBlocked: false };
+    return { kind: "DM", targetJid: toDirectJid(config.whatsappNumber), groupId: null };
   }
 
   throw new Error(`Lab ${config.labId} has neither waGroupJid nor whatsappNumber configured`);

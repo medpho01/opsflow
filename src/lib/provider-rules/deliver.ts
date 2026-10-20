@@ -190,7 +190,6 @@ export async function deliverOrderMessage(input: DeliverOrderInput): Promise<Del
     });
     communicationId = communication.id;
     const outbound = await tx.waOutbound.create({
-      // groupId arms the gateway's per-group sendEnabled guard.
       // No polls: labs answer in their own words (replies.ts reads them).
       data: { targetJid: target.targetJid, text, groupId: target.groupId, createdAt: now },
     });

@@ -203,7 +203,6 @@ export default function WhatsAppInbox({ gwDryRun, onOpenCase }: { gwDryRun: bool
                 </div>
                 <button onClick={send} disabled={busy} className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-semibold text-sm px-4 py-2.5 rounded-lg">Send ▸</button>
               </div>
-              {group && !group.sendEnabled && <div className="text-[11px] text-amber-400">Sending is off for this group — enable it in Settings.</div>}
               {gwDryRun && <div className="text-[11px] text-amber-400">Gateway is in dry-run — messages queue but won&apos;t send.</div>}
             </div>
           </>

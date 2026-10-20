@@ -37,12 +37,13 @@ describe("lab catalogue", () => {
 
   it("derives one setup status per lab", () => {
     const status = Object.fromEntries(rows.map((row) => [row.labId, row.status]));
-    assert.deepEqual(status, { 1: "LIVE", 2: "PAUSED", 3: "SENDING_OFF", 4: "NOT_CONFIGURED", 5: "NEEDS_GROUP" });
+    assert.deepEqual(status, { 1: "LIVE", 2: "PAUSED", 3: "LIVE", 4: "NOT_CONFIGURED", 5: "NEEDS_GROUP" });
   });
 
   it("filters by status and counts every status before that filter", () => {
+    // A group's old per-group send switch no longer matters: lab 3 is live.
     const result = queryCatalog(rows, { status: "LIVE" });
-    assert.deepEqual(ids(result), [1]);
+    assert.deepEqual(ids(result), [3, 1]);
     assert.equal(result.statusCounts.PAUSED, 1);
     assert.equal(result.statusCounts.NOT_CONFIGURED, 0);
   });

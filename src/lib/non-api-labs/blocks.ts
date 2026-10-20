@@ -141,6 +141,9 @@ export const SAMPLE_VALUES: Record<string, string> = {
   orders_word: "orders",
   items: "1. #73142 · Sharma · 7:00 am\n2. #73155 · Verma · 7:30 am\n3. #73160 · Iyer · 8:00 am",
   batch_title: "Your rule (sample)",
+  coordinator: "@Ravi (sample)",
+  numbers: "1, 3",
+  since: "1:30 pm",
 };
 
 /** Render a body with sample values, leaving unknown variables visible. */

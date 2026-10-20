@@ -136,9 +136,12 @@ async function labReplies(lab: LabKey, when: string, text: string, quotingOrder?
   } });
 }
 
-async function setBatching(lab: LabKey, mode: "OFF" | "SHADOW" | "LIVE", maxBatchesPerSlot = 3) {
-  await prisma.nonApiLabConfig.update({ where: { labId: LABS[lab].labId }, data: { batchingMode: mode, maxBatchesPerSlot } });
+async function setBatching(lab: LabKey, mode: "OFF" | "SHADOW" | "LIVE", maxBatchesPerSlot = 3, extra: { coordinators?: Array<{ jid: string; name: string }>; maxMessagesPerDay?: number } = {}) {
+  await prisma.nonApiLabConfig.update({ where: { labId: LABS[lab].labId }, data: { batchingMode: mode, maxBatchesPerSlot, ...extra } });
 }
+
+/** A lab coordinator, as picked on Lab Config. */
+const COORDINATOR = { jid: "919900000001@s.whatsapp.net", name: "Lab desk" };
 
 async function expectFacts(orderId: number, kinds: string[]) {
   const have = new Set((await prisma.providerOrderFact.findMany({ where: { orderId }, select: { kind: true } })).map((f) => f.kind));
@@ -174,7 +177,7 @@ async function collect() {
     } else if ((batch = await prisma.providerBatch.findUnique({ where: { outboundId: row.id } }))) {
       const names = (batch.items as Array<{ orderId: number }>).map((item) => aliases.get(item.orderId) ?? `#${item.orderId}`);
       what = `combined ${batch.intent} · ${batch.itemCount} order(s): ${names.join(", ")}`;
-      short = `COMBINED ${batch.intent} [${names.join(",")}]`;
+      short = `COMBINED ${batch.intent}${batch.followUpOf ? " FOLLOW-UP" : ""} [${names.join(",")}]`;
     } else {
       what = `reply: “${row.text.split("\n")[0].replace(/\(.*?\)/g, "(…)")}”`;
       short = "ack";
@@ -187,6 +190,9 @@ async function collect() {
 async function run(from: string, to: string, step = 5) {
   for (let t = at(from).getTime(); t <= at(to).getTime(); t += step * 60_000) {
     await runNonApiLabTick(new Date(t));
+    // The gateway: WhatsApp accepts what was queued (follow-ups can only quote accepted messages).
+    await prisma.$executeRawUnsafe(`UPDATE taskos.wa_outbound SET status = 'SENT', "sentWaMsgId" = 'sim-wa-' || id, "sentAt" = $1
+      WHERE status = 'QUEUED' AND "sentWaMsgId" IS NULL`, new Date(t));
     await collect();
   }
 }
@@ -371,35 +377,44 @@ const scenarios: Scenario[] = [
     ],
   },
   {
-    name: "13. Combined: 3 status checks due 9:05–9:20 go as ONE message at 9:30; a numbered reply lands on each order",
+    name: "13. Combined: 3 status checks due 9:05–9:20 go as ONE message at the 11:00 slot, @mentioning the coordinator; a numbered reply lands on each order",
     run: async () => {
-      await setBatching("A", "LIVE");
+      await setBatching("A", "LIVE", 3, { coordinators: [COORDINATOR] });
       const a = await createOrder({ status: "ORDER_SCHEDULED", placed: "-2d 10:00", appointment: "08:35", alias: "o13a" });
       const b = await createOrder({ status: "ORDER_SCHEDULED", placed: "-2d 10:00", appointment: "08:40", alias: "o13b" });
       await createOrder({ status: "ORDER_SCHEDULED", placed: "-2d 10:00", appointment: "08:50", alias: "o13c" });
-      await run("09:00", "09:35");
-      await labReplies("A", "09:40", "1 collected, 2 patient not available, 3 at 5 pm", a);
-      await run("09:45", "10:30", 15);
+      await run("09:00", "11:05");
+      const sent = await prisma.waOutbound.findFirstOrThrow({ where: { text: { contains: "quick check" } } });
+      if (!sent.text.startsWith("@919900000001 ") || JSON.stringify(sent.mentions) !== JSON.stringify([COORDINATOR.jid])) {
+        throw new Error(`expected an @mention of the coordinator, got: ${sent.text.split("\n")[0]} / ${JSON.stringify(sent.mentions)}`);
+      }
+      await labReplies("A", "11:10", "1 collected, 2 patient not available, 3 at 5 pm", a);
+      await run("11:15", "12:00", 15);
       await expectFacts(a, ["sample_collected"]);
       await expectFacts(b, ["patient_unavailable"]);
     },
-    expect: ["09:30 COMBINED STATUS [o13a,o13b,o13c]"],
+    expect: ["11:00 COMBINED STATUS [o13a,o13b,o13c]"],
   },
   {
-    name: "14. Combined phlebo asks repeat every 30 min — an order the lab answered drops out of the next one",
+    name: "14. Follow-ups quote the original, keep its numbers, name only what is open — firmer from the 3rd ask",
     run: async () => {
-      await setBatching("A", "LIVE");
-      await setRule("ASSIGN_PHLEBO", { isActive: true });
-      const a = await createOrder({ status: "ORDER_SCHEDULED", placed: "-1d 10:00", appointment: "11:10", alias: "o14a" });
-      await createOrder({ status: "ORDER_SCHEDULED", placed: "-1d 10:00", appointment: "11:20", alias: "o14b" });
-      await run("09:00", "09:40");
-      await labReplies("A", "09:45", "1 Ramesh 9876543210 will go", a);
-      await run("09:50", "10:45");
+      await setBatching("A", "LIVE", 3, { coordinators: [COORDINATOR] });
+      await setRule("REPORT_CHASE", { isActive: true });
+      const a = await createOrder({ status: "SAMPLE_COLLECTED", placed: "-2d 10:00", appointment: "-1d 20:00", alias: "o14a" });
+      await createOrder({ status: "SAMPLE_COLLECTED", placed: "-2d 10:00", appointment: "-1d 20:30", alias: "o14b" });
+      await run("10:00", "10:45");                       // 10:30: reports pending (2)
+      await labReplies("A", "11:00", "1 shared on email", a);
+      await run("11:15", "+1d 11:00", 15);               // 16:30 follow-up; next day 10:30 firm follow-up
+      const [root, first, second] = await prisma.providerBatch.findMany({ where: { intent: "REPORT" }, orderBy: { createdAt: "asc" } });
+      const rootOut = await prisma.waOutbound.findUniqueOrThrow({ where: { id: root.outboundId! } });
+      for (const [batch, wording] of [[first, "still open: 2"], [second, "reminder — 2 still pending since"]] as const) {
+        const out = await prisma.waOutbound.findUniqueOrThrow({ where: { id: batch.outboundId! } });
+        if (batch.followUpOf !== root.id || out.quotedWaId !== rootOut.sentWaMsgId || !out.text.includes(wording) || !out.text.startsWith("@919900000001")) {
+          throw new Error(`follow-up not as expected: "${out.text}" quoted=${out.quotedWaId}`);
+        }
+      }
     },
-    expect: [
-      "09:00 NEW_ORDER · o14a", "09:00 NEW_ORDER · o14b",
-      "09:30 COMBINED PHLEBO [o14a,o14b]", "10:00 COMBINED PHLEBO [o14b]", "10:30 COMBINED PHLEBO [o14b]",
-    ],
+    expect: ["10:30 COMBINED REPORT [o14a,o14b]", "16:30 COMBINED REPORT FOLLOW-UP [o14b]", "10:30 COMBINED REPORT FOLLOW-UP [o14b]"],
   },
   {
     name: "15. Preview only (SHADOW): labs still get one message per order; the combined one is recorded",
@@ -417,17 +432,23 @@ const scenarios: Scenario[] = [
     expect: ["09:05 STATUS_CHECK · o15a", "09:10 STATUS_CHECK · o15b", "09:20 STATUS_CHECK · o15c"],
   },
   {
-    name: "16. At most N combined messages per slot (here 1): the lower-ranked ask waits for the next slot; new-order messages are never combined",
+    name: "16. Day cap (here 1): the next ask waits for its slot TOMORROW — never sent at midnight; new-order messages are never combined",
     run: async () => {
-      await setBatching("A", "LIVE", 1);
-      await createOrder({ placed: "08:20", appointment: "+1d 08:00", alias: "o16a" });
-      await createOrder({ placed: "08:25", appointment: "+1d 09:00", alias: "o16b" });
+      await setBatching("A", "LIVE", 3, { maxMessagesPerDay: 1 });
+      const a = await createOrder({ placed: "08:20", appointment: "+1d 08:00", alias: "o16a" });
+      const b = await createOrder({ placed: "08:25", appointment: "+1d 09:00", alias: "o16b" });
       await createOrder({ status: "ORDER_SCHEDULED", placed: "-2d 10:00", appointment: "08:45", alias: "o16c" });
-      await run("08:20", "10:15");
+      await run("08:20", "11:30");
+      await run("23:30", "+1d 00:30", 10);
+      // Next morning the lab confirms a and b; the held status check goes at the 11:00 slot,
+      // together with a's and b's own status checks (their visits are past by then).
+      await updateOrder(a, "+1d 07:00", { status: "ORDER_SCHEDULED" });
+      await updateOrder(b, "+1d 07:00", { status: "ORDER_SCHEDULED" });
+      await run("+1d 10:50", "+1d 11:10");
     },
     expect: [
       "08:20 NEW_ORDER · o16a", "08:25 NEW_ORDER · o16b",
-      "09:30 COMBINED STATUS [o16c]", "10:00 COMBINED UNCONFIRMED [o16a,o16b]",
+      "10:00 COMBINED UNCONFIRMED [o16a,o16b]", "11:00 COMBINED STATUS [o16c,o16a,o16b]",
     ],
   },
   {
@@ -441,9 +462,9 @@ const scenarios: Scenario[] = [
       });
       await createOrder({ status: "ORDER_SCHEDULED", placed: "-2d 10:00", appointment: "08:35", alias: "o17a" });
       await createOrder({ status: "ORDER_SCHEDULED", placed: "-2d 10:00", appointment: "08:40", alias: "o17b" });
-      await run("09:00", "09:35");
+      await run("09:00", "11:05");
     },
-    expect: ["09:30 STATUS_CHECK · o17a", "09:30 STATUS_CHECK · o17b"],
+    expect: ["11:00 STATUS_CHECK · o17a", "11:00 STATUS_CHECK · o17b"],
   },
 ];
 

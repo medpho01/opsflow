@@ -308,3 +308,53 @@ so the current setup keeps working while a pilot runs.
    into Phase 3.
 4. Pilot labs: still to pick. Every capability ships OFF / SHADOW / LIVE per
    lab, so the pilot is chosen at rollout.
+
+## Phase 1b (20 Oct 2026): built
+
+From the chat review (CHAT-REVIEW-OCT-2026.md):
+- **Coordinators**: per lab, picked on Lab Config from the group's members
+  (lab people first, busiest first). Every combined message and follow-up
+  starts by @mentioning them (`{{coordinator}}`); without one it says "Team".
+- **Follow-ups in-thread**: when every order in a send was in one combined
+  message in the last 24 h, the bot replies to (quotes) that message, keeps its
+  numbers and names only what is open — "@desk still open: 2 🙏"; from the
+  third ask, "reminder — 2 still pending since 10:30 am…".
+- **Daily rhythm** per ask (`DAILY_SLOTS`): confirmations hourly 09–20,
+  escalations every 2 h, phlebo from 08:30 every 2 h, status 11:00 / 13:30 /
+  16:00 / 18:30, reports 10:30 / 16:30, overdue 12:00 / 17:00. Nothing before
+  08:30 or after 20:00. Asks within 90 min of a visit go immediately.
+- **Per-day cap** (default 8, manager escalations exempt). Held items wait for
+  their ask's next slot, never sent at an odd hour; combined items may now
+  carry over a day instead of being dropped.
+
+## Toward 95% autonomy
+
+The goal (20 Oct 2026): the bot runs ~95% of orders end to end, like a full
+ops person, with people needed for the rest only. What a person does today
+in the lab groups, and what the bot needs to do it:
+
+| Today, done by a person | Share of team messages* | Bot can do it now? | What it needs |
+|---|---|---|---|
+| Chase status / reports / phlebo, @mention, hourly | ~40% | **Yes** (Phase 1b) | — |
+| Escalate to the lab manager, then call | some | Partly: manager WhatsApp yes | **Bot calls** (approved): Exotel call to the lab manager when the 3rd ask goes unanswered |
+| Post patient / booking details for a new booking | ~25% | Partly: new-order message | Send it the moment the order exists, in the format labs already use |
+| Serviceability checks (pincode lists) before an order exists | ~8% | No | A source for incoming bookings/requests before they become orders, and a "can you serve X?" ask |
+| Act on lab-raised problems ("customer unreachable", "address wrong") | some | No | Read these from replies (the reader already can) **and reach the customer or partner** |
+| Reschedule / cancel | few | No | The lab updates its portal (bot asks), or LabStack writes |
+
+*Lab A, 5–20 Oct; categories overlap.
+
+**Decisions needed to get past ~60–70%:**
+1. **Customer contact.** May the bot call or WhatsApp the patient when the lab
+   can't reach them ("phone switched off"), or message the partner/store group?
+   Today it may only talk to labs. This is the largest class of exceptions in
+   the chats.
+2. **Pre-order bookings.** Where do new bookings/requests come from before
+   they are LabStack orders (for serviceability asks)?
+3. **Who closes the loop in LabStack.** Labs updating their own portal (the bot
+   asks and verifies) works without writes; reschedules and cancellations
+   initiated by the bot need either the lab or a LabStack write.
+
+**Autonomy rate** (to track the 95%): orders delivered with no LabStack team
+message about them in the lab group. Computable from wa_messages + LabStack;
+goes on the lab scorecard.

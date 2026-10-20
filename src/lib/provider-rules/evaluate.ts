@@ -115,8 +115,12 @@ export type DecideContext = {
   releaseAt?: (rule: MessageRule, dueAt: Date) => Date | null;
 };
 
-/** A combined item may wait this much past its catch-up window (slots, per-slot cap). */
-const BATCH_SLACK_MINUTES = 60;
+/**
+ * A combined item may wait this much past its catch-up window: slots are a few
+ * hours apart and the per-day cap can carry items to the next morning's first
+ * slot. Held, never dropped.
+ */
+const BATCH_SLACK_MINUTES = 1440;
 
 /** Scope checks shared by ORDER and SUMMARY rules. */
 export function inScope(rule: MessageRule, labId: number, lab: RuleLab | undefined): string | null {

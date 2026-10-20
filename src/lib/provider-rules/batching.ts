@@ -13,8 +13,11 @@
  * Not combined: the new-order message (it carries the full details once),
  * urgent rules (P0) and anything for a lab with batching OFF.
  *
- * Slots are fixed, so labs learn when to expect us: :00 and :30, and report
- * chases at 10:00, 14:00 and 18:00 (local time).
+ * Slots are a fixed daily rhythm per ask, inside the lab's working hours, so
+ * labs learn when to expect us and are never messaged at 05:00 or 23:00 (see
+ * DAILY_SLOTS). A rule's repeat interval then works out to "the next slot".
+ * Follow-ups quote the earlier message and name only what is still open.
+ * Every message @mentions the lab's coordinators: people answer people.
  */
 import { MS_PER_MIN } from "./evaluate";
 import type { MessageRule } from "./types";
@@ -42,6 +45,10 @@ const INTENT_BY_TEMPLATE: Record<string, KnownIntent> = {
  */
 export function batchIntentOf(rule: MessageRule): string | null {
   if (rule.kind !== "ORDER" || rule.introduces || rule.priority === 0) return null;
+  // Timed close to the visit ("30 min before"): it cannot wait for a slot, or the
+  // visit is over before it goes.
+  const before = rule.triggerCondition?.minutesBeforeAppointment;
+  if (typeof before === "number" && before <= 90) return null;
   if (rule.action === "ESCALATE" || rule.recipient === "MANAGER") return "ESCALATION";
   if (rule.milestoneLabel) return "OVERDUE";
   return INTENT_BY_TEMPLATE[rule.templateKey] ?? `RULE:${rule.id}`;
@@ -53,7 +60,22 @@ export function intentRank(intent: string): number {
   return index === -1 ? BATCH_INTENTS.length : index;
 }
 
-const REPORT_SLOTS = [10, 14, 18];
+/**
+ * When each ask goes out, local time. Time-sensitive asks (confirmation,
+ * escalation) hourly; the rest a few times a day at the hours labs answered
+ * most in the Oct 2026 chat review (DOCS/features/provider-communication/CHAT-REVIEW-OCT-2026.md).
+ */
+export const DAILY_SLOTS: Record<string, string[]> = {
+  UNCONFIRMED: ["09:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00", "17:00", "18:00", "19:00", "20:00"],
+  ESCALATION: ["10:00", "12:00", "14:00", "16:00", "18:00"],
+  PHLEBO: ["08:30", "10:30", "12:30", "14:30", "16:30", "18:30"],
+  ETA: ["08:30", "10:30", "12:30", "14:30", "16:30", "18:30"],
+  STATUS: ["11:00", "13:30", "16:00", "18:30"],
+  REPORT: ["10:30", "16:30"],
+  OVERDUE: ["12:00", "17:00"],
+};
+const DEFAULT_SLOTS = ["09:00", "13:00", "17:00"];
+export const slotsFor = (intent: string) => DAILY_SLOTS[intent] ?? DEFAULT_SLOTS;
 
 function localParts(at: Date, timeZone: string) {
   const parts = new Intl.DateTimeFormat("en-GB", {
@@ -70,21 +92,22 @@ function atLocal(at: Date, timeZone: string, hour: number, minute: number): Date
   return new Date(at.getTime() - sinceMidnight + (hour * 60 + minute) * MS_PER_MIN);
 }
 
-/** The first slot for `intent` at or after `dueAt`. */
+/** The first slot for `intent` at or after `dueAt` (today, else tomorrow's first). */
 export function releaseAt(intent: string, dueAt: Date, timeZone: string): Date {
-  if (intent === "REPORT") {
-    for (let day = 0; day < 2; day += 1) {
-      const base = new Date(dueAt.getTime() + day * 1440 * MS_PER_MIN);
-      for (const hour of REPORT_SLOTS) {
-        const slot = atLocal(base, timeZone, hour, 0);
-        if (slot.getTime() >= dueAt.getTime()) return slot;
-      }
+  const slots = slotsFor(intent).map((s) => s.split(":").map(Number));
+  for (let day = 0; day < 2; day += 1) {
+    const base = new Date(dueAt.getTime() + day * 1440 * MS_PER_MIN);
+    for (const [hour, minute] of slots) {
+      const slot = atLocal(base, timeZone, hour, minute);
+      if (slot.getTime() >= dueAt.getTime()) return slot;
     }
   }
-  const { minute, second } = localParts(dueAt, timeZone);
-  if (minute % 30 === 0 && second === 0 && dueAt.getMilliseconds() === 0) return dueAt;
-  const startOfMinute = dueAt.getTime() - second * 1000 - dueAt.getMilliseconds();
-  return new Date(startOfMinute + (30 - (minute % 30)) * MS_PER_MIN);
+  return dueAt;
+}
+
+/** The local day of `at`, for the per-day cap: "2026-10-20". */
+export function startOfLocalDay(at: Date, timeZone: string): Date {
+  return atLocal(at, timeZone, 0, 0);
 }
 
 /** The slot `now` falls in: the latest :00/:30 at or before it. */
@@ -204,4 +227,17 @@ export function itemLine(intent: string, item: ItemLineData, now: Date, timeZone
     case "OVERDUE": return `${head} · ${item.milestone ?? "update"} ${ago(item.dueAt, now)} late`;
     default: return `${head} · ${when}`;
   }
+}
+
+/**
+ * Is one of this ask's slots open right now (it started within the last hour)?
+ * Items held back — by the per-slot or per-day cap — only ever go out in a slot,
+ * never at, say, 00:00 when the day cap resets.
+ */
+export function isSlotOpen(intent: string, now: Date, timeZone: string, windowMinutes = 60): boolean {
+  return slotsFor(intent).some((slot) => {
+    const [hour, minute] = slot.split(":").map(Number);
+    const start = atLocal(now, timeZone, hour, minute).getTime();
+    return now.getTime() >= start && now.getTime() - start < windowMinutes * MS_PER_MIN;
+  });
 }

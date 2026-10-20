@@ -945,6 +945,8 @@ model ProviderBatch {
   slotAt     DateTime // the fixed slot it belongs to
   shadow     Boolean  @default(false)
   outboundId String?  @unique // the WhatsApp message (null in shadow)
+  // A follow-up quotes an earlier combined message and keeps its numbering.
+  followUpOf String?
   recipient  String
   itemCount  Int
   items      Json // [{ n, orderId, ruleId, occurrence, communicationId }]
@@ -1520,6 +1522,11 @@ model NonApiLabConfig {
   batchingMode                String             @default("OFF")
   // At most this many combined messages per slot (:00 / :30); the rest wait for the next.
   maxBatchesPerSlot           Int                @default(3)
+  // The lab's people to @mention in every bot message, [{ jid, name }], picked from
+  // the group's members. People answer people: a mention is what gets a reply.
+  coordinators                Json               @default("[]")
+  // At most this many combined messages per lab per day (manager escalations exempt).
+  maxMessagesPerDay           Int                @default(8)
   // Message this lab when an OpsFlow task for one of its orders breaches SLA.
   // Applies to API and NON_API labs alike; off by lab, not by integration type.
   slaBreachAlertsEnabled      Boolean            @default(false)

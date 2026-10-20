@@ -21,7 +21,7 @@ import { fetchOrderContactDetails } from "@/lib/non-api-labs/order-details";
 import { isAwaitingConfirmation } from "@/lib/non-api-labs/source-check";
 import { decideRule, inScope, planOrder, summaryDue, summaryMatches, summaryOccurrence, triggerMoment, conditionMatches } from "./evaluate";
 import { deliverBatch, deliverOrderMessage, deliverSummary, recordShadowBatch, type BatchItemInput, type FactValues } from "./deliver";
-import { batchIntentOf, currentSlot, intentRank, releaseAt, type BatchingMode } from "./batching";
+import { batchIntentOf, currentSlot, intentRank, isSlotOpen, releaseAt, startOfLocalDay, type BatchingMode } from "./batching";
 import { buildEntries, summaryVariables } from "./summary";
 import { ensureMigratedToRules } from "./migrate";
 import { TIME_ZONE } from "./format";
@@ -428,15 +428,21 @@ async function deliverCombined(
     byLab.set(send.order.labId, intents);
   }
   const slotStart = currentSlot(now, TIME_ZONE());
+  const dayStart = startOfLocalDay(now, TIME_ZONE());
   for (const [labId, intents] of byLab) {
     const config = labs.get(labId)!.config;
     const already = await prisma.providerBatch.count({ where: { labId, shadow: false, createdAt: { gte: slotStart } } });
     let allowance = Math.max(0, config.maxBatchesPerSlot - already);
+    // Per-day cap (manager escalations exempt): over it, items wait for tomorrow's first slot.
+    let today = await prisma.providerBatch.count({ where: { labId, shadow: false, intent: { not: "ESCALATION" }, createdAt: { gte: dayStart } } });
     for (const [intent, group] of [...intents].sort((a, b) => intentRank(a[0]) - intentRank(b[0]))) {
+      // Only inside one of this ask's slots (a held item waits for the next one).
+      if (!isSlotOpen(intent, now, TIME_ZONE())) { result.held += group.length; continue; }
       if (allowance <= 0) { result.held += group.length; continue; }
+      if (intent !== "ESCALATION" && today >= config.maxMessagesPerDay) { result.held += group.length; continue; }
       try {
         const outcome = await deliverBatch({ config, intent, items: group.map(itemOf), now });
-        if (outcome.sent) { result.combined += 1; result.sent += group.length; allowance -= 1; }
+        if (outcome.sent) { result.combined += 1; result.sent += group.length; allowance -= 1; if (intent !== "ESCALATION") today += 1; }
         else if (outcome.sendSingly) {
           // The combined template is paused: these orders go as single messages.
           for (const send of group) {

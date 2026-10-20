@@ -39,7 +39,10 @@ export const BATCH_TEMPLATE_BY_INTENT: Record<string, string> = {
   ESCALATION: "BATCH_ESCALATION",
 };
 export const BATCH_GENERIC_TEMPLATE = "BATCH_GENERIC";
-export const BATCH_VARIABLES = ["lab_name", "manager_name", "count", "orders_word", "items", "batch_title"] as const;
+export const BATCH_VARIABLES = ["lab_name", "manager_name", "coordinator", "count", "orders_word", "items", "batch_title"] as const;
+export const BATCH_FOLLOW_UP_TEMPLATE = "BATCH_FOLLOW_UP";
+export const BATCH_FOLLOW_UP_FIRM_TEMPLATE = "BATCH_FOLLOW_UP_FIRM";
+export const BATCH_FOLLOW_UP_VARIABLES = ["lab_name", "coordinator", "numbers", "since", "count"] as const;
 
 // Order details every template may use. `lab_name` has always been supplied to
 // the renderer by workflow.ts but was missing from this list, so a template
@@ -297,49 +300,93 @@ export const DEFAULT_PROVIDER_PENDING_REPORTS_BODY = `📋 *Reports pending – 
 
 Please share these reports as soon as possible. Thank you!`;
 
+// Phase 1b (Oct 2026 chat review): short, addressed to the lab's coordinator
+// ({{coordinator}} = their @mentions), one line per order, follow-ups in-thread.
 const BATCH_DEFAULT_BODIES: Record<string, { name: string; body: string }> = {
-  BATCH_STATUS_CHECK: { name: "Combined: status check", body: `🔎 *Status check · {{count}} {{orders_word}}*
+  BATCH_STATUS_CHECK: { name: "Combined: status check", body: `{{coordinator}} quick check — collected? ({{count}})
 
 {{items}}
 
-Reply: *1 collected, 2 not home, 3 at 5 pm*
-or *all collected*` },
-  BATCH_ASSIGN_PHLEBO: { name: "Combined: assign a phlebo", body: `🧑‍⚕️ *Phlebo not assigned · {{count}} {{orders_word}}*
+Reply *1 done, 2 not home* or *all done*` },
+  BATCH_ASSIGN_PHLEBO: { name: "Combined: assign a phlebo", body: `{{coordinator}} phlebo needed ({{count}})
 
 {{items}}
 
-Reply with the name and number:
-*1 Ramesh 98xxxxxx01, 2 Suresh 98xxxxxx02*` },
-  BATCH_PHLEBO_ETA: { name: "Combined: phlebo on time?", body: `🚗 *Phlebo on time? · {{count}} {{orders_word}}*
+Reply with names: *1 Ramesh 98xxxxxx01*` },
+  BATCH_PHLEBO_ETA: { name: "Combined: phlebo on time?", body: `{{coordinator}} phlebo on time? ({{count}})
 
 {{items}}
 
-Reply with the ETA: *1 by 10:30, 2 on the way*` },
-  BATCH_UNCONFIRMED: { name: "Combined: awaiting confirmation", body: `⏰ *Awaiting confirmation · {{count}} {{orders_word}}*
+Reply with the ETA: *1 by 10:30*` },
+  BATCH_UNCONFIRMED: { name: "Combined: awaiting confirmation", body: `{{coordinator}} please confirm ({{count}})
 
 {{items}}
 
-Tap each link to confirm.` },
-  BATCH_REPORT_CHASE: { name: "Combined: reports pending", body: `📄 *Reports pending · {{count}}*
+Tap a link to confirm, or reply *1 can't do*` },
+  BATCH_REPORT_CHASE: { name: "Combined: reports pending", body: `{{coordinator}} reports pending ({{count}})
 
 {{items}}
 
-Reply: *1 shared, 2 by 6 pm*` },
-  BATCH_OVERDUE: { name: "Combined: running late", body: `⚠️ *Running late · {{count}} {{orders_word}}*
+Reply *1 shared, 2 by 6 pm*` },
+  BATCH_OVERDUE: { name: "Combined: running late", body: `{{coordinator}} running late ({{count}})
 
 {{items}}
 
-Please update these in LabStack, or reply with the status.` },
+Please update in LabStack, or reply with the status.` },
   BATCH_ESCALATION: { name: "Combined: manager escalation", body: `Hello {{manager_name}}, {{lab_name}} has not yet confirmed {{count}} {{orders_word}}:
 
 {{items}}
 
 Please confirm today — each link opens the order.` },
-  BATCH_GENERIC: { name: "Combined: other rules", body: `*{{batch_title}} · {{count}} {{orders_word}}*
+  BATCH_GENERIC: { name: "Combined: other rules", body: `{{coordinator}} {{batch_title}} ({{count}})
 
 {{items}}
 
 Reply with the number and the update, e.g. *1 done*.` },
+  // Follow-ups reply to (quote) the earlier combined message and keep its numbers.
+  BATCH_FOLLOW_UP: { name: "Combined: follow-up (2nd ask)", body: `{{coordinator}} still open: {{numbers}} 🙏` },
+  BATCH_FOLLOW_UP_FIRM: { name: "Combined: follow-up (3rd ask on)", body: `{{coordinator}} reminder — {{numbers}} still pending since {{since}}. Please update in LabStack or reply here.` },
+};
+
+// The Phase 1 wording; stored copies nobody edited move to the bodies above.
+const BATCH_PHASE1_BODIES: Record<string, string> = {
+  BATCH_STATUS_CHECK: `🔎 *Status check · {{count}} {{orders_word}}*
+
+{{items}}
+
+Reply: *1 collected, 2 not home, 3 at 5 pm*
+or *all collected*`,
+  BATCH_ASSIGN_PHLEBO: `🧑‍⚕️ *Phlebo not assigned · {{count}} {{orders_word}}*
+
+{{items}}
+
+Reply with the name and number:
+*1 Ramesh 98xxxxxx01, 2 Suresh 98xxxxxx02*`,
+  BATCH_PHLEBO_ETA: `🚗 *Phlebo on time? · {{count}} {{orders_word}}*
+
+{{items}}
+
+Reply with the ETA: *1 by 10:30, 2 on the way*`,
+  BATCH_UNCONFIRMED: `⏰ *Awaiting confirmation · {{count}} {{orders_word}}*
+
+{{items}}
+
+Tap each link to confirm.`,
+  BATCH_REPORT_CHASE: `📄 *Reports pending · {{count}}*
+
+{{items}}
+
+Reply: *1 shared, 2 by 6 pm*`,
+  BATCH_OVERDUE: `⚠️ *Running late · {{count}} {{orders_word}}*
+
+{{items}}
+
+Please update these in LabStack, or reply with the status.`,
+  BATCH_GENERIC: `*{{batch_title}} · {{count}} {{orders_word}}*
+
+{{items}}
+
+Reply with the number and the update, e.g. *1 done*.`,
 };
 
 export const TEMPLATE_DEFAULTS: Record<string, { name: string; body: string }> = {
@@ -432,6 +479,7 @@ const SUPERSEDED_DEFAULTS: Record<string, { bodies: string[]; names: string[] }>
   [NON_API_APPOINTMENT_TEMPLATE]: { bodies: [LEGACY_APPOINTMENT_BODY], names: ["Non-API lab: appointment reminder"] },
   [PROVIDER_DAILY_DIGEST_TEMPLATE]: { bodies: [LEGACY_DAILY_DIGEST_BODY], names: ["Any lab: daily summary (today & tomorrow)"] },
   [NON_API_STATUS_CHECK_TEMPLATE]: { bodies: [LEGACY_STATUS_CHECK_BODY], names: [] },
+  ...Object.fromEntries(Object.entries(BATCH_PHASE1_BODIES).map(([key, body]) => [key, { bodies: [body], names: [] }])),
 };
 
 /** Is this stored body a default we used to ship (and nobody has edited)? */
@@ -504,6 +552,8 @@ const CONFIRMATION_RULES: TemplateRules = {
 const TEMPLATE_RULES: Record<string, TemplateRules> = {
   ...Object.fromEntries(Object.values(BATCH_TEMPLATE_BY_INTENT).concat(BATCH_GENERIC_TEMPLATE)
     .map((key) => [key, { allowed: BATCH_VARIABLES, required: ["items"] } satisfies TemplateRules])),
+  BATCH_FOLLOW_UP: { allowed: BATCH_FOLLOW_UP_VARIABLES, required: ["numbers"] },
+  BATCH_FOLLOW_UP_FIRM: { allowed: BATCH_FOLLOW_UP_VARIABLES, required: ["numbers"] },
   [NON_API_NEW_ORDER_TEMPLATE]: CONFIRMATION_RULES,
   [NON_API_REMINDER_TEMPLATE]: CONFIRMATION_RULES,
   [NON_API_URGENT_REMINDER_TEMPLATE]: CONFIRMATION_RULES,

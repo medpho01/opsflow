@@ -220,17 +220,26 @@ describe("combined messages", () => {
     // Never combined: the new-order message, urgent (P0) rules.
     assert.equal(batchIntentOf(builtIn("NEW_ORDER")), null);
     assert.equal(batchIntentOf(builtIn("APPT_10M")), null);
+    // Close to the visit: straight away, never held for a slot.
+    assert.equal(batchIntentOf(builtIn("APPT_30M")), null);
+    assert.equal(batchIntentOf(builtIn("PHLEBO_ETA")), null);
+    assert.equal(batchIntentOf(builtIn("ASSIGN_PHLEBO")), "PHLEBO");
     // A custom rule combines with itself only.
     assert.equal(batchIntentOf(builtIn("STATUS_CHECK", { id: "r1", templateKey: "MY_TEMPLATE" })), "RULE:r1");
   });
 
-  it("fixed slots: :00 / :30, reports at 10, 14, 18", () => {
-    const ist = (s: string) => new Date(`${s}+05:30`);
-    assert.deepEqual(releaseAt("STATUS", ist("2026-10-12T09:05:00"), IST), ist("2026-10-12T09:30:00"));
-    assert.deepEqual(releaseAt("STATUS", ist("2026-10-12T09:30:00"), IST), ist("2026-10-12T09:30:00"));
-    assert.deepEqual(releaseAt("STATUS", ist("2026-10-12T09:31:10"), IST), ist("2026-10-12T10:00:00"));
-    assert.deepEqual(releaseAt("REPORT", ist("2026-10-12T10:20:00"), IST), ist("2026-10-12T14:00:00"));
-    assert.deepEqual(releaseAt("REPORT", ist("2026-10-12T19:00:00"), IST), ist("2026-10-13T10:00:00"));
+  it("a daily rhythm per ask, inside working hours", () => {
+    const ist = (x: string) => new Date(`${x}+05:30`);
+    // Status checks: 11:00, 13:30, 16:00, 18:30.
+    assert.deepEqual(releaseAt("STATUS", ist("2026-10-12T09:05:00"), IST), ist("2026-10-12T11:00:00"));
+    assert.deepEqual(releaseAt("STATUS", ist("2026-10-12T11:00:00"), IST), ist("2026-10-12T11:00:00"));
+    assert.deepEqual(releaseAt("STATUS", ist("2026-10-12T11:01:00"), IST), ist("2026-10-12T13:30:00"));
+    // Phlebo asks from 08:30: never at 05:00 again.
+    assert.deepEqual(releaseAt("PHLEBO", ist("2026-10-12T05:00:00"), IST), ist("2026-10-12T08:30:00"));
+    // Reports at 10:30 and 16:30; after the last slot, tomorrow's first.
+    assert.deepEqual(releaseAt("REPORT", ist("2026-10-12T10:40:00"), IST), ist("2026-10-12T16:30:00"));
+    assert.deepEqual(releaseAt("REPORT", ist("2026-10-12T19:00:00"), IST), ist("2026-10-13T10:30:00"));
+    assert.deepEqual(releaseAt("UNCONFIRMED", ist("2026-10-12T22:10:00"), IST), ist("2026-10-13T09:00:00"));
     assert.deepEqual(currentSlot(ist("2026-10-12T09:44:59"), IST), ist("2026-10-12T09:30:00"));
   });
 
@@ -241,10 +250,10 @@ describe("combined messages", () => {
       lab, conversation: undefined, ledger: EMPTY_LEDGER, facts: new Set<string>(), now: at(now), timeZone: IST,
       releaseAt: (r: MessageRule, dueAt: Date) => releaseAt(batchIntentOf(r)!, dueAt, IST),
     });
-    assert.equal(decideRule(rule, o, ctx("2026-10-12T03:40:00Z")).kind, "WAIT"); // 9:10
-    assert.equal(decideRule(rule, o, ctx("2026-10-12T04:00:00Z")).kind, "SEND"); // 9:30, the slot
-    assert.equal(decideRule(rule, o, ctx("2026-10-12T05:00:00Z")).kind, "SEND"); // 10:30: slot + 60 min slack
-    assert.equal(decideRule(rule, o, ctx("2026-10-12T05:40:00Z")).kind, "MISS"); // 11:10: too late
+    assert.equal(decideRule(rule, o, ctx("2026-10-12T04:00:00Z")).kind, "WAIT"); // 9:30
+    assert.equal(decideRule(rule, o, ctx("2026-10-12T05:30:00Z")).kind, "SEND"); // 11:00, the slot
+    assert.equal(decideRule(rule, o, ctx("2026-10-13T03:30:00Z")).kind, "SEND"); // held by the day cap: still going next morning
+    assert.equal(decideRule(rule, o, ctx("2026-10-13T06:30:00Z")).kind, "MISS"); // more than a day late
   });
 
   it("reads numbered replies, 'all …', order ids — and never guesses", () => {

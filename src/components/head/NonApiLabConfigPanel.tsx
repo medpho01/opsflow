@@ -23,6 +23,8 @@ type LabConfig = {
   quietWindowMinutes: number;
   batchingMode?: "OFF" | "SHADOW" | "LIVE";
   maxBatchesPerSlot?: number;
+  coordinators?: Coordinator[];
+  maxMessagesPerDay?: number;
   slaBreachAlertsEnabled: boolean;
   slaBreachMaxPerOrder: number;
   dailyDigestEnabled: boolean;
@@ -52,6 +54,8 @@ type Draft = {
   quietWindowMinutes: string;
   batchingMode: "OFF" | "SHADOW" | "LIVE";
   maxBatchesPerSlot: string;
+  coordinators: Coordinator[];
+  maxMessagesPerDay: string;
   slaBreachAlertsEnabled: boolean;
   slaBreachMaxPerOrder: string;
   dailyDigestEnabled: boolean;
@@ -65,7 +69,7 @@ const EMPTY_DRAFT: Draft = {
   confirmationSlaMinutes: "60", reminderSlaMinutes: "180", escalationSlaMinutes: "300",
   initialTemplateKey: "NON_API_NEW_ORDER", reminderTemplateKey: "NON_API_REMINDER", escalationTemplateKey: "NON_API_ESCALATION",
   appointmentTemplateKey: "NON_API_APPOINTMENT_REMINDER", appointmentRemindersEnabled: false, postAppointmentCheckEnabled: true, quietWindowMinutes: "10",
-  batchingMode: "OFF", maxBatchesPerSlot: "3",
+  batchingMode: "OFF", maxBatchesPerSlot: "3", coordinators: [], maxMessagesPerDay: "8",
   slaBreachAlertsEnabled: true, slaBreachMaxPerOrder: "2",
   dailyDigestEnabled: false, dailyDigestAt: "19:00", dailyDigestSkipWhenEmpty: true,
 };
@@ -91,6 +95,8 @@ function toDraft(lab: LabConfig): Draft {
     quietWindowMinutes: String(lab.quietWindowMinutes ?? 10),
     batchingMode: lab.batchingMode ?? "OFF",
     maxBatchesPerSlot: String(lab.maxBatchesPerSlot ?? 3),
+    coordinators: Array.isArray(lab.coordinators) ? lab.coordinators : [],
+    maxMessagesPerDay: String(lab.maxMessagesPerDay ?? 8),
     slaBreachAlertsEnabled: lab.slaBreachAlertsEnabled ?? true,
     slaBreachMaxPerOrder: String(lab.slaBreachMaxPerOrder ?? 2),
     dailyDigestEnabled: lab.dailyDigestEnabled ?? false,
@@ -102,6 +108,7 @@ function toDraft(lab: LabConfig): Draft {
 type SetupStatus = "NOT_CONFIGURED" | "NEEDS_GROUP" | "PAUSED" | "SENDING_OFF" | "LIVE";
 type StatusFilter = "ALL" | "CONFIGURED" | SetupStatus;
 type SortKey = "fulfilled" | "open" | "recent" | "name" | "id";
+type Coordinator = { jid: string; name: string };
 type Activity = "VERY_ACTIVE" | "ACTIVE" | "SOME" | "QUIET" | "DORMANT";
 
 /** One lab as LabStack knows it, plus our config for it when there is one. */
@@ -317,6 +324,8 @@ export function NonApiLabConfigPanel() {
       quietWindowMinutes: Number(draft.quietWindowMinutes),
       batchingMode: draft.batchingMode,
       maxBatchesPerSlot: Number(draft.maxBatchesPerSlot),
+      coordinators: draft.coordinators,
+      maxMessagesPerDay: Number(draft.maxMessagesPerDay),
       slaBreachAlertsEnabled: draft.slaBreachAlertsEnabled,
       slaBreachMaxPerOrder: Number(draft.slaBreachMaxPerOrder),
       dailyDigestEnabled: draft.dailyDigestEnabled,
@@ -604,7 +613,7 @@ export function NonApiLabConfigPanel() {
                     {g.subject || g.jid}{g.sendEnabled ? "" : " — sending off"}
                   </option>
                 ))}
-              </select></Field><p className="text-[11px] text-zinc-500 -mt-2">Picked from the {groups.length} groups the gateway can actually see, so the id is never typed. A group still needs sending switched on under Settings &rarr; WhatsApp before anything leaves.</p><p className="text-[11px] text-zinc-500 -mt-2">The provider&apos;s ops group, so a reply is visible to their whole desk. Required for API labs too — that is where breach alerts go. Sending stays off until the group is enabled under Settings → WhatsApp.</p><Field label="Lab WhatsApp number (fallback, used only without a group)"><input value={draft.whatsappNumber} onChange={(e) => update("whatsappNumber", e.target.value)} placeholder="+9198…" className={inputClass} /></Field><div className="grid grid-cols-2 gap-3"><Field label="Lab manager (name)"><input value={draft.managerName} onChange={(e) => update("managerName", e.target.value)} placeholder="Optional" className={inputClass} /></Field><Field label="Lab manager WhatsApp"><input value={draft.managerWhatsapp} onChange={(e) => update("managerWhatsapp", e.target.value)} placeholder="+9198…" className={inputClass} /></Field></div><p className="text-[11px] text-zinc-500 -mt-2">Rules set to “send to the lab manager” (the final reminder) go here; without a number they go to the group.</p><div className="max-w-[14rem]"><Field label="Quiet window (minutes)"><input required type="number" min="0" max="240" value={draft.quietWindowMinutes} onChange={(e) => update("quietWindowMinutes", e.target.value)} className={inputClass} /></Field></div><p className="text-[11px] text-zinc-500 -mt-2">Minimum gap between two messages about the same order. What is sent, and when, is set on the Message Rules page.</p><div className="grid grid-cols-2 gap-3"><Field label="Combined messages"><select value={draft.batchingMode} onChange={(e) => update("batchingMode", e.target.value as Draft["batchingMode"])} className={inputClass}><option value="OFF">Off — one message per order</option><option value="SHADOW">Preview only — record, don&apos;t change sends</option><option value="LIVE">On — combine at :00 / :30</option></select></Field><Field label="Max combined messages per slot"><input required type="number" min="1" max="10" value={draft.maxBatchesPerSlot} onChange={(e) => update("maxBatchesPerSlot", e.target.value)} className={inputClass} /></Field></div><p className="text-[11px] text-zinc-500 -mt-2">On: follow-ups for several orders go as one numbered message per ask (status check, phlebo, reports…), at :00 and :30 (reports at 10, 2 and 6). New-order messages and urgent ones still go straight away. Labs can reply “1 done, 2 not home”.</p>{draft.labId && <CombinedMessages labId={Number(draft.labId)} />}<label className="flex items-center gap-2 text-sm text-zinc-300"><input type="checkbox" checked={draft.isActive} onChange={(e) => update("isActive", e.target.checked)} className="accent-blue-500" /> Enable automation for this lab</label>{error && <div className="rounded-md bg-rose-500/10 text-rose-300 text-sm px-3 py-2">{error}</div>}</div><div className="px-5 py-4 border-t border-zinc-800 flex justify-end gap-2"><button type="button" onClick={() => setOpen(false)} className="px-3 py-2 text-sm text-zinc-400 hover:text-zinc-200">Cancel</button><button disabled={saving} className="rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-60 text-white font-semibold text-sm px-4 py-2">{saving ? "Saving…" : "Save configuration"}</button></div></form></div></div>}
+              </select></Field><p className="text-[11px] text-zinc-500 -mt-2">Picked from the {groups.length} groups the gateway can actually see, so the id is never typed. A group still needs sending switched on under Settings &rarr; WhatsApp before anything leaves.</p><p className="text-[11px] text-zinc-500 -mt-2">The provider&apos;s ops group, so a reply is visible to their whole desk. Required for API labs too — that is where breach alerts go. Sending stays off until the group is enabled under Settings → WhatsApp.</p><Field label="Lab WhatsApp number (fallback, used only without a group)"><input value={draft.whatsappNumber} onChange={(e) => update("whatsappNumber", e.target.value)} placeholder="+9198…" className={inputClass} /></Field><div className="grid grid-cols-2 gap-3"><Field label="Lab manager (name)"><input value={draft.managerName} onChange={(e) => update("managerName", e.target.value)} placeholder="Optional" className={inputClass} /></Field><Field label="Lab manager WhatsApp"><input value={draft.managerWhatsapp} onChange={(e) => update("managerWhatsapp", e.target.value)} placeholder="+9198…" className={inputClass} /></Field></div><p className="text-[11px] text-zinc-500 -mt-2">Rules set to “send to the lab manager” (the final reminder) go here; without a number they go to the group.</p><div className="max-w-[14rem]"><Field label="Quiet window (minutes)"><input required type="number" min="0" max="240" value={draft.quietWindowMinutes} onChange={(e) => update("quietWindowMinutes", e.target.value)} className={inputClass} /></Field></div><p className="text-[11px] text-zinc-500 -mt-2">Minimum gap between two messages about the same order. What is sent, and when, is set on the Message Rules page.</p><div className="grid grid-cols-2 gap-3"><Field label="Combined messages"><select value={draft.batchingMode} onChange={(e) => update("batchingMode", e.target.value as Draft["batchingMode"])} className={inputClass}><option value="OFF">Off — one message per order</option><option value="SHADOW">Preview only — record, don&apos;t change sends</option><option value="LIVE">On — combine, at set times of day</option></select></Field><Field label="Max combined messages per slot"><input required type="number" min="1" max="10" value={draft.maxBatchesPerSlot} onChange={(e) => update("maxBatchesPerSlot", e.target.value)} className={inputClass} /></Field></div><p className="text-[11px] text-zinc-500 -mt-2">On: follow-ups go as one numbered message per ask, at set times in working hours (phlebo from 8:30 every 2 h, status 11:00 · 13:30 · 16:00 · 18:30, reports 10:30 · 16:30, confirmations hourly). Follow-ups reply to the earlier message and name only what is open. New-order messages and urgent ones still go straight away. Labs can reply “1 done, 2 not home”.</p><div className="max-w-[16rem]"><Field label="Max combined messages per day"><input required type="number" min="1" max="40" value={draft.maxMessagesPerDay} onChange={(e) => update("maxMessagesPerDay", e.target.value)} className={inputClass} /></Field></div><CoordinatorPicker labId={draft.labId} groupJid={draft.waGroupJid} value={draft.coordinators} onChange={(next) => update("coordinators", next)} />{draft.labId && <CombinedMessages labId={Number(draft.labId)} />}<label className="flex items-center gap-2 text-sm text-zinc-300"><input type="checkbox" checked={draft.isActive} onChange={(e) => update("isActive", e.target.checked)} className="accent-blue-500" /> Enable automation for this lab</label>{error && <div className="rounded-md bg-rose-500/10 text-rose-300 text-sm px-3 py-2">{error}</div>}</div><div className="px-5 py-4 border-t border-zinc-800 flex justify-end gap-2"><button type="button" onClick={() => setOpen(false)} className="px-3 py-2 text-sm text-zinc-400 hover:text-zinc-200">Cancel</button><button disabled={saving} className="rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-60 text-white font-semibold text-sm px-4 py-2">{saving ? "Saving…" : "Save configuration"}</button></div></form></div></div>}
       {toast && <div className="fixed z-[60] left-1/2 bottom-6 -translate-x-1/2 rounded-lg bg-zinc-100 text-zinc-950 px-4 py-2 text-sm font-medium shadow-lg">{toast}</div>}
     </div>
   );
@@ -830,6 +839,52 @@ function LabStackIntegration({ row }: { row: CatalogRow }) {
   return (
     <div className={`mt-1 text-[11px] ${mismatch ? "text-amber-400" : "text-zinc-500"}`} title={mismatch ? "OpsFlow's setting differs from LabStack's" : undefined}>
       {mismatch ? "⚠ " : ""}{text}
+    </div>
+  );
+}
+
+type GroupMember = { jid: string; name: string; messages: number; team: boolean };
+
+/**
+ * The lab's coordinators: the people every bot message @mentions. People answer
+ * people — in the Oct 2026 chats, @mentioned asks got answered, broadcasts did
+ * not. Picked from who actually writes in the lab's group, lab people first.
+ */
+function CoordinatorPicker({ labId, groupJid, value, onChange }: {
+  labId: string; groupJid: string; value: Coordinator[]; onChange: (next: Coordinator[]) => void;
+}) {
+  const [members, setMembers] = useState<GroupMember[] | null>(null);
+  useEffect(() => {
+    if (!labId || !groupJid) return;
+    let cancelled = false;
+    fetch(`/api/non-api-labs/${labId}/members?groupJid=${encodeURIComponent(groupJid)}`)
+      .then((r) => (r.ok ? r.json() : { members: [] }))
+      .then((d) => { if (!cancelled) setMembers(d.members ?? []); })
+      .catch(() => { if (!cancelled) setMembers([]); });
+    return () => { cancelled = true; };
+  }, [labId, groupJid]);
+  const picked = new Set(value.map((c) => c.jid));
+  const toggle = (member: GroupMember) => onChange(picked.has(member.jid)
+    ? value.filter((c) => c.jid !== member.jid)
+    : [...value, { jid: member.jid, name: member.name }].slice(0, 5));
+  return (
+    <div>
+      <div className="text-xs font-medium text-zinc-300 mb-1">Lab coordinators to @mention</div>
+      {!groupJid ? <p className="text-[11px] text-zinc-500">Pick the lab&apos;s WhatsApp group first.</p>
+        : members === null ? <p className="text-[11px] text-zinc-500">Loading the group&apos;s members…</p>
+        : members.length === 0 ? <p className="text-[11px] text-zinc-500">Nobody has written in this group yet.</p>
+        : <div className="max-h-40 overflow-y-auto rounded-lg border border-zinc-800 divide-y divide-zinc-800/60">
+            {members.slice(0, 15).map((member, index) => (
+              <label key={member.jid} className="flex items-center gap-2 px-3 py-1.5 text-xs text-zinc-300">
+                <input type="checkbox" checked={picked.has(member.jid)} onChange={() => toggle(member)} className="accent-blue-500" />
+                <span className="truncate">{member.name}</span>
+                {member.team ? <span className="text-[10px] text-zinc-500">LabStack team</span>
+                  : index === 0 && <span className="text-[10px] text-emerald-400">most active</span>}
+                <span className="ml-auto tabular-nums text-[10px] text-zinc-500">{member.messages} msgs</span>
+              </label>
+            ))}
+          </div>}
+      <p className="text-[11px] text-zinc-500 mt-1">Every combined message and follow-up starts by @mentioning them. Without one, messages say “Team”.</p>
     </div>
   );
 }

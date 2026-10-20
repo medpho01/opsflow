@@ -194,3 +194,16 @@ contact, plus a short reply in the group: "Noted — informing the team now."
 | Lab replies within 30 min to bot asks | 19–20% | ≥ team level (40–50%) |
 | Lab names the asked-about order | 0–1% | > 40% |
 | Team chase messages per day | 15–19 | halve |
+
+## Decisions (20 Oct 2026)
+
+- **Build 1: yes, and built** — lab coordinators (@mentioned in every combined
+  message), follow-ups that quote the original and keep its numbers, a daily
+  rhythm per ask in working hours, a per-day cap. Asks timed within 90 min of
+  the visit still go straight away.
+- **Build 2: no.** The bot takes the lead; it does not step back when the team
+  is chasing, and it still sends the new-order message.
+- **Build 3: not as proposed.** No handover after two misses: the bot keeps
+  going with a modulated rhythm (2nd ask polite, 3rd on firmer, then the
+  manager and calls). The goal is a bot that runs ~95% of orders end to end;
+  see ORDER-JOURNEY-AGENT.md, "Toward 95% autonomy".

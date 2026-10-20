@@ -24,6 +24,8 @@ export type NonApiLabConfigInput = {
   quietWindowMinutes?: unknown;
   batchingMode?: unknown;
   maxBatchesPerSlot?: unknown;
+  coordinators?: unknown;
+  maxMessagesPerDay?: unknown;
   slaBreachAlertsEnabled?: unknown;
   slaBreachTemplateKey?: unknown;
   slaBreachMaxPerOrder?: unknown;
@@ -55,6 +57,8 @@ export type ValidatedNonApiLabConfig = {
   quietWindowMinutes: number;
   batchingMode: "OFF" | "SHADOW" | "LIVE";
   maxBatchesPerSlot: number;
+  coordinators: Array<{ jid: string; name: string }>;
+  maxMessagesPerDay: number;
   slaBreachAlertsEnabled: boolean;
   slaBreachTemplateKey: string;
   slaBreachMaxPerOrder: number;
@@ -221,6 +225,17 @@ export function validateNonApiLabConfig(input: NonApiLabConfigInput):
   const rawPerSlot = input.maxBatchesPerSlot ?? 3;
   const perSlot = typeof rawPerSlot === "number" ? rawPerSlot : Number(rawPerSlot);
   if (!Number.isInteger(perSlot) || perSlot < 1 || perSlot > 10) errors.maxBatchesPerSlot = "must be a whole number between 1 and 10";
+  // The lab's people to @mention: up to 5 WhatsApp members of its group.
+  const rawCoordinators = input.coordinators ?? [];
+  const coordinators: Array<{ jid: string; name: string }> = [];
+  if (!Array.isArray(rawCoordinators) || rawCoordinators.length > 5) errors.coordinators = "pick up to 5 people";
+  else for (const c of rawCoordinators as Array<{ jid?: unknown; name?: unknown }>) {
+    if (typeof c?.jid !== "string" || !/^[^@\s]+@[a-z.]+$/i.test(c.jid)) { errors.coordinators = "each person needs a WhatsApp id"; break; }
+    coordinators.push({ jid: c.jid, name: typeof c.name === "string" ? c.name.trim().slice(0, 80) : "" });
+  }
+  const rawPerDay = input.maxMessagesPerDay ?? 8;
+  const perDay = typeof rawPerDay === "number" ? rawPerDay : Number(rawPerDay);
+  if (!Number.isInteger(perDay) || perDay < 1 || perDay > 40) errors.maxMessagesPerDay = "must be a whole number between 1 and 40";
 
   if (
     confirmationSlaMinutes !== null && reminderSlaMinutes !== null && escalationSlaMinutes !== null &&
@@ -255,6 +270,8 @@ export function validateNonApiLabConfig(input: NonApiLabConfigInput):
       quietWindowMinutes: quietWindowNumber,
       batchingMode: batchingMode as "OFF" | "SHADOW" | "LIVE",
       maxBatchesPerSlot: perSlot,
+      coordinators,
+      maxMessagesPerDay: perDay,
       slaBreachAlertsEnabled,
       slaBreachTemplateKey:
         typeof input.slaBreachTemplateKey === "string" && input.slaBreachTemplateKey.trim()

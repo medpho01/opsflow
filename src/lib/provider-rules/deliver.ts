@@ -17,7 +17,7 @@
 import { Prisma, type NonApiLabConfig } from "@prisma/client";
 import prisma from "@/lib/db/client";
 import { resolveLabTarget } from "@/lib/non-api-labs/target";
-import { BATCH_GENERIC_TEMPLATE, BATCH_TEMPLATE_BY_INTENT, ensureTemplate, renderLabTemplate, type TemplateVariables } from "@/lib/non-api-labs/templates";
+import { BATCH_FOLLOW_UP_FIRM_TEMPLATE, BATCH_FOLLOW_UP_TEMPLATE, BATCH_GENERIC_TEMPLATE, BATCH_TEMPLATE_BY_INTENT, ensureTemplate, renderLabTemplate, type TemplateVariables } from "@/lib/non-api-labs/templates";
 import { confirmationUrl } from "@/lib/non-api-labs/confirmation-link";
 import { contactVariables, type OrderContactDetails } from "@/lib/non-api-labs/order-details";
 import { newConversationStatus } from "./evaluate";
@@ -309,12 +309,48 @@ async function batchLine(intent: string, n: number, item: BatchItemInput, now: D
   }, now, TIME_ZONE());
 }
 
+type Coordinator = { jid: string; name?: string };
+
+/** The lab's coordinators as "@<number>" tokens (the gateway turns them into real mentions) and their jids. */
+export function coordinatorMentions(config: Pick<NonApiLabConfig, "coordinators">): { text: string; jids: string[] } {
+  const list = (Array.isArray(config.coordinators) ? config.coordinators : []) as Coordinator[];
+  const valid = list.filter((c) => typeof c?.jid === "string" && c.jid.includes("@"));
+  return { text: valid.map((c) => `@${c.jid.split("@")[0]}`).join(" ") || "Team", jids: valid.map((c) => c.jid) };
+}
+
 function batchVariables(config: NonApiLabConfig, lines: string[], title: string): TemplateVariables {
   return {
-    lab_name: config.labName, manager_name: config.managerName || "team",
+    lab_name: config.labName, manager_name: config.managerName || "team", coordinator: coordinatorMentions(config).text,
     count: String(lines.length), orders_word: ordersWord(lines.length),
     items: lines.join("\n"), batch_title: title,
   };
+}
+
+type FollowUp = { rootId: string; quotedWaId: string; attempt: number; items: StoredBatchItem[]; since: Date };
+
+/**
+ * Is this a follow-up? Yes when every order was in one combined message to this
+ * lab, for this ask, in the last 24 h, and WhatsApp has accepted it (so it can
+ * be quoted). The follow-up quotes that ORIGINAL message and keeps its numbers,
+ * so "1 done" still means the same order.
+ */
+async function findFollowUp(labId: number, intent: string, orderIds: number[], now: Date): Promise<FollowUp | null> {
+  const recent = await prisma.providerBatch.findMany({
+    where: { labId, intent, shadow: false, outboundId: { not: null }, createdAt: { gte: new Date(now.getTime() - 24 * 3_600_000), lt: now } },
+    orderBy: { createdAt: "desc" },
+    take: 20,
+  });
+  for (const candidate of recent) {
+    const root = candidate.followUpOf ? await prisma.providerBatch.findUnique({ where: { id: candidate.followUpOf } }) : candidate;
+    if (!root?.outboundId) continue;
+    const rootItems = root.items as unknown as StoredBatchItem[];
+    if (!orderIds.every((id) => rootItems.some((item) => item.orderId === id))) continue;
+    const outbound = await prisma.waOutbound.findUnique({ where: { id: root.outboundId }, select: { sentWaMsgId: true } });
+    if (!outbound?.sentWaMsgId) return null; // not delivered yet: send a fresh message instead
+    const attempt = (await prisma.providerBatch.count({ where: { followUpOf: root.id } })) + 1;
+    return { rootId: root.id, quotedWaId: outbound.sentWaMsgId, attempt, items: rootItems, since: root.createdAt };
+  }
+  return null;
 }
 
 export type DeliverBatchInput = { config: NonApiLabConfig; intent: string; items: BatchItemInput[]; now: Date };
@@ -341,14 +377,39 @@ export async function deliverBatch(input: DeliverBatchInput): Promise<BatchOutco
   const target = await resolveLabTarget(config, toManager ? config.managerWhatsapp : null);
   const conversations = new Map<number, string>();
   for (const item of items) conversations.set(item.order.id, (await ensureConversation(item.order, item.rule, item.contact, now)).id);
-  const lines = await Promise.all(items.map((item, index) => batchLine(intent, index + 1, item, now)));
-  const text = renderLabTemplate(template.body, batchVariables(config, lines, items[0].rule.name));
+  // A manager escalation goes to a personal chat: no coordinator mention, no quoting.
+  const followUp = toManager ? null : await findFollowUp(config.labId, intent, items.map((i) => i.order.id), now);
+  const mention = coordinatorMentions(config);
+  let numbers: number[];
+  let lines: string[];
+  let text: string;
+  if (followUp) {
+    const original = new Map(followUp.items.map((item) => [item.orderId, item]));
+    numbers = items.map((item) => original.get(item.order.id)!.n);
+    lines = items.map((item) => original.get(item.order.id)!.line);
+    const followTemplate = await ensureTemplate(followUp.attempt === 1 ? BATCH_FOLLOW_UP_TEMPLATE : BATCH_FOLLOW_UP_FIRM_TEMPLATE);
+    text = renderLabTemplate(followTemplate.isActive ? followTemplate.body : "{{coordinator}} still open: {{numbers}}", {
+      lab_name: config.labName, coordinator: mention.text, count: String(items.length),
+      numbers: [...numbers].sort((a, b) => a - b).join(", "), since: formatTime(followUp.since),
+    });
+  } else {
+    numbers = items.map((_, index) => index + 1);
+    lines = await Promise.all(items.map((item, index) => batchLine(intent, index + 1, item, now)));
+    text = renderLabTemplate(template.body, batchVariables(config, lines, items[0].rule.name));
+  }
   const slotAt = currentSlot(now, TIME_ZONE());
 
   const stored: StoredBatchItem[] = [];
   let batchId = "";
   await prisma.$transaction(async (tx) => {
-    const outbound = await tx.waOutbound.create({ data: { targetJid: target.targetJid, text, groupId: target.groupId, createdAt: now } });
+    const outbound = await tx.waOutbound.create({
+      data: {
+        targetJid: target.targetJid, text, groupId: target.groupId, createdAt: now,
+        // Quote the original combined message, as a person would; @mention the coordinators.
+        ...(followUp ? { quotedWaId: followUp.quotedWaId } : {}),
+        ...(!toManager && mention.jids.length ? { mentions: mention.jids } : {}),
+      },
+    });
     for (const [index, item] of items.entries()) {
       const { rule, order, occurrence } = item;
       const conversationId = conversations.get(order.id)!;
@@ -357,11 +418,11 @@ export async function deliverBatch(input: DeliverBatchInput): Promise<BatchOutco
         data: {
           workflowId: conversationId, labId: order.labId, orderId: order.id, type, status: "QUEUED",
           recipient: target.targetJid, templateKey, batchOutboundId: outbound.id,
-          templateVariables: { order_id: String(order.id), combined: intent, item: String(index + 1), of: String(items.length) },
+          templateVariables: { order_id: String(order.id), combined: intent, item: String(numbers[index]), of: String(items.length), ...(followUp ? { followUpOf: followUp.rootId } : {}) },
           ruleId: rule.id, idempotencyKey: `rules:${rule.id}:${order.id}:${occurrence}`, createdAt: now,
         },
       });
-      stored.push({ n: index + 1, orderId: order.id, ruleId: rule.id, occurrence, communicationId: communication.id, line: lines[index] });
+      stored.push({ n: numbers[index], orderId: order.id, ruleId: rule.id, occurrence, communicationId: communication.id, line: lines[index] });
       await tx.providerMessageLedger.create({
         data: {
           ruleId: rule.id, ruleVersion: rule.version, entityType: "ORDER", entityId: order.id, labId: order.labId,
@@ -386,7 +447,7 @@ export async function deliverBatch(input: DeliverBatchInput): Promise<BatchOutco
           actorType: "SYSTEM",
           payload: {
             ruleId: rule.id, ruleName: rule.name, occurrence, communicationId: communication.id, outboundId: outbound.id,
-            recipient: target.targetJid, combined: { intent, item: index + 1, of: items.length },
+            recipient: target.targetJid, combined: { intent, item: numbers[index], of: items.length, followUp: followUp?.attempt ?? 0 },
           } as Prisma.InputJsonValue,
           occurredAt: now,
         },
@@ -395,6 +456,7 @@ export async function deliverBatch(input: DeliverBatchInput): Promise<BatchOutco
     const batch = await tx.providerBatch.create({
       data: {
         labId: config.labId, intent, slotAt, shadow: false, outboundId: outbound.id, recipient: target.targetJid,
+        followUpOf: followUp?.rootId ?? null,
         itemCount: items.length, items: stored as unknown as Prisma.InputJsonValue, text, createdAt: now,
       },
     });

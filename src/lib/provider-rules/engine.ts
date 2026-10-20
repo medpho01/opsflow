@@ -21,7 +21,7 @@ import { fetchOrderContactDetails } from "@/lib/non-api-labs/order-details";
 import { isAwaitingConfirmation } from "@/lib/non-api-labs/source-check";
 import { decideRule, inScope, planOrder, summaryDue, summaryMatches, summaryOccurrence, triggerMoment, conditionMatches } from "./evaluate";
 import { deliverBatch, deliverOrderMessage, deliverSummary, recordShadowBatch, type BatchItemInput, type FactValues } from "./deliver";
-import { batchIntentOf, currentSlot, intentRank, isSlotOpen, releaseAt, startOfLocalDay, type BatchingMode } from "./batching";
+import { batchIntentOf, currentSlot, intentRank, isSlotOpen, releaseAt, slotMissesVisit, startOfLocalDay, type BatchingMode } from "./batching";
 import { buildEntries, summaryVariables } from "./summary";
 import { ensureMigratedToRules } from "./migrate";
 import { TIME_ZONE } from "./format";
@@ -143,16 +143,16 @@ export async function loadConversations(orderIds: number[]): Promise<Map<number,
 export async function loadLedger(ruleIds: string[], orderIds: number[]): Promise<Map<string, LedgerState>> {
   const rows = ruleIds.length === 0 || orderIds.length === 0 ? [] : await prisma.providerMessageLedger.findMany({
     where: { ruleId: { in: ruleIds }, entityType: "ORDER", entityId: { in: orderIds }, shadow: false },
-    select: { ruleId: true, entityId: true, occurrence: true, createdAt: true },
+    select: { ruleId: true, entityId: true, occurrence: true, createdAt: true, outcome: true },
   });
   const map = new Map<string, LedgerState>();
   for (const row of rows) {
     const key = `${row.ruleId}:${row.entityId}`;
-    const state: LedgerState = map.get(key) ?? { count: 0, lastAt: null, answered: false };
+    const state: LedgerState = map.get(key) ?? { count: 0, lastAt: null, answered: false, lastOutcome: null };
     if (row.occurrence === 0) state.answered = true;
     else {
       state.count += 1;
-      if (!state.lastAt || row.createdAt > state.lastAt) state.lastAt = row.createdAt;
+      if (!state.lastAt || row.createdAt > state.lastAt) { state.lastAt = row.createdAt; state.lastOutcome = row.outcome; }
     }
     map.set(key, state);
   }
@@ -204,10 +204,11 @@ export async function runMessageRulesPass(now = new Date()): Promise<RulesPassRe
   const timeZone = TIME_ZONE();
   const orderRules = rules.filter((rule) => rule.kind === "ORDER");
   const modeOf = (labId: number) => (labs.get(labId)?.config.batchingMode ?? "OFF") as BatchingMode;
-  // LIVE labs: a combinable item waits for its intent's next slot.
-  const slotted = (rule: MessageRule, dueAt: Date) => {
+  // LIVE labs: a combinable item waits for its intent's next slot — or, when
+  // that slot would miss the order's visit, goes before the visit (releaseAt).
+  const slotted = (order: RuleOrder) => (rule: MessageRule, dueAt: Date) => {
     const intent = batchIntentOf(rule);
-    return intent ? releaseAt(intent, dueAt, timeZone) : null;
+    return intent ? releaseAt(intent, dueAt, timeZone, order.appointmentTime) : null;
   };
   const sends: Send[] = [];
   for (const order of orders) {
@@ -219,11 +220,15 @@ export async function runMessageRulesPass(now = new Date()): Promise<RulesPassRe
       now,
       timeZone,
       ledgerFor: (ruleId) => ledger.get(`${ruleId}:${order.id}`) ?? EMPTY_LEDGER,
-      releaseAt: modeOf(order.labId) === "LIVE" ? slotted : undefined,
+      releaseAt: modeOf(order.labId) === "LIVE" ? slotted(order) : undefined,
     });
     for (const { rule, decision } of plan.misses) {
       await writeLedger(rule, "ORDER", order.id, order.labId, decision.occurrence, "MISSED", decision.reason, now);
       result.missed += 1;
+    }
+    for (const { rule, decision } of plan.lapses) {
+      await writeLedger(rule, "ORDER", order.id, order.labId, decision.occurrence, "SKIPPED", decision.reason, now);
+      result.skipped += 1;
     }
     if (plan.send && live && sends.length < MAX_SENDS_PER_PASS) {
       const rule = plan.send.rule;
@@ -395,7 +400,7 @@ export async function previewRule(rule: MessageRule, now = new Date()) {
       timeZone,
     });
     if (decision.kind === "SEND") counts.sendNow += 1;
-    else if (decision.kind === "MISS") counts.tooLate += 1;
+    else if (decision.kind === "MISS" || decision.kind === "LAPSE") counts.tooLate += 1;
     else if (decision.kind === "WAIT") counts.later += 1;
     else if (decision.reason === "all sends done") counts.done += 1;
     else if (labs.has(order.labId) && conditionMatches(untimed, order, now).matches && triggerMoment(rule.triggerCondition, order).getTime() > now.getTime()) {
@@ -450,9 +455,12 @@ async function deliverCombined(
     let allowance = Math.max(0, config.maxBatchesPerSlot - already);
     // Per-day cap (manager escalations exempt): over it, items wait for tomorrow's first slot.
     let today = await prisma.providerBatch.count({ where: { labId, shadow: false, intent: { not: "ESCALATION" }, createdAt: { gte: dayStart } } });
-    for (const [intent, group] of [...intents].sort((a, b) => intentRank(a[0]) - intentRank(b[0]))) {
-      // Only inside one of this ask's slots (a held item waits for the next one).
-      if (!isSlotOpen(intent, now, TIME_ZONE())) { result.held += group.length; continue; }
+    for (const [intent, pending] of [...intents].sort((a, b) => intentRank(a[0]) - intentRank(b[0]))) {
+      // Only inside one of this ask's slots (a held item waits for the next one) —
+      // except an item whose next slot would miss its visit: it goes now.
+      const group = isSlotOpen(intent, now, TIME_ZONE()) ? pending : pending.filter((send) => slotMissesVisit(intent, now, send.order.appointmentTime, TIME_ZONE()));
+      result.held += pending.length - group.length;
+      if (group.length === 0) continue;
       if (allowance <= 0) { result.held += group.length; continue; }
       if (intent !== "ESCALATION" && today >= config.maxMessagesPerDay) { result.held += group.length; continue; }
       try {

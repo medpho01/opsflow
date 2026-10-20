@@ -93,7 +93,7 @@ function atLocal(at: Date, timeZone: string, hour: number, minute: number): Date
 }
 
 /** The first slot for `intent` at or after `dueAt` (today, else tomorrow's first). */
-export function releaseAt(intent: string, dueAt: Date, timeZone: string): Date {
+export function nextSlot(intent: string, dueAt: Date, timeZone: string): Date {
   const slots = slotsFor(intent).map((s) => s.split(":").map(Number));
   for (let day = 0; day < 2; day += 1) {
     const base = new Date(dueAt.getTime() + day * 1440 * MS_PER_MIN);
@@ -103,6 +103,71 @@ export function releaseAt(intent: string, dueAt: Date, timeZone: string): Date {
     }
   }
   return dueAt;
+}
+
+/** An ask whose slot would miss the visit goes this long before the visit at the latest. */
+export const VISIT_LEAD_MINUTES = 90;
+/**
+ * …and only between these local hours (the chat review found nobody answers
+ * earlier, and nobody should be woken later) — unless the visit itself comes
+ * before the next 07:00.
+ */
+export const EARLIEST_RELEASE_HOUR = 7;
+export const LATEST_RELEASE_HOUR = 21;
+
+const inWakingHours = (at: Date, timeZone: string) => {
+  const { hour } = localParts(at, timeZone);
+  return hour >= EARLIEST_RELEASE_HOUR && hour < LATEST_RELEASE_HOUR;
+};
+/** The next 07:00 local at or after `at`. */
+const nextMorning = (at: Date, timeZone: string) => {
+  const today = atLocal(at, timeZone, EARLIEST_RELEASE_HOUR, 0);
+  return today.getTime() >= at.getTime() ? today : new Date(today.getTime() + 1440 * MS_PER_MIN);
+};
+
+/**
+ * When an item due at `dueAt` goes out: its intent's next slot — unless that
+ * slot falls at or after the order's visit, when waiting would drop the ask
+ * (every pre-visit rule has `notAfterAppointment`). Then it goes at the
+ * earlier of its due time and 90 min before the visit, within 07:00-21:00
+ * local; outside those hours it waits for 07:00. A visit at or before the
+ * next 07:00 is the one exception: 07:00 would miss it, so the ask goes at
+ * the odd hour — the only chance it has.
+ *
+ * Example: visit Wed 07:00, order placed Tue 16:45. The 5 h manager escalation
+ * (due 21:45) would wait for Wed 10:00; 07:00 would be the visit → goes Tue
+ * 21:45. The phlebo ask and the 2 h ping (due 05:00) would wait for 08:30 /
+ * 09:00 → go at 05:00. Visit Wed 09:00: the 2 h ping (due 07:00) would wait
+ * for the 09:00 slot, which is the visit → goes at 07:00; that order's
+ * escalation due Tue 21:45 → Wed 07:00.
+ */
+export function releaseAt(intent: string, dueAt: Date, timeZone: string, appointmentAt?: Date | null): Date {
+  const slot = nextSlot(intent, dueAt, timeZone);
+  // Only a visit still ahead can be missed: asks after the visit (status
+  // check, report chase) keep their slots.
+  if (!appointmentAt || appointmentAt.getTime() <= dueAt.getTime() || slot.getTime() < appointmentAt.getTime()) return slot;
+  return earlyRelease(dueAt, appointmentAt, timeZone);
+}
+
+/** The pre-visit release for an ask whose slot would miss the visit (see releaseAt). */
+export function earlyRelease(dueAt: Date, appointmentAt: Date, timeZone: string): Date {
+  const wanted = new Date(Math.min(dueAt.getTime(), appointmentAt.getTime() - VISIT_LEAD_MINUTES * MS_PER_MIN));
+  if (inWakingHours(wanted, timeZone)) return wanted;
+  const morning = nextMorning(wanted, timeZone);
+  return morning.getTime() < appointmentAt.getTime() ? morning : wanted;
+}
+
+/**
+ * May this ask go out now, between slots, because waiting for its next slot
+ * would miss the visit? Such an item is released off-slot by `releaseAt`, so
+ * delivery must not hold it for a slot that will never be in time — but it
+ * still keeps the 07:00-21:00 hours (an item the day cap held is not sent
+ * at midnight when the cap resets) unless the visit is before the next 07:00.
+ */
+export function slotMissesVisit(intent: string, now: Date, appointmentAt: Date | null, timeZone: string): boolean {
+  if (!appointmentAt || appointmentAt.getTime() <= now.getTime()) return false;
+  if (nextSlot(intent, now, timeZone).getTime() < appointmentAt.getTime()) return false;
+  return inWakingHours(now, timeZone) || nextMorning(now, timeZone).getTime() >= appointmentAt.getTime();
 }
 
 /** The local day of `at`, for the per-day cap: "2026-10-20". */

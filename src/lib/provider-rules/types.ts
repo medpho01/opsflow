@@ -100,8 +100,9 @@ export type RuleLab = {
 };
 
 /** Ledger state for one (rule, order): occurrences recorded, the last one's time, and whether the lab answered. */
-export type LedgerState = { count: number; lastAt: Date | null; answered: boolean };
-export const EMPTY_LEDGER: LedgerState = { count: 0, lastAt: null, answered: false };
+/** `lastOutcome`: of the latest counted row (SENT, MISSED, SKIPPED, …), to record a lapse once. */
+export type LedgerState = { count: number; lastAt: Date | null; answered: boolean; lastOutcome?: string | null };
+export const EMPTY_LEDGER: LedgerState = { count: 0, lastAt: null, answered: false, lastOutcome: null };
 
 const numbers = (value: unknown): number[] =>
   Array.isArray(value) ? value.map(Number).filter((n) => Number.isInteger(n) && n > 0) : [];

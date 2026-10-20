@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { decideRule, planOrder, triggerMoment, nextWindowOpening, summaryDue, summaryMatches, conditionMatches } from "../evaluate";
 import { BUILT_IN_RULES } from "../builtins";
 import { statusesBefore, milestoneTiming, milestoneStatuses, milestoneCondition } from "../migrate";
-import { batchIntentOf, releaseAt, currentSlot, splitBatchReply, itemLine, shortWhen } from "../batching";
+import { batchIntentOf, releaseAt, nextSlot, slotMissesVisit, currentSlot, splitBatchReply, itemLine, shortWhen } from "../batching";
 import { EMPTY_LEDGER, type LedgerState, type MessageRule, type RuleConversation, type RuleLab, type RuleOrder } from "../types";
 
 const IST = "Asia/Kolkata";
@@ -277,6 +277,96 @@ describe("combined messages", () => {
     assert.equal(decideRule(rule, o, ctx("2026-10-12T05:30:00Z")).kind, "SEND"); // 11:00, the slot
     assert.equal(decideRule(rule, o, ctx("2026-10-13T03:30:00Z")).kind, "SEND"); // held by the day cap: still going next morning
     assert.equal(decideRule(rule, o, ctx("2026-10-13T06:30:00Z")).kind, "MISS"); // more than a day late
+  });
+
+  describe("a slot that would miss the visit: the ask goes before the visit instead", () => {
+    const ist = (x: string) => new Date(`${x}+05:30`);
+    // Tue 20 Oct 16:45 order, visit Wed 07:00 (section A of TIMELINE-WALKTHROUGH, order #6 moved to the first visit).
+    const placed = ist("2026-10-20T16:45:00");
+    const visit = ist("2026-10-21T07:00:00");
+    const early = (overrides: Partial<RuleOrder> = {}) => order({ createdAt: placed, statusUpdatedAt: placed, appointmentTime: visit, ...overrides });
+    const ctx = (now: string, extra: Extra = {}) => ({
+      lab, conversation: waiting, ledger: EMPTY_LEDGER, facts: none, now: ist(now), timeZone: IST, ...extra,
+      releaseAt: (r: MessageRule, dueAt: Date, o: RuleOrder = early()) => releaseAt(batchIntentOf(r)!, dueAt, IST, o.appointmentTime),
+    });
+
+    it("the release time: earlier of due and visit − 90 min, within 07:00-21:00 — unless the visit comes first", () => {
+      // Manager escalation due Tue 21:45: the next ESCALATION slot is Wed 10:00, after the visit → the same evening, at its due time.
+      assert.deepEqual(releaseAt("ESCALATION", ist("2026-10-20T21:45:00"), IST, visit), ist("2026-10-20T21:45:00"));
+      // Phlebo ask and 2 h ping due Wed 05:00: slots 08:30 / 09:00 miss the visit; 07:00 IS the visit → 05:00, the only chance.
+      assert.deepEqual(releaseAt("PHLEBO", ist("2026-10-21T05:00:00"), IST, visit), ist("2026-10-21T05:00:00"));
+      assert.deepEqual(releaseAt("UNCONFIRMED", ist("2026-10-21T05:00:00"), IST, visit), ist("2026-10-21T05:00:00"));
+      // Visit 08:00: phlebo ask due 06:00 → 07:00 (clamped), still an hour before the visit.
+      assert.deepEqual(releaseAt("PHLEBO", ist("2026-10-21T06:00:00"), IST, ist("2026-10-21T08:00:00")), ist("2026-10-21T07:00:00"));
+      // Visit 09:00: 2 h ping due 07:00 → the 09:00 slot is the visit → 07:00.
+      assert.deepEqual(releaseAt("UNCONFIRMED", ist("2026-10-21T07:00:00"), IST, ist("2026-10-21T09:00:00")), ist("2026-10-21T07:00:00"));
+      // Escalation due Tue 19:10 for a Wed 09:00 visit: Tue 19:10 (due) beats Wed 07:30 (visit − 90).
+      assert.deepEqual(releaseAt("ESCALATION", ist("2026-10-20T19:10:00"), IST, ist("2026-10-21T09:00:00")), ist("2026-10-20T19:10:00"));
+      // Due 21:45 for a Wed 10:00 visit: after 21:00 → the next morning, 07:00 (still 3 h before the visit).
+      assert.deepEqual(releaseAt("ESCALATION", ist("2026-10-20T21:45:00"), IST, ist("2026-10-21T10:00:00")), ist("2026-10-21T07:00:00"));
+      // Delivery lets such an item through between slots.
+      assert.equal(slotMissesVisit("PHLEBO", ist("2026-10-21T05:00:00"), visit, IST), true);
+      assert.equal(slotMissesVisit("PHLEBO", ist("2026-10-21T05:00:00"), ist("2026-10-21T09:00:00"), IST), false);
+      assert.equal(slotMissesVisit("PHLEBO", ist("2026-10-21T05:00:00"), null, IST), false);
+      // Held past its release by the day cap: not sent at midnight when the cap resets — 07:00 is still before the visit.
+      assert.equal(slotMissesVisit("UNCONFIRMED", ist("2026-10-21T00:00:00"), ist("2026-10-21T08:00:00"), IST), false);
+      assert.equal(slotMissesVisit("UNCONFIRMED", ist("2026-10-21T07:00:00"), ist("2026-10-21T08:00:00"), IST), true);
+      assert.equal(slotMissesVisit("UNCONFIRMED", ist("2026-10-21T00:00:00"), ist("2026-10-21T07:00:00"), IST), true);
+      // A visit already behind us is not "missed": post-visit asks keep their slots.
+      assert.equal(slotMissesVisit("STATUS", ist("2026-10-21T09:05:00"), ist("2026-10-21T08:35:00"), IST), false);
+      assert.deepEqual(releaseAt("STATUS", ist("2026-10-21T09:05:00"), IST, ist("2026-10-21T08:35:00")), ist("2026-10-21T11:00:00"));
+      assert.deepEqual(releaseAt("REPORT", ist("2026-10-21T08:00:00"), IST, ist("2026-10-20T20:00:00")), ist("2026-10-21T10:30:00"));
+    });
+
+    it("visit 07:00, order 16:45 the day before: phlebo ask, 2 h ping and manager escalation all go out, none is skipped", () => {
+      // Manager escalation: 5 h after the order, Tue 21:45, the same evening.
+      assert.equal(decideRule(builtIn("ESCALATION_5H"), early(), ctx("2026-10-20T21:40:00")).kind, "SKIP"); // not 5 h yet
+      assert.equal(decideRule(builtIn("ESCALATION_5H"), early(), ctx("2026-10-20T21:45:00")).kind, "SEND");
+      // 2 h ping (still unconfirmed): Wed 05:00, not the 09:00 slot.
+      assert.equal(decideRule(builtIn("APPT_2H"), early(), ctx("2026-10-21T04:59:00")).kind, "SKIP");
+      assert.equal(decideRule(builtIn("APPT_2H"), early(), ctx("2026-10-21T05:00:00")).kind, "SEND");
+      // Phlebo ask (confirmed, no phlebo): Wed 05:00, and its 30-min repeat at 05:30 — not the 08:30 slot.
+      const confirmed = early({ orderStatus: "ORDER_SCHEDULED" });
+      const accepted: RuleConversation = { ...waiting, status: "LAB_ACCEPTED" };
+      assert.equal(decideRule(builtIn("ASSIGN_PHLEBO"), confirmed, ctx("2026-10-21T05:00:00", { conversation: accepted })).kind, "SEND");
+      const once: LedgerState = { count: 1, lastAt: ist("2026-10-21T05:00:00"), answered: false, lastOutcome: "SENT" };
+      assert.equal(decideRule(builtIn("ASSIGN_PHLEBO"), confirmed, ctx("2026-10-21T05:20:00", { conversation: accepted, ledger: once })).kind, "WAIT");
+      assert.equal(decideRule(builtIn("ASSIGN_PHLEBO"), confirmed, ctx("2026-10-21T05:30:00", { conversation: accepted, ledger: once })).kind, "SEND");
+    });
+
+    it("visit 14:00: the normal slots, unchanged", () => {
+      const noon = ist("2026-10-21T14:00:00");
+      const o = early({ createdAt: ist("2026-10-20T09:00:00"), statusUpdatedAt: ist("2026-10-20T09:00:00"), appointmentTime: noon });
+      assert.deepEqual(releaseAt("UNCONFIRMED", ist("2026-10-20T10:00:00"), IST, noon), ist("2026-10-20T10:00:00"));
+      assert.deepEqual(releaseAt("ESCALATION", ist("2026-10-20T14:00:00"), IST, noon), ist("2026-10-20T14:00:00"));
+      assert.deepEqual(releaseAt("UNCONFIRMED", ist("2026-10-21T12:00:00"), IST, noon), ist("2026-10-21T12:00:00"));
+      assert.deepEqual(releaseAt("PHLEBO", ist("2026-10-21T12:00:00"), IST, noon), ist("2026-10-21T12:30:00"));
+      for (const intent of ["UNCONFIRMED", "ESCALATION", "PHLEBO"]) {
+        assert.deepEqual(releaseAt(intent, ist("2026-10-21T12:00:00"), IST, noon), nextSlot(intent, ist("2026-10-21T12:00:00"), IST));
+      }
+      const rctx = (now: string, extra: Extra = {}) => ({ ...ctx(now, extra), releaseAt: (r: MessageRule, dueAt: Date) => releaseAt(batchIntentOf(r)!, dueAt, IST, noon) });
+      assert.equal(decideRule(builtIn("ASSIGN_PHLEBO"), { ...o, orderStatus: "ORDER_SCHEDULED" }, rctx("2026-10-21T12:00:00", { conversation: { ...waiting, status: "LAB_ACCEPTED" } })).kind, "WAIT");
+      assert.equal(decideRule(builtIn("ASSIGN_PHLEBO"), { ...o, orderStatus: "ORDER_SCHEDULED" }, rctx("2026-10-21T12:30:00", { conversation: { ...waiting, status: "LAB_ACCEPTED" } })).kind, "SEND");
+      assert.equal(decideRule(builtIn("APPT_2H"), o, rctx("2026-10-21T12:00:00")).kind, "SEND");
+    });
+
+    it("an ask the visit still overtakes is recorded as SKIPPED 'visit passed before slot' — once, never silently", () => {
+      const o = early();
+      const after = (extra: Extra = {}) => decideRule(builtIn("APPT_2H"), o, ctx("2026-10-21T07:01:00", extra));
+      assert.deepEqual([after().kind, (after() as { reason: string }).reason], ["LAPSE", "visit passed before slot"]);
+      // Already recorded: quiet from then on. Already sent: done, not a lapse.
+      assert.equal(after({ ledger: { count: 1, lastAt: ist("2026-10-21T07:01:00"), answered: false, lastOutcome: "SKIPPED" } }).kind, "SKIP");
+      assert.equal(after({ ledger: { count: 1, lastAt: ist("2026-10-21T05:00:00"), answered: false, lastOutcome: "SENT" } }).kind, "SKIP");
+      // Never due before the visit (placed 40 min before it): nothing to record.
+      const late = early({ createdAt: ist("2026-10-21T06:20:00"), statusUpdatedAt: ist("2026-10-21T06:20:00") });
+      assert.equal(decideRule(builtIn("REMINDER_1H"), late, ctx("2026-10-21T07:01:00")).kind, "SKIP");
+      // A confirmed order: the reminder was not pending.
+      assert.equal(decideRule(builtIn("REMINDER_1H"), o, ctx("2026-10-21T07:01:00", { conversation: { ...waiting, status: "LAB_ACCEPTED" } })).kind, "SKIP");
+      // planOrder hands lapses to the engine for the ledger.
+      const plan = planOrder([builtIn("APPT_2H"), builtIn("REMINDER_1H")], o, { ...ctx("2026-10-21T07:01:00"), ledgerFor: () => EMPTY_LEDGER });
+      assert.deepEqual(plan.lapses.map((l) => l.rule.builtInKey), ["APPT_2H", "REMINDER_1H"]);
+      assert.equal(plan.send, null);
+    });
   });
 
   it("reads numbered replies, 'all …', order ids — and never guesses", () => {

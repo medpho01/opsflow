@@ -23,6 +23,8 @@ export type RuleDecision =
   | { kind: "WAIT"; reason: string }
   /** Its first moment is older than the catch-up window — record it, do not send. */
   | { kind: "MISS"; occurrence: number; moment: Date; reason: string }
+  /** It was pending, and the visit came first (`notAfterAppointment`) — record a SKIPPED row, never silent. */
+  | { kind: "LAPSE"; occurrence: number; moment: Date; reason: string }
   /** Send occurrence N now. `needsConversation` = open one first. */
   | { kind: "SEND"; occurrence: number; moment: Date; needsConversation: boolean };
 
@@ -144,12 +146,13 @@ export function decideRule(rule: MessageRule, order: RuleOrder, ctx: DecideConte
   if (rule.onlyNewSinceLabConfigured && order.createdAt.getTime() < lab!.createdAt.getTime()) {
     return { kind: "SKIP", reason: "order placed before the lab was configured" };
   }
-  if (rule.notAfterAppointment && order.appointmentTime && order.appointmentTime.getTime() <= now.getTime()) {
-    return { kind: "SKIP", reason: "appointment has passed" };
-  }
+  // The visit has come: a pre-visit ask that was still pending is recorded
+  // below as a lapse, so a slot that missed the visit is visible in the ledger.
+  const visitPassed = !!(rule.notAfterAppointment && order.appointmentTime && order.appointmentTime.getTime() <= now.getTime());
+  const asOf = visitPassed ? order.appointmentTime! : now;
 
   // ── Condition (the Task Rule evaluator) and reply facts ───────────────
-  const condition = conditionMatches(rule.triggerCondition, order, now);
+  const condition = conditionMatches(rule.triggerCondition, order, asOf);
   if (!condition.matches) return { kind: "SKIP", reason: condition.reason };
   for (const fact of rule.factConditions) {
     if (facts.has(fact.kind) !== fact.present) {
@@ -176,6 +179,15 @@ export function decideRule(rule: MessageRule, order: RuleOrder, ctx: DecideConte
   // ── Timing ────────────────────────────────────────────────────────────
   const occurrence = ledger.count + 1;
   const moment = triggerMoment(rule.triggerCondition, order);
+  if (visitPassed) {
+    // Everything above held as of the visit: this ask was due and never went.
+    // One SKIPPED row says so; after it the rule is simply over for this order.
+    if (ledger.lastOutcome === "SKIPPED") return { kind: "SKIP", reason: "appointment has passed" };
+    if (occurrence > 1 && ledger.lastAt && ledger.lastAt.getTime() + rule.repeatEveryMinutes! * MS_PER_MIN >= order.appointmentTime!.getTime()) {
+      return { kind: "SKIP", reason: "appointment has passed" }; // the next repeat was not due before the visit
+    }
+    return { kind: "LAPSE", occurrence, moment, reason: "visit passed before slot" };
+  }
   if (occurrence === 1) {
     // Measured from the first moment the rule was ALLOWED to send, so a send
     // window does not turn every overnight trigger into a miss — and, for a
@@ -204,6 +216,8 @@ export type OrderPlan = {
   send: { rule: MessageRule; decision: Extract<RuleDecision, { kind: "SEND" }> } | null;
   /** Misses to record. */
   misses: Array<{ rule: MessageRule; decision: Extract<RuleDecision, { kind: "MISS" }> }>;
+  /** Pending asks the visit overtook: SKIPPED rows to write. */
+  lapses: Array<{ rule: MessageRule; decision: Extract<RuleDecision, { kind: "LAPSE" }> }>;
   /** Why the would-be winner is held back, if it is. */
   heldBack: string | null;
 };
@@ -218,13 +232,14 @@ export function planOrder(
   order: RuleOrder,
   ctx: Omit<DecideContext, "ledger"> & { ledgerFor: (ruleId: string) => LedgerState },
 ): OrderPlan {
-  const plan: OrderPlan = { send: null, misses: [], heldBack: null };
+  const plan: OrderPlan = { send: null, misses: [], lapses: [], heldBack: null };
   const candidates: Array<{ rule: MessageRule; decision: Extract<RuleDecision, { kind: "SEND" }> }> = [];
   for (const rule of rules) {
     if (rule.kind !== "ORDER") continue;
     const decision = decideRule(rule, order, { ...ctx, ledger: ctx.ledgerFor(rule.id) });
     if (decision.kind === "SEND") candidates.push({ rule, decision });
     else if (decision.kind === "MISS") plan.misses.push({ rule, decision });
+    else if (decision.kind === "LAPSE") plan.lapses.push({ rule, decision });
   }
   if (candidates.length === 0) return plan;
 

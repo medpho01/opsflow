@@ -473,6 +473,59 @@ const scenarios: Scenario[] = [
     expect: ["11:00 STATUS_CHECK · o17a", "11:00 STATUS_CHECK · o17b"],
   },
   {
+    name: "21. Early visit (07:00): asks whose slot would miss the visit go before it — manager the same evening, phlebo ask and 2 h ping at 05:00; never skipped",
+    run: async () => {
+      await setBatching("A", "LIVE", 3, { coordinators: [COORDINATOR] });
+      // Placed 16:45 for 07:00 tomorrow, never confirmed: 1 h and 3 h reminders in their slots, the 5 h manager
+      // escalation at 21:45 (its next slot, 10:00, is after the visit), the 2 h ping at 05:00 (09:00 slot would miss it).
+      await createOrder({ placed: "16:45", appointment: "+1d 07:00", alias: "o21-unconfirmed" });
+      // Confirmed (placed 10:00, introduced at the first tick), no phlebo, same visit: the phlebo ask at 05:00 and
+      // its 30-min repeats (the 08:30 slot would miss it).
+      await createOrder({ status: "ORDER_SCHEDULED", placed: "10:00", appointment: "+1d 07:00", alias: "o21-no-phlebo" });
+      await run("16:45", "+1d 07:05", 5);
+      const skipped = await prisma.providerMessageLedger.findMany({ where: { outcome: "SKIPPED", entityType: "ORDER" } });
+      if (skipped.length) throw new Error(`nothing should be skipped: ${skipped.map((r) => r.detail).join("; ")}`);
+    },
+    expect: [
+      "16:45 NEW_ORDER · o21-unconfirmed", "16:45 NEW_ORDER · o21-no-phlebo",
+      "18:00 COMBINED UNCONFIRMED [o21-unconfirmed]", "20:00 COMBINED UNCONFIRMED FOLLOW-UP [o21-unconfirmed]",
+      "19:00 SUMMARY_TOMORROW", "21:45 COMBINED ESCALATION [o21-unconfirmed]",
+      "05:00 COMBINED UNCONFIRMED FOLLOW-UP [o21-unconfirmed]",
+      "05:00 COMBINED PHLEBO [o21-no-phlebo]", "05:30 COMBINED PHLEBO FOLLOW-UP [o21-no-phlebo]", "06:00 COMBINED PHLEBO FOLLOW-UP [o21-no-phlebo]",
+    ],
+  },
+  {
+    name: "22. Visit at 14:00: the normal slots, unchanged — and asks the day cap holds past the visit leave SKIPPED rows, never silence",
+    run: async () => {
+      await setBatching("A", "LIVE", 3, { coordinators: [COORDINATOR] });
+      // Placed 09:00 for 14:00 tomorrow: reminders at 10:00 / 12:00, manager at 14:00 — every slot is before the visit.
+      await createOrder({ placed: "09:00", appointment: "+1d 14:00", alias: "o22-unconfirmed" });
+      // Confirmed, no phlebo: the ask in the 12:30 slot (due 12:00); the lab names one before the repeat.
+      const confirmed = await createOrder({ status: "ORDER_SCHEDULED", placed: "-1d 10:00", appointment: "+1d 14:00", alias: "o22-no-phlebo" });
+      await run("09:00", "14:05", 5);
+      await run("+1d 11:55", "+1d 12:35", 5);
+      await labReplies("A", "+1d 12:40", "Phlebo Suresh 9876500000 will go", confirmed);
+      await run("+1d 12:45", "+1d 14:05", 5);
+      if (await prisma.providerMessageLedger.count({ where: { outcome: "SKIPPED", entityType: "ORDER" } })) throw new Error("nothing should be skipped for lab A");
+      // Lab B with a day cap of 0: every combined ask is held, the visit comes — each one leaves a row.
+      await setBatching("B", "LIVE", 3, { maxMessagesPerDay: 0 });
+      const capped = await createOrder({ lab: "B", placed: "+1d 09:00", appointment: "+1d 13:00", alias: "o22-capped" });
+      await run("+1d 09:00", "+1d 13:05", 5);
+      const rows = await prisma.providerMessageLedger.findMany({ where: { entityId: capped, outcome: "SKIPPED" }, include: { rule: true }, orderBy: { createdAt: "asc" } });
+      const got = rows.map((r) => `${r.rule.builtInKey}:${r.detail}`).sort();
+      const want = ["APPT_2H:visit passed before slot", "REMINDER_1H:visit passed before slot", "REMINDER_3H:visit passed before slot"];
+      if (JSON.stringify(got) !== JSON.stringify(want)) throw new Error(`expected ${want.join(", ")}, got ${got.join(", ") || "none"}`);
+    },
+    expect: [
+      "09:00 NEW_ORDER · o22-unconfirmed", "09:00 NEW_ORDER · o22-no-phlebo",
+      "10:00 COMBINED UNCONFIRMED [o22-unconfirmed]", "12:00 COMBINED UNCONFIRMED FOLLOW-UP [o22-unconfirmed]",
+      "14:00 COMBINED ESCALATION [o22-unconfirmed]",
+      // Next day: the 2 h ping at its 12:00 slot, the phlebo ask at 12:30.
+      "12:00 COMBINED UNCONFIRMED FOLLOW-UP [o22-unconfirmed]", "12:30 COMBINED PHLEBO [o22-no-phlebo]",
+      "09:00 NEW_ORDER · o22-capped",
+    ],
+  },
+  {
     name: "18. One standard message set for every lab — no per-lab switches; applied once, later global edits stick",
     upgrade: true,
     run: async () => {

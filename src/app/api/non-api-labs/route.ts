@@ -1,3 +1,4 @@
+import { syncLabGroup } from "@/lib/wa/connect";
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/db/client";
 import { getSessionFromRequest } from "@/lib/auth/session";
@@ -37,6 +38,8 @@ export async function POST(request: NextRequest) {
     if (existing) return NextResponse.json({ error: "A configuration already exists for this LabStack lab", code: "CONFLICT", requestId }, { status: 409 });
 
     const lab = await prisma.nonApiLabConfig.create({ data: { ...parsed.data, createdById: user.id, updatedById: user.id } });
+    // The WhatsApp side follows: the group is this lab's provider group, read by the console.
+    await syncLabGroup(lab.labId, lab.waGroupJid, lab.isActive);
     return NextResponse.json({ lab }, { status: 201 });
   } catch (error) {
     return NextResponse.json(logAndBuildErrorBody({ requestId, scope: "NonApiLabsAPI.POST", code: "CREATE_ERROR", userMessage: "Failed to save non-API lab configuration", error }), { status: 500 });

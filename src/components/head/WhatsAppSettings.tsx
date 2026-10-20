@@ -5,20 +5,13 @@ import { useCallback, useEffect, useState } from "react";
 type Gateway = { status: string; online: boolean; connectedNumber: string | null; qrDataUrl: string | null; lastSeenAt: string | null; gatewayLive?: boolean };
 type Group = { id: string; jid: string; subject: string; role: string; storeId: number | null; labId: number | null; active: boolean; sendEnabled: boolean; autoAskIdOnMissing: boolean; isMember: boolean };
 
-const ROLES = [
-  { v: "SUPPORT", label: "Customer" },
-  { v: "PROVIDER", label: "Provider" },
-  { v: "INTERNAL", label: "Internal" },
-  { v: "IGNORE", label: "Ignore" },
-];
-
 export function WhatsAppSettings() {
   const [gw, setGw] = useState<Gateway | null>(null);
   const [groups, setGroups] = useState<Group[]>([]);
   const [toast, setToast] = useState<string | null>(null);
   const [q, setQ] = useState("");
-  const [roleFilter, setRoleFilter] = useState("ALL");
-  const [listenFilter, setListenFilter] = useState<"ALL" | "ON" | "OFF">("ALL");
+  const [show, setShow] = useState<"ALL" | "PROVIDER" | "SUPPORT" | "INTERNAL" | "UNCONNECTED" | "IGNORE">("ALL");
+  const [connecting, setConnecting] = useState<Group | null>(null);
   // Groups the linked number has LEFT stay in the table (their history is
   // kept) but are hidden unless asked for. A previous number's groups never
   // appear here at all — they are archived when the number changes.
@@ -32,8 +25,7 @@ export function WhatsAppSettings() {
   const shownGroups = groups.filter(
     (g) =>
       (showFormer || g.isMember) &&
-      (roleFilter === "ALL" || g.role === roleFilter) &&
-      (listenFilter === "ALL" || (listenFilter === "ON" ? g.active : !g.active)) &&
+      (show === "ALL" || (show === "UNCONNECTED" ? !isConnected(g) && g.role !== "IGNORE" : g.role === show && (show === "IGNORE" || isConnected(g)))) &&
       g.subject.toLowerCase().includes(q.toLowerCase())
   );
   const listeningCount = memberGroups.filter((g) => g.active).length;
@@ -81,7 +73,7 @@ export function WhatsAppSettings() {
     <div className="max-w-5xl">
       <div className="mb-1 text-xs text-zinc-500"><a href="/head/whatsapp" className="hover:text-zinc-300">‹ Back to inbox</a> &nbsp;·&nbsp; Settings / Integrations / <span className="text-zinc-300 font-medium">WhatsApp</span></div>
       <h1 className="text-2xl font-semibold text-zinc-100 tracking-tight">WhatsApp integration</h1>
-      <p className="text-sm text-zinc-400 mt-1 mb-5">Link the ops WhatsApp account and classify each group. Powers the WhatsApp Control Tower inbox — admins only.</p>
+      <p className="text-sm text-zinc-400 mt-1 mb-5">Link the ops WhatsApp account and connect each group to its lab or store — one step does everything (reading the group, and for labs the standard messages). Admins only.</p>
 
       {/* Connection */}
       <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-5 mb-6">
@@ -129,10 +121,21 @@ export function WhatsAppSettings() {
         )}
       </div>
 
-      {/* Group classification */}
+      {/* Onboarding: the same three steps for every lab and store */}
+      <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-4 mb-4 text-sm text-zinc-300">
+        <div className="text-[11px] uppercase tracking-wide text-zinc-500 font-semibold mb-2">Onboard a lab or store</div>
+        <ol className="list-decimal pl-5 space-y-1 text-zinc-400">
+          <li>Add the ops WhatsApp number{gw?.connectedNumber ? <> (+{gw.connectedNumber})</> : null} to their WhatsApp group.</li>
+          <li>Find the group below and click <b className="text-zinc-200">Connect</b>.</li>
+          <li>Pick the lab or store — the closest match by name is suggested — and confirm. That&apos;s all: the console reads the group, and a lab gets the standard messages.</li>
+        </ol>
+      </div>
+      {connecting && <ConnectDialog group={connecting} onClose={() => setConnecting(null)} onDone={(message) => { setConnecting(null); flash(message); loadGroups(); }} />}
+
+      {/* Groups */}
       <div className="rounded-xl border border-zinc-800 overflow-hidden">
         <div className="px-4 py-3 border-b border-zinc-800 flex items-center gap-3 flex-wrap">
-          <div className="text-[11px] uppercase tracking-wide text-zinc-500 font-semibold">Group classification</div>
+          <div className="text-[11px] uppercase tracking-wide text-zinc-500 font-semibold">Groups</div>
           <span className="text-[11px] text-zinc-500">Listening to <b className="text-emerald-400">{listeningCount}</b> of {memberGroups.length} groups</span>
           {formerCount > 0 && (
             <label className="flex items-center gap-1.5 text-[11px] text-zinc-500 cursor-pointer select-none">
@@ -142,17 +145,14 @@ export function WhatsAppSettings() {
           )}
           <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search groups…"
             className="ml-auto w-56 bg-zinc-900 border border-zinc-700 rounded-md px-3 py-1.5 text-xs text-zinc-200 focus:border-blue-500 outline-none" />
-          <div className="flex rounded-md border border-zinc-700 overflow-hidden text-xs">
-            {(["ALL", "ON", "OFF"] as const).map((v) => (
-              <button key={v} onClick={() => setListenFilter(v)} className={`px-2.5 py-1.5 font-medium ${listenFilter === v ? "bg-blue-600 text-white" : "bg-zinc-900 text-zinc-400 hover:text-zinc-200"}`}>
-                {v === "ALL" ? "All" : v === "ON" ? "Listening" : "Not listening"}
-              </button>
-            ))}
-          </div>
-          <select value={roleFilter} onChange={(e) => setRoleFilter(e.target.value)}
+          <select value={show} onChange={(e) => setShow(e.target.value as typeof show)}
             className="bg-zinc-900 border border-zinc-700 rounded-md px-2 py-1.5 text-xs text-zinc-300 focus:border-blue-500 outline-none">
-            <option value="ALL">All roles</option>
-            {ROLES.map((r) => <option key={r.v} value={r.v}>{r.label}</option>)}
+            <option value="ALL">All groups</option>
+            <option value="UNCONNECTED">Not connected yet</option>
+            <option value="PROVIDER">Labs</option>
+            <option value="SUPPORT">Stores</option>
+            <option value="INTERNAL">Internal</option>
+            <option value="IGNORE">Ignored</option>
           </select>
           <span className="text-xs text-zinc-500">{shownGroups.length}/{groups.length}</span>
         </div>
@@ -161,9 +161,7 @@ export function WhatsAppSettings() {
             <thead className="sticky top-0 bg-zinc-950/95 backdrop-blur">
               <tr className="text-left text-[11px] uppercase tracking-wide text-zinc-500 border-b border-zinc-800">
                 <th className="px-4 py-2.5 font-semibold">Group</th>
-                <th className="px-3 py-2.5 font-semibold">Role</th>
-                <th className="px-3 py-2.5 font-semibold">Map (store/lab id)</th>
-                <th className="px-3 py-2.5 font-semibold text-center">Active</th>
+                <th className="px-3 py-2.5 font-semibold">Connected to</th>
                 <th className="px-3 py-2.5 font-semibold text-center">Ask ID</th>
               </tr>
             </thead>
@@ -172,19 +170,13 @@ export function WhatsAppSettings() {
                 <tr key={g.id} className="border-b border-zinc-800/60 hover:bg-zinc-900/40">
                   <td className="px-4 py-2.5 text-zinc-200 font-medium">{g.subject.replace("Labstack", "LS").replace("LABSTACK", "LS")}{!g.isMember && <span className="ml-2 text-[10px] font-normal text-amber-400">left this group</span>}</td>
                   <td className="px-3 py-2.5">
-                    <select value={g.role} onChange={(e) => patchGroup(g.id, { role: e.target.value })}
-                      className="bg-zinc-900 border border-zinc-700 rounded-md px-2 py-1 text-xs text-zinc-200 focus:border-blue-500 outline-none">
-                      {ROLES.map((r) => <option key={r.v} value={r.v}>{r.label}</option>)}
-                    </select>
+                    <div className="flex items-center gap-2">
+                      <ConnectionLabel group={g} />
+                      <button onClick={() => setConnecting(g)} className="ml-auto text-xs font-medium text-blue-400 hover:text-blue-300">
+                        {isConnected(g) ? "Change" : "Connect"}
+                      </button>
+                    </div>
                   </td>
-                  <td className="px-3 py-2.5">
-                    {g.role === "SUPPORT" || g.role === "PROVIDER" ? (
-                      <input type="number" defaultValue={(g.role === "SUPPORT" ? g.storeId : g.labId) ?? ""} placeholder={g.role === "SUPPORT" ? "store id" : "lab id"}
-                        onBlur={(e) => patchGroup(g.id, g.role === "SUPPORT" ? { storeId: e.target.value ? Number(e.target.value) : null } : { labId: e.target.value ? Number(e.target.value) : null })}
-                        className="w-24 bg-zinc-900 border border-zinc-700 rounded-md px-2 py-1 text-xs text-zinc-200 focus:border-blue-500 outline-none" />
-                    ) : <span className="text-zinc-600 text-xs">—</span>}
-                  </td>
-                  <td className="px-3 py-2.5 text-center"><Toggle on={g.active} onChange={(v) => patchGroup(g.id, { active: v })} /></td>
                   <td className="px-3 py-2.5 text-center"><Toggle on={g.autoAskIdOnMissing} onChange={(v) => patchGroup(g.id, { autoAskIdOnMissing: v })} /></td>
                 </tr>
               ))}
@@ -231,5 +223,114 @@ function Toggle({ on, onChange }: { on: boolean; onChange: (v: boolean) => void 
     <button onClick={() => onChange(!on)} className={`relative w-9 h-5 rounded-full transition-colors ${on ? "bg-blue-600" : "bg-zinc-700"}`}>
       <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${on ? "translate-x-4" : "translate-x-0.5"}`} />
     </button>
+  );
+}
+
+const isConnected = (g: Group) =>
+  (g.role === "PROVIDER" && g.labId != null) || (g.role === "SUPPORT" && g.storeId != null) || g.role === "INTERNAL";
+
+function ConnectionLabel({ group }: { group: Group }) {
+  if (group.role === "PROVIDER" && group.labId != null) return <span className="text-xs text-emerald-300">Lab #{group.labId}</span>;
+  if (group.role === "SUPPORT" && group.storeId != null) return <span className="text-xs text-sky-300">Store #{group.storeId}</span>;
+  if (group.role === "INTERNAL") return <span className="text-xs text-zinc-300">Internal</span>;
+  if (group.role === "IGNORE") return <span className="text-xs text-zinc-600">Ignored</span>;
+  return <span className="text-xs text-amber-400">Not connected</span>;
+}
+
+type ConnectOption = { id: number; name: string; detail: string | null; score: number };
+type Kind = "LAB" | "STORE" | "INTERNAL" | "NONE";
+
+/** Connect one group to a lab, a store, internal, or ignore it — everything set in one go (lib/wa/connect.ts). */
+function ConnectDialog({ group, onClose, onDone }: { group: Group; onClose: () => void; onDone: (message: string) => void }) {
+  // Connected: start on what it is. Not yet: on whichever (lab or store) matches its name best.
+  const [kind, setKind] = useState<Kind>(
+    !isConnected(group) ? (group.role === "IGNORE" ? "NONE" : "LAB")
+      : group.role === "SUPPORT" ? "STORE" : group.role === "INTERNAL" ? "INTERNAL" : "LAB");
+  const [kindChosen, setKindChosen] = useState(isConnected(group));
+  const [q, setQ] = useState("");
+  const [options, setOptions] = useState<{ labs: ConnectOption[]; stores: ConnectOption[] } | null>(null);
+  const [picked, setPicked] = useState<number | null>(group.role === "SUPPORT" ? group.storeId : group.labId);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const t = setTimeout(() => {
+      fetch(`/api/whatsapp/groups/${group.id}/connect?q=${encodeURIComponent(q)}`)
+        .then((r) => (r.ok ? r.json() : { labs: [], stores: [] }))
+        .then((d) => {
+          if (cancelled) return;
+          setOptions({ labs: d.labs ?? [], stores: d.stores ?? [] });
+          let effective = kind;
+          if (!kindChosen && !q && kind !== "NONE") {
+            effective = (d.stores?.[0]?.score ?? 0) > (d.labs?.[0]?.score ?? 0) ? "STORE" : "LAB";
+            setKind(effective);
+            setKindChosen(true);
+          }
+          // Nothing picked yet: preselect the best name match.
+          setPicked((current) => current ?? (effective === "STORE" ? d.stores?.[0]?.id : d.labs?.[0]?.id) ?? null);
+        })
+        .catch(() => { if (!cancelled) setOptions({ labs: [], stores: [] }); });
+    }, q ? 300 : 0);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [group.id, q, kind, kindChosen]);
+
+  const list = kind === "LAB" ? options?.labs : kind === "STORE" ? options?.stores : [];
+  async function confirm() {
+    setBusy(true); setError(null);
+    const body = kind === "LAB" || kind === "STORE" ? { kind, id: picked } : { kind };
+    const r = await fetch(`/api/whatsapp/groups/${group.id}/connect`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const d = await r.json().catch(() => ({}));
+    setBusy(false);
+    if (!r.ok) return setError(d.error || "Could not connect");
+    onDone(kind === "LAB" ? "Connected to the lab — messages and reading are on" : kind === "STORE" ? "Connected to the store — the console reads it" : kind === "INTERNAL" ? "Marked internal" : "Ignored");
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
+      <div className="w-full max-w-md rounded-2xl border border-zinc-700 bg-zinc-900 p-5 shadow-2xl space-y-3" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between">
+          <h2 className="text-base font-semibold text-zinc-100 truncate">Connect “{group.subject}”</h2>
+          <button onClick={onClose} className="text-zinc-500 hover:text-zinc-300">✕</button>
+        </div>
+        <div className="grid grid-cols-4 gap-1 rounded-lg border border-zinc-700 p-1 text-xs">
+          {(["LAB", "STORE", "INTERNAL", "NONE"] as Kind[]).map((k) => (
+            <button key={k} onClick={() => { setKind(k); setKindChosen(true); setPicked(null); }}
+              className={`rounded-md px-2 py-1.5 font-medium ${kind === k ? "bg-blue-600 text-white" : "text-zinc-400 hover:text-zinc-200"}`}>
+              {k === "LAB" ? "Lab" : k === "STORE" ? "Store" : k === "INTERNAL" ? "Internal" : "Ignore"}
+            </button>
+          ))}
+        </div>
+        {(kind === "LAB" || kind === "STORE") ? (
+          <>
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={`Search ${kind === "LAB" ? "labs" : "stores"} by name or id`}
+              className="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-blue-500" />
+            <div className="max-h-60 overflow-y-auto rounded-lg border border-zinc-800 divide-y divide-zinc-800/60">
+              {!options ? <div className="p-3 text-xs text-zinc-500">Looking for matches…</div>
+                : list && list.length ? list.map((o, i) => (
+                  <label key={o.id} className="flex items-center gap-2 px-3 py-2 text-sm text-zinc-200 cursor-pointer hover:bg-zinc-800/60">
+                    <input type="radio" name="connect-target" checked={picked === o.id} onChange={() => setPicked(o.id)} className="accent-blue-500" />
+                    <span className="truncate">{o.name}</span>
+                    {!q && i === 0 && <span className="text-[10px] text-emerald-400">best match</span>}
+                    <span className="ml-auto text-[11px] text-zinc-500">{o.detail ? `${o.detail} · ` : ""}#{o.id}</span>
+                  </label>
+                )) : <div className="p-3 text-xs text-zinc-500">{q ? "Nothing matches — try the id." : "No close match by name — search above."}</div>}
+            </div>
+            <p className="text-[11px] text-zinc-500">
+              {kind === "LAB" ? "The console reads this group, and the lab gets the standard messages (Message Rules) — nothing else to set. Add the lab manager’s number on Lab Config if you have it."
+                : "The console reads this group and links its questions to the store."}
+            </p>
+          </>
+        ) : (
+          <p className="text-[11px] text-zinc-500">{kind === "INTERNAL" ? "LabStack's own team group: the console reads it." : "Not read, not messaged."}</p>
+        )}
+        {error && <div className="rounded-md bg-rose-500/10 px-3 py-2 text-xs text-rose-300">{error}</div>}
+        <div className="flex justify-end gap-2">
+          <button onClick={onClose} className="px-3 py-2 text-sm text-zinc-400 hover:text-zinc-200">Cancel</button>
+          <button onClick={() => void confirm()} disabled={busy || ((kind === "LAB" || kind === "STORE") && !picked)}
+            className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-500 disabled:opacity-50">{busy ? "Connecting…" : "Connect"}</button>
+        </div>
+      </div>
+    </div>
   );
 }

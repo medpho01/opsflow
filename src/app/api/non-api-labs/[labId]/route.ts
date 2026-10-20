@@ -1,3 +1,4 @@
+import { syncLabGroup } from "@/lib/wa/connect";
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/db/client";
 import { getSessionFromRequest } from "@/lib/auth/session";
@@ -46,6 +47,8 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
     if (!parsed.ok) return NextResponse.json({ error: "Invalid lab configuration", code: "VALIDATION_ERROR", requestId, details: parsed.errors }, { status: 400 });
 
     const lab = await prisma.nonApiLabConfig.update({ where: { labId }, data: { ...parsed.data, updatedById: user.id } });
+    // The WhatsApp side follows: the group is this lab's provider group, read by the console.
+    await syncLabGroup(lab.labId, lab.waGroupJid, lab.isActive);
     return NextResponse.json({ lab });
   } catch (error) {
     return NextResponse.json(logAndBuildErrorBody({ requestId, scope: "NonApiLabAPI.PUT", code: "UPDATE_ERROR", userMessage: "Failed to update non-API lab configuration", error }), { status: 500 });

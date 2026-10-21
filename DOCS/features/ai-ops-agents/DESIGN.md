@@ -1,12 +1,13 @@
 # OpsFlow Agents — product and system design
 
-Status: design for build, 21 Oct 2026. Source: "OpsFlow AI Ops Agents — Product Spec" (20 Oct 2026).
+Status: design for build, 21 Oct 2026; decisions of 21 Oct folded in (section 16). Source: "OpsFlow AI Ops Agents — Product Spec" (20 Oct 2026).
 Builds on: `DOCS/features/provider-communication/DESIGN.md` (message rules), `ORDER-JOURNEY-AGENT.md`
 (journeys, promises, ladder), `TIMELINE-WALKTHROUGH.md` (where today's bot still fails).
 
-This repo is public. Labs, stores and people are named by role or tier here, never by name.
-"SOP owners" are the two founders who approve SOP changes. "Lab A" is an API lab that assigns
-phlebos about 30 min before the slot. "Store S1" is the largest store group.
+This repo is public. People are named by role here. Labs and stores are named only in the pilot
+list (section 16), as the code already names them; elsewhere they are named by tier. "SOP owners"
+are the two founders who approve SOP changes. "Lab A" is an API lab that assigns phlebos about
+30 min before the slot. "Store S1" is the largest store group.
 
 ---
 
@@ -88,18 +89,19 @@ recommendation for each. Items marked **Decide** need an SOP owner's call before
 
 3. **Quiet hours contradict the morning block.** FR-8.1 says no lab messages 20:00 to 08:30. The
    morning block starts at 06:00, Flow 1 sends a 07:00 ask, and Flow 9 warns a store at 06:00.
-   Recommendation: quiet hours per counterparty and per ask. Labs: 06:00 to 20:00 only for asks about
-   a slot within the next 3 hours, otherwise 08:30 to 20:00. Stores: 07:00 to 21:00, with the 06:00
-   at-risk warning moved to 07:00. **Decide.**
+   **Decided 21 Oct: quiet hours depend on the order.** There is no fixed clock window. Each ask gets
+   a send window from its own order's checkpoint, and asks not tied to a near slot follow the
+   counterparty's working hours. Section 4.15 has the rule.
 
 4. **The autonomy matrix will never fill.** "98% agreement over 200 cases" per action × lab × store
-   is thousands of cells, and most will never see 200 cases. Recommendation: measure and promote at
-   action × lab tier (A/B/C) × desk. A lab or store can override only downward (demote), or upward
+   is thousands of cells, and most will never see 200 cases. **Decided 21 Oct:** measure and promote
+   at action × lab tier (A/B/C) × desk. A lab or store can override only downward (demote), or upward
    once its own sample reaches 200. Same gate, reachable in weeks instead of never.
 
 5. **Two confidence thresholds.** Appendix B says 0.7, FR-3.2 says 0.8. Recommendation: one evidence
    bar per transition, defaulting to auto-write at 0.85 or above with a named order, review between
    0.5 and 0.85, note only below 0.5. The Brain tunes it per lab × transition at review.
+   **Decided 21 Oct.**
 
 6. **Two senders during migration.** Today's message rules send to every lab. If a Lab desk goes to
    shadow while the rules keep sending, it is fine. When it goes live for a lab, the rules for that lab
@@ -110,7 +112,8 @@ recommendation for each. Items marked **Decide** need an SOP owner's call before
 7. **The Brain does not need the strongest model every 30 minutes.** The 30-minute run is a
    deterministic monitor (SQL plus thresholds: lab silent at peak, breach spike, overdue tasks). It
    calls the LLM only when a threshold trips and needs a diagnosis. The nightly brief and the review
-   cycle use the strongest model. That keeps the Brain at a handful of large calls a day.
+   cycle use the strongest model. This is a design choice for speed and signal, not cost: cost is
+   tracked but not capped for now (decided 21 Oct).
 
 8. **Store warnings are customer-visible, so they need autonomy too.** "Order 92144 is at risk" in a
    store group is an action with a cost if wrong. FR-16.4 does not say it starts in suggest mode. It
@@ -132,8 +135,9 @@ recommendation for each. Items marked **Decide** need an SOP owner's call before
     desk state, autonomy overrides and kill switches.
 
 12. **Console write APIs are the critical dependency.** Until they ship, a status write becomes a
-    one-click task ("Mark #92288 Sample Collected — evidence: lab reply 08:05"). The pipeline is the
-    same; only the executor differs. Desks can go live before the APIs exist.
+   one-click task ("Mark #92288 Sample Collected — evidence: lab reply 08:05"). The pipeline is the
+   same; only the executor differs. Desks can go live before the APIs exist. **Decided 21 Oct:** API
+   dates are not a planning input yet; the task fallback is the plan until they land.
 
 ---
 
@@ -174,9 +178,9 @@ One health card per connection. Each must be green before the desks that need it
 | LabStack replica | Everything | Query under 2 s, replica lag under 60 s |
 | Console change events (webhook or outbox) | Faster wake-ups (optional at first) | A test event round-trips |
 | Console write API (service account) | Status writes in act mode | A dry-run write against a test order returns 200 with the idempotency key echoed |
-| WhatsApp gateway, dedicated agent number | Lab and Store desks | Connected, the number is in every configured group |
+| WhatsApp gateway, dedicated agent number (already configured) | Lab and Store desks | Connected, the number is in every configured group |
 | Exotel | Calls rung (P1) | Test call to an internal number |
-| Lab portal sessions | Portal reads (Tier A/B labs) | Session logged in and a read of a known order succeeds |
+| Lab portal sessions, credentials in the OpsFlow vault (4.12) | Portal reads (Tier A/B labs) | Session logged in and a read of a known order succeeds |
 | LLM provider keys | Reader, case worker, Brain | A canary prompt passes |
 
 ### Step 2. Directory
@@ -238,11 +242,13 @@ prompts. Each suite has a gate:
 ### Step 6. Desks
 
 A matrix of desk × lab (Lab, Intake, Kit) or desk × store (Store, Escalation). Each cell is off,
-shadow or live. Setup puts every cell to **shadow** for the pilot labs and stores, and off elsewhere.
+shadow or live. Setup puts every cell to **shadow** for the pilot labs and stores (section 16), and
+off elsewhere.
 
 ### Step 7. Autonomy
 
-Defaults, by action, at the lab-tier level:
+Defaults, by action, at the lab-tier level. Store warnings and the two risky transitions start in
+suggest until the SOP owners say otherwise (section 16).
 
 | Action | Default | Can rise to |
 |---|---|---|
@@ -257,8 +263,9 @@ Defaults, by action, at the lab-tier level:
 
 ### Step 8. Guardrails and the go-live checklist
 
-Caps (per lab per slot, per lab per day, per order per day), quiet hours, daily cost cap, the
-kill-switch drill (pause one lab, confirm nothing sends, resume). Then the checklist:
+Caps (per lab per slot, per lab per day, per order per day), the order-based send windows (4.15),
+and the kill-switch drill (pause one lab, confirm nothing sends, resume). Cost is shown per order and
+per desk but not capped. Then the checklist:
 
 - [ ] Shadow has run at least 7 days for the pilot cell.
 - [ ] Shadow agreement for every act-level action in the cell is at the gate.
@@ -539,9 +546,21 @@ interface PortalAdapter {
 ```
 
 It reads only late or at-risk orders, rate-limited per lab, on a `portal.read` job a journey
-requests. Results come back as facts with source `portal`. Credentials sit in a vault only this
-service can read. A logout raises a lead-console alert within 5 minutes and journeys fall back to
-console data and WhatsApp.
+requests. Results come back as facts with source `portal`. A logout raises a lead-console alert
+within 5 minutes and journeys fall back to console data and WhatsApp.
+
+**The vault (built in OpsFlow, decided 21 Oct).**
+
+- **Storage.** An `agent_secret` table holds each portal login encrypted with AES-256-GCM: the
+  ciphertext, the IV and auth tag, a key version, and the lab it belongs to.
+- **Key.** The master key lives only in the portal worker's environment. The web app and the main
+  worker do not have it, so they can store a secret but never read one back.
+- **Lead console.** Controls has a write-only field per lab: paste the username and password, save,
+  and the page shows only "set on 21 Oct by …" afterwards. Replacing a secret adds a new row; the old
+  one is kept disabled for audit.
+- **Access log.** Every decrypt by the portal worker writes a row: which secret, when, for which job.
+- **Rotation.** A key version on every row lets the master key be rotated by re-encrypting in place.
+- **Models never see credentials.** The portal worker logs in with code; no prompt contains a secret.
 
 ### 4.13 Tasks for people
 
@@ -573,6 +592,26 @@ not show it, the task reopens with "not seen in the console yet".
 | 14:00 to 18:00 | Reports: portal first, Refresh Order, chase at 14:00 and 16:30, upload tasks for portal-only reports |
 | 18:00 to 20:00 | Tomorrow: confirm with labs, warn stores, placeholder labs to the network team, evening lists, store day summaries at 19:00 |
 | After 20:00 | No outbound. The Brain's nightly run. |
+
+### 4.15 When a message may go: quiet hours set by the order
+
+Decided 21 Oct: there is no fixed quiet window. Each outbox item carries its own window, computed
+from the order it is about.
+
+| Kind of ask | Earliest | Latest | Example |
+|---|---|---|---|
+| Tied to a slot today (phlebo, ETA, collected check, urgent) | Checkpoint due − the ask's lead time (from the SOP: phlebo 2 h for Tier C, the lab's own time for Tier A) | Checkpoint due + grace | 06:30 slot at a manual lab: phlebo ask may go at 04:30; collected check at 07:00 |
+| About tomorrow's slot (confirm, phlebo the night before) | Lab's working hours start | Lab's working hours end, or 2 h before the slot | 07:00 slot tomorrow: confirm in the evening block, never at 23:00 |
+| Not slot-bound (report chase, overdue, summaries) | Counterparty's working hours start | Counterparty's working hours end | Report chase at 14:00 and 16:30 |
+| Store warning | As soon as the risk is known, inside the store's active hours | Checkpoint due − 2 h | 08:00 slot at risk: warn the evening before, not at 06:00 |
+| Store answer to a question | Immediately | — | The store asked, so it is awake |
+
+Working hours are learned per lab and store: the hours in which its group has written in 30 days
+(p5 to p95), which the Brain refreshes at review. Batching still applies: items whose windows are
+open share a slot message; an item whose window closes before the next slot goes alone.
+
+Assumption to confirm: a safety floor with no messages from 22:00 to 05:00 unless the visit is within
+90 minutes. It stops a mis-set slot from waking a coordinator at 01:00.
 
 ---
 
@@ -809,7 +848,7 @@ services/portal-worker/   adapters per portal
 | Portal logged out | Alert in 5 min; journeys skip the portal rung |
 | Worker restart | Everything is level-triggered: the next sweep re-derives what is due; idempotency keys prevent repeats |
 | Duplicate console events | De-duplicated by event id; the fingerprint makes reprocessing a no-op |
-| Cost cap reached | Kill switch for LLM-dependent actions; deterministic steps continue |
+| Cost spike (no cap; alert only) | Alert at 2× the 7-day average; a person may pull the LLM kill switch; deterministic steps continue |
 
 ---
 
@@ -974,6 +1013,23 @@ model AgentEvalCase {
   id String @id @default(cuid()); suite String; input Json; expected Json; labels String[]
   addedFrom String /* HISTORY | INBOX_CORRECTION | AUDIT */; createdAt DateTime @default(now()); @@map("agent_eval_cases")
 }
+model AgentSecret {                    // the vault (4.12)
+  id String @id @default(cuid()); labId Int; kind String /* PORTAL_LOGIN */
+  ciphertext Bytes; iv Bytes; authTag Bytes; keyVersion Int
+  active Boolean @default(true); setBy Int; setAt DateTime @default(now())
+  @@index([labId, active]) @@map("agent_secrets")
+}
+model AgentSecretAccess {
+  id String @id @default(cuid()); secretId String; job String; at DateTime @default(now())
+  @@index([secretId, at]) @@map("agent_secret_access")
+}
+model AgentLearning {                  // what the Brain learns from retained logs (section 11)
+  id String @id @default(cuid()); scopeKind String /* LAB | STORE | TIER | GLOBAL */; scopeKey String
+  topic String /* reply_meaning, ref_format, working_hours, timing, ... */; statement String
+  evidence Json; orderCount Int; confidence Float; status String @default("ACTIVE") // ACTIVE, RETIRED
+  firstSeenAt DateTime @default(now()); lastSeenAt DateTime @default(now())
+  @@index([scopeKind, scopeKey, topic]) @@map("agent_learnings")
+}
 model AgentPortalSession {
   id String @id @default(cuid()); labId Int @unique; vaultRef String; status String
   lastOkAt DateTime?; lastError String?; @@map("agent_portal_sessions")
@@ -1031,12 +1087,26 @@ change a level, unlock an action or add a recipient.
 
 **Privacy (DPDP).** A `redact()` layer before every call: phone numbers become `[PHONE_1]`, names
 become first names, addresses are dropped unless the step needs them. Every call is logged with what
-was sent, retained for a period set with counsel.
+was sent.
 
-**Cost.** Assumptions per order per day: about 3 reader calls at about 1k tokens, case worker on
-about 10% of orders at about 4k tokens, Brain about 300k tokens a day shared across all orders. That
-puts the case worker and Brain at most of the spend. Check it against current prices before setting
-the daily cap; the target is ₹2 to 8 per order.
+**Retention and learning (decided 21 Oct).** Chat logs, model inputs and outputs, journey events and
+agent actions are kept for as long as possible, with no expiry job. They are the system's memory:
+
+- **Learnings.** The Brain's nightly run extracts learnings into an `agent_learning` table, each
+  with its evidence and how many orders it covers. Examples: "Lab C writes 'done' to mean collected,
+  not report shared"; "Store S1 quotes lab refs, not order ids"; "Lab A's coordinator answers within
+  10 min before 09:00, never after 18:00".
+- **Where learnings go.** Reader prompts take them as examples; the eval set takes them as cases;
+  SOP proposals cite them; working hours and lab timings come from them.
+- **Access.** Raw logs are readable only by OPS_HEAD and OPS_ADMIN roles and the worker. Every read
+  of raw chat text from the lead console is logged.
+- Indefinite retention of patient data is the SOP owners' call; it should still be checked against
+  the DPDP Act before the store desk goes live.
+
+**Cost.** Tracked per order and per desk on the scorecards, with no cap for now (decided 21 Oct). A
+manual kill switch remains. Rough load per order per day: about 3 reader calls at about 1k tokens,
+the case worker on about 10% of orders at about 4k tokens, and the Brain about 300k tokens a day
+shared across all orders.
 
 ---
 
@@ -1062,7 +1132,7 @@ Each phase is useful on its own. Desks move per lab or store from off to shadow 
 |---|---|---|---|
 | **0. Foundations** | 1 to 2 | Worker on pg-boss (move node-cron loops); journeys, checkpoints, events, change detector; SLA shim with per-lab offsets; guard in shadow; order timeline | Journeys match the console for 7 days; no missed wakes |
 | **1. Lab desk** | 3 to 4 | Lab desk SOP v0 from the current message set; dispatcher unification; exception inbox, review queue, take over; risk scoring and at-risk lists; status writes as one-click tasks | Team messages per order falling in pilot groups; no double senders |
-| **2. Console writes and action page** | 4 to 6, depends on the console API | Console writer with idempotency and revert; evidence bar; action-page mini-portal; Sample Collected to act at Tier A | Override rate under 2% on writes |
+| **2. Console writes and action page** | 4 to 6; writes run as one-click tasks until the console API lands | Console writer with idempotency and revert; evidence bar; action-page mini-portal; Sample Collected to act at Tier A | Override rate under 2% on writes |
 | **3. Store desk** | 5 to 7 | Store reader and linker; template answers; change requests to tasks; patient-unreachable alerts; store warnings in suggest | First reply p90 under 5 min in shadow agreement |
 | **4. Intake desk and case worker** | 6 to 8 | Placement errors, placeholder labs, unconfirmed; case worker in suggest | Case-worker agreement climbing |
 | **5. The Brain loop** | 7 to 10 | Monitor, nightly brief, audit, review cycle with replay, SOP library | Two review cycles with approved proposals |
@@ -1096,19 +1166,52 @@ W1 to W3 and W5 can start now. W11 should be requested now, because Phase 2 wait
 
 ---
 
-## 15. Open questions
+## 15. Still open
 
-1. **Quiet hours.** Accept the per-counterparty and per-ask quiet hours in section 1, item 3?
-2. **Autonomy pooling.** Promote at action × lab tier with downward-only overrides (section 1,
-   item 4)?
-3. **Confidence threshold.** One evidence bar per transition, default 0.85 (item 5)?
-4. **Store warnings and the two risky transitions** start in suggest (items 8 and 9)?
-5. **Console API dates.** When do the write APIs, change events and sub-state fields land? Phase 2
-   is scheduled around the answer.
-6. **Vault.** Which secrets manager holds portal credentials?
-7. **Cost cap.** The spec leaves the budget open. A starting daily cap is still needed for the kill
-   switch.
-8. **WhatsApp numbers.** Start the agent on its own dedicated number from Phase 1, separate from
-   today's bot number, so groups learn one identity?
-9. **Retention.** How long are chat logs and model inputs kept (counsel)?
-10. **Pilot.** Which two manual labs and which store go to shadow first?
+1. **Store warnings, Patient Missed and Phlebo No Show.** They start in suggest mode (section 1,
+   items 8 and 9) unless the SOP owners decide otherwise.
+2. **Night floor.** Keep the 22:00 to 05:00 safety floor in section 4.15?
+
+---
+
+## 16. Decisions (21 Oct 2026)
+
+| # | Question | Decision |
+|---|---|---|
+| 1 | Quiet hours | Depend on the order: each ask's window comes from its checkpoint; asks not tied to a slot follow learned working hours (4.15) |
+| 2 | Autonomy pooling | Promote at action × lab tier × desk; lab and store overrides demote only, or promote at their own 200 cases |
+| 3 | Confidence | One evidence bar per transition, default 0.85 |
+| 4 | Store warnings and risky transitions | No answer yet; suggest mode by default |
+| 5 | Console API dates | Not planned around yet; status writes run as one-click tasks until the APIs land |
+| 6 | Vault | Built in OpsFlow: encrypted table, key only in the portal worker (4.12) |
+| 7 | Cost cap | None for now; cost tracked per order and desk, spike alert, manual kill switch |
+| 8 | WhatsApp number | The dedicated agent number is already configured |
+| 9 | Retention | Keep everything as long as possible; the Brain turns it into learnings (section 11) |
+| 10 | Pilot | See below |
+
+**Pilot (shadow first):**
+
+| Desk | Who | Tier |
+|---|---|---|
+| Lab | The two manual labs with the most orders in the last 30 days, picked by the query below at setup | C |
+| Lab | Orange Health | A |
+| Lab | Thyrocare | A |
+| Store | Plum | — |
+| Store | Elevate Now | — |
+
+The pilot covers both ends. The two biggest manual labs are where chasing is heaviest and the console
+is dark. The two API labs carry most orders and most status writes, and their different phlebo
+timings exercise the per-lab checkpoints. Plum carries the most store messages, and Elevate Now adds
+a second store's phrasing to the store reader.
+
+The manual-lab pick, run at setup against the replica (labs configured as NON_API in OpsFlow):
+
+```sql
+SELECT o."labId", count(*) AS orders_30d
+FROM public."Order" o
+WHERE o."createdAt" > now() - interval '30 days'
+  AND o."labId" = ANY($1::int[])          -- NON_API lab ids from non_api_lab_configs
+GROUP BY o."labId"
+ORDER BY orders_30d DESC
+LIMIT 2;
+```

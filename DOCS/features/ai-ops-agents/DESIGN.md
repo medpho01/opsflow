@@ -1193,18 +1193,36 @@ W1 to W3 and W5 can start now. W11 should be requested now, because Phase 2 wait
 
 | Desk | Who | Tier |
 |---|---|---|
-| Lab | The two manual labs with the most orders in the last 30 days, picked by the query below at setup | C |
+| Lab | Vision Lab Maharashtra | C |
+| Lab | Good Health Lab | C |
 | Lab | Orange Health | A |
 | Lab | Thyrocare | A |
 | Store | Plum | — |
 | Store | Elevate Now | — |
 
-The pilot covers both ends. The two biggest manual labs are where chasing is heaviest and the console
-is dark. The two API labs carry most orders and most status writes, and their different phlebo
-timings exercise the per-lab checkpoints. Plum carries the most store messages, and Elevate Now adds
-a second store's phrasing to the store reader.
+Picked from the console order export of 21 Oct (about 6,300 orders, almost all from the last 30
+days). Manual labs are the ones whose orders carry no lab order id. Vision Lab Maharashtra and Good
+Health Lab are the two largest, at about 150 orders each; Advaitha is third at about 100. The four
+Orange Health cities and Thyrocare carry most of all orders.
 
-The manual-lab pick, run at setup against the replica (labs configured as NON_API in OpsFlow):
+What the export shows about this pilot:
+
+- **The lab pilot and the store pilot barely overlap.** Both manual labs get about 95% of their
+  orders from Star Health. Plum sends them none and Elevate Now under 10. So the Lab desk pilot
+  exercises manual-lab chasing for Star Health orders, and the Store desk pilot exercises store
+  questions about Orange and Thyrocare orders. Each desk is tested; the two are not tested together
+  on manual labs. Adding Star Health's group to the Store desk would close that gap.
+- **Plum's second lab is Redcliffe, which is not in the lab pilot.** Plum questions about Redcliffe
+  orders can still be answered from the console. Where the answer needs the lab, the order goes to
+  the team as it does today, because the Lab desk is off for Redcliffe.
+- **Elevate Now's largest "lab" is the placeholder lab.** Those orders belong to the Intake desk
+  (network-team tasks), which this pilot will exercise early.
+- **Good Health cancels about 4 in 10 orders**, mostly "samples not collected", plus hospital
+  issues and non-serviceable areas. It is the strongest test of the risk score and early store
+  warnings.
+
+To refresh the manual-lab pick later, run against the replica (labs configured as NON_API in
+OpsFlow):
 
 ```sql
 SELECT o."labId", count(*) AS orders_30d

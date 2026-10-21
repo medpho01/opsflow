@@ -562,6 +562,17 @@ within 5 minutes and journeys fall back to console data and WhatsApp.
 - **Rotation.** A key version on every row lets the master key be rotated by re-encrypting in place.
 - **Models never see credentials.** The portal worker logs in with code; no prompt contains a secret.
 
+**How the reads run.** Playwright with a persisted browser context per lab, so a login survives
+restarts. One adapter per portal: log in, check the session, read one order by its lab reference;
+each with recorded page fixtures so its tests never touch the real portal. Reads are queued by
+journeys for late or at-risk orders only and rate-limited per lab. Every read logs the order, the
+fields found and a screenshot kept for a few days. Scripted adapters do the daily reads; a model
+is used to repair an adapter when a portal changes, not for every read.
+
+**Logins (decided 21 Oct).** Start with the logins the team has. OTP logins: a person signs the
+session in from the lead console when it expires; sessions usually last days. Service logins per
+lab can come later.
+
 ### 4.13 Tasks for people
 
 An agent task is an ordinary `Task` with a new task type and a typed payload:
@@ -1132,11 +1143,11 @@ Each phase is useful on its own. Desks move per lab or store from off to shadow 
 |---|---|---|---|
 | **0. Foundations** | 1 to 2 | Worker on pg-boss (move node-cron loops); journeys, checkpoints, events, change detector; SLA shim with per-lab offsets; guard in shadow; order timeline | Journeys match the console for 7 days; no missed wakes |
 | **1. Lab desk** | 3 to 4 | Lab desk SOP v0 from the current message set; dispatcher unification; exception inbox, review queue, take over; risk scoring and at-risk lists; status writes as one-click tasks | Team messages per order falling in pilot groups; no double senders |
-| **2. Console writes and action page** | 4 to 6; writes run as one-click tasks until the console API lands | Console writer with idempotency and revert; evidence bar; action-page mini-portal; Sample Collected to act at Tier A | Override rate under 2% on writes |
+| **2. Console writes, portal reads and action page** | 4 to 6; writes run as one-click tasks until the console API lands | Console writer with idempotency and revert; evidence bar; portal worker with the Orange adapter, then Thyrocare and Redcliffe; action-page mini-portal; Sample Collected to act at Tier A | Override rate under 2% on writes; portal facts agree with the console on a daily sample |
 | **3. Store desk** | 5 to 7 | Store reader and linker; template answers; change requests to tasks; patient-unreachable alerts; store warnings in suggest | First reply p90 under 5 min in shadow agreement |
 | **4. Intake desk and case worker** | 6 to 8 | Placement errors, placeholder labs, unconfirmed; case worker in suggest | Case-worker agreement climbing |
 | **5. The Brain loop** | 7 to 10 | Monitor, nightly brief, audit, review cycle with replay, SOP library | Two review cycles with approved proposals |
-| **6. Portals, calls, API, Kit, Escalation** | 9 onward | Portal worker; Exotel manager calls; store status API; Kit and Escalation desks | Per desk, as above |
+| **6. Calls, API, Kit, Escalation** | 9 onward | Exotel manager calls; store status API; Kit and Escalation desks | Per desk, as above |
 
 The rollback rule applies to every desk in every phase: if team messages and touches per order in
 that group have not fallen within 14 days of going live, the desk returns to shadow.
@@ -1188,6 +1199,8 @@ W1 to W3 and W5 can start now. W11 should be requested now, because Phase 2 wait
 | 8 | WhatsApp number | The dedicated agent number is already configured |
 | 9 | Retention | Keep everything as long as possible; the Brain turns it into learnings (section 11) |
 | 10 | Pilot | See below |
+| 11 | Portal logins (21 Oct, later) | Start with the logins we have; service logins per lab are not a precondition. The portal worker moves from Phase 6 to Phase 2 (all three API pilot labs have portals; FR-17 is P0). Orange first. |
+| 12 | Agent shape (21 Oct, later) | Hybrid, as section 0: rules for routine steps; the Brain and the case worker are tool-using agent loops with a visible task list; every journey carries a visible plan (done / now / next) on its timeline, written by rules for routine orders and by the case worker for unusual ones. Not one AI loop per order. |
 
 **Pilot (shadow first), revised 21 Oct:**
 

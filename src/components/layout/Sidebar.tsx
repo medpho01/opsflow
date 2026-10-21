@@ -162,6 +162,16 @@ const navItems: NavItem[] = [
     ),
   },
   {
+    label: "Agents",
+    href: "/head/agents",
+    roles: ["OPS_HEAD", "OPS_AGENT"],
+    icon: (
+      <svg className="w-4.5 h-4.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.75}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v3m0 12v3M3 12h3m12 0h3M7.8 7.8l2.1 2.1m4.2 4.2l2.1 2.1m0-8.4l-2.1 2.1m-4.2 4.2l-2.1 2.1M12 9a3 3 0 100 6 3 3 0 000-6z" />
+      </svg>
+    ),
+  },
+  {
     label: "Engine",
     href: "/head/engine",
     roles: ["OPS_HEAD"],

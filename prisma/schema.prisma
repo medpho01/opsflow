@@ -140,39 +140,39 @@ enum CallStatus {
 }
 
 model CallLog {
-  id             Int        @id @default(autoincrement())
-  source         CallSource @default(EXOTEL)
-  status         CallStatus @default(INITIATED)
-  sourceMobile   String // the agent's phone Exotel dials first
-  targetMobile   String // the patient/doctor/phlebo being called
-  targetUserName String?
-  userId         Int? // the OpsFlow user who placed the call
-  storeId        Int?
-  taskId         Int?
+  id                     Int        @id @default(autoincrement())
+  source                 CallSource @default(EXOTEL)
+  status                 CallStatus @default(INITIATED)
+  sourceMobile           String // the agent's phone Exotel dials first
+  targetMobile           String // the patient/doctor/phlebo being called
+  targetUserName         String?
+  userId                 Int? // the OpsFlow user who placed the call
+  storeId                Int?
+  taskId                 Int?
   // The order/appointment this call is about, independent of taskId — an
   // order can have zero, one, or several OpsFlow tasks against it over its
   // life, so "the task" isn't always a meaningful owner for a call placed
   // from the head's order/appointment drawer. taskId is still set when the
   // call was placed from a specific task's own drawer (see CallButton call
   // sites) so a call can be found either way.
-  entityType     String?
-  entityId       Int?
-  triggeredFrom  String? // where in the UI the call was started
-  sid            String? // Exotel CallSid
-  recordingUrl   String?
-  durationSec    Int?
-  errorMessage   String?
+  entityType             String?
+  entityId               Int?
+  triggeredFrom          String? // where in the UI the call was started
+  sid                    String? // Exotel CallSid
+  recordingUrl           String?
+  durationSec            Int?
+  errorMessage           String?
   // How many times the recording sweep has polled Exotel for a recording
   // that wasn't ready yet on the status webhook (recording URLs generate
   // 45s-few min after the call ends). Capped in callRecordingSweep.ts.
-  recordingCheckAttempts Int @default(0)
+  recordingCheckAttempts Int        @default(0)
   // Self-hosted Whisper transcript of recordingUrl, filled in by
   // transcriptionSweep.ts once a recording exists. Null while pending/
   // unavailable (Exotel has no transcription of its own — see that file).
-  transcript         String? @db.Text
-  transcriptAttempts Int     @default(0)
-  createdAt      DateTime   @default(now())
-  updatedAt      DateTime   @updatedAt
+  transcript             String?    @db.Text
+  transcriptAttempts     Int        @default(0)
+  createdAt              DateTime   @default(now())
+  updatedAt              DateTime   @updatedAt
 
   user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
 
@@ -977,33 +977,33 @@ model WaIdentity {
 }
 
 model WaGroup {
-  id                 String      @id @default(cuid())
-  jid                String      @unique // WhatsApp group jid (…@g.us)
-  subject            String // group name
-  role               WaGroupRole @default(SUPPORT)
-  storeId            Int? // SUPPORT → partner/store (no FK, mirrors Task.storeId)
-  labId              Int? // PROVIDER → lab
-  autoAskIdOnMissing Boolean     @default(false) // auto-reply asking for an id; OFF by default + gated by WA_AUTO_ASK
-  sendEnabled        Boolean     @default(false) // per-group send guard
-  active             Boolean     @default(true) // listening on/off
-  lastReadAt         DateTime? // console: inbound messages after this count as unread
+  id                  String      @id @default(cuid())
+  jid                 String      @unique // WhatsApp group jid (…@g.us)
+  subject             String // group name
+  role                WaGroupRole @default(SUPPORT)
+  storeId             Int? // SUPPORT → partner/store (no FK, mirrors Task.storeId)
+  labId               Int? // PROVIDER → lab
+  autoAskIdOnMissing  Boolean     @default(false) // auto-reply asking for an id; OFF by default + gated by WA_AUTO_ASK
+  sendEnabled         Boolean     @default(false) // per-group send guard
+  active              Boolean     @default(true) // listening on/off
+  lastReadAt          DateTime? // console: inbound messages after this count as unread
   /// The linked WhatsApp number this row belongs to (digits, e.g. 919522584955).
   /// When the gateway connects as a DIFFERENT number, every row of the old one
   /// is archived (see archivedAt) and the new number's groups start fresh.
-  accountNumber      String?
+  accountNumber       String?
   /// Set when the row was archived because the linked number changed. Archived
   /// rows (and their messages/tickets) are hidden everywhere but never deleted —
   /// deleting a group would cascade-delete its whole history. The row's jid is
   /// suffixed "~archived~<timestamp>" so the real jid is free for the new number.
-  archivedAt         DateTime?
+  archivedAt          DateTime?
   /// Listening state at the moment of archiving. The archived row itself is
   /// switched off (so it drops out of every listener/sender), and the fresh row
   /// for the same jid under the new number takes its listening from here.
   activeBeforeArchive Boolean?
   /// Whether the CURRENT number is still in this group (false after it leaves).
-  isMember           Boolean     @default(true)
-  createdAt          DateTime    @default(now())
-  updatedAt          DateTime    @updatedAt
+  isMember            Boolean     @default(true)
+  createdAt           DateTime    @default(now())
+  updatedAt           DateTime    @updatedAt
 
   messages WaMessage[]
   tickets  WaTicket[]
@@ -1181,9 +1181,9 @@ model WaOutbound {
 // arrive encrypted and can only be opened with the original message's
 // `messageSecret`, so it has to survive a gateway restart.
 model WaPoll {
-  waMsgId    String  @id // the poll creation message id
-  outboundId String? @unique // the wa_outbound row that sent it
-  workflowId String? // the confirmation workflow this poll is asking about
+  waMsgId     String  @id // the poll creation message id
+  outboundId  String? @unique // the wa_outbound row that sent it
+  workflowId  String? // the confirmation workflow this poll is asking about
   // [{ label, action }] in display order. Votes come back as the option TEXT,
   // so this is what turns "Cannot fulfil" into REJECT.
   options     Json
@@ -1201,9 +1201,9 @@ model WaPoll {
   // A poll tap carries no text, so REJECT/RESCHEDULE ask for a follow-up in the
   // group. The gateway sets awaitingReason, then fills reason from that
   // person's next message.
-  awaitingReason Boolean   @default(false)
-  reason         String?
-  reasonAt       DateTime? // when the provider sent it
+  awaitingReason  Boolean   @default(false)
+  reason          String?
+  reasonAt        DateTime? // when the provider sent it
   // The vote is applied as soon as it lands, so reminders stop immediately;
   // a reason that turns up afterwards is a second, separate write. This marks
   // it done so the tick does not re-attach the same text every minute.
@@ -1671,31 +1671,31 @@ model SlaMilestoneConfig {
 /// computeDeadline() is deterministic for a given order state, so the same
 /// deadline always produces the same key.
 model SlaBreachEvent {
-  id               String          @id @default(cuid())
+  id                 String          @id @default(cuid())
   /// LabStack public."Order".id — deliberately not a foreign key, same as
   /// LabCommunicationWorkflow.orderId.
-  orderId          Int
-  labId            Int
-  milestone        SlaMilestone
-  deadlineAt       DateTime        @db.Timestamptz(3)
-  firstBreachedAt  DateTime        @db.Timestamptz(3)
-  attemptsSent     Int             @default(0)
-  lastSentAt       DateTime?       @db.Timestamptz(3)
+  orderId            Int
+  labId              Int
+  milestone          SlaMilestone
+  deadlineAt         DateTime        @db.Timestamptz(3)
+  firstBreachedAt    DateTime        @db.Timestamptz(3)
+  attemptsSent       Int             @default(0)
+  lastSentAt         DateTime?       @db.Timestamptz(3)
   /// NULL once the event is done. `status = ACTIVE AND nextAttemptAt <= now()`
   /// is the whole engine query — no in-memory timers, restart-safe.
-  nextAttemptAt    DateTime?       @db.Timestamptz(3)
-  status           SlaBreachStatus @default(ACTIVE)
-  resolvedAt       DateTime?       @db.Timestamptz(3)
+  nextAttemptAt      DateTime?       @db.Timestamptz(3)
+  status             SlaBreachStatus @default(ACTIVE)
+  resolvedAt         DateTime?       @db.Timestamptz(3)
   /// MILESTONE_COMPLETED | ORDER_CANCELLED | RESCHEDULED | MAX_ATTEMPTS | MANUAL_STOP
-  resolutionReason String?
+  resolutionReason   String?
   /// What the lab answered on the breach poll: DONE | ON_THE_WAY | DELAYED |
   /// CANNOT_FULFIL. Recorded, not trusted as completion — LabStack stays the
   /// source of truth for "done"; the answer pauses chasing and informs Ops.
   providerOutcome    String?
-  providerReportedAt DateTime? @db.Timestamptz(3)
+  providerReportedAt DateTime?       @db.Timestamptz(3)
   /// The lab's follow-up text after DELAYED / CANNOT_FULFIL.
   providerReason     String?
-  createdAt        DateTime        @default(now()) @db.Timestamptz(3)
+  createdAt          DateTime        @default(now()) @db.Timestamptz(3)
 
   sends SlaBreachSend[]
 
@@ -1736,33 +1736,33 @@ model SlaBreachSend {
 /// flipped without a deploy — the gateway's DRY_RUN env stops sequence sends
 /// too, so it cannot serve as a breach-only switch.
 model ProviderCommsSettings {
-  id                 String   @id @default("default")
+  id                   String    @id @default("default")
   /// Master switch for SLA-breach sending only. Sequence steps are unaffected.
-  slaBreachEnabled   Boolean  @default(false)
+  slaBreachEnabled     Boolean   @default(false)
   /// Renders and records every attempt, advances attempt state, enqueues nothing.
-  slaBreachDryRun    Boolean  @default(true)
+  slaBreachDryRun      Boolean   @default(true)
   /// Clock-hour quiet window in TIMEZONE. Attempts defer to the next opening
   /// unless the milestone sets ignoreQuietHours.
-  quietHoursStart    Int?
-  quietHoursEnd      Int?
+  quietHoursStart      Int?
+  quietHoursEnd        Int?
   /// Max breach messages per lab per tick. Excess rolls to the next tick.
-  perLabPerTickLimit Int      @default(2)
+  perLabPerTickLimit   Int       @default(2)
   /// The message-rules engine (lib/provider-rules): OFF, SHADOW (evaluate and
   /// record what it would send, send nothing — the legacy scheduler keeps
   /// sending) or LIVE (rules send; the legacy timed steps retire).
-  messageRulesMode   String   @default("SHADOW")
+  messageRulesMode     String    @default("SHADOW")
   /// When the one-time move to message rules ran (built-ins seeded, per-lab
   /// digest settings and deadline watchers converted, past sends imported).
-  rulesMigratedAt    DateTime?
+  rulesMigratedAt      DateTime?
   // When the standard message set (provider-rules/standard-set.ts) was applied to
   // every lab: one set for all labs, no per-lab switches.
-  standardSetAt      DateTime?
+  standardSetAt        DateTime?
   // When existing group <-> lab links (WhatsApp Settings and Lab Config) were
   // aligned into one (lib/wa/connect.ts, alignExistingConnections).
   connectionsAlignedAt DateTime?
   /// How far inbound lab messages have been read for reply understanding.
-  replyWatermark     DateTime?
-  updatedAt          DateTime @updatedAt @db.Timestamptz(3)
+  replyWatermark       DateTime?
+  updatedAt            DateTime  @updatedAt @db.Timestamptz(3)
 
   @@map("provider_comms_settings")
 }
@@ -1975,80 +1975,80 @@ model LabCommunicationAuditLog {
 // so an edit, pause or delete applies to every open order on the next tick.
 // See DOCS/features/provider-communication/DESIGN.md and lib/provider-rules.
 model ProviderMessageRule {
-  id                   String   @id @default(cuid())
+  id                        String   @id @default(cuid())
   /// Set on the rules seeded from the built-in steps (REMINDER_1H, …), so
   /// seeding is idempotent and they can be told apart from authored rules.
-  builtInKey           String?  @unique
-  name                 String
-  description          String?
-  isActive             Boolean  @default(true)
+  builtInKey                String?  @unique
+  name                      String
+  description               String?
+  isActive                  Boolean  @default(true)
   /// Bumped whenever timing, condition or content changes. Recorded on each
   /// send for the audit trail; never used to re-send.
-  version              Int      @default(1)
+  version                   Int      @default(1)
   /// Data source. "orders" (LabStack Lab Orders) is the only one wired today.
-  sourceKey            String   @default("orders")
+  sourceKey                 String   @default("orders")
   /// ORDER — one message about one order. SUMMARY — one message per lab at a
   /// time of day, listing the orders that match.
-  kind                 String   @default("ORDER")
+  kind                      String   @default("ORDER")
   /// Sending this opens the conversation with the lab (the new-order message).
-  introduces           Boolean  @default(false)
+  introduces                Boolean  @default(false)
   /// Only orders placed after their lab was configured (no "new order" for old orders).
-  onlyNewSinceLabConfigured Boolean @default(false)
+  onlyNewSinceLabConfigured Boolean  @default(false)
   /// Lab integration types in scope: NON_API, API. Empty = any.
-  integrationTypes     Json     @default("[\"NON_API\"]")
+  integrationTypes          Json     @default("[\"NON_API\"]")
   /// Conditions on facts read from the lab's replies, e.g.
   /// [{"kind":"report_shared","present":false}] — stop once the lab says so.
-  factConditions       Json     @default("[]")
+  factConditions            Json     @default("[]")
   /// A poll answer or a reply about this order stops further repeats.
-  stopOnAnswer         Boolean  @default(true)
+  stopOnAnswer              Boolean  @default(true)
   /// Label for deadline-style rules, shown as {{sla_milestone}}.
-  milestoneLabel       String?
+  milestoneLabel            String?
   /// SUMMARY: local time of day.
-  summaryHour          Int?
-  summaryMinute        Int?
+  summaryHour               Int?
+  summaryMinute             Int?
   /// SUMMARY: which orders — APPOINTMENT_TOMORROW, APPOINTMENT_TODAY or OPEN.
-  summaryScope         String?
+  summaryScope              String?
   /// SUMMARY: say nothing when no order matches.
-  skipWhenEmpty        Boolean  @default(true)
+  skipWhenEmpty             Boolean  @default(true)
   /// Empty = every configured lab.
-  allowedLabIds        Json     @default("[]")
+  allowedLabIds             Json     @default("[]")
   /// Labs this rule must skip (e.g. labs covered by a converted legacy rule).
-  excludedLabIds       Json     @default("[]")
+  excludedLabIds            Json     @default("[]")
   /// Empty = every order type.
-  allowedOrderTypes    Json     @default("[]")
+  allowedOrderTypes         Json     @default("[]")
   /// The Task Rule TriggerCondition (statusIn, minutesSince…, metadataConditions).
-  triggerCondition     Json
+  triggerCondition          Json
   /// Conversation states this rule may send in. Empty = any.
-  conversationStatusIn Json     @default("[]")
+  conversationStatusIn      Json     @default("[]")
   /// Only orders the lab was told about (the new-order message went out).
-  onlyIfIntroduced     Boolean  @default(true)
+  onlyIfIntroduced          Boolean  @default(true)
   /// Never send once the appointment has passed (orders without one pass).
-  notAfterAppointment  Boolean  @default(false)
+  notAfterAppointment       Boolean  @default(false)
   /// A NonApiLabConfig boolean that must be on for the lab, e.g.
   /// "appointmentRemindersEnabled" or "postAppointmentCheckEnabled".
-  requiresLabSetting   String?
+  requiresLabSetting        String?
   /// SEND or ESCALATE (escalate also marks the conversation ESCALATED).
-  action               String   @default("SEND")
+  action                    String   @default("SEND")
   /// LAB (the lab's group) or MANAGER (the lab manager's number, else the lab).
-  recipient            String   @default("LAB")
-  templateKey          String
+  recipient                 String   @default("LAB")
+  templateKey               String
   /// When the lab has its own template for this slot (initial / reminder /
   /// escalation / appointment) in Lab Config, that one is used instead.
-  templateSlot         String?
+  templateSlot              String?
   /// Poll definition key sent with the message, e.g. ORDER_STATUS_CHECK.
-  pollKey              String?
+  pollKey                   String?
   /// P0..P4, P0 most urgent: one message per order per tick, lowest wins.
-  priority             Int      @default(4)
+  priority                  Int      @default(4)
   /// Null = send once. Otherwise repeat while the condition still holds.
-  repeatEveryMinutes   Int?
-  maxSends             Int      @default(1)
+  repeatEveryMinutes        Int?
+  maxSends                  Int      @default(1)
   /// How late a first send may still go out (see DESIGN.md §5).
-  catchUpMinutes       Int      @default(30)
+  catchUpMinutes            Int      @default(30)
   /// Local-hour send window; outside it the send waits for the next opening.
-  sendWindowStartHour  Int?
-  sendWindowEndHour    Int?
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
+  sendWindowStartHour       Int?
+  sendWindowEndHour         Int?
+  createdAt                 DateTime @default(now())
+  updatedAt                 DateTime @updatedAt
 
   ledger ProviderMessageLedger[]
 
@@ -2109,4 +2109,160 @@ model ProviderOrderFact {
   @@index([orderId, kind])
   @@index([labId, createdAt])
   @@map("provider_order_facts")
+}
+
+// ─────────────────────────────────────────────
+// OPSFLOW AGENTS (DOCS/features/ai-ops-agents/DESIGN.md)
+// One journey per open order; everything about the work lives here, never
+// a copy of order truth (the console owns that; `consoleSnapshot` is a cache
+// for change detection and replay only).
+// ─────────────────────────────────────────────
+
+model AgentJourney {
+  id                 String    @id @default(cuid())
+  orderId            Int       @unique
+  orderType          String
+  labId              Int?
+  storeId            Int?
+  /// Last seen console status (cache).
+  stage              String
+  subStates          String[]
+  /// { what: checkpoint name, from: LAB | STORE | OPS | COURIER }
+  waitingFor         Json?
+  dueAt              DateTime?
+  /// POLICY | PROMISE
+  dueSource          String?
+  nextCheckAt        DateTime?
+  /// ON_TRACK | AT_RISK | BREACHED
+  health             String    @default("ON_TRACK")
+  /// LOW | MEDIUM | HIGH
+  riskLevel          String    @default("LOW")
+  riskReasons        String[]
+  /// A person who took the order over (User.id); the agent only observes until pausedUntil.
+  ownerUserId        Int?
+  pausedUntil        DateTime?
+  /// Asks per checkpoint, e.g. { "phlebo_assigned": 2 }
+  attempts           Json      @default("{}")
+  brokenPromises     Int       @default(0)
+  sopVersionId       String?
+  consoleFingerprint String?
+  consoleSnapshot    Json?
+  /// Visible plan: [{ id, label, state: DONE | NOW | NEXT, at? }]
+  plan               Json      @default("[]")
+  openedAt           DateTime  @default(now())
+  closedAt           DateTime?
+  closeReason        String?
+  updatedAt          DateTime  @updatedAt
+
+  events      AgentJourneyEvent[]
+  checkpoints AgentCheckpoint[]
+  actions     AgentAction[]
+
+  @@index([nextCheckAt])
+  @@index([labId, health])
+  @@index([storeId])
+  @@index([closedAt])
+  @@map("agent_journeys")
+}
+
+/// The event log the agent's step() runs on, and that replay re-runs.
+model AgentJourneyEvent {
+  id        String   @id @default(cuid())
+  journeyId String
+  at        DateTime
+  /// console_change, fact, promise, ask, write, task, takeover, handback, escalation, llm_output, person_action, note
+  kind      String
+  payload   Json
+  /// AGENT | PERSON:<userId> | LAB | STORE | CONSOLE | PORTAL | SYSTEM
+  actor     String
+  applied   Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  journey AgentJourney @relation(fields: [journeyId], references: [id], onDelete: Cascade)
+
+  @@index([journeyId, at])
+  @@index([applied, at])
+  @@map("agent_journey_events")
+}
+
+model AgentCheckpoint {
+  id        String    @id @default(cuid())
+  journeyId String
+  /// confirmed, scheduled, phlebo_assigned, phlebo_en_route, phlebo_reached, sample_collected, sample_at_lab, report_delivered, …
+  name      String
+  dueAt     DateTime
+  /// POLICY | PROMISE | RESET
+  dueSource String    @default("POLICY")
+  metAt     DateTime?
+  /// PENDING | MET | BREACHED | WAIVED
+  status    String    @default("PENDING")
+  policyRef String?
+  updatedAt DateTime  @updatedAt
+
+  journey AgentJourney @relation(fields: [journeyId], references: [id], onDelete: Cascade)
+
+  @@unique([journeyId, name])
+  @@index([status, dueAt])
+  @@map("agent_checkpoints")
+}
+
+/// The audit log: one row per action the guard saw, whatever happened to it (FR-14.1).
+model AgentAction {
+  id           String   @id @default(cuid())
+  journeyId    String?
+  orderId      Int?
+  /// LAB | INTAKE | STORE | KIT | ESCALATION | BRAIN
+  desk         String
+  /// ask, store_reply, store_alert, status_write, create_task, portal_read, call, wait, …
+  action       String
+  params       Json
+  reason       String
+  evidenceIds  String[]
+  sopVersionId String?
+  /// SHADOW | SUGGEST | ACT_NOTIFY | ACT
+  level        String
+  /// RECORDED | REVIEW | EXECUTED | BLOCKED | FAILED | REVERTED
+  outcome      String
+  blockedBy    String?
+  model        String?
+  tokens       Int?
+  costPaise    Int?
+  idemKey      String?  @unique
+  createdAt    DateTime @default(now())
+
+  journey AgentJourney? @relation(fields: [journeyId], references: [id], onDelete: SetNull)
+
+  @@index([journeyId, createdAt])
+  @@index([desk, action, createdAt])
+  @@index([outcome, createdAt])
+  @@map("agent_actions")
+}
+
+/// Each desk is OFF, SHADOW or LIVE per lab or per store.
+model AgentDeskState {
+  id        String    @id @default(cuid())
+  desk      String
+  /// LAB | STORE
+  scopeKind String
+  scopeId   Int
+  /// OFF | SHADOW | LIVE
+  state     String    @default("OFF")
+  liveSince DateTime?
+  setBy     Int?
+  updatedAt DateTime  @updatedAt
+
+  @@unique([desk, scopeKind, scopeId])
+  @@map("agent_desk_states")
+}
+
+/// Kill switches and global knobs, one row.
+model AgentSettings {
+  id             String   @id @default("default")
+  pausedAll      Boolean  @default(false)
+  pausedDesks    String[]
+  pausedLabIds   Int[]
+  pausedStoreIds Int[]
+  updatedAt      DateTime @updatedAt
+
+  @@map("agent_settings")
 }

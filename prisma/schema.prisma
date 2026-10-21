@@ -2264,5 +2264,321 @@ model AgentSettings {
   pausedStoreIds Int[]
   updatedAt      DateTime @updatedAt
 
+  /// The Store desk's read watermark over wa_messages.
+  storeWatermark DateTime?
+
   @@map("agent_settings")
+}
+
+/// One SOP per desk; `currentVersionId` is the live version.
+model AgentSop {
+  id               String   @id @default(cuid())
+  desk             String   @unique
+  currentVersionId String?
+  updatedAt        DateTime @updatedAt
+
+  versions  AgentSopVersion[]
+  proposals AgentSopProposal[]
+
+  @@map("agent_sops")
+}
+
+model AgentSopVersion {
+  id         String    @id @default(cuid())
+  sopId      String
+  version    Int
+  /// Typed JSON validated by lib/agents/sop/schema.ts
+  body       Json
+  /// SYSTEM | BRAIN | USER:<id>
+  author     String
+  summary    String?
+  approvedBy Int?
+  approvedAt DateTime?
+  /// DRAFT | LIVE | RETIRED
+  status     String    @default("DRAFT")
+  createdAt  DateTime  @default(now())
+
+  sop AgentSop @relation(fields: [sopId], references: [id], onDelete: Cascade)
+
+  @@unique([sopId, version])
+  @@map("agent_sop_versions")
+}
+
+model AgentSopProposal {
+  id               String    @id @default(cuid())
+  sopId            String
+  baseVersionId    String
+  /// The full proposed body plus a human diff summary.
+  body             Json
+  diff             Json
+  rationale        String
+  evidence         Json
+  replay           Json?
+  inBounds         Boolean   @default(false)
+  /// APPROVED | REJECTED | APPLIED
+  decision         String?
+  decidedBy        Int?
+  decidedAt        DateTime?
+  appliedVersionId String?
+  createdAt        DateTime  @default(now())
+
+  sop AgentSop @relation(fields: [sopId], references: [id], onDelete: Cascade)
+
+  @@index([sopId, decision])
+  @@map("agent_sop_proposals")
+}
+
+/// Autonomy per action × scope (TIER | LAB | STORE | ALL). Promote at ≥98% over ≥200.
+model AgentAutonomy {
+  id            String    @id @default(cuid())
+  action        String
+  desk          String
+  scopeKind     String
+  scopeKey      String
+  /// SHADOW | SUGGEST | ACT_NOTIFY | ACT
+  level         String
+  agreementRate Float?
+  sampleSize    Int       @default(0)
+  promotedAt    DateTime?
+  setBy         Int?
+  updatedAt     DateTime  @updatedAt
+
+  @@unique([action, desk, scopeKind, scopeKey])
+  @@map("agent_autonomy")
+}
+
+/// Something a person decides with one click: a low-confidence fact, a suggested action.
+model AgentReviewItem {
+  id         String    @id @default(cuid())
+  /// fact | status_write | store_reply | store_warning | case_choice | ask | store_alert | call
+  kind       String
+  desk       String
+  orderId    Int?
+  journeyId  String?
+  actionId   String    @unique
+  proposal   Json
+  confidence Float?
+  storeId    Int?
+  labId      Int?
+  dueAt      DateTime?
+  weight     Int       @default(1)
+  /// APPROVED | EDITED | REJECTED
+  decision   String?
+  decidedBy  Int?
+  decidedAt  DateTime?
+  edited     Json?
+  createdAt  DateTime  @default(now())
+
+  @@index([decision, dueAt])
+  @@index([orderId])
+  @@map("agent_review_items")
+}
+
+/// One order in one ask to one counterparty, waiting for its slot.
+model AgentOutboxItem {
+  id           String    @id @default(cuid())
+  /// LAB:<id> | STORE:<id> | MANAGER:<labId>
+  counterparty String
+  ask          String
+  orderId      Int
+  journeyId    String?
+  actionId     String?
+  line         String?
+  payload      Json?
+  windowFrom   DateTime
+  windowTo     DateTime
+  urgent       Boolean   @default(false)
+  /// QUEUED | SENT | WITHDRAWN | DROPPED | FAILED
+  status       String    @default("QUEUED")
+  batchId      String?
+  outboundId   String?
+  idemKey      String    @unique
+  createdAt    DateTime  @default(now())
+  sentAt       DateTime?
+
+  @@index([counterparty, ask, status])
+  @@index([orderId, status])
+  @@map("agent_outbox_items")
+}
+
+model AgentPromise {
+  id         String    @id @default(cuid())
+  orderId    Int
+  labId      Int?
+  journeyId  String?
+  /// eta | report | reschedule | confirm | custom
+  kind       String
+  checkpoint String?
+  dueAt      DateTime
+  factId     String?
+  text       String?
+  /// OPEN | KEPT | BROKEN | SUPERSEDED
+  status     String    @default("OPEN")
+  createdAt  DateTime  @default(now())
+  resolvedAt DateTime?
+
+  @@index([orderId, status])
+  @@map("agent_promises")
+}
+
+model AgentOrderRisk {
+  id                String    @id @default(cuid())
+  journeyId         String
+  orderId           Int
+  scoredAt          DateTime  @default(now())
+  level             String
+  score             Int
+  reasons           String[]
+  predictedDelayMin Int?
+  cannotDoToday     Boolean   @default(false)
+  warnedStoreAt     DateTime?
+  warnedOpsAt       DateTime?
+  /// ON_TIME | LATE | NOT_DONE
+  outcome           String?
+
+  @@index([journeyId, scoredAt])
+  @@index([scoredAt, level])
+  @@map("agent_order_risks")
+}
+
+model AgentConsoleWrite {
+  id           String   @id @default(cuid())
+  orderId      Int
+  journeyId    String?
+  actionId     String?
+  transition   String
+  evidenceId   String?
+  idemKey      String   @unique
+  /// PENDING | DONE | FAILED | REVERTED | TASKED
+  status       String
+  note         String
+  response     Json?
+  taskId       Int?
+  revertedById Int?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([orderId, createdAt])
+  @@map("agent_console_writes")
+}
+
+/// The vault: portal logins, AES-256-GCM, key only in the portal worker.
+model AgentSecret {
+  id         String   @id @default(cuid())
+  labId      Int
+  /// PORTAL_LOGIN
+  kind       String
+  ciphertext Bytes
+  iv         Bytes
+  authTag    Bytes
+  keyVersion Int      @default(1)
+  active     Boolean  @default(true)
+  setBy      Int?
+  setAt      DateTime @default(now())
+
+  @@index([labId, active])
+  @@map("agent_secrets")
+}
+
+model AgentSecretAccess {
+  id       String   @id @default(cuid())
+  secretId String
+  job      String
+  at       DateTime @default(now())
+
+  @@index([secretId, at])
+  @@map("agent_secret_access")
+}
+
+model AgentPortalSession {
+  id         String    @id @default(cuid())
+  labId      Int       @unique
+  adapter    String
+  /// OK | LOGGED_OUT | CHANGED | ERROR | NOT_SET
+  status     String    @default("NOT_SET")
+  lastOkAt   DateTime?
+  lastError  String?
+  readsToday Int       @default(0)
+  updatedAt  DateTime  @updatedAt
+
+  @@map("agent_portal_sessions")
+}
+
+model AgentPortalRead {
+  id             String   @id @default(cuid())
+  labId          Int
+  orderId        Int
+  labRef         String?
+  fields         Json
+  screenshotPath String?
+  at             DateTime @default(now())
+
+  @@index([orderId, at])
+  @@map("agent_portal_reads")
+}
+
+/// What the Brain learns from retained logs.
+model AgentLearning {
+  id          String   @id @default(cuid())
+  scopeKind   String
+  scopeKey    String
+  topic       String
+  statement   String
+  evidence    Json
+  orderCount  Int      @default(0)
+  confidence  Float    @default(0.5)
+  status      String   @default("ACTIVE")
+  firstSeenAt DateTime @default(now())
+  lastSeenAt  DateTime @default(now())
+
+  @@index([scopeKind, scopeKey, topic])
+  @@map("agent_learnings")
+}
+
+model AgentBrainRun {
+  id         String    @id @default(cuid())
+  /// monitor | alert | nightly | audit | review | baseline
+  kind       String
+  startedAt  DateTime  @default(now())
+  finishedAt DateTime?
+  inputs     Json?
+  findings   Json?
+  plan       Json?
+  brief      String?
+  model      String?
+  tokens     Int?
+  costPaise  Int?
+  error      String?
+
+  @@index([kind, startedAt])
+  @@map("agent_brain_runs")
+}
+
+model AgentEvalCase {
+  id        String   @id @default(cuid())
+  suite     String
+  input     Json
+  expected  Json
+  labels    String[]
+  /// HISTORY | INBOX_CORRECTION | AUDIT
+  addedFrom String
+  createdAt DateTime @default(now())
+
+  @@index([suite])
+  @@map("agent_eval_cases")
+}
+
+model AgentEvalRun {
+  id         String   @id @default(cuid())
+  suite      String
+  cases      Int
+  passed     Int
+  score      Float
+  gate       Float
+  passedGate Boolean
+  details    Json?
+  ranAt      DateTime @default(now())
+
+  @@index([suite, ranAt])
+  @@map("agent_eval_runs")
 }

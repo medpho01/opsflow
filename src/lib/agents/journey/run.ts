@@ -1,7 +1,8 @@
 /**
  * One wake of one journey (DESIGN.md §4.3, step 11): load, read the console,
- * run the pure step, then persist the journey, its checkpoints and its new
- * events in one transaction, and hand every proposed action to the guard.
+ * resolve the SOP for this order, run the pure step, then persist the journey,
+ * its checkpoints, its risk and its new events in one transaction, withdraw
+ * asks the step cancelled, and hand every proposed action to the guard.
  *
  * The worker runs this under a per-order singleton key, so two wakes of the
  * same order never overlap (FR-1.2).
@@ -9,17 +10,22 @@
 import { Prisma } from "@prisma/client";
 import prisma from "@/lib/db/client";
 import { fetchOrderSnapshot } from "./window";
-import { step, type CheckpointState, type JourneyEvent, type JourneyState } from "./step";
+import { step, type Attempt, type CheckpointState, type JourneyEvent, type JourneyState } from "./step";
 import type { OrderSnapshot } from "./policy";
 import { guard, loadGuardState, type GuardState } from "../guard/guard";
+import { loadLiveSops, paramsFor, type LiveSop } from "../sop/load";
+import { loadDirectory, tierOf, type Directory } from "../directory";
+import { withdrawOutbox } from "../executors/dispatcher";
 
-export type WakeReason = "sweep" | "timer" | "console_change" | "opened" | "person" | "inbound" | "block_start";
+export type WakeReason = "sweep" | "timer" | "console_change" | "opened" | "person" | "inbound" | "block_start" | "risk_batch";
 
-export type WakeResult = { orderId: number; opened: boolean; closed: boolean; events: number; actions: number; skipped?: string };
+export type WakeResult = { orderId: number; opened: boolean; closed: boolean; events: number; actions: number; executed: number; review: number; skipped?: string };
+
+export type WakeContext = { now?: Date; order?: OrderSnapshot; guardState?: GuardState; sops?: Map<string, LiveSop>; directory?: Directory; labSilentHours?: number | null };
 
 const asDate = (v: unknown): Date | null => (typeof v === "string" || v instanceof Date ? new Date(v) : null);
 
-function toJourneyState(row: Prisma.AgentJourneyGetPayload<{ include: { checkpoints: true } }>): JourneyState {
+export function toJourneyState(row: Prisma.AgentJourneyGetPayload<{ include: { checkpoints: true } }>): JourneyState {
   const snap = row.consoleSnapshot as Record<string, unknown> | null;
   const consoleSnapshot: OrderSnapshot | null = snap ? {
     id: Number(snap.id), orderType: String(snap.orderType), orderStatus: String(snap.orderStatus),
@@ -28,43 +34,56 @@ function toJourneyState(row: Prisma.AgentJourneyGetPayload<{ include: { checkpoi
     phleboName: String(snap.phleboName ?? ""), patientName: (snap.patientName as string | null) ?? null,
     labName: (snap.labName as string | null) ?? null, storeName: (snap.storeName as string | null) ?? null,
   } : null;
+  const rawAttempts = (row.attempts as Record<string, unknown>) ?? {};
+  const attempts: Record<string, Attempt> = {};
+  for (const [k, v] of Object.entries(rawAttempts)) attempts[k] = typeof v === "number" ? { n: v, at: null } : (v as Attempt);
+  const meta = (snap?.__journey as Record<string, unknown> | undefined) ?? {};
   return {
     orderId: row.orderId, orderType: row.orderType, labId: row.labId, storeId: row.storeId, stage: row.stage, subStates: row.subStates,
     waitingFor: (row.waitingFor as JourneyState["waitingFor"]) ?? null, dueAt: row.dueAt, dueSource: (row.dueSource as JourneyState["dueSource"]) ?? null,
-    nextCheckAt: row.nextCheckAt, health: row.health as JourneyState["health"], ownerUserId: row.ownerUserId, pausedUntil: row.pausedUntil,
-    attempts: (row.attempts as Record<string, number>) ?? {}, brokenPromises: row.brokenPromises,
+    nextCheckAt: row.nextCheckAt, health: row.health as JourneyState["health"], riskLevel: row.riskLevel as JourneyState["riskLevel"], riskReasons: row.riskReasons,
+    ownerUserId: row.ownerUserId, pausedUntil: row.pausedUntil, attempts, brokenPromises: row.brokenPromises,
+    rescheduleCount: Number(meta.rescheduleCount ?? 0),
     consoleFingerprint: row.consoleFingerprint, consoleSnapshot,
     plan: ((row.plan as unknown[]) ?? []).map((p) => { const i = p as Record<string, unknown>; return { id: String(i.id), label: String(i.label), state: i.state as "DONE" | "NOW" | "NEXT", at: asDate(i.at) }; }),
-    closedAt: row.closedAt, closeReason: row.closeReason,
+    sopVersionId: row.sopVersionId, closedAt: row.closedAt, closeReason: row.closeReason,
   };
 }
 
 const toCheckpointState = (c: { name: string; dueAt: Date; dueSource: string; metAt: Date | null; status: string }): CheckpointState =>
   ({ name: c.name as CheckpointState["name"], dueAt: c.dueAt, dueSource: c.dueSource as CheckpointState["dueSource"], metAt: c.metAt, status: c.status as CheckpointState["status"] });
 
-/** Wake one journey. `order` may be passed by the sweep to save a replica read. */
-export async function wakeJourney(orderId: number, reason: WakeReason, opts: { now?: Date; order?: OrderSnapshot; guardState?: GuardState } = {}): Promise<WakeResult> {
+/** Wake one journey. The sweep passes shared context to save reads. */
+export async function wakeJourney(orderId: number, reason: WakeReason, opts: WakeContext = {}): Promise<WakeResult> {
   const now = opts.now ?? new Date();
+  const empty = (skipped: string): WakeResult => ({ orderId, opened: false, closed: false, events: 0, actions: 0, executed: 0, review: 0, skipped });
   const row = await prisma.agentJourney.findUnique({ where: { orderId }, include: { checkpoints: true } });
-  if (row?.closedAt) return { orderId, opened: false, closed: true, events: 0, actions: 0, skipped: "journey closed" };
+  if (row?.closedAt) return { ...empty("journey closed"), closed: true };
 
-  // The replica is the truth; when it has nothing (lag, an outage), an existing journey
-  // still applies people's events on its last snapshot. Nothing is ever written to the
-  // console from a snapshot: the guard records in shadow and executors re-read first.
   let order = opts.order ?? await fetchOrderSnapshot(orderId);
   if (!order && row) order = toJourneyState(row).consoleSnapshot;
-  if (!order) return { orderId, opened: false, closed: false, events: 0, actions: 0, skipped: "order not in the replica" };
+  if (!order) return empty("order not in the replica");
 
   const pending = row ? await prisma.agentJourneyEvent.findMany({ where: { journeyId: row.id, applied: false }, orderBy: { at: "asc" } }) : [];
   const events: JourneyEvent[] = pending.map((e) => ({ kind: e.kind, at: e.at, actor: e.actor, payload: (e.payload as Record<string, unknown>) ?? {} }));
 
-  const out = step({ now, order, journey: row ? toJourneyState(row) : null, checkpoints: row ? row.checkpoints.map(toCheckpointState) : [], events });
+  const [sops, directory] = await Promise.all([opts.sops ?? loadLiveSops(), opts.directory ?? loadDirectory()]);
+  const labTier = tierOf(directory, order.labId);
+  const labSop = sops.get("LAB") ?? null;
+  const sopParams = paramsFor(labSop, { labTier, labId: order.labId, storeId: order.storeId, orderType: order.orderType });
+
+  const out = step({
+    now, order, journey: row ? toJourneyState(row) : null, checkpoints: row ? row.checkpoints.map(toCheckpointState) : [], events,
+    sop: sopParams, sopVersionId: labSop?.versionId ?? null, labTier, labSilentHours: opts.labSilentHours ?? null, timeZone: process.env.TIMEZONE || "Asia/Kolkata",
+  });
   const j = out.journey;
+  const snapshot = j.consoleSnapshot ? { ...j.consoleSnapshot, __journey: { rescheduleCount: j.rescheduleCount } } : null;
   const data = {
     orderType: j.orderType, labId: j.labId, storeId: j.storeId, stage: j.stage, subStates: j.subStates,
     waitingFor: (j.waitingFor ?? Prisma.JsonNull) as Prisma.InputJsonValue | typeof Prisma.JsonNull, dueAt: j.dueAt, dueSource: j.dueSource, nextCheckAt: j.nextCheckAt,
-    health: j.health, ownerUserId: j.ownerUserId, pausedUntil: j.pausedUntil, attempts: j.attempts as Prisma.InputJsonValue, brokenPromises: j.brokenPromises,
-    consoleFingerprint: j.consoleFingerprint, consoleSnapshot: j.consoleSnapshot as unknown as Prisma.InputJsonValue,
+    health: j.health, riskLevel: j.riskLevel, riskReasons: j.riskReasons, ownerUserId: j.ownerUserId, pausedUntil: j.pausedUntil,
+    attempts: j.attempts as Prisma.InputJsonValue, brokenPromises: j.brokenPromises, sopVersionId: j.sopVersionId,
+    consoleFingerprint: j.consoleFingerprint, consoleSnapshot: snapshot as unknown as Prisma.InputJsonValue,
     plan: j.plan.map((p) => ({ ...p, at: p.at ? p.at.toISOString() : null })) as Prisma.InputJsonValue,
     closedAt: j.closedAt, closeReason: j.closeReason,
   };
@@ -84,23 +103,54 @@ export async function wakeJourney(orderId: number, reason: WakeReason, opts: { n
     const stale = (row?.checkpoints ?? []).filter((c) => !gone.has(c.name as CheckpointState["name"]));
     if (stale.length) await tx.agentCheckpoint.deleteMany({ where: { id: { in: stale.map((c) => c.id) } } });
     if (pending.length) await tx.agentJourneyEvent.updateMany({ where: { id: { in: pending.map((e) => e.id) } }, data: { applied: true } });
-    const opening: JourneyEvent[] = row ? [] : [{ kind: "opened", at: now, actor: "SYSTEM", payload: { reason, orderStatus: order.orderStatus, appointmentTime: order.appointmentTime } }];
+    const opening: JourneyEvent[] = row ? [] : [{ kind: "opened", at: now, actor: "SYSTEM", payload: { reason, orderStatus: order!.orderStatus, appointmentTime: order!.appointmentTime } }];
     const toWrite = [...opening, ...out.newEvents];
     if (toWrite.length) {
-      await tx.agentJourneyEvent.createMany({
-        data: toWrite.map((e) => ({ journeyId: saved.id, at: e.at, kind: e.kind, actor: e.actor, payload: e.payload as Prisma.InputJsonValue, applied: true })),
-      });
+      await tx.agentJourneyEvent.createMany({ data: toWrite.map((e) => ({ journeyId: saved.id, at: e.at, kind: e.kind, actor: e.actor, payload: e.payload as Prisma.InputJsonValue, applied: true })) });
+    }
+    for (const e of out.newEvents.filter((x) => x.kind === "promise")) {
+      const p = e.payload as { kind: string; checkpoint: string; dueAt: Date; text: string; superseded: boolean };
+      if (p.superseded) await tx.agentPromise.updateMany({ where: { orderId, status: "OPEN", checkpoint: p.checkpoint }, data: { status: "SUPERSEDED", resolvedAt: now } });
+      await tx.agentPromise.create({ data: { orderId, labId: order!.labId, journeyId: saved.id, kind: p.kind, checkpoint: p.checkpoint, dueAt: p.dueAt, text: p.text, status: "OPEN" } });
+    }
+    for (const e of out.newEvents.filter((x) => x.kind === "promise_broken")) {
+      await tx.agentPromise.updateMany({ where: { orderId, status: "OPEN", checkpoint: String((e.payload as { checkpoint: string }).checkpoint) }, data: { status: "BROKEN", resolvedAt: now } });
+    }
+    for (const c of out.checkpoints.filter((x) => x.status === "MET")) {
+      await tx.agentPromise.updateMany({ where: { orderId, status: "OPEN", checkpoint: c.name }, data: { status: "KEPT", resolvedAt: now } });
+    }
+    if (out.risk && (!row || row.riskLevel !== out.risk.level || reason === "risk_batch")) {
+      await tx.agentOrderRisk.create({ data: { journeyId: saved.id, orderId, level: out.risk.level, score: out.risk.score, reasons: out.risk.reasons, predictedDelayMin: out.risk.predictedDelayMin, cannotDoToday: out.risk.cannotDoToday } });
     }
     return saved.id;
   });
 
-  let actions = 0;
+  for (const w of out.withdraw) await withdrawOutbox(orderId, w.reason, w.asks).catch(() => 0);
+
+  let executed = 0; let review = 0;
   if (out.actions.length) {
     const state = opts.guardState ?? await loadGuardState();
     for (const action of out.actions) {
-      await guard(action, { journeyId, orderId, labId: j.labId, storeId: j.storeId }, state);
-      actions += 1;
+      const r = await guard(action, {
+        journeyId, orderId, labId: j.labId, storeId: j.storeId, labTier, sopVersionId: labSop?.versionId ?? null,
+        menus: {
+          LAB: sopParams?.menu,
+          STORE: paramsFor(sops.get("STORE"), { labTier, labId: order.labId, storeId: order.storeId, orderType: order.orderType })?.menu,
+          INTAKE: paramsFor(sops.get("INTAKE"), { labTier, labId: order.labId, storeId: order.storeId, orderType: order.orderType })?.menu,
+        },
+        orderType: order.orderType, appointmentTime: order.appointmentTime, patientName: order.patientName, labName: order.labName, storeName: order.storeName,
+      }, state);
+      if (r.outcome === "EXECUTED") executed += 1; else if (r.outcome === "REVIEW") review += 1;
     }
   }
-  return { orderId, opened: !row, closed: !!j.closedAt, events: out.newEvents.length, actions };
+  return { orderId, opened: !row, closed: !!j.closedAt, events: out.newEvents.length, actions: out.actions.length, executed, review };
+}
+
+/** Record something that happened to an order (a fact, a person's action) and wake it. */
+export async function recordJourneyEvent(orderId: number, event: JourneyEvent, wake = true): Promise<boolean> {
+  const journey = await prisma.agentJourney.findUnique({ where: { orderId }, select: { id: true, closedAt: true } });
+  if (!journey || journey.closedAt) return false;
+  await prisma.agentJourneyEvent.create({ data: { journeyId: journey.id, at: event.at, kind: event.kind, actor: event.actor, payload: event.payload as Prisma.InputJsonValue, applied: false } });
+  if (wake) await wakeJourney(orderId, "inbound").catch((error) => console.error(`[Agents] wake after ${event.kind} failed:`, error instanceof Error ? error.message : error));
+  return true;
 }

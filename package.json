@@ -9,6 +9,7 @@
     "lint": "eslint",
     "test": "node --import tsx --test src/lib/non-api-labs/__tests__/*.test.ts src/lib/provider-comms/__tests__/*.test.ts src/lib/provider-rules/__tests__/*.test.ts src/lib/agents/__tests__/*.test.ts",
     "worker": "node --import tsx src/worker/index.ts",
+    "agents:evals": "node --import tsx scripts/agents-evals.ts",
     "db:seed": "node node_modules/.bin/tsx prisma/seed.ts",
     "db:migrate": "node node_modules/prisma/build/index.js migrate dev",
     "db:studio": "node node_modules/prisma/build/index.js studio",

@@ -188,7 +188,11 @@ export type RulesPassResult = {
 export async function runMessageRulesPass(now = new Date()): Promise<RulesPassResult> {
   const result: RulesPassResult = { orders: 0, sent: 0, summaries: 0, missed: 0, skipped: 0, confirmed: 0, failed: 0, combined: 0, held: 0 };
   await ensureMigratedToRules();
-  const [rules, labs] = await Promise.all([loadActiveRules(), loadLiveLabs()]);
+  const [rules, allLabs] = await Promise.all([loadActiveRules(), loadLiveLabs()]);
+  // A lab whose Lab desk is LIVE belongs to OpsFlow Agents (DESIGN.md §1 item 6): the
+  // legacy rules step aside for it in the same pass, so nothing is ever sent twice.
+  const liveDesks = await prisma.agentDeskState.findMany({ where: { desk: "LAB", scopeKind: "LAB", state: "LIVE" }, select: { scopeId: true } });
+  const labs = new Map([...allLabs].filter(([labId]) => !liveDesks.some((d) => d.scopeId === labId)));
   if (rules.length === 0 || labs.size === 0) return result;
 
   const orders = await fetchOpenOrders([...labs.keys()], now);

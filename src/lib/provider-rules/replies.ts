@@ -201,6 +201,19 @@ async function applyReply(message: ReplyMessage, labId: number, match: Attributi
   }
   // The lab answered: the rule that asked stops repeating.
   if (match.ruleId) await recordAnswered(match.ruleId, match.orderId, labId, `Reply: ${said.slice(0, 120)}`, message.createdAt);
+  // The order's agent hears about it too (OpsFlow Agents): each fact is a journey event, and the journey wakes.
+  try {
+    const { recordJourneyEvent } = await import("@/lib/agents/journey/run");
+    const list = facts.length ? facts : [{ kind: "note", value: said.slice(0, 200), confidence: 0.5 }];
+    for (const [index, fact] of list.entries()) {
+      await recordJourneyEvent(match.orderId, {
+        kind: "fact", at: message.createdAt, actor: "LAB",
+        payload: { kind: fact.kind, value: fact.value, confidence: fact.confidence, source: "lab_reply", attributedBy: match.via, sender: message.sender, messageId: message.id, factId: `${message.id}:${index}` },
+      }, index === list.length - 1);
+    }
+  } catch (error) {
+    console.warn("[Replies] journey event failed:", error instanceof Error ? error.message : error);
+  }
   return facts.length;
 }
 

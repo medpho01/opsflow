@@ -1189,37 +1189,40 @@ W1 to W3 and W5 can start now. W11 should be requested now, because Phase 2 wait
 | 9 | Retention | Keep everything as long as possible; the Brain turns it into learnings (section 11) |
 | 10 | Pilot | See below |
 
-**Pilot (shadow first):**
+**Pilot (shadow first), revised 21 Oct:**
 
 | Desk | Who | Tier |
 |---|---|---|
-| Lab | Vision Lab Maharashtra | C |
-| Lab | Good Health Lab | C |
-| Lab | Orange Health | A |
+| Lab | Orange Health (Bangalore, Hyderabad, Delhi NCR, Mumbai) | A |
 | Lab | Thyrocare | A |
+| Lab | Redcliffe | A |
+| Lab | Advaitha | C |
+| Lab | Star Pathology | C |
 | Store | Plum | — |
 | Store | Elevate Now | — |
 
-Picked from the console order export of 21 Oct (about 6,300 orders, almost all from the last 30
-days). Manual labs are the ones whose orders carry no lab order id. Vision Lab Maharashtra and Good
-Health Lab are the two largest, at about 150 orders each; Advaitha is third at about 100. The four
-Orange Health cities and Thyrocare carry most of all orders.
+Picked with the console order export of 21 Oct (about 6,300 orders, almost all from the last 30
+days). Manual labs are the ones whose orders carry no lab order id. Star Health is out of the
+pilot, so the manual labs are the largest ones that serve the two pilot stores:
 
-What the export shows about this pilot:
+- **Vision Lab Maharashtra and Good Health Lab are left out.** They are the two largest manual
+  labs, but about 95% of their orders come from Star Health.
+- **Advaitha** is the next largest manual lab, at about 100 orders a month, and Elevate Now sends it
+  about a third of them.
+- **Star Pathology** gets most of its orders from Elevate Now. Life Care Pathology is an equal
+  alternative (similar volume, also mostly Elevate Now).
 
-- **The lab pilot and the store pilot barely overlap.** Both manual labs get about 95% of their
-  orders from Star Health. Plum sends them none and Elevate Now under 10. So the Lab desk pilot
-  exercises manual-lab chasing for Star Health orders, and the Store desk pilot exercises store
-  questions about Orange and Thyrocare orders. Each desk is tested; the two are not tested together
-  on manual labs. Adding Star Health's group to the Store desk would close that gap.
-- **Plum's second lab is Redcliffe, which is not in the lab pilot.** Plum questions about Redcliffe
-  orders can still be answered from the console. Where the answer needs the lab, the order goes to
-  the team as it does today, because the Lab desk is off for Redcliffe.
-- **Elevate Now's largest "lab" is the placeholder lab.** Those orders belong to the Intake desk
-  (network-team tasks), which this pilot will exercise early.
-- **Good Health cancels about 4 in 10 orders**, mostly "samples not collected", plus hospital
-  issues and non-serviceable areas. It is the strongest test of the risk score and early store
-  warnings.
+What this pilot covers:
+
+- **Plum's labs are all in it.** Orange, Thyrocare and Redcliffe receive almost all of Plum's
+  orders, so every Plum question can be answered, chased and closed by the agent.
+- **Elevate Now covers the manual side.** Its orders go mostly to manual labs (Advaitha, Star
+  Pathology, Life Care) and to the placeholder lab, so the Store desk and Lab desk meet on
+  manual-lab orders, and the Intake desk gets placeholder-lab orders early.
+- **Redcliffe is the API lab that runs late.** It is the hardest test of per-lab timings and the
+  escalation ladder, and it also carries camp orders.
+- **Volumes are uneven.** Plum is about 20 times Elevate Now. Agreement rates for the Store desk
+  will be dominated by Plum; Elevate Now's are tracked separately so its phrasing is not drowned out.
 
 To refresh the manual-lab pick later, run against the replica (labs configured as NON_API in
 OpsFlow):

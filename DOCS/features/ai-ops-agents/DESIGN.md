@@ -1,6 +1,6 @@
 # OpsFlow Agents — product and system design
 
-Status: design for build, 21 Oct 2026; decisions of 21 Oct folded in (section 16). Source: "OpsFlow AI Ops Agents — Product Spec" (20 Oct 2026).
+Status: built 21 Oct 2026 across phases 0–6 (see BUILD.md for what is real, how to run it, and what waits on the console API and the portals); decisions of 21 Oct folded in (section 16). Source: "OpsFlow AI Ops Agents — Product Spec" (20 Oct 2026).
 Builds on: `DOCS/features/provider-communication/DESIGN.md` (message rules), `ORDER-JOURNEY-AGENT.md`
 (journeys, promises, ladder), `TIMELINE-WALKTHROUGH.md` (where today's bot still fails).
 
@@ -1249,3 +1249,18 @@ GROUP BY o."labId"
 ORDER BY orders_30d DESC
 LIMIT 2;
 ```
+
+---
+
+## 17. Build status (21 Oct 2026)
+
+Built in this repo, per BUILD.md: journeys and the pure step with the ladder, promises, evidence bar,
+hand-offs, Store desk, risk and send windows; the dispatcher; the guard with autonomy; tasks with a
+verify loop; console writes (task fallback until the API exists); the lab action page; the portal
+worker and vault; the case worker; the Brain's monitor, nightly brief, audit and review with replay;
+evals; and the screens (inbox, journeys, order timeline, lab board, brief and tracking, desks and
+autonomy, SOP library, controls, setup). 183 unit tests.
+
+Still outside this repo: the console write API and change events (§10), each portal's real selectors
+and logins (set on Controls), a Chromium for the portal worker, model keys, and the pilot's groups
+and managers in Connections and Lab Config.

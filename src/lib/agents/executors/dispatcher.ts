@@ -19,6 +19,8 @@ import { coordinatorsFor } from "@/lib/wa/coordinators";
 import { currentSlot, itemLine } from "@/lib/provider-rules/batching";
 import { formatTime, TIME_ZONE } from "@/lib/provider-rules/format";
 import { confirmationUrl } from "@/lib/non-api-labs/confirmation-link";
+import { actionPageUrl } from "./actionPage";
+import { loadDirectory, tierOf } from "../directory";
 
 export const PER_SLOT_CAP = Number(process.env.AGENT_BATCH_PER_SLOT_CAP ?? 3);
 export const PER_DAY_CAP = Number(process.env.AGENT_BATCH_PER_DAY_CAP ?? 8);
@@ -148,12 +150,16 @@ async function flushGroup(key: string, group: Item[], now: Date): Promise<{ mess
   let messages = 0; let items = 0; let held = 0;
 
   const sendItems = async (list: Item[], urgentSend: boolean) => {
+    // Manual labs get the action page on every nudge (FR-8.4): one tap is evidence. API labs get the
+    // confirmation link only where the ask needs one.
+    const manual = tierOf(await loadDirectory(), id) === "C";
     const lines = await Promise.all(list.map(async (i, index) => {
       const p = (i.payload as { line: OutboxLine & { appointment: string | null } }).line;
       const needsLink = ask === "UNCONFIRMED" || ask === "ESCALATION";
+      const link = manual && !toManager ? await actionPageUrl(i.orderId).catch(() => null) : null;
       return itemLine(ask, {
         n: index + 1, orderId: i.orderId, patientName: p.patientName, appointment: p.appointment ? new Date(p.appointment) : null,
-        area: p.area ?? null, phlebo: p.phlebo ?? null, confirmUrl: needsLink ? await confirmationUrl(i.orderId).catch(() => null) : null,
+        area: p.area ?? null, phlebo: p.phlebo ?? null, confirmUrl: link ?? (needsLink ? await confirmationUrl(i.orderId).catch(() => null) : null),
       }, now, tz);
     }));
     const followUp = toManager ? null : await findFollowUp(id, ask, list.map((i) => i.orderId), now);

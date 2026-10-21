@@ -112,6 +112,8 @@ export type StepOutput = {
   /** Asks to withdraw from the outbox (reschedule, cancel, answered). */
   withdraw: Array<{ asks?: string[]; reason: string }>;
   risk: ReturnType<typeof scoreRisk> | null;
+  /** No deterministic step fits: the case worker decides (DESIGN.md §4.6). */
+  caseworker: { reason: string; text: string; checkpoint: string | null; factKind?: string | null; intent?: string | null; at: Date } | null;
 };
 
 // ── Console snapshot ──────────────────────────────────────────────────────
@@ -290,7 +292,7 @@ export function step(input: StepInput): StepOutput {
     if (!journey.closedAt) { newEvents.push({ kind: "closed", at: now, actor: "SYSTEM", payload: { reason } }); withdraw.push({ reason: reason.toLowerCase() }); }
     return {
       journey: { ...journey, closedAt: journey.closedAt ?? now, closeReason: reason, waitingFor: null, dueAt: null, dueSource: null, nextCheckAt: null, health: "ON_TRACK", plan: planOf(checkpoints, now, undefined, null) },
-      checkpoints, newEvents, actions, withdraw, risk: null,
+      checkpoints, newEvents, actions, withdraw, risk: null, caseworker: null,
     };
   }
 
@@ -298,6 +300,7 @@ export function step(input: StepInput): StepOutput {
   const attempts: Record<string, Attempt> = { ...journey.attempts };
   const factsSeen: Array<{ kind: string; value: string; confidence: number; source: string; named: boolean; id: string | null; at: Date }> = [];
   const storeMessages: Array<{ intent: string; text: string; messageId: string; waMsgId: string | null; at: Date }> = [];
+  let caseworker: StepOutput["caseworker"] = null;
   for (const ev of events) {
     if (ev.kind === "takeover") {
       const userId = Number(ev.payload.userId);
@@ -449,6 +452,18 @@ export function step(input: StepInput): StepOutput {
     }
   }
 
+  // 5c. When no deterministic step fits, the case worker decides (FR-1.6): a lab-raised problem
+  //     the hand-offs do not cover, a store message nobody could place, or an exhausted ladder.
+  if (sop && !taken && !journey.closedAt) {
+    const covered = new Set([...Object.keys(FACT_TO_CHECKPOINT), ...sop.handoffs.map((h) => h.onFact)]);
+    const odd = factsSeen.find((f) => !covered.has(f.kind) && f.kind !== "note" && f.value.trim().length > 3) ?? factsSeen.find((f) => f.kind === "note" && f.value.trim().length > 12 && next != null);
+    const stray = storeMessages.find((m) => m.intent === "other" && m.text.trim().length > 8);
+    const exhausted = next && brokenPromises >= sop.brokenPromisesSkip && (attempts[next.name]?.n ?? 0) >= sop.ladder.length;
+    if (odd) caseworker = { reason: `lab said something the SOP has no step for (${odd.kind})`, text: odd.value, checkpoint: next?.name ?? null, factKind: odd.kind, at: odd.at };
+    else if (stray) caseworker = { reason: "store message with no clear intent", text: stray.text, checkpoint: next?.name ?? null, intent: "other", at: stray.at };
+    else if (exhausted) caseworker = { reason: `${brokenPromises} broken promises and the ladder is exhausted for ${next!.name}`, text: `console shows ${order.orderStatus}; due ${next!.dueAt.toISOString()}`, checkpoint: next!.name, at: now };
+  }
+
   // 6. The ladder for the checkpoint the order waits on (FR-8.7).
   let rungLabel: string | null = null;
   if (sop && next && !taken) {
@@ -541,5 +556,5 @@ export function step(input: StepInput): StepOutput {
     dueAt: next?.dueAt ?? null, dueSource: next ? (next.dueSource === "PROMISE" ? "PROMISE" : "POLICY") : null,
     nextCheckAt, health, plan: planOf(checkpoints, now, next, rungLabel),
   };
-  return { journey, checkpoints, newEvents, actions, withdraw, risk };
+  return { journey, checkpoints, newEvents, actions, withdraw, risk, caseworker };
 }

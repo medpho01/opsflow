@@ -11,6 +11,8 @@ import { createAgentTask, type AgentTaskPayload } from "./tasks";
 import { writeStatus } from "./consoleWriter";
 import { storeText } from "./storeReply";
 import { placeManagerCall } from "./calls";
+import { enqueuePortalRead } from "../queue";
+import { draftComplaintReply } from "../escalation/drafter";
 
 export type ExecuteContext = {
   actionId: string; journeyId: string | null; orderId: number; labId: number | null; storeId: number | null;
@@ -44,14 +46,17 @@ export async function execute(action: ProposedAction, ctx: ExecuteContext): Prom
         dueInMinutes: typeof p.dueInMinutes === "number" ? p.dueInMinutes : undefined,
       });
       if (ctx.journeyId) await prisma.agentJourneyEvent.create({ data: { journeyId: ctx.journeyId, at: new Date(), kind: "task", actor: "AGENT", applied: true, payload: { taskId: r.taskId, type: p.taskType, cause: payload.cause, created: r.created } as Prisma.InputJsonValue } });
+      // Escalation desk (FR-9.5): a complaint's task carries the timeline and a drafted reply; a person sends it.
+      if (p.draft === true && r.created) await draftComplaintReply(r.taskId, ctx.orderId, ctx.journeyId, String(payload.evidence[0]?.text ?? "")).catch((e) => console.warn("[Agents] draft failed:", e instanceof Error ? e.message : e));
       return { outcome: "EXECUTED", note: `task #${r.taskId}${r.created ? "" : " (existing)"}` };
     }
     case "status_write": return writeStatus(action, ctx);
     case "store_alert": case "store_warning": case "store_reply": case "ack": return storeText(action, ctx);
     case "call": return placeManagerCall(action, ctx);
     case "portal_read": {
-      await prisma.agentJourneyEvent.create({ data: { journeyId: ctx.journeyId ?? "", at: new Date(), kind: "portal_read_requested", actor: "AGENT", applied: true, payload: { checkpoint: p.checkpoint } as Prisma.InputJsonValue } }).catch(() => undefined);
-      return { outcome: "EXECUTED", note: "portal read queued" };
+      const queued = await enqueuePortalRead(ctx.labId ?? 0, ctx.orderId, (p.labRef as string | null) ?? null, ctx.journeyId);
+      if (ctx.journeyId) await prisma.agentJourneyEvent.create({ data: { journeyId: ctx.journeyId, at: new Date(), kind: "portal_read_requested", actor: "AGENT", applied: true, payload: { checkpoint: p.checkpoint, queued } as Prisma.InputJsonValue } }).catch(() => undefined);
+      return queued ? { outcome: "EXECUTED", note: "portal read queued" } : { outcome: "RECORDED", note: "portal worker not reachable; next rung continues" };
     }
     case "stuck": {
       if (ctx.journeyId) await prisma.agentJourneyEvent.create({ data: { journeyId: ctx.journeyId, at: new Date(), kind: "escalation", actor: "AGENT", applied: true, payload: { rung: "stuck", checkpoint: p.checkpoint } as Prisma.InputJsonValue } });

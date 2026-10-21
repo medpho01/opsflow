@@ -2471,6 +2471,10 @@ model AgentSecret {
   ciphertext Bytes
   iv         Bytes
   authTag    Bytes
+  /// The per-secret AES key, wrapped with the vault's public key; only the portal worker can unwrap it.
+  wrappedKey Bytes?
+  /// JSON: adapter name and its selectors/config (not secret).
+  config     Json?
   keyVersion Int      @default(1)
   active     Boolean  @default(true)
   setBy      Int?

@@ -172,6 +172,7 @@ const navItems: NavItem[] = [
       { label: "Brief and tracking", href: "/head/agents/brief" },
       { label: "Desks and autonomy", href: "/head/agents/desks" },
       { label: "SOP library", href: "/head/agents/sops" },
+      { label: "Controls", href: "/head/agents/controls" },
       { label: "Setup", href: "/head/agents/setup" },
     ],
     icon: (

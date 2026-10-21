@@ -10,6 +10,10 @@ import prisma from "@/lib/db/client";
 import { labstackWorkerQuery } from "@/lib/db/labstack";
 
 export type LabTier = "A" | "B" | "C";
+
+/** The pilot (DESIGN.md §16), matched by name so ids never have to be typed. */
+export const PILOT_LABS = [/orange health/i, /thyrocare/i, /redcliffe/i, /advaitha/i, /star patho/i];
+export const PILOT_STORES = [/plum/i, /elevate now/i];
 export type LabEntry = { labId: number; labName: string; tier: LabTier; groupJid: string | null; groupId: string | null; managerWhatsapp: string | null; hasPortal: boolean };
 export type StoreEntry = { storeId: number; storeName: string | null; groupJid: string | null; groupId: string | null; weight: number };
 export type Directory = { labs: Map<number, LabEntry>; stores: Map<number, StoreEntry> };

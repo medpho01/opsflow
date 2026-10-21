@@ -39,6 +39,8 @@ export const LAB_SOP_V1: SopBody = parseSop({
       { onFact: "patient_unavailable", do: "store_alert", template: "STORE_PATIENT_UNREACHABLE" },
       { onFact: "cannot_fulfil", do: "create_task", taskType: "AGENT_LAB_CANNOT_FULFIL" },
       { onFact: "sample_collected", do: "status_write", transition: "SAMPLE_COLLECTED" },
+      { onFact: "sample_delivered", do: "status_write", transition: "SAMPLE_DELIVERED" },
+      { onFact: "phlebo_started", do: "status_write", transition: "PHLEBO_STARTED" },
       { onFact: "report_shared", do: "create_task", taskType: "AGENT_REPORT_UPLOAD" },
     ],
     menu: ["ask", "reminder", "manager_whatsapp", "call", "create_task", "stuck", "portal_read", "status_write", "store_alert", "store_warning", "ack", "wait"],

@@ -18,6 +18,9 @@ export const FACT_TO_CHECKPOINT: Record<string, { checkpoint: CheckpointName; pr
   report_shared: { checkpoint: "report_delivered", promise: "report" },
   new_appointment_time: { checkpoint: "sample_collected", promise: "reschedule" },
   delay_reason: { checkpoint: "sample_collected", promise: "custom" },
+  // Action-page taps and portal reads (DESIGN.md §4.5).
+  phlebo_started: { checkpoint: "phlebo_reached", promise: "custom" },
+  sample_delivered: { checkpoint: "sample_at_lab", promise: "custom" },
 };
 
 /** Local wall-clock parts of an instant. */

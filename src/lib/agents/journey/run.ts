@@ -16,6 +16,7 @@ import { guard, loadGuardState, type GuardState } from "../guard/guard";
 import { loadLiveSops, paramsFor, type LiveSop } from "../sop/load";
 import { loadDirectory, tierOf, type Directory } from "../directory";
 import { withdrawOutbox } from "../executors/dispatcher";
+import { caseWorker } from "../caseworker";
 
 export type WakeReason = "sweep" | "timer" | "console_change" | "opened" | "person" | "inbound" | "block_start" | "risk_batch";
 
@@ -141,6 +142,24 @@ export async function wakeJourney(orderId: number, reason: WakeReason, opts: Wak
         orderType: order.orderType, appointmentTime: order.appointmentTime, patientName: order.patientName, labName: order.labName, storeName: order.storeName,
       }, state);
       if (r.outcome === "EXECUTED") executed += 1; else if (r.outcome === "REVIEW") review += 1;
+    }
+  }
+  // The case worker (FR-1.6): only when no step fit. Its choice goes through the same guard,
+  // where it starts in suggest mode, so a person approves each one until it earns its way up.
+  if (out.caseworker && !j.closedAt) {
+    try {
+      const allowed = [...new Set([...(sopParams?.menu ?? []), ...(paramsFor(sops.get("STORE"), { labTier, labId: order.labId, storeId: order.storeId, orderType: order.orderType })?.menu ?? [])])];
+      const proposed = await caseWorker({ ...out.caseworker, orderId }, journeyId, allowed);
+      if (proposed) {
+        const state = opts.guardState ?? await loadGuardState();
+        const r = await guard({ ...proposed, params: { ...proposed.params, alwaysSuggest: true } }, {
+          journeyId, orderId, labId: j.labId, storeId: j.storeId, labTier, sopVersionId: labSop?.versionId ?? null,
+          orderType: order.orderType, appointmentTime: order.appointmentTime, patientName: order.patientName, labName: order.labName, storeName: order.storeName,
+        }, state);
+        if (r.outcome === "EXECUTED") executed += 1; else if (r.outcome === "REVIEW") review += 1;
+      }
+    } catch (error) {
+      console.warn(`[Agents] case worker for ${orderId} failed:`, error instanceof Error ? error.message : error);
     }
   }
   return { orderId, opened: !row, closed: !!j.closedAt, events: out.newEvents.length, actions: out.actions.length, executed, review };

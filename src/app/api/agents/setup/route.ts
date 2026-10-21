@@ -6,13 +6,9 @@ import { NextResponse } from "next/server";
 import prisma from "@/lib/db/client";
 import { labstackWorkerQuery } from "@/lib/db/labstack";
 import { agentsRoute, bad } from "@/lib/agents/api";
-import { loadDirectory } from "@/lib/agents/directory";
+import { loadDirectory, PILOT_LABS, PILOT_STORES } from "@/lib/agents/directory";
 import { LAB_OFFSETS } from "@/lib/agents/journey/policy";
 import { consoleClient } from "@/lib/agents/console/client";
-
-/** The pilot (DESIGN.md §16): matched by name so ids never have to be typed. */
-export const PILOT_LABS = [/orange health/i, /thyrocare/i, /redcliffe/i, /advaitha/i, /star patho/i];
-export const PILOT_STORES = [/plum/i, /elevate now/i];
 
 export const GET = agentsRoute("setup", async (_request, { requestId }) => {
   const dir = await loadDirectory(true);

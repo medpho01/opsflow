@@ -9,13 +9,13 @@ export type Handler = (request: NextRequest, ctx: { user: AuthUser; requestId: s
 
 /** OPS_HEAD may do everything; OPS_AGENT may read and work the inbox; `headOnly` restricts a route to OPS_HEAD. */
 export function agentsRoute(scope: string, handler: Handler, opts: { headOnly?: boolean } = {}) {
-  return async (request: NextRequest, context?: { params?: Promise<Record<string, string>> }) => {
+  return async (request: NextRequest, context: { params: Promise<Record<string, string>> }) => {
     const requestId = newRequestId();
     try {
       const user = await getSessionFromRequest(request);
       const allowed = user && (user.role === UserRole.OPS_HEAD || (!opts.headOnly && user.role === UserRole.OPS_AGENT));
       if (!allowed) return NextResponse.json({ error: "Unauthorized", code: "FORBIDDEN", requestId }, { status: 403 });
-      const params = context?.params ? await context.params : {};
+      const params = (await context?.params) ?? {};
       return await handler(request, { user: user!, requestId, params });
     } catch (error) {
       return NextResponse.json(logAndBuildErrorBody({ requestId, scope: `AgentsAPI.${scope}`, code: "AGENTS_FAILED", userMessage: "Something went wrong", error }), { status: 500 });

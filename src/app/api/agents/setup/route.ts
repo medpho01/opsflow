@@ -1,6 +1,7 @@
 /**
  * GET  /api/agents/setup — the eight setup steps with their status (DESIGN.md §3).
- * POST /api/agents/setup — { action: "pilot_shadow" } puts the pilot's desks in shadow (OPS_HEAD).
+ * POST /api/agents/setup — { action: "pilot_shadow" } puts the pilot's desks in shadow;
+ *                          { action: "all_shadow" } every lab and connected store (OPS_HEAD).
  */
 import { NextResponse } from "next/server";
 import prisma from "@/lib/db/client";
@@ -44,10 +45,11 @@ export const GET = agentsRoute("setup", async (_request, { requestId }) => {
 
 export const POST = agentsRoute("setup", async (request, { user, requestId }) => {
   const body = await request.json().catch(() => ({})) as { action?: string };
-  if (body.action !== "pilot_shadow") return bad(requestId, "action must be pilot_shadow");
+  if (body.action !== "pilot_shadow" && body.action !== "all_shadow") return bad(requestId, "action must be pilot_shadow or all_shadow");
+  const all = body.action === "all_shadow";
   const dir = await loadDirectory(true);
   let cells = 0;
-  for (const l of [...dir.labs.values()].filter((l) => PILOT_LABS.some((re) => re.test(l.labName)))) {
+  for (const l of [...dir.labs.values()].filter((l) => all || PILOT_LABS.some((re) => re.test(l.labName)))) {
     for (const desk of ["LAB", "INTAKE"]) {
       const where = { desk_scopeKind_scopeId: { desk, scopeKind: "LAB", scopeId: l.labId } };
       const cur = await prisma.agentDeskState.findUnique({ where });
@@ -56,7 +58,7 @@ export const POST = agentsRoute("setup", async (request, { user, requestId }) =>
       cells += 1;
     }
   }
-  for (const s of [...dir.stores.values()].filter((s) => PILOT_STORES.some((re) => re.test(s.storeName ?? "")))) {
+  for (const s of [...dir.stores.values()].filter((s) => all || PILOT_STORES.some((re) => re.test(s.storeName ?? "")))) {
     const where = { desk_scopeKind_scopeId: { desk: "STORE", scopeKind: "STORE", scopeId: s.storeId } };
     const cur = await prisma.agentDeskState.findUnique({ where });
     if (cur?.state === "LIVE") continue;

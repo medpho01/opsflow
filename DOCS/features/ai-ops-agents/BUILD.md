@@ -30,6 +30,29 @@ Tests: `npm test` (agents suites under `src/lib/agents/__tests__`); evals: `npm 
 | `STORE_STATUS_API_KEYS` | `storeId:key,storeId:key` for the store status API. |
 | `AGENT_BATCH_PER_SLOT_CAP`, `AGENT_BATCH_PER_DAY_CAP`, `PORTAL_MIN_GAP_MS`, `PORTAL_DAILY_READ_CAP`, `AGENT_AUDIT_SAMPLE` | Caps. |
 
+## Deploying with Docker Compose
+
+The repo already deploys as `docker compose up -d --build` (DOCKER.md). This adds two services:
+
+```bash
+# On the server, in the checkout:
+git pull                                   # the three agents commits
+$EDITOR .env                               # add the OpsFlow Agents block from .env.example
+docker compose up -d --build app worker    # app (schema push happens in its entrypoint) + the agent worker
+docker compose --profile portals up -d --build portal-worker   # later, once a vault key pair and portal logins exist
+docker compose logs -f worker              # expect: "[Worker] started: sweep, wake, dispatch, risk, verify, store pass, brain"
+```
+
+What happens on that first boot, in order: the app's entrypoint runs `prisma db push` (adds the
+`agent_*` tables and the `pgboss` schema is created by the worker), the worker seeds the baseline
+SOPs and the agent task types, the first sweep opens a journey for every order in the active window.
+**No message changes**: every desk is OFF, the legacy message rules keep sending as before.
+
+The WhatsApp gateway overlay (`docker-compose.wa.yml`) is unchanged; the agents send through the same
+gateway and the same number.
+
+Rollback: `docker compose stop worker` stops every agent loop; the app and the legacy rules continue.
+
 ## Going live with the pilot
 
 1. Deploy the schema (`prisma db push`), start the worker. Journeys open for every order in the active window within a minute. Everything is OFF until set.

@@ -106,6 +106,11 @@ COPY --from=builder --chown=app:app /app/tsconfig.json ./tsconfig.json
 # tsx needs the source for seed-admin.ts; pull only what's referenced
 COPY --from=builder --chown=app:app /app/src/lib ./src/lib
 COPY --from=builder --chown=app:app /app/src/types ./src/types
+# OpsFlow Agents: the worker and the portal worker run from source via tsx
+# (same image, different entrypoint — see docker-compose.yml).
+COPY --from=builder --chown=app:app /app/src/worker ./src/worker
+COPY --from=builder --chown=app:app /app/src/portal-worker ./src/portal-worker
+COPY --from=builder --chown=app:app /app/scripts/agents-evals.ts ./scripts/agents-evals.ts
 
 USER app
 
@@ -114,3 +119,16 @@ EXPOSE 3000
 # tini reaps zombies + forwards SIGTERM to Next so docker stop is clean.
 # (Debian's tini ships at /usr/bin/tini, not /sbin/tini like Alpine.)
 ENTRYPOINT ["/usr/bin/tini", "--", "/app/docker/entrypoint.sh"]
+
+# ── Portal worker stage ───────────────────────────────────────────────
+# The runner plus a Chromium for Playwright (playwright-core drives the
+# distro browser; no browser download). Built only for the `portal-worker`
+# service (compose target: portal). Needs /data for sessions and screenshots.
+FROM runner AS portal
+USER root
+RUN apt-get -o Acquire::Check-Valid-Until=false update && \
+    apt-get install -y --no-install-recommends chromium fonts-liberation && \
+    rm -rf /var/lib/apt/lists/* && \
+    mkdir -p /data && chown app:app /data
+USER app
+ENV PLAYWRIGHT_CHROMIUM_PATH=/usr/bin/chromium

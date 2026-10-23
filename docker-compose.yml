@@ -148,6 +148,17 @@ services:
       # Self-hosted transcription (see whisper-service/). Blank ⇒
       # transcriptionSweep.ts no-ops — no transcript is ever generated.
       WHISPER_SERVICE_URL: ${WHISPER_SERVICE_URL:-http://whisper:8000}
+      # OpsFlow Agents (DOCS/features/ai-ops-agents/BUILD.md). The app only serves
+      # the screens and APIs; the loops run in the `worker` service below.
+      APP_BASE_URL: ${APP_BASE_URL:-${NEXT_PUBLIC_APP_URL:-http://localhost:3000}}
+      LABSTACK_CONSOLE_URL: ${LABSTACK_CONSOLE_URL:-}
+      CONSOLE_API_BASE: ${CONSOLE_API_BASE:-}
+      CONSOLE_API_KEY: ${CONSOLE_API_KEY:-}
+      AGENT_VAULT_PUBLIC_KEY: ${AGENT_VAULT_PUBLIC_KEY:-}
+      STORE_STATUS_API_KEYS: ${STORE_STATUS_API_KEYS:-}
+      AGENT_MODEL_READER: ${AGENT_MODEL_READER:-}
+      AGENT_MODEL_CASEWORKER: ${AGENT_MODEL_CASEWORKER:-}
+      AGENT_MODEL_BRAIN: ${AGENT_MODEL_BRAIN:-}
     ports:
       - "${APP_PORT:-3000}:3000"
     # Required for host.docker.internal to resolve on Linux (no-op on
@@ -156,7 +167,78 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
+  # ── OpsFlow Agents worker ───────────────────────────────────────────
+  # The agent loops (sweep, wakes, dispatcher, risk, tasks verify, store pass,
+  # Brain) on pg-boss queues in the taskos database. Same image as `app`; no
+  # db push or seed here (the app's entrypoint does that). Scale to 1.
+  worker:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_started
+        required: false
+    entrypoint: ["/usr/bin/tini", "--", "node", "--import", "tsx", "src/worker/index.ts"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-opsflow}:${POSTGRES_PASSWORD:-opsflow_dev_password}@db:5432/${POSTGRES_DB:-opsflow}?schema=taskos}
+      SOURCE_DATABASE_URL: ${SOURCE_DATABASE_URL:-}
+      MALLOC_ARENA_MAX: "2"
+      TIMEZONE: ${TIMEZONE:-Asia/Kolkata}
+      NODE_ENV: production
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      AGENT_LLM: ${AGENT_LLM:-}
+      AGENT_MODEL_READER: ${AGENT_MODEL_READER:-}
+      AGENT_MODEL_CASEWORKER: ${AGENT_MODEL_CASEWORKER:-}
+      AGENT_MODEL_BRAIN: ${AGENT_MODEL_BRAIN:-}
+      CONSOLE_API_BASE: ${CONSOLE_API_BASE:-}
+      CONSOLE_API_KEY: ${CONSOLE_API_KEY:-}
+      APP_BASE_URL: ${APP_BASE_URL:-${NEXT_PUBLIC_APP_URL:-http://localhost:3000}}
+      LABSTACK_CONFIRMATION_KEY: ${LABSTACK_CONFIRMATION_KEY:-}
+      LABSTACK_CONFIRMATION_BASE_URL: ${LABSTACK_CONFIRMATION_BASE_URL:-https://console.labstack.in/confirmation}
+      LABSTACK_CONSOLE_URL: ${LABSTACK_CONSOLE_URL:-}
+      AGENT_CALLS: ${AGENT_CALLS:-}
+      AGENT_CALLER_NUMBER: ${AGENT_CALLER_NUMBER:-}
+      AGENT_DAILY_CALL_BUDGET: ${AGENT_DAILY_CALL_BUDGET:-20}
+      EXOTEL_SESSION_ID: ${EXOTEL_SESSION_ID:-}
+      EXOTEL_USERNAME: ${EXOTEL_USERNAME:-}
+      EXOTEL_PASSWORD: ${EXOTEL_PASSWORD:-}
+      EXOTEL_CALLER_ID: ${EXOTEL_CALLER_ID:-}
+      AGENT_BRIEF_JIDS: ${AGENT_BRIEF_JIDS:-}
+      AGENT_BATCH_PER_SLOT_CAP: ${AGENT_BATCH_PER_SLOT_CAP:-3}
+      AGENT_BATCH_PER_DAY_CAP: ${AGENT_BATCH_PER_DAY_CAP:-8}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # ── OpsFlow Agents portal worker ────────────────────────────────────
+  # Read-only lab portal sessions (Playwright + Chromium). The ONLY service
+  # with the vault's private key. Optional: without it, the portal rung is
+  # skipped and journeys fall back to console data and WhatsApp.
+  portal-worker:
+    build:
+      context: .
+      target: portal
+    restart: unless-stopped
+    profiles: ["portals"]
+    entrypoint: ["/usr/bin/tini", "--", "node", "--import", "tsx", "src/portal-worker/index.ts"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-opsflow}:${POSTGRES_PASSWORD:-opsflow_dev_password}@db:5432/${POSTGRES_DB:-opsflow}?schema=taskos}
+      SOURCE_DATABASE_URL: ${SOURCE_DATABASE_URL:-}
+      MALLOC_ARENA_MAX: "2"
+      TIMEZONE: ${TIMEZONE:-Asia/Kolkata}
+      NODE_ENV: production
+      AGENT_VAULT_PRIVATE_KEY: ${AGENT_VAULT_PRIVATE_KEY:-}
+      PLAYWRIGHT_CHROMIUM_PATH: /usr/bin/chromium
+      PORTAL_STATE_DIR: /data/portal-state
+      PORTAL_SCREENSHOT_DIR: /data/portal-screenshots
+      PORTAL_MIN_GAP_MS: ${PORTAL_MIN_GAP_MS:-4000}
+      PORTAL_DAILY_READ_CAP: ${PORTAL_DAILY_READ_CAP:-300}
+    volumes:
+      - opsflow_portal_data:/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
 volumes:
   # Named so `docker compose down` does NOT wipe data — it's removed only
   # by `docker compose down -v`. Move/back-up with standard volume tools.
   opsflow_taskos_data:
+  opsflow_portal_data:

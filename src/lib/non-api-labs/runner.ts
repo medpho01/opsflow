@@ -50,6 +50,7 @@ export async function runNonApiLabTick(now = new Date()): Promise<void> {
           `[MessageRules] orders=${pass.orders} sent=${pass.sent} combined=${pass.combined} held=${pass.held} summaries=${pass.summaries} ` +
           `missed=${pass.missed} skipped=${pass.skipped} confirmed=${pass.confirmed} failed=${pass.failed}`,
         );
+        if (pass.heldWhy.length) console.log(`[MessageRules] held: ${pass.heldWhy.join("; ")}`);
       }
     } catch (error) {
       console.error("[MessageRules] Cycle error:", error);

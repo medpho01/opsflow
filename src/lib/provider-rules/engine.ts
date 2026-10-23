@@ -21,7 +21,8 @@ import { fetchOrderContactDetails } from "@/lib/non-api-labs/order-details";
 import { isAwaitingConfirmation } from "@/lib/non-api-labs/source-check";
 import { decideRule, inScope, planOrder, summaryDue, summaryMatches, summaryOccurrence, triggerMoment, conditionMatches } from "./evaluate";
 import { deliverBatch, deliverOrderMessage, deliverSummary, recordShadowBatch, type BatchItemInput, type FactValues } from "./deliver";
-import { NEW_ORDER_INTENT, batchIntentOf, currentSlot, intentRank, isSlotOpen, releaseAt, slotMissesVisit, startOfLocalDay, type BatchingMode } from "./batching";
+import { formatTime } from "./format";
+import { NEW_ORDER_INTENT, batchIntentOf, currentSlot, intentRank, isSlotOpen, nextSlot, releaseAt, slotMissesVisit, startOfLocalDay, type BatchingMode } from "./batching";
 import { newOrderReleaseAt } from "./new-order";
 import { buildEntries, summaryVariables } from "./summary";
 import { ensureMigratedToRules } from "./migrate";
@@ -183,10 +184,12 @@ export type RulesPassResult = {
   orders: number; sent: number; summaries: number; missed: number; skipped: number; confirmed: number; failed: number;
   /** Combined messages sent, and items held for the next slot by a lab's per-slot cap. */
   combined: number; held: number;
+  /** Why items are held, for the log: "STATUS×6 wait for 16:00 (lab 223)". */
+  heldWhy: string[];
 };
 
 export async function runMessageRulesPass(now = new Date()): Promise<RulesPassResult> {
-  const result: RulesPassResult = { orders: 0, sent: 0, summaries: 0, missed: 0, skipped: 0, confirmed: 0, failed: 0, combined: 0, held: 0 };
+  const result: RulesPassResult = { orders: 0, sent: 0, summaries: 0, missed: 0, skipped: 0, confirmed: 0, failed: 0, combined: 0, held: 0, heldWhy: [] };
   await ensureMigratedToRules();
   const [rules, allLabs] = await Promise.all([loadActiveRules(), loadLiveLabs()]);
   // A lab whose Lab desk is LIVE belongs to OpsFlow Agents (DESIGN.md §1 item 6): the
@@ -265,6 +268,7 @@ export async function runMessageRulesPass(now = new Date()): Promise<RulesPassRe
     const unread = sends.filter((send) => !details?.has(send.order.id));
     if (unread.length) {
       result.held += unread.length;
+      result.heldWhy.push(`${unread.length} without order details`);
       console.warn(`[MessageRules] order details unavailable for ${unread.length} order(s) — trying again next pass`);
       sends.splice(0, sends.length, ...sends.filter((send) => details?.has(send.order.id)));
     }
@@ -339,7 +343,7 @@ async function runSummaries(
       try {
         const outcome = await sendSummary(rule, config, orders.filter((o) => o.labId === lab.labId), facts, now, occurrence);
         if (outcome === "sent") count += 1;
-        else if (outcome === RETRY) result.held += 1;
+        else if (outcome === RETRY) { result.held += 1; result.heldWhy.push(`list for lab ${lab.labId} without order details`); }
         else await writeLedger(rule, "LAB_SUMMARY", lab.labId, lab.labId, occurrence, "SKIPPED", outcome, now);
       } catch (error) {
         result.failed += 1;
@@ -485,10 +489,13 @@ async function deliverCombined(
       // Only inside one of this ask's slots (a held item waits for the next one) —
       // except an item whose next slot would miss its visit: it goes now.
       const group = uncapped || isSlotOpen(intent, now, TIME_ZONE()) ? pending : pending.filter((send) => slotMissesVisit(intent, now, send.order.appointmentTime, TIME_ZONE()));
-      result.held += pending.length - group.length;
+      if (pending.length > group.length) {
+        result.held += pending.length - group.length;
+        result.heldWhy.push(`${intent}×${pending.length - group.length} wait for ${formatTime(nextSlot(intent, now, TIME_ZONE()))} (lab ${labId})`);
+      }
       if (group.length === 0) continue;
-      if (!uncapped && allowance <= 0) { result.held += group.length; continue; }
-      if (!uncapped && intent !== "ESCALATION" && today >= config.maxMessagesPerDay) { result.held += group.length; continue; }
+      if (!uncapped && allowance <= 0) { result.held += group.length; result.heldWhy.push(`${intent}×${group.length} over the per-slot cap (lab ${labId})`); continue; }
+      if (!uncapped && intent !== "ESCALATION" && today >= config.maxMessagesPerDay) { result.held += group.length; result.heldWhy.push(`${intent}×${group.length} over the day cap (lab ${labId})`); continue; }
       try {
         const outcome = await deliverBatch({ config, intent, items: group.map(itemOf), now });
         if (outcome.sent) { result.combined += 1; result.sent += group.length; if (!uncapped) allowance -= 1; if (intent !== "ESCALATION") today += 1; }

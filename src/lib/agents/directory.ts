@@ -12,8 +12,14 @@ import { labstackWorkerQuery } from "@/lib/db/labstack";
 export type LabTier = "A" | "B" | "C";
 
 /** The pilot (DESIGN.md §16), matched by name so ids never have to be typed. */
-export const PILOT_LABS = [/orange health/i, /thyrocare/i, /redcliffe/i, /advaitha/i, /star patho/i];
-export const PILOT_STORES = [/plum/i, /elevate now/i];
+/**
+ * The pilot, as chosen on 23 Oct 2026: Orange Health (every city), Thyrocare
+ * India, Advaitha and Star Pathology; the store is Plum. Matched on the name
+ * as LabStack spells it — anchored so "… and Thyrocare Services" (another lab)
+ * and Redcliffe's unit Celara stay out.
+ */
+export const PILOT_LABS = [/^orange health/i, /^thyrocare india$/i, /advaitha/i, /star patho/i];
+export const PILOT_STORES = [/plum/i];
 export type LabEntry = { labId: number; labName: string; tier: LabTier; groupJid: string | null; groupId: string | null; managerWhatsapp: string | null; hasPortal: boolean };
 export type StoreEntry = { storeId: number; storeName: string | null; groupJid: string | null; groupId: string | null; weight: number };
 export type Directory = { labs: Map<number, LabEntry>; stores: Map<number, StoreEntry> };

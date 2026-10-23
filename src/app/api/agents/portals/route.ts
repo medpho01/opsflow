@@ -7,7 +7,7 @@
 import { NextResponse } from "next/server";
 import prisma from "@/lib/db/client";
 import { agentsRoute, bad } from "@/lib/agents/api";
-import { storePortalLogin, vaultCanStore } from "@/lib/agents/portal/vault";
+import { storePortalLogin, vaultCanStore, VAULT_SETUP_HINT } from "@/lib/agents/portal/vault";
 import { ADAPTER_PRESETS } from "@/lib/agents/portal/adapters";
 import { enqueuePortalSignin } from "@/lib/agents/queue";
 import { loadDirectory } from "@/lib/agents/directory";
@@ -31,7 +31,7 @@ export const POST = agentsRoute("portals", async (request, { user, requestId }) 
   if (!Number.isInteger(body.labId)) return bad(requestId, "labId required");
   if (body.action === "set_login") {
     if (!body.username || !body.password) return bad(requestId, "username and password required");
-    if (!vaultCanStore()) return bad(requestId, "The vault's public key (AGENT_VAULT_PUBLIC_KEY) is not set on this server", 503);
+    if (!vaultCanStore()) return bad(requestId, `The vault has no key on this server: ${VAULT_SETUP_HINT}`, 503);
     const adapter = body.adapter && ADAPTER_PRESETS[body.adapter] ? body.adapter : "generic";
     await storePortalLogin(body.labId!, { username: body.username, password: body.password }, user.id, { adapter, ...(body.config ?? {}) });
     await prisma.agentPortalSession.upsert({ where: { labId: body.labId! }, update: { adapter, status: "LOGGED_OUT", lastError: null }, create: { labId: body.labId!, adapter, status: "LOGGED_OUT" } });

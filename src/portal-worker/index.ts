@@ -121,7 +121,7 @@ async function readOrder(job: { labId: number; orderId: number; labRef: string |
 }
 
 export async function startPortalWorker(): Promise<PgBoss> {
-  if (!vaultCanRead()) throw new Error("AGENT_VAULT_PRIVATE_KEY is not set; the portal worker cannot read logins");
+  if (!vaultCanRead()) throw new Error("The portal worker cannot read logins: set AGENT_VAULT_KEY (shared with the app) or AGENT_VAULT_PRIVATE_KEY");
   const boss = new PgBoss({ connectionString: connectionString(), schema: process.env.PGBOSS_SCHEMA || "pgboss", max: 3 });
   boss.on("error", (error) => console.error("[PortalWorker] pg-boss:", error instanceof Error ? error.message : error));
   await boss.start();

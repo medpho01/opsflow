@@ -22,7 +22,7 @@ Tests: `npm test` (agents suites under `src/lib/agents/__tests__`); evals: `npm 
 | `TIMEZONE` | Operating time zone (default Asia/Kolkata). |
 | `ANTHROPIC_API_KEY`, `AGENT_MODEL_READER`, `AGENT_MODEL_CASEWORKER`, `AGENT_MODEL_BRAIN`, `AGENT_LLM=off` | Model calls. Without a key: readers use patterns, the case worker is off, the Brain's prose is deterministic. |
 | `CONSOLE_API_BASE`, `CONSOLE_API_KEY` | The console write API (`/agent/v1`). Unset: every status write becomes a one-click task. |
-| `AGENT_VAULT_PUBLIC_KEY` (web), `AGENT_VAULT_PRIVATE_KEY` (portal worker only) | The vault's RSA key pair, PEM (`\n` escaped is fine). Generate once; see `src/lib/agents/portal/vault.ts`. |
+| `AGENT_VAULT_KEY` (app and portal worker) — or `AGENT_VAULT_PUBLIC_KEY` (web) + `AGENT_VAULT_PRIVATE_KEY` (portal worker only) | Portal logins encrypted at rest. The simple way is one shared secret (any long random string) set on both services. The RSA pair is the stricter option: the web app can store a login but never read it. See `src/lib/agents/portal/vault.ts`. |
 | `APP_BASE_URL`, `LABSTACK_CONFIRMATION_KEY` | The lab action page link (`/provider/order/<token>`) on every nudge to a manual lab. |
 | `LABSTACK_CONSOLE_URL` | Console deep links on tasks. |
 | `AGENT_CALLS=on`, `AGENT_CALLER_NUMBER`, `AGENT_DAILY_CALL_BUDGET` | Exotel calls to lab managers; otherwise the call rung is a task. |

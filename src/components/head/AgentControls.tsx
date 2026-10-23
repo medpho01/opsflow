@@ -36,7 +36,7 @@ export function AgentControls() {
         </section>
       )}
       <section className="rounded-lg border border-zinc-800">
-        <div className="flex flex-wrap items-baseline justify-between gap-2 px-3 py-2"><h2 className="text-base font-semibold text-zinc-100">Lab portals</h2><span className="text-xs text-zinc-500">{portals?.canStore ? "Logins are stored encrypted; this page never shows them back." : "Vault public key not set on this server: logins cannot be stored yet."}</span></div>
+        <div className="flex flex-wrap items-baseline justify-between gap-2 px-3 py-2"><h2 className="text-base font-semibold text-zinc-100">Lab portals</h2><span className="text-xs text-zinc-500">{portals?.canStore ? "Logins are stored encrypted; this page never shows them back." : "No vault key on this server (AGENT_VAULT_KEY): logins cannot be stored yet."}</span></div>
         <table className="w-full text-sm">
           <thead className="bg-zinc-900/60 text-left text-[11px] uppercase tracking-wide text-zinc-500"><tr><th className="px-3 py-2">Lab</th><th className="px-3 py-2">Session</th><th className="px-3 py-2">Reads</th><th className="px-3 py-2">Login</th><th className="px-3 py-2"></th></tr></thead>
           <tbody className="divide-y divide-zinc-800/80">

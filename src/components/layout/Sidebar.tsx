@@ -280,6 +280,9 @@ export default function Sidebar({ user }: SidebarProps) {
 
           if (item.children) {
             const expanded = openGroups[item.href] ?? active;
+            // A child at the group's own path (Journeys at /head/agents) is only
+            // active there; a prefix match would light it on every sibling page.
+            const childIsActive = (href: string) => (href === item.href ? pathname === href : isActive(href));
             return (
               <div key={item.href}>
                 <button
@@ -307,7 +310,7 @@ export default function Sidebar({ user }: SidebarProps) {
                 {expanded && (
                   <div className="mt-0.5 ml-5 pl-2.5 border-l border-zinc-800 space-y-0.5">
                     {item.children.map((child) => {
-                      const childActive = isActive(child.href);
+                      const childActive = childIsActive(child.href);
                       return (
                         <Link
                           key={child.href}

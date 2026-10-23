@@ -129,6 +129,13 @@ export async function wakeJourney(orderId: number, reason: WakeReason, opts: Wak
   for (const w of out.withdraw) await withdrawOutbox(orderId, w.reason, w.asks).catch(() => 0);
 
   let executed = 0; let review = 0;
+  // A ladder rung counts as an ask only when it actually went out. In shadow (or
+  // blocked) the step still proposes it, but the lab never saw it — the rung must
+  // not climb, or a desk switched LIVE later starts at "manager" for asks nobody made.
+  const LADDER = new Set(["ask", "reminder", "manager_whatsapp", "call", "create_task", "stuck", "portal_read"]);
+  const before = row ? toJourneyState(row).attempts : {};
+  const attempts: Record<string, Attempt> = { ...j.attempts };
+  let attemptsChanged = false;
   if (out.actions.length) {
     const state = opts.guardState ?? await loadGuardState();
     for (const action of out.actions) {
@@ -142,8 +149,14 @@ export async function wakeJourney(orderId: number, reason: WakeReason, opts: Wak
         orderType: order.orderType, appointmentTime: order.appointmentTime, patientName: order.patientName, labName: order.labName, storeName: order.storeName,
       }, state);
       if (r.outcome === "EXECUTED") executed += 1; else if (r.outcome === "REVIEW") review += 1;
+      const checkpoint = typeof action.params.checkpoint === "string" ? action.params.checkpoint : null;
+      if (r.outcome !== "EXECUTED" && action.desk === "LAB" && LADDER.has(action.action) && checkpoint && attempts[checkpoint]) {
+        attempts[checkpoint] = { ...attempts[checkpoint], n: before[checkpoint]?.n ?? 0 };
+        attemptsChanged = true;
+      }
     }
   }
+  if (attemptsChanged) await prisma.agentJourney.update({ where: { id: journeyId }, data: { attempts: attempts as Prisma.InputJsonValue } });
   // The case worker (FR-1.6): only when no step fit. Its choice goes through the same guard,
   // where it starts in suggest mode, so a person approves each one until it earns its way up.
   if (out.caseworker && !j.closedAt) {

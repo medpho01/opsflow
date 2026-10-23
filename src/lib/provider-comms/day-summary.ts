@@ -225,8 +225,8 @@ export async function loadDaySchedule(
              WHERE op."A" = o.id) AS tests,
            p."unitFloorBuilding", p.address AS street, p.locality, p.latitude, p.longitude,
            -- Each package with the individual tests inside it: the test
-           -- catalogue (Master) link first, the package's own sub-test list
-           -- when the catalogue has none.
+           -- catalogue (Master) link only — production LabStack has no
+           -- per-package sub-test column (see order-details.ts).
            (SELECT json_agg(json_build_object(
                      'name', pk."packageName",
                      'tests', COALESCE(
@@ -234,7 +234,6 @@ export async function loadDaySchedule(
                           FROM public."_MasterToPackage" mp
                           JOIN public."Master" m ON m.id = mp."A"
                          WHERE mp."B" = pk.id),
-                       pk."panelSubTests",
                        ARRAY[]::text[]))
                      ORDER BY pk."packageName")
               FROM public."_OrderToPackage" op

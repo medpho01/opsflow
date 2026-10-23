@@ -170,15 +170,17 @@ export async function fetchOrderContactDetails(ids: number[]): Promise<Map<numbe
                FROM public."_OrderToPackage" op
                JOIN public."Package" pk ON pk.id = op."B"
               WHERE op."A" = o.id) AS tests,
-            -- Each package with its individual tests: the test catalogue
-            -- (Master) first, the package's own sub-test list otherwise.
+            -- Each package with its individual tests from the test catalogue
+            -- (Master). Only columns production LabStack has: a column that
+            -- exists in one copy and not another fails the whole read, and
+            -- a failed read holds every message (23 Oct 2026).
             (SELECT json_agg(json_build_object(
                       'name', pk."packageName",
                       'tests', COALESCE(
                         (SELECT array_agg(DISTINCT m.name ORDER BY m.name)
                            FROM public."_MasterToPackage" mp JOIN public."Master" m ON m.id = mp."A"
                           WHERE mp."B" = pk.id),
-                        pk."panelSubTests", ARRAY[]::text[]))
+                        ARRAY[]::text[]))
                       ORDER BY pk."packageName")
                FROM public."_OrderToPackage" op JOIN public."Package" pk ON pk.id = op."B"
               WHERE op."A" = o.id) AS packages,

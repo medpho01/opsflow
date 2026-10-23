@@ -193,9 +193,12 @@ export async function runMessageRulesPass(now = new Date()): Promise<RulesPassRe
   await ensureMigratedToRules();
   const [rules, allLabs] = await Promise.all([loadActiveRules(), loadLiveLabs()]);
   // A lab whose Lab desk is LIVE belongs to OpsFlow Agents (DESIGN.md §1 item 6): the
-  // legacy rules step aside for it in the same pass, so nothing is ever sent twice.
+  // follow-up rules and the evening list step aside for it, so nothing is sent twice.
+  // The new-order message (patient details, confirm link) is not an ask the agent
+  // makes — it stays with these rules for every lab, live desk or not.
   const liveDesks = await prisma.agentDeskState.findMany({ where: { desk: "LAB", scopeKind: "LAB", state: "LIVE" }, select: { scopeId: true } });
-  const labs = new Map([...allLabs].filter(([labId]) => !liveDesks.some((d) => d.scopeId === labId)));
+  const agentLabs = new Set(liveDesks.map((d) => d.scopeId));
+  const labs = allLabs;
   if (rules.length === 0 || labs.size === 0) return result;
 
   const orders = await fetchOpenOrders([...labs.keys()], now);
@@ -211,6 +214,8 @@ export async function runMessageRulesPass(now = new Date()): Promise<RulesPassRe
 
   const timeZone = TIME_ZONE();
   const orderRules = rules.filter((rule) => rule.kind === "ORDER");
+  const introRules = orderRules.filter((rule) => rule.introduces);
+  const rulesFor = (labId: number) => (agentLabs.has(labId) ? introRules : orderRules);
   const modeOf = (labId: number) => (labs.get(labId)?.config.batchingMode ?? "OFF") as BatchingMode;
   // New orders gather for a few minutes (new-order.ts): the window starts at the
   // earliest order of the lab still waiting for its message — decided without a
@@ -238,7 +243,7 @@ export async function runMessageRulesPass(now = new Date()): Promise<RulesPassRe
   const sends: Send[] = [];
   for (const order of orders) {
     const live = labs.get(order.labId);
-    const plan = planOrder(orderRules, order, {
+    const plan = planOrder(rulesFor(order.labId), order, {
       lab: live?.lab,
       conversation: conversations.get(order.id),
       facts: (facts.get(order.id) ?? NO_FACTS).kinds,
@@ -300,7 +305,8 @@ export async function runMessageRulesPass(now = new Date()): Promise<RulesPassRe
     }
   }
 
-  result.summaries = await runSummaries(rules.filter((rule) => rule.kind === "SUMMARY"), labs, orders, facts, now, result);
+  const legacyLabs = new Map([...labs].filter(([labId]) => !agentLabs.has(labId)));
+  result.summaries = await runSummaries(rules.filter((rule) => rule.kind === "SUMMARY"), legacyLabs, orders, facts, now, result);
   return result;
 }
 

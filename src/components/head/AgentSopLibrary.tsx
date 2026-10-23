@@ -3,7 +3,7 @@
 /** Agents › SOP library: each desk's SOP as a document, versions with diffs, proposals with replay, approve / reject / roll back (FR-13.3, FR-5.3). */
 import { useCallback, useEffect, useState } from "react";
 
-type Version = { id: string; version: number; status: string; author: string; summary: string | null; approvedAt: string | null; createdAt: string; body?: unknown; changedFromPrevious?: string[] };
+type Version = { id: string; version: number; status: string; author: string; summary: string | null; approvedBy?: number | null; approvedAt: string | null; createdAt: string; body?: unknown; changedFromPrevious?: string[] };
 type Proposal = { id: string; rationale: string; inBounds: boolean; decision: string | null; replay: Record<string, unknown> | null; evidence: Record<string, unknown>; diff: { paths?: string[]; summary?: string }; createdAt: string };
 type Detail = { desk: string; live: Version | null; versions: Version[]; proposals: Proposal[] };
 
@@ -41,6 +41,12 @@ export function AgentSopLibrary() {
           <section className="rounded-lg border border-zinc-800 p-4">
             <div className="flex flex-wrap items-baseline justify-between gap-2"><h2 className="text-lg font-semibold text-zinc-100">{params?.title ?? `${detail.desk} desk`}</h2><span className="text-xs text-zinc-500">live v{detail.live?.version} · {detail.live?.author.toLowerCase()} · {detail.live?.approvedAt ? new Date(detail.live.approvedAt).toLocaleDateString("en-IN") : ""}</span></div>
             <p className="mt-1 text-sm text-zinc-400">{params?.description}</p>
+            {detail.live && detail.live.approvedBy == null && (
+              <div className="mt-3 flex flex-wrap items-center gap-3 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-sm text-amber-200">
+                <span>Baseline, not yet reviewed. Read it below; approving makes it the SOP the agent follows for this desk.</span>
+                <button onClick={() => act({ action: "approve_live" })} className="rounded-md bg-zinc-100 px-3 py-1.5 text-xs font-medium text-zinc-900">Approve this SOP</button>
+              </div>
+            )}
             {params?.params && (
               <div className="mt-4 space-y-3 text-sm">
                 <Block title="Ladder" text={((params.params.ladder as string[]) ?? []).map((r) => r.replace("_", " ")).join(" → ")} why={params.provenance?.ladder} />

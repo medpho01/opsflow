@@ -4,6 +4,7 @@
  *   { action: "approve" | "reject", proposalId, note? }  — a Brain proposal (FR-4.7, FR-13.3)
  *   { action: "rollback", versionId }                     — one-click rollback (FR-5.3)
  *   { action: "edit", body, summary }                     — a person's own change (validated)
+ *   { action: "approve_live" }                            — sign off the live baseline (Setup step 4)
  */
 import { NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
@@ -45,6 +46,14 @@ export const POST = agentsRoute("sop", async (request, { user, requestId, params
     await prisma.agentSopProposal.update({ where: { id: proposal.id }, data: { decision: "APPROVED", decidedBy: user.id, decidedAt: new Date(), appliedVersionId: version.id } });
     return NextResponse.json({ ok: true, decision: "APPROVED", version: version.version, requestId });
   }
+  if (body.action === "approve_live") {
+    if (!sop.currentVersionId) return bad(requestId, "No live version to approve", 409);
+    const live = await prisma.agentSopVersion.findUnique({ where: { id: sop.currentVersionId } });
+    if (!live) return bad(requestId, "No live version to approve", 409);
+    if (live.approvedBy != null) return NextResponse.json({ ok: true, already: true, version: live.version, requestId });
+    await prisma.agentSopVersion.update({ where: { id: live.id }, data: { approvedBy: user.id, approvedAt: new Date() } });
+    return NextResponse.json({ ok: true, version: live.version, requestId });
+  }
   if (body.action === "rollback") {
     const target = body.versionId ? await prisma.agentSopVersion.findUnique({ where: { id: body.versionId } }) : null;
     if (!target || target.sopId !== sop.id) return bad(requestId, "Version not found", 404);
@@ -59,5 +68,5 @@ export const POST = agentsRoute("sop", async (request, { user, requestId, params
       return bad(requestId, `The SOP does not validate: ${error instanceof Error ? error.message.slice(0, 300) : String(error)}`);
     }
   }
-  return bad(requestId, "action must be approve, reject, rollback or edit");
+  return bad(requestId, "action must be approve, reject, rollback, edit or approve_live");
 }, { headOnly: true });

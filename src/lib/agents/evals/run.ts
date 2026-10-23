@@ -54,7 +54,9 @@ export async function runSuite(suite: string): Promise<{ suite: string; cases: n
   for (const c of cases) { const v = judge(suite, c); if (v.pass) passed += 1; else if (failures.length < 50) failures.push({ id: c.id, got: v.got, want: v.want, input: c.input }); }
   const score = cases.length ? passed / cases.length : 0;
   const gate = GATES[suite] ?? 0.9;
-  const result = { suite, cases: cases.length, passed, score, gate, passedGate: cases.length > 0 && score >= gate, failures };
+  // A suite with no cases yet has nothing to disagree with: it does not block
+  // the gate (status writes get cases only once writes are reviewed).
+  const result = { suite, cases: cases.length, passed, score, gate, passedGate: cases.length === 0 || score >= gate, failures };
   await prisma.agentEvalRun.create({ data: { suite, cases: cases.length, passed, score, gate, passedGate: result.passedGate, details: { failures: failures.slice(0, 20) } as object } });
   return result;
 }

@@ -61,7 +61,7 @@ export function extractWithPatterns(text: string, ask: Ask = NO_ASK): ExtractedF
   if (eta) add("eta", eta[1]);
   if (/\breport\b[^.]*\b(shared|sent|uploaded|mailed|delivered|done)\b/i.test(text)) add("report_shared", "yes", 0.7);
   else if (/\b(sample\s+(?:collected|taken|done)|collected)\b/i.test(text)) add("sample_collected", "yes", 0.7);
-  const unavailable = text.match(/\b(not available|not at home|no response|not reachable|not picking|door (?:is )?locked|patient (?:not|didn't|did not) \w+)\b/i);
+  const unavailable = text.match(/\b(not available|not at home|no response|not reachable|not picking|not answering|switched off|phone (?:is )?off|unreachable|door (?:is )?locked|patient (?:not|didn't|did not) \w+)\b/i);
   if (unavailable) add("patient_unavailable", unavailable[1]);
   const cannot = text.match(/\b(?:cannot|can't|cant|unable to|won't be able to)\b[^.]*/i);
   if (cannot) add("cannot_fulfil", cannot[0]);

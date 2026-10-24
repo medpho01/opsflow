@@ -11,6 +11,7 @@
  * Group scope + roles come from wa_groups (admin-configured), replacing the
  * hardcoded /labstack/i filter: only groups present + active are handled.
  */
+import { inheritedVia } from "./provenance.mjs";
 import { taskos, taskosQuery } from "./taskosdb.mjs";
 import { classify, extractIds, extractReferences, DISPOSITION, isLabstack } from "./classifier.mjs";
 import { lookupIds, resolveEntities, orderLabs } from "./lookup.mjs";
@@ -359,6 +360,8 @@ export async function ingestMessage(m) {
   let idVia = resolved.primary?.warning
     ? `${resolved.primary.via} · ⚠ ${resolved.primary.warning}`
     : resolved.primary?.via || null;
+  // orderIds[0] is what readers take as THE order: keep it the primary idVia names.
+  if (orderId) allOrderIds = [orderId, ...allOrderIds.filter((x) => +x !== +orderId)];
   let inheritedTicketId = null;
 
   // Reply-chain inheritance. People reply to a root message ("any update on
@@ -378,7 +381,7 @@ export async function ingestMessage(m) {
       orderId = allOrderIds[0] || null;
       requestId = validRequestIds[0] || null;
       idType = parent.idType || (orderId ? "ORDER" : requestId ? "REQUEST" : null);
-      idVia = `reply · ${parent.idVia || (orderId ? `order ${orderId}` : `request ${requestId}`)}`;
+      idVia = `reply · ${inheritedVia(parent, orderId, requestId)}`;
       inheritedTicketId = parent.ticketId || null;
     }
   }
@@ -560,6 +563,7 @@ export async function reresolveWindow({ days = 3 } = {}) {
     let requestId = resolved.primary?.requestId || null;
     let idType = resolved.primary?.type || null;
     let idVia = resolved.primary?.warning ? `${resolved.primary.via} · ⚠ ${resolved.primary.warning}` : (resolved.primary?.via || null);
+    if (orderId) allOrderIds = [orderId, ...allOrderIds.filter((x) => +x !== +orderId)];
     let ticketId = null;
 
     if (!orderId && !requestId && r.replyToWaId) {
@@ -573,7 +577,7 @@ export async function reresolveWindow({ days = 3 } = {}) {
         orderId = allOrderIds[0] || null;
         requestId = validRequestIds[0] || null;
         idType = parent.idType || (orderId ? "ORDER" : requestId ? "REQUEST" : null);
-        idVia = `reply · ${parent.idVia || (orderId ? `order ${orderId}` : `request ${requestId}`)}`;
+        idVia = `reply · ${inheritedVia(parent, orderId, requestId)}`;
         ticketId = parent.ticketId || null;
         inherited++;
       }

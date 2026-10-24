@@ -82,6 +82,18 @@ Rollback: `docker compose stop worker` stops every agent loop; the app and the l
 | Escalation desk | Complaint → task with timeline and drafted reply (needs a key for the draft; the timeline is always built). |
 | Email to patients, per-test TAT, agents uploading reports | Not built (later per the spec). |
 
+## Known data issues
+
+**WhatsApp message order tags (fixed 24 Oct 2026).** `wa_messages.orderIds[0]` is what every reader
+takes as the message's order, and `idVia` explains how the gateway chose it. Ticket adoption and
+relinks used to append the ticket's order to every message in the ticket, and a reply inherited its
+parent's explanation verbatim, so rows could say `reply · order 93709` while carrying `{90381}`; the
+agents' store reader then answered with the wrong order's status (caught in shadow, Plum). Now the
+primary order is always first, a reply's explanation is rebuilt from the id it actually inherited, and
+adoption/relink tag only messages that named no order of their own (as `CONTEXT`, `ticket · order N`).
+Existing rows: `npx tsx scripts/repair-wa-message-tags.ts` (dry run; `--apply` to fix) puts the named
+order first. The store reader itself never trusts a tag that did not come from the message's own text.
+
 ## Where things are
 
 ```

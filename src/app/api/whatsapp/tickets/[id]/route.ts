@@ -110,7 +110,9 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       ticket.requestId = adoptRequest;
       await prisma.waTicket.update({ where: { id }, data: { orderId: adoptOrder, requestId: adoptRequest } }).catch(() => {});
       if (adoptOrder) {
-        await prisma.$executeRaw`UPDATE wa_messages SET "orderIds" = array_append("orderIds", ${adoptOrder}) WHERE "ticketId" = ${id} AND NOT (${adoptOrder} = ANY("orderIds"))`.catch(() => {});
+        // Only messages that named no order of their own: a message that cites
+        // another order keeps it (its orderIds[0] must match its idVia).
+        await prisma.$executeRaw`UPDATE wa_messages SET "orderIds" = ARRAY[${adoptOrder}]::int[], "idType" = COALESCE("idType", 'CONTEXT'), "idVia" = COALESCE("idVia", ${`ticket · order ${adoptOrder}`}) WHERE "ticketId" = ${id} AND cardinality("orderIds") = 0`.catch(() => {});
       }
     }
   }
@@ -457,9 +459,11 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     // Tag every message already threaded to this case with the bound id so the
     // whole conversation carries the corrected context going forward.
     if (relink) {
+      // A person re-bound the case: messages that named no id of their own follow
+      // it; a message that cites a different, validated id keeps what it said.
       await prisma.$executeRawUnsafe(
-        `UPDATE wa_messages SET "${relink.col}" = array_append("${relink.col}", $1) WHERE "ticketId" = $2 AND NOT ($1 = ANY("${relink.col}"))`,
-        relink.id, id,
+        `UPDATE wa_messages SET "${relink.col}" = ARRAY[$1]::int[], "idType" = COALESCE("idType", 'CONTEXT'), "idVia" = COALESCE("idVia", $3) WHERE "ticketId" = $2 AND cardinality("${relink.col}") = 0`,
+        relink.id, id, `ticket · ${relink.col === "orderIds" ? "order" : "request"} ${relink.id}`,
       );
     }
     return NextResponse.json({ ticket });

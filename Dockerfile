@@ -110,7 +110,8 @@ COPY --from=builder --chown=app:app /app/src/types ./src/types
 # (same image, different entrypoint — see docker-compose.yml).
 COPY --from=builder --chown=app:app /app/src/worker ./src/worker
 COPY --from=builder --chown=app:app /app/src/portal-worker ./src/portal-worker
-COPY --from=builder --chown=app:app /app/scripts/agents-evals.ts ./scripts/agents-evals.ts
+# Ops scripts run inside the container (`docker compose exec -T app npx tsx scripts/<name>.ts`).
+COPY --from=builder --chown=app:app /app/scripts/*.ts ./scripts/
 
 USER app
 

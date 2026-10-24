@@ -434,7 +434,7 @@ export function step(input: StepInput): StepOutput {
               const ask = sop.asks[next.name];
               const urgent = slotPassed || (minutesToSlot != null && minutesToSlot <= ask.urgentWithinMin);
               const window = sendWindow(now, now, sop, { ...ask, leadMin: 0, graceMin: 240 }, true, urgent, tz);
-              actions.push({ desk: "LAB", action: "ask", params: { checkpoint: next.name, orderId: order.id, labId: order.labId, attempt: (attempts[next.name]?.n ?? 0) + 1, dueAt: next.dueAt, rung: "ask", intent: ask.intent, counterparty: `LAB:${order.labId}`, windowFrom: window.from, windowTo: window.to, urgent, line: { orderId: order.id, patientName: order.patientName, appointment: order.appointmentTime, labRef: order.labRef ?? null, mobile: order.mobile ?? null, area: order.area ?? null, phlebo: order.phleboName || null }, forStore: true }, reason: `store asked about #${order.id} and the console does not know`, idemKey: `${key}:chase` });
+              actions.push({ desk: "LAB", action: "ask", params: { checkpoint: next.name, orderId: order.id, labId: order.labId, attempt: (attempts[next.name]?.n ?? 0) + 1, dueAt: next.dueAt, rung: "ask", intent: ask.intent, counterparty: `LAB:${order.labId}`, windowFrom: window.from, windowTo: window.to, urgent, line: { orderId: order.id, patientName: order.patientName, appointment: order.appointmentTime, labRef: order.labRef ?? null, mobile: order.mobile ?? null, area: order.area ?? null, milestone: LABELS[next.name], dueAt: next.dueAt, phlebo: order.phleboName || null }, forStore: true }, reason: `store asked about #${order.id} and the console does not know`, idemKey: `${key}:chase` });
             }
           }
           break;
@@ -505,10 +505,10 @@ export function step(input: StepInput): StepOutput {
         switch (rung) {
           case "portal_read": actions.push({ desk: "LAB", action: "portal_read", params: { ...common }, reason: why, idemKey: idem }); break;
           case "ask": case "reminder":
-            actions.push({ desk: "LAB", action: rung, params: { ...common, intent: ask.intent, counterparty: `LAB:${order.labId}`, windowFrom: window.from, windowTo: window.to, urgent, line: { orderId: order.id, patientName: order.patientName, appointment: order.appointmentTime, labRef: order.labRef ?? null, mobile: order.mobile ?? null, area: order.area ?? null, phlebo: order.phleboName || null } }, reason: why, idemKey: idem });
+            actions.push({ desk: "LAB", action: rung, params: { ...common, intent: ask.intent, counterparty: `LAB:${order.labId}`, windowFrom: window.from, windowTo: window.to, urgent, line: { orderId: order.id, patientName: order.patientName, appointment: order.appointmentTime, labRef: order.labRef ?? null, mobile: order.mobile ?? null, area: order.area ?? null, milestone: LABELS[next.name], dueAt: due, phlebo: order.phleboName || null } }, reason: why, idemKey: idem });
             break;
           case "manager_whatsapp":
-            actions.push({ desk: "LAB", action: "manager_whatsapp", params: { ...common, intent: "ESCALATION", counterparty: `MANAGER:${order.labId}`, windowFrom: window.from, windowTo: window.to, urgent, line: { orderId: order.id, patientName: order.patientName, appointment: order.appointmentTime, labRef: order.labRef ?? null, mobile: order.mobile ?? null, area: order.area ?? null } }, reason: `${why}; ${a.n} asks unanswered`, idemKey: idem });
+            actions.push({ desk: "LAB", action: "manager_whatsapp", params: { ...common, intent: "ESCALATION", counterparty: `MANAGER:${order.labId}`, windowFrom: window.from, windowTo: window.to, urgent, line: { orderId: order.id, patientName: order.patientName, appointment: order.appointmentTime, labRef: order.labRef ?? null, mobile: order.mobile ?? null, area: order.area ?? null, milestone: LABELS[next.name], dueAt: due } }, reason: `${why}; ${a.n} asks unanswered`, idemKey: idem });
             break;
           case "call":
             actions.push({ desk: "LAB", action: "call", params: { ...common, labId: order.labId }, reason: `${why}; ${a.n} asks unanswered`, idemKey: idem });

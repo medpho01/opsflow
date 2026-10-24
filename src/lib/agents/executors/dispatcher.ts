@@ -19,13 +19,14 @@ import { coordinatorsFor } from "@/lib/wa/coordinators";
 import { currentSlot, itemLine } from "@/lib/provider-rules/batching";
 import { formatTime, TIME_ZONE } from "@/lib/provider-rules/format";
 import { confirmationUrl } from "@/lib/non-api-labs/confirmation-link";
+import { fetchOrderContactDetails } from "@/lib/non-api-labs/order-details";
 import { actionPageUrl } from "./actionPage";
 import { loadDirectory, tierOf } from "../directory";
 
 export const PER_SLOT_CAP = Number(process.env.AGENT_BATCH_PER_SLOT_CAP ?? 3);
 export const PER_DAY_CAP = Number(process.env.AGENT_BATCH_PER_DAY_CAP ?? 8);
 
-export type OutboxLine = { n?: number; orderId: number; patientName: string | null; appointment: Date | null; confirmUrl?: string | null; phlebo?: string | null; area?: string | null; labRef?: string | null; mobile?: string | null };
+export type OutboxLine = { n?: number; orderId: number; patientName: string | null; appointment: Date | null; confirmUrl?: string | null; phlebo?: string | null; area?: string | null; labRef?: string | null; mobile?: string | null; milestone?: string | null; dueAt?: Date | string | null };
 
 export type EnqueueInput = {
   counterparty: string;          // LAB:<id> | MANAGER:<labId> | STORE:<id>
@@ -155,13 +156,18 @@ async function flushGroup(key: string, group: Item[], now: Date): Promise<{ mess
     // Manual labs get the action page on every nudge (FR-8.4): one tap is evidence. API labs get the
     // confirmation link only where the ask needs one.
     const manual = tierOf(await loadDirectory(), id) === "C";
+    // What a lab needs to find the order — its reference, the phone, the place — read
+    // now rather than trusted from the queued payload, so every line carries them.
+    const details = await fetchOrderContactDetails(list.map((i) => i.orderId)).catch(() => null);
     const lines = await Promise.all(list.map(async (i, index) => {
       const p = (i.payload as { line: OutboxLine & { appointment: string | null } }).line;
+      const d = details?.get(i.orderId);
       const needsLink = ask === "UNCONFIRMED" || ask === "ESCALATION";
       const link = manual && !toManager ? await actionPageUrl(i.orderId).catch(() => null) : null;
       return itemLine(ask, {
         n: index + 1, orderId: i.orderId, patientName: p.patientName, appointment: p.appointment ? new Date(p.appointment) : null,
-        area: p.area ?? null, phlebo: p.phlebo ?? null, labRef: p.labRef ?? null, mobile: p.mobile ?? null, confirmUrl: link ?? (needsLink ? await confirmationUrl(i.orderId).catch(() => null) : null),
+        area: p.area ?? d?.area ?? null, phlebo: p.phlebo ?? null, labRef: p.labRef ?? d?.labRef ?? null, mobile: p.mobile ?? d?.patientMobile ?? null,
+        milestone: p.milestone ?? null, dueAt: p.dueAt ? new Date(p.dueAt) : undefined, confirmUrl: link ?? (needsLink ? await confirmationUrl(i.orderId).catch(() => null) : null),
       }, now, tz);
     }));
     const followUp = toManager ? null : await findFollowUp(id, ask, list.map((i) => i.orderId), now);

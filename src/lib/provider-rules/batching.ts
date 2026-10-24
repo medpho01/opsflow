@@ -287,6 +287,8 @@ export type ItemLineData = {
   createdAt?: Date;
   milestone?: string | null;
   dueAt?: Date;
+  /** The lab's own order reference (API labs): what their desk searches by. */
+  labRef?: string | null;
   /** New-order block: the patient's details the lab needs to serve the order. */
   mobile?: string | null;
   address?: string | null;
@@ -327,7 +329,7 @@ export function itemLine(intent: string, item: ItemLineData, now: Date, timeZone
   const when = shortWhen(item.appointment, now, timeZone);
   if (intent === NEW_ORDER_INTENT) {
     return [
-      `${item.n}. #${item.orderId} · ${(item.patientName || "Patient").trim()} · ${when}`,
+      `${item.n}. ${item.labRef ? `${item.labRef} · ` : ""}#${item.orderId} · ${(item.patientName || "Patient").trim()} · ${when}`,
       item.mobile ? `    📞 ${item.mobile}` : "",
       item.address ? `    📍 ${item.address}` : item.area ? `    📍 ${item.area}` : "",
       item.mapUrl ? `    🗺️ ${item.mapUrl}` : "",
@@ -335,10 +337,11 @@ export function itemLine(intent: string, item: ItemLineData, now: Date, timeZone
       item.confirmUrl ? `    ${item.confirmUrl}` : "",
     ].filter(Boolean).join("\n");
   }
-  const head = `${item.n}. #${item.orderId} · ${firstName(item.patientName)}`;
+  // Labs find an order by their own reference or the patient's phone, not by our id (Orange, 24 Oct 2026).
+  const head = [`${item.n}. ${item.labRef ? `${item.labRef} · ` : ""}#${item.orderId} · ${firstName(item.patientName)}`, item.mobile, item.area].filter(Boolean).join(" · ");
   const link = item.confirmUrl ? `\n    ${item.confirmUrl}` : "";
   switch (intent) {
-    case "PHLEBO": return `${head} · ${when}${item.area ? ` · ${item.area}` : ""}`;
+    case "PHLEBO": return `${head} · ${when}`;
     case "ETA": return `${head} · ${when}${item.phlebo ? ` · ${item.phlebo}` : ""}`;
     case "UNCONFIRMED": return `${head} · ${when}${link}`;
     case "ESCALATION": return `${head} · ${when} · waiting ${ago(item.createdAt, now)}${link}`;

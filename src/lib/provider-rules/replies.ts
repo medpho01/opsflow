@@ -109,6 +109,13 @@ export async function runReplyPass(now = new Date()): Promise<ReplyPassResult> {
       // A reply to a combined message: each numbered part is about its own order.
       const combined = await attributeToBatch(message, labId, text);
       if (combined) {
+        // "Share the details / contact number / address" about the orders we just asked
+        // about is a question, not an answer: reply with what the lab needs (Orange, 24 Oct 2026).
+        if (DETAILS_REQUEST_RE.test(text)) {
+          await answerDetailsRequest(message, labId, combined.items, combined.parts, now);
+          result.attributed += 1;
+          continue;
+        }
         if (combined.parts.size === 0) {
           // Quoted a combined message but named no item we know: a note on every order in it.
           // A bare "ok"/"done" (no numbers at all) is a yes to the whole ask; anything with
@@ -227,6 +234,42 @@ type BatchItem = { n: number; orderId: number; ruleId: string; line: string };
  * but cannot be placed returns no parts — the caller notes it on every order
  * in the batch rather than guessing one.
  */
+/** A lab asking for what it needs to find or serve the order, rather than answering. */
+const DETAILS_REQUEST_RE = /\b(share|send|give|provide|need|kindly|please|pls|which|what)\b[^\n]{0,40}\b(details?|contact|number|mobile|phone|address|location|cx|customer|patient|order ?id|ref(?:erence)?)\b|\b(cx|customer|patient) (details?|contact|number|address)\b|\bregistered (contact|number|mobile)\b/i;
+
+/**
+ * Reply, quoting the lab's message, with the details for the items they asked about
+ * (the numbered ones, or every item in the message): the lab's own reference, the
+ * patient's name, phone, address and visit time. Once per inbound message.
+ */
+async function answerDetailsRequest(message: { id: string; waMsgId: string; groupId: string }, labId: number, items: BatchItem[], parts: Map<number, string>, now: Date) {
+  const wanted = parts.size ? items.filter((i) => parts.has(i.n)) : items;
+  if (wanted.length === 0) return;
+  // Each inbound message is read once (the reply watermark), so this answers once.
+  const { fetchOrderContactDetails } = await import("@/lib/non-api-labs/order-details");
+  const { fetchOpenOrders } = await import("./engine");
+  const [details, orders] = await Promise.all([fetchOrderContactDetails(wanted.map((i) => i.orderId)), fetchOpenOrders([labId], now)]);
+  if (!details) { console.warn(`[Replies] details request from lab ${labId}: LabStack not readable, left to the team`); return; }
+  const { formatDateTime } = await import("./format");
+  const lines = wanted.map((i) => {
+    const d = details.get(i.orderId); const o = orders.find((x) => x.id === i.orderId);
+    return [
+      `${i.n}. ${d?.labRef ? `${d.labRef} · ` : ""}#${i.orderId} · ${(o?.patientName || "Patient").trim()}`,
+      d?.patientMobile ? `    📞 ${d.patientMobile}` : "    📞 not on file — please check LabStack",
+      d?.address ? `    📍 ${d.address}` : "",
+      d?.mapUrl ? `    🗺️ ${d.mapUrl}` : "",
+      o?.appointmentTime ? `    🗓️ ${formatDateTime(o.appointmentTime)}` : "",
+      d?.tests ? `    🧪 ${d.tests}` : "",
+    ].filter(Boolean).join("\n");
+  });
+  const group = await prisma.waGroup.findUnique({ where: { id: message.groupId }, select: { id: true, jid: true } });
+  if (!group) return;
+  const { sendWhatsApp } = await import("@/lib/agents/executors/dispatcher");
+  const text = `Details for ${wanted.length === 1 ? "this order" : "these orders"}:\n\n${lines.join("\n\n")}`;
+  await sendWhatsApp({ targetJid: group.jid, groupId: group.id, text, quotedWaId: message.waMsgId, now });
+  console.log(`[Replies] answered a details request from lab ${labId} for ${wanted.length} order(s)`);
+}
+
 async function attributeToBatch(
   message: { replyToWaId: string | null; createdAt: Date },
   labId: number,

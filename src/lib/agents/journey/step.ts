@@ -99,6 +99,8 @@ export type StepInput = {
   sop: SopParams | null;
   sopVersionId?: string | null;
   labTier?: LabTier | null;
+  /** Is a logged-in portal session set up for this lab? Without one the portal rung is skipped: ask in the group instead. */
+  portalReady?: boolean;
   /** Hours since the lab's group last wrote, for risk; null when unknown. */
   labSilentHours?: number | null;
   timeZone?: string;
@@ -142,7 +144,10 @@ export function classifyChange(before: OrderSnapshot | null, after: OrderSnapsho
 
 // ── Checkpoints ───────────────────────────────────────────────────────────
 
-function buildCheckpoints(order: OrderSnapshot, existing: CheckpointState[], now: Date, opts: { recomputePreCollection: boolean; rebuildAll: boolean }): CheckpointState[] {
+/** Checkpoints an API lab is never asked about: the order reaches it through the API, so "confirm" is not theirs to answer (23 Oct 2026). */
+const NOT_FOR_API_LABS = new Set(["confirmed", "visit_confirmed"]);
+
+function buildCheckpoints(order: OrderSnapshot, existing: CheckpointState[], now: Date, opts: { recomputePreCollection: boolean; rebuildAll: boolean; labTier?: LabTier | null }): CheckpointState[] {
   const offsets = offsetsFor(order.labId);
   const byName = new Map(existing.map((c) => [c.name, c]));
   const out: CheckpointState[] = [];
@@ -151,6 +156,10 @@ function buildCheckpoints(order: OrderSnapshot, existing: CheckpointState[], now
     const prior = opts.rebuildAll ? undefined : byName.get(def.name);
     const isMet = def.met(order);
     if (prior?.status === "MET") { out.push(prior); continue; }
+    if (opts.labTier && opts.labTier !== "C" && NOT_FOR_API_LABS.has(def.name) && !isMet) {
+      out.push({ name: def.name, dueAt: due ?? now, dueSource: "POLICY", metAt: null, status: "WAIVED" });
+      continue;
+    }
     if (!due) {
       if (isMet) out.push({ name: def.name, dueAt: now, dueSource: "POLICY", metAt: now, status: "MET" });
       continue;
@@ -268,7 +277,7 @@ export function step(input: StepInput): StepOutput {
     const resets = changes.includes("RESCHEDULED") || changes.includes("REROUTED");
     const rebuild = changes.includes("TYPE_CHANGED");
     const oldDue = Object.fromEntries(checkpoints.map((c) => [c.name, c.dueAt.toISOString()]));
-    checkpoints = waiveImplied(buildCheckpoints(order, checkpoints, now, { recomputePreCollection: resets, rebuildAll: rebuild }));
+    checkpoints = waiveImplied(buildCheckpoints(order, checkpoints, now, { recomputePreCollection: resets, rebuildAll: rebuild, labTier: input.labTier }));
     if (resets || rebuild) {
       journey = { ...journey, attempts: {}, subStates: journey.subStates.filter((s) => s !== "change_pending"), rescheduleCount: journey.rescheduleCount + (changes.includes("RESCHEDULED") ? 1 : 0) };
       withdraw.push({ reason: changes.includes("REROUTED") ? "re-routed to another lab" : "rescheduled" });
@@ -283,7 +292,7 @@ export function step(input: StepInput): StepOutput {
     });
     journey = { ...journey, consoleFingerprint: fp, consoleSnapshot: order };
   } else {
-    checkpoints = waiveImplied(buildCheckpoints(order, checkpoints, now, { recomputePreCollection: false, rebuildAll: false }));
+    checkpoints = waiveImplied(buildCheckpoints(order, checkpoints, now, { recomputePreCollection: false, rebuildAll: false, labTier: input.labTier }));
   }
 
   // 2. Terminal: stop everything (FR-1.9, FR-2.8).
@@ -425,7 +434,7 @@ export function step(input: StepInput): StepOutput {
               const ask = sop.asks[next.name];
               const urgent = slotPassed || (minutesToSlot != null && minutesToSlot <= ask.urgentWithinMin);
               const window = sendWindow(now, now, sop, { ...ask, leadMin: 0, graceMin: 240 }, true, urgent, tz);
-              actions.push({ desk: "LAB", action: "ask", params: { checkpoint: next.name, orderId: order.id, labId: order.labId, attempt: (attempts[next.name]?.n ?? 0) + 1, dueAt: next.dueAt, rung: "ask", intent: ask.intent, counterparty: `LAB:${order.labId}`, windowFrom: window.from, windowTo: window.to, urgent, line: { orderId: order.id, patientName: order.patientName, appointment: order.appointmentTime, phlebo: order.phleboName || null }, forStore: true }, reason: `store asked about #${order.id} and the console does not know`, idemKey: `${key}:chase` });
+              actions.push({ desk: "LAB", action: "ask", params: { checkpoint: next.name, orderId: order.id, labId: order.labId, attempt: (attempts[next.name]?.n ?? 0) + 1, dueAt: next.dueAt, rung: "ask", intent: ask.intent, counterparty: `LAB:${order.labId}`, windowFrom: window.from, windowTo: window.to, urgent, line: { orderId: order.id, patientName: order.patientName, appointment: order.appointmentTime, labRef: order.labRef ?? null, mobile: order.mobile ?? null, area: order.area ?? null, phlebo: order.phleboName || null }, forStore: true }, reason: `store asked about #${order.id} and the console does not know`, idemKey: `${key}:chase` });
             }
           }
           break;
@@ -476,7 +485,8 @@ export function step(input: StepInput): StepOutput {
     const gapOk = lastAt == null || now.getTime() - lastAt >= sop.rungGapMin * MIN;
     const answeredAt = a.answeredAt ? Date.parse(a.answeredAt) : null;
     const holding = answeredAt != null && now.getTime() - answeredAt < sop.answerHoldMin * MIN && next.dueSource !== "RESET";
-    const ladder = sop.ladder;
+    // No portal session: there is nothing to read, so the ask goes straight to the group.
+    const ladder = input.portalReady ? sop.ladder : sop.ladder.filter((r) => r !== "portal_read");
     if (from === "LAB" && ask && started && gapOk && !holding) {
       let rungIndex = a.n;
       if (brokenPromises >= sop.brokenPromisesSkip && rungIndex > 0 && rungIndex < ladder.length - 1) rungIndex += 1;
@@ -495,10 +505,10 @@ export function step(input: StepInput): StepOutput {
         switch (rung) {
           case "portal_read": actions.push({ desk: "LAB", action: "portal_read", params: { ...common }, reason: why, idemKey: idem }); break;
           case "ask": case "reminder":
-            actions.push({ desk: "LAB", action: rung, params: { ...common, intent: ask.intent, counterparty: `LAB:${order.labId}`, windowFrom: window.from, windowTo: window.to, urgent, line: { orderId: order.id, patientName: order.patientName, appointment: order.appointmentTime, phlebo: order.phleboName || null } }, reason: why, idemKey: idem });
+            actions.push({ desk: "LAB", action: rung, params: { ...common, intent: ask.intent, counterparty: `LAB:${order.labId}`, windowFrom: window.from, windowTo: window.to, urgent, line: { orderId: order.id, patientName: order.patientName, appointment: order.appointmentTime, labRef: order.labRef ?? null, mobile: order.mobile ?? null, area: order.area ?? null, phlebo: order.phleboName || null } }, reason: why, idemKey: idem });
             break;
           case "manager_whatsapp":
-            actions.push({ desk: "LAB", action: "manager_whatsapp", params: { ...common, intent: "ESCALATION", counterparty: `MANAGER:${order.labId}`, windowFrom: window.from, windowTo: window.to, urgent, line: { orderId: order.id, patientName: order.patientName, appointment: order.appointmentTime } }, reason: `${why}; ${a.n} asks unanswered`, idemKey: idem });
+            actions.push({ desk: "LAB", action: "manager_whatsapp", params: { ...common, intent: "ESCALATION", counterparty: `MANAGER:${order.labId}`, windowFrom: window.from, windowTo: window.to, urgent, line: { orderId: order.id, patientName: order.patientName, appointment: order.appointmentTime, labRef: order.labRef ?? null, mobile: order.mobile ?? null, area: order.area ?? null } }, reason: `${why}; ${a.n} asks unanswered`, idemKey: idem });
             break;
           case "call":
             actions.push({ desk: "LAB", action: "call", params: { ...common, labId: order.labId }, reason: `${why}; ${a.n} asks unanswered`, idemKey: idem });

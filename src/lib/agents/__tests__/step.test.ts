@@ -82,10 +82,18 @@ describe("the ladder", () => {
     const r6 = wake(o, at("2026-10-21T02:45:00Z"), r5);
     assert.equal(r6.actions.length, 0, "ladder exhausted");
   });
-  it("API labs read the portal first", () => {
+  it("API labs read the portal first — when a portal session is set up; otherwise they are asked in the group", () => {
     const o = order({ labId: 4 });
-    const r1 = step({ now: at("2026-10-21T01:40:00Z"), order: o, journey: null, checkpoints: [], events: [], sop: SOP_A, labTier: "A", timeZone: IST });
+    const r1 = step({ now: at("2026-10-21T01:40:00Z"), order: o, journey: null, checkpoints: [], events: [], sop: SOP_A, labTier: "A", portalReady: true, timeZone: IST });
     assert.deepEqual(acts(r1), ["portal_read"]);
+    const r2 = step({ now: at("2026-10-21T01:40:00Z"), order: o, journey: null, checkpoints: [], events: [], sop: SOP_A, labTier: "A", timeZone: IST });
+    assert.deepEqual(acts(r2), ["ask"]);
+  });
+  it("an API lab is never asked to confirm: the order is already in its system", () => {
+    const o = order({ labId: 4, orderStatus: "PENDING" });
+    const r = step({ now: at("2026-10-20T10:00:00Z"), order: o, journey: null, checkpoints: [], events: [], sop: SOP_A, labTier: "A", timeZone: IST });
+    assert.equal(r.checkpoints.find((c) => c.name === "confirmed")?.status, "WAIVED");
+    assert.ok(!r.actions.some((a) => a.params.checkpoint === "confirmed"));
   });
   it("a visit within 90 min makes the ask urgent", () => {
     const o = order();

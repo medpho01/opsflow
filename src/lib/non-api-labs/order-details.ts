@@ -28,6 +28,8 @@ export type OrderContactDetails = {
   directTests: string[];
   /** The centre, for a centre visit. */
   storeName: string | null;
+  /** The lab's own order reference (API labs), when LabStack has one. */
+  labRef?: string | null;
 };
 
 type AddressParts = {
@@ -136,6 +138,7 @@ type DetailsRow = {
   packages: OrderPackage[] | null;
   directTests: string[] | null;
   storeName: string | null;
+  labRef: string | null;
   mobile: string | null;
   unitFloorBuilding: string | null;
   address: string | null;
@@ -164,6 +167,7 @@ export async function fetchOrderContactDetails(ids: number[]): Promise<Map<numbe
   const query = labstackWorkerQuery<DetailsRow>(
     `SELECT o.id,
             u.mobile,
+            NULLIF(o."labOrderId", '') AS "labRef",
             p."unitFloorBuilding", p.address, p.locality, p.city, p.pincode::text AS pincode,
             p.latitude, p.longitude,
             (SELECT string_agg(pk."packageName", ', ' ORDER BY pk."packageName")
@@ -210,6 +214,7 @@ export async function fetchOrderContactDetails(ids: number[]): Promise<Map<numbe
       packages: row.packages ?? [],
       directTests: row.directTests ?? [],
       storeName: clean(row.storeName) || null,
+      labRef: clean(row.labRef) || null,
     }];
   }));
 }

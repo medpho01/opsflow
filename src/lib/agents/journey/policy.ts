@@ -29,6 +29,10 @@ export type OrderSnapshot = {
   patientName: string | null;
   labName: string | null;
   storeName: string | null;
+  /** The lab's own order reference (API labs), the patient's mobile and locality — what a lab needs to find the order. */
+  labRef?: string | null;
+  mobile?: string | null;
+  area?: string | null;
 };
 
 /** LabStack order statuses in the order an order moves through them. */

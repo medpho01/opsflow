@@ -70,12 +70,16 @@ export async function wakeJourney(orderId: number, reason: WakeReason, opts: Wak
 
   const [sops, directory] = await Promise.all([opts.sops ?? loadLiveSops(), opts.directory ?? loadDirectory()]);
   const labTier = tierOf(directory, order.labId);
+  // A portal rung only makes sense with a logged-in session; otherwise the ask goes to the group.
+  const portalReady = order.labId != null && labTier !== "C"
+    ? !!(await prisma.agentPortalSession.findUnique({ where: { labId: order.labId }, select: { status: true } }).then((s) => s?.status === "OK").catch(() => false))
+    : false;
   const labSop = sops.get("LAB") ?? null;
   const sopParams = paramsFor(labSop, { labTier, labId: order.labId, storeId: order.storeId, orderType: order.orderType });
 
   const out = step({
     now, order, journey: row ? toJourneyState(row) : null, checkpoints: row ? row.checkpoints.map(toCheckpointState) : [], events,
-    sop: sopParams, sopVersionId: labSop?.versionId ?? null, labTier, labSilentHours: opts.labSilentHours ?? null, timeZone: process.env.TIMEZONE || "Asia/Kolkata",
+    sop: sopParams, sopVersionId: labSop?.versionId ?? null, labTier, portalReady, labSilentHours: opts.labSilentHours ?? null, timeZone: process.env.TIMEZONE || "Asia/Kolkata",
   });
   const j = out.journey;
   const snapshot = j.consoleSnapshot ? { ...j.consoleSnapshot, __journey: { rescheduleCount: j.rescheduleCount } } : null;

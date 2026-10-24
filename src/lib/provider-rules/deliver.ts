@@ -323,7 +323,7 @@ async function batchLine(intent: string, n: number, item: BatchItemInput, now: D
   const needsLink = intent === "UNCONFIRMED" || intent === "ESCALATION" || intent === NEW_ORDER_INTENT;
   return itemLine(intent, {
     n, orderId: order.id, patientName: order.patientName, appointment: order.appointmentTime,
-    area: contact?.area ?? null,
+    area: contact?.area ?? null, labRef: contact?.labRef ?? null,
     phlebo: [phleboName, phleboPhone].filter(Boolean).join(" ") || null,
     confirmUrl: needsLink ? await confirmationUrl(order.id) : null,
     createdAt: order.createdAt, milestone: rule.milestoneLabel, dueAt: moment,

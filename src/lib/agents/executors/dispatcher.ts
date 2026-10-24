@@ -25,7 +25,7 @@ import { loadDirectory, tierOf } from "../directory";
 export const PER_SLOT_CAP = Number(process.env.AGENT_BATCH_PER_SLOT_CAP ?? 3);
 export const PER_DAY_CAP = Number(process.env.AGENT_BATCH_PER_DAY_CAP ?? 8);
 
-export type OutboxLine = { n?: number; orderId: number; patientName: string | null; appointment: Date | null; confirmUrl?: string | null; phlebo?: string | null; area?: string | null };
+export type OutboxLine = { n?: number; orderId: number; patientName: string | null; appointment: Date | null; confirmUrl?: string | null; phlebo?: string | null; area?: string | null; labRef?: string | null; mobile?: string | null };
 
 export type EnqueueInput = {
   counterparty: string;          // LAB:<id> | MANAGER:<labId> | STORE:<id>
@@ -145,6 +145,8 @@ async function flushGroup(key: string, group: Item[], now: Date): Promise<{ mess
   // Caps: per day per lab (urgent exempt) and per slot (urgent alone).
   const dayStart = new Date(now); dayStart.setUTCHours(0, 0, 0, 0);
   const sentToday = await prisma.providerBatch.count({ where: { labId: id, shadow: false, createdAt: { gte: new Date(dayStart.getTime() - 5.5 * 3_600_000) } } });
+  // Per-slot cap, the same rhythm as the message rules: at most PER_SLOT_CAP combined messages per lab per :00/:30 (urgent exempt).
+  const sentThisSlot = await prisma.providerBatch.count({ where: { labId: id, shadow: false, recipient: "LAB", createdAt: { gte: currentSlot(now, tz) } } });
   const urgent = group.filter((i) => i.urgent);
   const routine = group.filter((i) => !i.urgent);
   let messages = 0; let items = 0; let held = 0;
@@ -159,7 +161,7 @@ async function flushGroup(key: string, group: Item[], now: Date): Promise<{ mess
       const link = manual && !toManager ? await actionPageUrl(i.orderId).catch(() => null) : null;
       return itemLine(ask, {
         n: index + 1, orderId: i.orderId, patientName: p.patientName, appointment: p.appointment ? new Date(p.appointment) : null,
-        area: p.area ?? null, phlebo: p.phlebo ?? null, confirmUrl: link ?? (needsLink ? await confirmationUrl(i.orderId).catch(() => null) : null),
+        area: p.area ?? null, phlebo: p.phlebo ?? null, labRef: p.labRef ?? null, mobile: p.mobile ?? null, confirmUrl: link ?? (needsLink ? await confirmationUrl(i.orderId).catch(() => null) : null),
       }, now, tz);
     }));
     const followUp = toManager ? null : await findFollowUp(id, ask, list.map((i) => i.orderId), now);
@@ -203,7 +205,7 @@ async function flushGroup(key: string, group: Item[], now: Date): Promise<{ mess
 
   if (urgent.length) await sendItems(urgent, true);
   if (routine.length) {
-    if (!toManager && sentToday >= PER_DAY_CAP) { held += routine.length; }
+    if (!toManager && (sentToday >= PER_DAY_CAP || sentThisSlot >= PER_SLOT_CAP)) { held += routine.length; }
     else {
       const take = routine.slice(0, 50);
       await sendItems(take, false);

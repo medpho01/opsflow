@@ -91,6 +91,10 @@ services:
   # ── The OpsFlow app ─────────────────────────────────────────────────
   app:
     build: .
+    image: opsflow-app
+    volumes:
+      # Ops scripts run from the checkout: `git pull` is enough, no rebuild.
+      - ./scripts:/app/scripts:ro
     restart: unless-stopped
     depends_on:
       db:
@@ -173,7 +177,10 @@ services:
   # Brain) on pg-boss queues in the taskos database. Same image as `app`; no
   # db push or seed here (the app's entrypoint does that). Scale to 1.
   worker:
-    build: .
+    # Same image as app — built once, not twice.
+    image: opsflow-app
+    volumes:
+      - ./scripts:/app/scripts:ro
     restart: unless-stopped
     depends_on:
       app:

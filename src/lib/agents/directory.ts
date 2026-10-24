@@ -13,13 +13,33 @@ export type LabTier = "A" | "B" | "C";
 
 /** The pilot (DESIGN.md §16), matched by name so ids never have to be typed. */
 /**
- * The pilot, as chosen on 23–24 Oct 2026: Orange Health (every city), Thyrocare
- * India, Redcliffe Labs, Advaitha and Star Pathology; the store is Plum. Matched on the name
- * as LabStack spells it — anchored so "… and Thyrocare Services" (another lab)
- * and Redcliffe's unit Celara stay out.
+ * The pilot: labs and stores picked on Agents › Setup (step 2), kept in
+ * agent_settings — nothing is matched by name. The first read seeds it from
+ * the desks already in shadow or live, so a pilot set up before this existed
+ * carries over.
  */
-export const PILOT_LABS = [/^orange health/i, /^thyrocare india$/i, /^redcliffe labs/i, /advaitha/i, /star patho/i];
-export const PILOT_STORES = [/plum/i];
+export type Pilot = { labIds: number[]; storeIds: number[] };
+
+export async function loadPilot(): Promise<Pilot> {
+  const settings = await prisma.agentSettings.upsert({ where: { id: "default" }, update: {}, create: { id: "default" } });
+  if (settings.pilotLabIds.length || settings.pilotStoreIds.length) return { labIds: settings.pilotLabIds, storeIds: settings.pilotStoreIds };
+  const desks = await prisma.agentDeskState.findMany({ where: { state: { not: "OFF" } }, select: { scopeKind: true, scopeId: true } });
+  const seeded = {
+    labIds: [...new Set(desks.filter((d) => d.scopeKind === "LAB").map((d) => d.scopeId))],
+    storeIds: [...new Set(desks.filter((d) => d.scopeKind === "STORE").map((d) => d.scopeId))],
+  };
+  if (seeded.labIds.length || seeded.storeIds.length) await prisma.agentSettings.update({ where: { id: "default" }, data: { pilotLabIds: seeded.labIds, pilotStoreIds: seeded.storeIds } });
+  return seeded;
+}
+
+export async function setPilot(kind: "LAB" | "STORE", id: number, inPilot: boolean): Promise<Pilot> {
+  const current = await loadPilot();
+  const key = kind === "LAB" ? "labIds" : "storeIds";
+  const next = inPilot ? [...new Set([...current[key], id])] : current[key].filter((x) => x !== id);
+  const pilot = { ...current, [key]: next } as Pilot;
+  await prisma.agentSettings.update({ where: { id: "default" }, data: { pilotLabIds: pilot.labIds, pilotStoreIds: pilot.storeIds } });
+  return pilot;
+}
 export type LabEntry = { labId: number; labName: string; tier: LabTier; groupJid: string | null; groupId: string | null; managerWhatsapp: string | null; hasPortal: boolean };
 export type StoreEntry = { storeId: number; storeName: string | null; groupJid: string | null; groupId: string | null; weight: number };
 export type Directory = { labs: Map<number, LabEntry>; stores: Map<number, StoreEntry> };

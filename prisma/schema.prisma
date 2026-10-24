@@ -2267,6 +2267,11 @@ model AgentSettings {
   /// The Store desk's read watermark over wa_messages.
   storeWatermark DateTime?
 
+  /// The pilot: labs and stores chosen on Agents › Setup (step 2). Empty until
+  /// first read, when it is seeded from the desks already in shadow or live.
+  pilotLabIds    Int[]
+  pilotStoreIds  Int[]
+
   @@map("agent_settings")
 }
 

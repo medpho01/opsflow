@@ -61,9 +61,10 @@ export function AgentSetup() {
               <Row k="Exotel" v={d.exotel ? "configured" : "not configured — the call rung becomes a task"} />
             </div>}
             {step.key === "directory" && <div className="mt-3 space-y-3">
-              <table className="w-full text-xs"><thead className="text-left text-zinc-500"><tr><th>Lab</th><th>Tier</th><th>Group</th><th>Manager</th></tr></thead><tbody>{((d.labs as Array<{ labName: string; tier: string; group: boolean; manager: boolean }>) ?? []).map((l) => <tr key={l.labName} className="text-zinc-300"><td className="py-1">{l.labName}</td><td>{l.tier}</td><td>{l.group ? "linked" : <span className="text-amber-300">missing</span>}</td><td>{l.manager ? "on file" : <span className="text-amber-300">missing</span>}</td></tr>)}</tbody></table>
-              <table className="w-full text-xs"><thead className="text-left text-zinc-500"><tr><th>Store</th><th>Group</th><th>Weight</th></tr></thead><tbody>{((d.stores as Array<{ storeName: string; group: boolean; weight: number }>) ?? []).map((s) => <tr key={s.storeName} className="text-zinc-300"><td className="py-1">{s.storeName}</td><td>{s.group ? "linked" : "missing"}</td><td>{s.weight}</td></tr>)}</tbody></table>
-              <div className="text-xs text-zinc-500">Labs, groups and coordinators come from Connections; managers from Lab Config.</div>
+              <table className="w-full text-xs"><thead className="text-left text-zinc-500"><tr><th>Lab</th><th>Tier</th><th>Group</th><th>Manager</th><th></th></tr></thead><tbody>{((d.labs as Array<{ labId: number; labName: string; tier: string; group: boolean; manager: boolean }>) ?? []).map((l) => <tr key={l.labId} className="text-zinc-300"><td className="py-1">{l.labName}</td><td>{l.tier}</td><td>{l.group ? "linked" : <span className="text-amber-300">missing</span>}</td><td>{l.manager ? "on file" : <span className="text-amber-300">missing</span>}</td><td className="text-right"><button disabled={busy} onClick={() => post("/api/agents/setup", { action: "pilot_remove", kind: "LAB", id: l.labId }, `${l.labName} removed from the pilot`)} className="text-zinc-500 hover:text-zinc-200">remove</button></td></tr>)}</tbody></table>
+              <table className="w-full text-xs"><thead className="text-left text-zinc-500"><tr><th>Store</th><th>Group</th><th>Weight</th><th></th></tr></thead><tbody>{((d.stores as Array<{ storeId: number; storeName: string; group: boolean; weight: number }>) ?? []).map((s) => <tr key={s.storeId} className="text-zinc-300"><td className="py-1">{s.storeName}</td><td>{s.group ? "linked" : "missing"}</td><td>{s.weight}</td><td className="text-right"><button disabled={busy} onClick={() => post("/api/agents/setup", { action: "pilot_remove", kind: "STORE", id: s.storeId }, `${s.storeName} removed from the pilot`)} className="text-zinc-500 hover:text-zinc-200">remove</button></td></tr>)}</tbody></table>
+              <PilotPicker busy={busy} pick={(d.pick as { labs: Array<{ labId: number; labName: string; tier: string; group: boolean }>; stores: Array<{ storeId: number; storeName: string | null }> }) ?? { labs: [], stores: [] }} onAdd={(kind, id, name) => post("/api/agents/setup", { action: "pilot_add", kind, id }, `${name} added to the pilot`)} />
+              <div className="text-xs text-zinc-500">The pilot is whatever is listed here. Groups and coordinators come from Connections; managers from a connected lab&apos;s Edit.</div>
             </div>}
             {step.key === "sla" && <div className="mt-3 space-y-1 text-zinc-300">{((d.offsets as Array<{ labName: string; phleboBeforeSlotMin?: number }>) ?? []).map((o) => <Row key={o.labName} k={String(o.labName)} v={`phlebo at slot − ${o.phleboBeforeSlotMin} min`} />)}<div className="text-xs text-zinc-500">{String(d.note)}</div></div>}
             {step.key === "sops" && <div className="mt-3 space-y-2">{((d.sops as Array<{ desk: string; version: number | null; author: string | null; approvedBy: number | null }>) ?? []).map((s) => <Row key={s.desk} k={`${s.desk} desk`} v={s.version ? `v${s.version} · ${s.author?.toLowerCase()} · ${s.approvedBy ? "approved" : "baseline, not yet reviewed"}` : "missing"} />)}<Link href="/head/agents/sops" className="inline-block rounded-md bg-zinc-100 px-3 py-1.5 text-xs font-medium text-zinc-900">Open the SOP library</Link></div>}
@@ -85,3 +86,21 @@ export function AgentSetup() {
   );
 }
 function Row({ k, v }: { k: string; v: string }) { return <div className="flex justify-between gap-4 border-b border-zinc-800/60 py-1"><span className="text-zinc-500">{k}</span><span className="text-right text-zinc-200">{v}</span></div>; }
+
+/** Add a lab or a connected store to the pilot: search the directory, click Add. */
+function PilotPicker({ busy, pick, onAdd }: { busy: boolean; pick: { labs: Array<{ labId: number; labName: string; tier: string; group: boolean }>; stores: Array<{ storeId: number; storeName: string | null }> }; onAdd: (kind: "LAB" | "STORE", id: number, name: string) => void }) {
+  const [q, setQ] = useState("");
+  const needle = q.trim().toLowerCase();
+  const labs = needle ? pick.labs.filter((l) => l.labName.toLowerCase().includes(needle) || String(l.labId) === needle).slice(0, 8) : [];
+  const stores = needle ? pick.stores.filter((s) => (s.storeName ?? "").toLowerCase().includes(needle) || String(s.storeId) === needle).slice(0, 5) : [];
+  return (
+    <div className="rounded-md border border-zinc-800 p-3">
+      <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Add a lab or store to the pilot — search by name or id" className="w-full rounded-md border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-xs text-zinc-200 outline-none focus:border-blue-500" />
+      {needle && labs.length === 0 && stores.length === 0 && <div className="mt-2 text-xs text-zinc-500">No match. A store appears here once its group is connected (Connections › Stores).</div>}
+      {(labs.length > 0 || stores.length > 0) && <ul className="mt-2 divide-y divide-zinc-800/60 text-xs">
+        {labs.map((l) => <li key={`L${l.labId}`} className="flex items-center gap-2 py-1.5 text-zinc-300"><span className="flex-1">{l.labName} <span className="text-zinc-500">· lab #{l.labId} · {l.tier}{l.group ? "" : " · no group yet"}</span></span><button disabled={busy} onClick={() => { onAdd("LAB", l.labId, l.labName); setQ(""); }} className="rounded-md bg-zinc-100 px-2.5 py-1 font-medium text-zinc-900">Add</button></li>)}
+        {stores.map((s) => <li key={`S${s.storeId}`} className="flex items-center gap-2 py-1.5 text-zinc-300"><span className="flex-1">{s.storeName ?? `store #${s.storeId}`} <span className="text-zinc-500">· store #{s.storeId}</span></span><button disabled={busy} onClick={() => { onAdd("STORE", s.storeId, s.storeName ?? `store #${s.storeId}`); setQ(""); }} className="rounded-md bg-zinc-100 px-2.5 py-1 font-medium text-zinc-900">Add</button></li>)}
+      </ul>}
+    </div>
+  );
+}

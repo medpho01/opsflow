@@ -56,7 +56,7 @@ Rollback: `docker compose stop worker` stops every agent loop; the app and the l
 ## Going live with the pilot
 
 1. Deploy the schema (`prisma db push`), start the worker. Journeys open for every order in the active window within a minute. Everything is OFF until set.
-2. Agents › Setup: check connections and the directory (every pilot lab needs its group; managers from Lab Config).
+2. Agents › Setup › step 2: pick the pilot — add labs and connected stores from the directory (nothing is matched by name); every pilot lab needs its group, managers from a connected lab's Edit on Connections.
 3. Setup step 5: seed and run the evals.
 4. Setup step 6: "Put the pilot in shadow". From here the inbox and the lab board show what the agent would do; `agent_actions` records every would-do with `RECORDED`.
 5. After 7 days, Desks and autonomy: switch a cell to LIVE. The legacy message rules step aside for that lab in the same pass. Defaults: asks act; store answers act-and-notify; status writes, store warnings and case-worker choices suggest (review items in the inbox).

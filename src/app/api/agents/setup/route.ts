@@ -1,13 +1,14 @@
 /**
  * GET  /api/agents/setup — the eight setup steps with their status (DESIGN.md §3).
- * POST /api/agents/setup — { action: "pilot_shadow" } puts the pilot's desks in shadow;
+ * POST /api/agents/setup — { action: "pilot_add" | "pilot_remove", kind: "LAB" | "STORE", id } edits the pilot;
+ *                          { action: "pilot_shadow" } puts the pilot's desks in shadow;
  *                          { action: "all_shadow" } every lab and connected store (OPS_HEAD).
  */
 import { NextResponse } from "next/server";
 import prisma from "@/lib/db/client";
 import { labstackWorkerQuery } from "@/lib/db/labstack";
 import { agentsRoute, bad } from "@/lib/agents/api";
-import { loadDirectory, PILOT_LABS, PILOT_STORES } from "@/lib/agents/directory";
+import { loadDirectory, loadPilot, setPilot } from "@/lib/agents/directory";
 import { LAB_OFFSETS } from "@/lib/agents/journey/policy";
 import { consoleClient } from "@/lib/agents/console/client";
 
@@ -23,8 +24,9 @@ export const GET = agentsRoute("setup", async (_request, { requestId }) => {
     prisma.agentAutonomy.count(),
     prisma.agentSettings.upsert({ where: { id: "default" }, update: {}, create: { id: "default" } }),
   ]);
-  const pilotLabs = [...dir.labs.values()].filter((l) => PILOT_LABS.some((re) => re.test(l.labName)));
-  const pilotStores = [...dir.stores.values()].filter((s) => PILOT_STORES.some((re) => re.test(s.storeName ?? "")));
+  const pilot = await loadPilot();
+  const pilotLabs = pilot.labIds.map((id) => dir.labs.get(id)).filter((l): l is NonNullable<typeof l> => !!l);
+  const pilotStores = pilot.storeIds.map((id) => dir.stores.get(id)).filter((s): s is NonNullable<typeof s> => !!s);
   const groupsOk = pilotLabs.filter((l) => l.groupJid).length;
   const latestEval = new Map<string, (typeof evals)[number]>();
   for (const e of evals) if (!latestEval.has(e.suite)) latestEval.set(e.suite, e);
@@ -32,7 +34,7 @@ export const GET = agentsRoute("setup", async (_request, { requestId }) => {
   const anyLive = desks.some((d) => d.state === "LIVE");
   const steps = [
     { n: 1, key: "connections", name: "Connections", status: replica === "OK" && gateway?.status === "CONNECTED" ? "done" : "in_progress", detail: { replica, gateway: gateway?.status ?? "NOT_CONFIGURED", gatewayNumber: gateway?.connectedNumber ?? null, consoleApi: consoleClient() ? "configured" : "not yet — status writes become tasks", portals: portals.map((p) => ({ labId: p.labId, status: p.status, lastOkAt: p.lastOkAt })), modelKey: !!process.env.ANTHROPIC_API_KEY, exotel: !!process.env.EXOTEL_API_KEY || !!process.env.EXOTEL_SID } },
-    { n: 2, key: "directory", name: "Directory", status: pilotLabs.length >= 4 && pilotStores.length >= 1 && groupsOk === pilotLabs.length ? "done" : "in_progress", detail: { labs: pilotLabs.map((l) => ({ labId: l.labId, labName: l.labName, tier: l.tier, group: !!l.groupJid, manager: !!l.managerWhatsapp })), stores: pilotStores.map((s) => ({ storeId: s.storeId, storeName: s.storeName, group: !!s.groupJid, weight: s.weight })) } },
+    { n: 2, key: "directory", name: "Directory", status: pilotLabs.length >= 4 && pilotStores.length >= 1 && groupsOk === pilotLabs.length ? "done" : "in_progress", detail: { labs: pilotLabs.map((l) => ({ labId: l.labId, labName: l.labName, tier: l.tier, group: !!l.groupJid, manager: !!l.managerWhatsapp })), stores: pilotStores.map((s) => ({ storeId: s.storeId, storeName: s.storeName, group: !!s.groupJid, weight: s.weight })), pick: { labs: [...dir.labs.values()].filter((l) => !pilot.labIds.includes(l.labId)).map((l) => ({ labId: l.labId, labName: l.labName, tier: l.tier, group: !!l.groupJid })).sort((a, b) => a.labName.localeCompare(b.labName)), stores: [...dir.stores.values()].filter((s) => !pilot.storeIds.includes(s.storeId)).map((s) => ({ storeId: s.storeId, storeName: s.storeName })) } } },
     { n: 3, key: "sla", name: "SLA timings", status: "done", detail: { offsets: Object.entries(LAB_OFFSETS).map(([labId, o]) => ({ labId: Number(labId), labName: dir.labs.get(Number(labId))?.labName ?? labId, ...o })), note: "Defaults per order type; the Brain proposes per-lab timings from history at each review." } },
     { n: 4, key: "sops", name: "Baseline SOPs", status: sops.length >= 3 && sops.every((s) => s.versions.length) ? (sops.every((s) => s.versions[0]?.approvedBy != null) ? "done" : "needs_approval") : "in_progress", detail: { sops: sops.map((s) => ({ desk: s.desk, version: s.versions[0]?.version ?? null, author: s.versions[0]?.author ?? null, approvedBy: s.versions[0]?.approvedBy ?? null })) } },
     { n: 5, key: "evals", name: "Accuracy tests", status: latestEval.size === 0 ? "not_started" : [...latestEval.values()].every((e) => e.passedGate) ? "done" : "failing", detail: { suites: [...latestEval.values()].map((e) => ({ suite: e.suite, cases: e.cases, score: e.score, gate: e.gate, passed: e.passedGate, ranAt: e.ranAt })) } },
@@ -44,12 +46,20 @@ export const GET = agentsRoute("setup", async (_request, { requestId }) => {
 });
 
 export const POST = agentsRoute("setup", async (request, { user, requestId }) => {
-  const body = await request.json().catch(() => ({})) as { action?: string };
-  if (body.action !== "pilot_shadow" && body.action !== "all_shadow") return bad(requestId, "action must be pilot_shadow or all_shadow");
+  const body = await request.json().catch(() => ({})) as { action?: string; kind?: string; id?: number | string };
+  if (body.action === "pilot_add" || body.action === "pilot_remove") {
+    const kind = body.kind === "STORE" ? "STORE" : body.kind === "LAB" ? "LAB" : null;
+    const id = Number(body.id);
+    if (!kind || !Number.isInteger(id)) return bad(requestId, "kind must be LAB or STORE and id a number");
+    const pilot = await setPilot(kind, id, body.action === "pilot_add");
+    return NextResponse.json({ ok: true, pilot, requestId });
+  }
+  if (body.action !== "pilot_shadow" && body.action !== "all_shadow") return bad(requestId, "action must be pilot_shadow, all_shadow, pilot_add or pilot_remove");
   const all = body.action === "all_shadow";
   const dir = await loadDirectory(true);
+  const pilot = await loadPilot();
   let cells = 0;
-  for (const l of [...dir.labs.values()].filter((l) => all || PILOT_LABS.some((re) => re.test(l.labName)))) {
+  for (const l of [...dir.labs.values()].filter((l) => all || pilot.labIds.includes(l.labId))) {
     for (const desk of ["LAB", "INTAKE"]) {
       const where = { desk_scopeKind_scopeId: { desk, scopeKind: "LAB", scopeId: l.labId } };
       const cur = await prisma.agentDeskState.findUnique({ where });
@@ -58,7 +68,7 @@ export const POST = agentsRoute("setup", async (request, { user, requestId }) =>
       cells += 1;
     }
   }
-  for (const s of [...dir.stores.values()].filter((s) => all || PILOT_STORES.some((re) => re.test(s.storeName ?? "")))) {
+  for (const s of [...dir.stores.values()].filter((s) => all || pilot.storeIds.includes(s.storeId))) {
     const where = { desk_scopeKind_scopeId: { desk: "STORE", scopeKind: "STORE", scopeId: s.storeId } };
     const cur = await prisma.agentDeskState.findUnique({ where });
     if (cur?.state === "LIVE") continue;

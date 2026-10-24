@@ -1202,12 +1202,13 @@ W1 to W3 and W5 can start now. W11 should be requested now, because Phase 2 wait
 | 11 | Portal logins (21 Oct, later) | Start with the logins we have; service logins per lab are not a precondition. The portal worker moves from Phase 6 to Phase 2 (all three API pilot labs have portals; FR-17 is P0). Orange first. |
 | 12 | Agent shape (21 Oct, later) | Hybrid, as section 0: rules for routine steps; the Brain and the case worker are tool-using agent loops with a visible task list; every journey carries a visible plan (done / now / next) on its timeline, written by rules for routine orders and by the case worker for unusual ones. Not one AI loop per order. |
 
-**Pilot (shadow first), revised 23 Oct** (Redcliffe and Elevate Now dropped at setup):
+**Pilot (shadow first), revised 23 Oct** (Elevate Now dropped at setup; Redcliffe added back 24 Oct):
 
 | Desk | Who | Tier |
 |---|---|---|
 | Lab | Orange Health (every city) | A |
 | Lab | Thyrocare India | A |
+| Lab | Redcliffe Labs | A |
 | Lab | Advaitha | C |
 | Lab | Star Pathology | C |
 | Store | Plum | — |

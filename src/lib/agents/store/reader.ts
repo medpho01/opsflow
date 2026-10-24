@@ -43,8 +43,30 @@ export function classifyStoreMessage(text: string): { intent: StoreIntent; sure:
 
 export type StoreReaderResult = { read: number; linked: number; answered: number; tasks: number; review: number };
 
-async function linkOrder(message: { orderIds: number[]; refIds: string[]; text: string; replyToWaId: string | null; groupId: string }, storeId: number, now: Date): Promise<{ orderId: number; via: string } | null> {
-  if (message.orderIds.length) return { orderId: message.orderIds[0], via: "ORDER_ID" };
+/** Order ids a store writes in a message: 5–6 digits, not part of a longer number (a phone, a lab ref). */
+export const EXPLICIT_ID_RE = /(?<![\d+])#?(\d{5,6})(?![\d])/g;
+export function explicitOrderIds(text: string): number[] {
+  // A phone number written with spaces or dashes ("98765 43210") is not two order ids.
+  const withoutPhones = text.replace(/\+?\d[\d\s-]{8,}\d/g, " ");
+  return [...new Set([...withoutPhones.matchAll(EXPLICIT_ID_RE)].map((m) => Number(m[1])))];
+}
+
+/**
+ * Which order a store message is about. Never the group's "active thread": the
+ * gateway tags a message with the thread's order when it names none (idType
+ * CONTEXT), and in a busy store group that pinned every question to one order
+ * (Plum, 24 Oct 2026). Only an id the store wrote, a quoted message's order, or
+ * the one order we asked them about counts.
+ */
+async function linkOrder(message: { orderIds: number[]; idType: string | null; refIds: string[]; text: string; replyToWaId: string | null; groupId: string }, storeId: number, now: Date): Promise<{ orderId: number; via: string } | null> {
+  // An id the store wrote, checked against LabStack and this store.
+  const written = explicitOrderIds(message.text);
+  if (written.length) {
+    const rows = await labstackWorkerQuery<{ id: number }>(`SELECT id FROM public."Order" WHERE id = ANY($1::int[]) AND "storeId" = $2 ORDER BY "createdAt" DESC LIMIT 1`, [written, storeId]).catch(() => []);
+    if (rows[0]) return { orderId: rows[0].id, via: "ORDER_ID" };
+  }
+  const explicit = message.idType === "ORDER" || (message.idType != null && message.idType !== "CONTEXT");
+  if (message.orderIds.length && explicit) return { orderId: message.orderIds[0], via: "ORDER_ID" };
   const refs = [...new Set([...message.refIds, ...(message.text.match(REF_RE) ?? [])].map((r) => r.toUpperCase()))].filter((r) => /\d/.test(r));
   if (refs.length) {
     const rows = await labstackWorkerQuery<{ id: number }>(`SELECT id FROM public."Order" WHERE upper("labOrderId") = ANY($1::text[]) AND "storeId" = $2 ORDER BY "createdAt" DESC LIMIT 1`, [refs, storeId]).catch(() => []);
@@ -96,7 +118,7 @@ export async function runStoreReader(now = new Date()): Promise<StoreReaderResul
       if (word && ["status", "report", "slot", "reschedule", "cancel", "change_tests", "new_booking", "serviceability", "complaint", "noise", "other"].includes(word)) { intent = word as StoreIntent; sure = true; }
     }
     if (intent === "noise") continue;
-    const link = await linkOrder({ orderIds: m.orderIds, refIds: m.refIds, text, replyToWaId: m.replyToWaId, groupId: m.groupId }, g.storeId!, now);
+    const link = await linkOrder({ orderIds: m.orderIds, idType: m.idType ?? null, refIds: m.refIds, text, replyToWaId: m.replyToWaId, groupId: m.groupId }, g.storeId!, now);
     await prisma.waMessage.update({ where: { id: m.id }, data: { intent: `STORE_${intent.toUpperCase()}` } }).catch(() => undefined);
     if (!link) {
       // Ask once for the order id (FR-9.2), only for questions that need one.

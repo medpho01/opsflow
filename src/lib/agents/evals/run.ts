@@ -10,7 +10,7 @@
  */
 import prisma from "@/lib/db/client";
 import { extractWithPatterns } from "@/lib/provider-rules/reply-extract";
-import { classifyStoreMessage } from "../store/reader";
+import { classifyStoreMessage, explicitOrderIds } from "../store/reader";
 
 export const GATES: Record<string, number> = { lab_reply_reader: 0.97, store_intent: 0.9, store_linker: 0.95, lab_status_write: 0.98 };
 
@@ -36,7 +36,8 @@ function judge(suite: string, c: Case): Verdict {
       return { pass: got === want || (want === "other" && got === "noise"), got, want };
     }
     case "store_linker": {
-      const got = (c.input.orderIds as number[] | undefined)?.[0] ?? null;
+      // From the text alone — the gateway's own tag is not the thing under test.
+      const got = explicitOrderIds(String(c.input.text ?? ""))[0] ?? null;
       const want = c.expected.orderId as number | null;
       return { pass: got === want, got, want };
     }
@@ -93,7 +94,7 @@ export async function seedFromHistory(): Promise<Record<string, number>> {
     out[s.suite] = (out[s.suite] ?? 0) + 1;
   }
   // Store messages the gateway already classified with a validated order: linker cases.
-  const linked = await prisma.waMessage.findMany({ where: { direction: "IN", orderIds: { isEmpty: false }, idType: { not: null } }, orderBy: { ts: "desc" }, take: 200, select: { text: true, orderIds: true, refIds: true, intent: true } });
+  const linked = await prisma.waMessage.findMany({ where: { direction: "IN", orderIds: { isEmpty: false }, idType: "ORDER" }, orderBy: { ts: "desc" }, take: 200, select: { text: true, orderIds: true, refIds: true, intent: true } });
   for (const m of linked) {
     const input = { text: m.text.slice(0, 300), orderIds: m.orderIds, refIds: m.refIds };
     const exists = await prisma.agentEvalCase.findFirst({ where: { suite: "store_linker", input: { equals: input } } });

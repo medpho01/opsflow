@@ -487,7 +487,23 @@ export function step(input: StepInput): StepOutput {
     const holding = answeredAt != null && now.getTime() - answeredAt < sop.answerHoldMin * MIN && next.dueSource !== "RESET";
     // No portal session: there is nothing to read, so the ask goes straight to the group.
     const ladder = input.portalReady ? sop.ladder : sop.ladder.filter((r) => r !== "portal_read");
-    if (from === "LAB" && ask && started && gapOk && !holding) {
+    // A pre-visit checkpoint still open two hours after the visit is not a chase
+    // any more ("phlebo on time?" for a visit five days past went out on 24 Oct
+    // 2026): the visit happened or it did not, and LabStack does not say — one
+    // task for a person, then the journey waits for the console.
+    const preVisit = checkpointDefs(order.orderType).find((d) => d.name === next.name)?.preCollection === true;
+    const visitLongPast = preVisit && minutesToSlot != null && minutesToSlot < -120;
+    if (visitLongPast && from === "LAB" && a.n < 99) {
+      rungLabel = "task";
+      actions.push({ desk: "LAB", action: "create_task", params: {
+        checkpoint: next.name, orderId: order.id, labId: order.labId, attempt: 1, dueAt: due, rung: "task",
+        taskType: STUCK_TASK[next.name] ?? "AGENT_COLLECTION_STUCK", cause: "VISIT_PASSED_NO_UPDATE",
+        evidence: [{ kind: "console", at: now.toISOString(), text: `visit ${Math.round(-minutesToSlot / 60)} h ago; the console still shows ${order.orderStatus}` }],
+        action: `Check #${order.id} with ${order.labName ?? "the lab"}: the visit was ${Math.round(-minutesToSlot / 60)} h ago and LabStack still shows ${order.orderStatus.toLowerCase().replace(/_/g, " ")}`,
+      }, reason: `${LABELS[next.name]} still open ${Math.round(-minutesToSlot / 60)} h after the visit; the console shows ${order.orderStatus}`, idemKey: `visit-passed:${order.id}:${next.name}` });
+      attempts[next.name] = { ...a, n: 99, at: now.toISOString() };
+      journey = { ...journey, attempts };
+    } else if (from === "LAB" && ask && started && gapOk && !holding) {
       let rungIndex = a.n;
       if (brokenPromises >= sop.brokenPromisesSkip && rungIndex > 0 && rungIndex < ladder.length - 1) rungIndex += 1;
       const rung = ladder[Math.min(rungIndex, ladder.length - 1)];

@@ -95,6 +95,14 @@ describe("the ladder", () => {
     assert.equal(r.checkpoints.find((c) => c.name === "confirmed")?.status, "WAIVED");
     assert.ok(!r.actions.some((a) => a.params.checkpoint === "confirmed"));
   });
+  it("a pre-visit checkpoint still open long after the visit becomes one task, never a chase", () => {
+    const o = order({ appointmentTime: at("2026-10-19T02:30:00Z"), orderStatus: "ORDER_SCHEDULED" });
+    const r1 = wake(o, at("2026-10-24T13:45:00Z"));
+    assert.deepEqual(acts(r1), ["create_task"]);
+    assert.equal(r1.actions[0].params.cause, "VISIT_PASSED_NO_UPDATE");
+    const r2 = wake(o, at("2026-10-24T15:45:00Z"), r1);
+    assert.deepEqual(acts(r2), []);
+  });
   it("a visit within 90 min makes the ask urgent", () => {
     const o = order();
     const r = wake(o, at("2026-10-21T01:00:00Z"));

@@ -15,7 +15,8 @@ import { itemLine } from "@/lib/provider-rules/batching";
 import { TIME_ZONE } from "@/lib/provider-rules/format";
 import { fetchOrderContactDetails } from "@/lib/non-api-labs/order-details";
 import { BATCH_GENERIC_TEMPLATE, BATCH_TEMPLATE_BY_INTENT, ensureTemplate, renderLabTemplate } from "@/lib/non-api-labs/templates";
-import type { OutboxLine } from "@/lib/agents/executors/dispatcher";
+import { partitionQueued, type OutboxLine } from "@/lib/agents/executors/dispatcher";
+import { loadDirectory, tierOf } from "@/lib/agents/directory";
 
 async function main() {
   const now = new Date();
@@ -24,9 +25,13 @@ async function main() {
   const groups = new Map<string, typeof items>();
   for (const i of items) { const k = `${i.counterparty}|${i.ask}`; groups.set(k, [...(groups.get(k) ?? []), i]); }
   console.log(`${items.length} queued item(s) in ${groups.size} message(s):\n`);
-  for (const [key, list] of groups) {
+  const directory = await loadDirectory();
+  for (const [key, queued] of groups) {
     const [counterparty, ask] = key.split("|");
     const labId = Number(counterparty.split(":")[1]);
+    const { fresh: list, stale } = partitionQueued(queued, ask, now, counterparty.startsWith("LAB:") ? tierOf(directory, labId) : null);
+    if (stale.length) console.log(`── ${counterparty} · ${ask}: ${stale.length} item(s) will be dropped as stale or duplicate`);
+    if (!list.length) { console.log(); continue; }
     const config = await prisma.nonApiLabConfig.findUnique({ where: { labId } });
     const details = await fetchOrderContactDetails(list.map((i) => i.orderId)).catch(() => null);
     const lines = list.map((i, index) => {
@@ -44,7 +49,7 @@ async function main() {
       count: String(list.length), orders_word: list.length === 1 ? "order" : "orders", items: lines.join("\n"), batch_title: ask.toLowerCase().replace("_", " "),
     });
     const windowFrom = list.map((i) => i.windowFrom).sort((a, b) => a.getTime() - b.getTime())[0];
-    console.log(`── ${counterparty} (${config?.labName ?? "?"}) · ${ask} · ${list.length} item(s) · earliest window ${windowFrom.toLocaleString("en-IN", { timeZone: TIME_ZONE() })}${list.some((i) => i.urgent) ? " · URGENT" : ""}`);
+    console.log(`── ${counterparty} (${config?.labName ?? "not connected"}) · ${ask} · ${list.length} item(s) (first 10 go now) · earliest window ${windowFrom.toLocaleString("en-IN", { timeZone: TIME_ZONE() })}${list.some((i) => i.urgent) ? " · URGENT" : ""}`);
     console.log(text.split("\n").map((l) => `   ${l}`).join("\n"));
     console.log();
   }

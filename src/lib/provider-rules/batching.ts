@@ -344,7 +344,7 @@ export function itemLine(intent: string, item: ItemLineData, now: Date, timeZone
     case "PHLEBO": return `${head} · ${when}`;
     case "ETA": return `${head} · ${when}${item.phlebo ? ` · ${item.phlebo}` : ""}`;
     case "UNCONFIRMED": return `${head} · ${when}${link}`;
-    case "ESCALATION": return `${head} · ${when} · waiting ${ago(item.createdAt, now)}${link}`;
+    case "ESCALATION": return `${head} · ${when}${item.createdAt ? ` · waiting ${ago(item.createdAt, now)}` : ""}${link}`;
     case "REPORT": return `${head} · visit ${when} (${ago(item.appointment, now)} ago)`;
     case "OVERDUE": return `${head} · ${item.milestone ?? "update"} ${ago(item.dueAt, now)} late`;
     default: return `${head} · ${when}`;

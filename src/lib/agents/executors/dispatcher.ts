@@ -20,6 +20,7 @@ import { currentSlot, itemLine } from "@/lib/provider-rules/batching";
 import { formatTime, TIME_ZONE } from "@/lib/provider-rules/format";
 import { confirmationUrl } from "@/lib/non-api-labs/confirmation-link";
 import { fetchOrderContactDetails } from "@/lib/non-api-labs/order-details";
+import { labstackWorkerQuery } from "@/lib/db/labstack";
 import { actionPageUrl } from "./actionPage";
 import { loadDirectory, tierOf } from "../directory";
 
@@ -126,7 +127,29 @@ export async function flushOutbox(now = new Date(), opts: { urgentOnly?: boolean
   return result;
 }
 
-async function flushGroup(key: string, group: Item[], now: Date): Promise<{ messages: number; items: number; held: number }> {
+/**
+ * What in a queued group is still worth sending. Dropped: a pre-visit ask after
+ * the visit, a report chase older than a week, "running late" to an API lab
+ * (sample-at-lab is the API's to report), and a second item for the same order.
+ * Shared with scripts/agents-preview-outbox.ts so the preview shows what will go.
+ */
+export function partitionQueued<T extends { orderId: number; payload: unknown }>(group: T[], ask: string, now: Date, tier: string | null): { fresh: T[]; stale: T[] } {
+  const PRE_VISIT = new Set(["UNCONFIRMED", "PHLEBO", "ETA", "ESCALATION"]);
+  const stale: T[] = []; const seen = new Set<number>(); const fresh: T[] = [];
+  for (const i of group) {
+    const line = (i.payload as { line?: { appointment?: string | null } }).line ?? {};
+    const appt = line.appointment ? new Date(line.appointment).getTime() : null;
+    const pastVisit = appt != null && appt < now.getTime() - 2 * 3_600_000;
+    const oldReport = ask === "REPORT" && appt != null && appt < now.getTime() - 7 * 86_400_000;
+    const apiOverdue = ask === "OVERDUE" && tier != null && tier !== "C";
+    if ((PRE_VISIT.has(ask) && pastVisit) || oldReport || apiOverdue || seen.has(i.orderId)) { stale.push(i); continue; }
+    seen.add(i.orderId); fresh.push(i);
+  }
+  return { fresh, stale };
+}
+
+async function flushGroup(key: string, queued: Item[], now: Date): Promise<{ messages: number; items: number; held: number }> {
+  let group = queued;
   const [counterparty, ask] = key.split("|");
   const [kind, idText] = counterparty.split(":");
   const id = Number(idText);
@@ -134,8 +157,25 @@ async function flushGroup(key: string, group: Item[], now: Date): Promise<{ mess
 
   if (kind === "STORE") return flushStore(id, group, now);
 
+  // Never send what no longer makes sense (seen queued on 24 Oct 2026: "phlebo
+  // on time?" for a visit a week ago, "please confirm" for a past visit, report
+  // chases 14 days old): a pre-visit ask after the visit, a report chase older
+  // than a week, and a second rung for an order already in this message.
+  const { fresh, stale } = partitionQueued(group, ask, now, kind === "LAB" ? tierOf(await loadDirectory(), id) : null);
+  if (stale.length) {
+    await prisma.agentOutboxItem.updateMany({ where: { id: { in: stale.map((i) => i.id) } }, data: { status: "DROPPED" } });
+    console.log(`[Agents] ${counterparty} ${ask}: dropped ${stale.length} stale or duplicate item(s)`);
+  }
+  group = fresh;
+  if (!group.length) return { messages: 0, items: 0, held: 0 };
+
   const config = await prisma.nonApiLabConfig.findUnique({ where: { labId: id } });
-  if (!config) throw new Error(`lab ${id} has no config`);
+  if (!config) {
+    // Not connected: nothing to send to. Dropped, not failed — Connect the lab on Connections.
+    await prisma.agentOutboxItem.updateMany({ where: { id: { in: group.map((i) => i.id) } }, data: { status: "DROPPED" } });
+    console.warn(`[Agents] lab ${id} is not connected (no group); ${group.length} item(s) dropped`);
+    return { messages: 0, items: 0, held: 0 };
+  }
   const toManager = kind === "MANAGER";
   if (toManager && !config.managerWhatsapp) {
     await prisma.agentOutboxItem.updateMany({ where: { id: { in: group.map((i) => i.id) } }, data: { status: "DROPPED" } });
@@ -159,6 +199,14 @@ async function flushGroup(key: string, group: Item[], now: Date): Promise<{ mess
     // What a lab needs to find the order — its reference, the phone, the place — read
     // now rather than trusted from the queued payload, so every line carries them.
     const details = await fetchOrderContactDetails(list.map((i) => i.orderId)).catch(() => null);
+    // Which checkpoint is late and since when, for items queued before the line carried it.
+    const late = new Map<number, { milestone: string; dueAt: Date }>();
+    if (ask === "OVERDUE" || ask === "STATUS") {
+      const cps = await prisma.agentCheckpoint.findMany({ where: { journey: { orderId: { in: list.map((i) => i.orderId) } }, status: "BREACHED" }, select: { name: true, dueAt: true, journey: { select: { orderId: true } } }, orderBy: { dueAt: "asc" } });
+      const { LABELS } = await import("../journey/step");
+      for (const c of cps) if (!late.has(c.journey.orderId)) late.set(c.journey.orderId, { milestone: LABELS[c.name as keyof typeof LABELS] ?? c.name, dueAt: c.dueAt });
+    }
+    const createdAts = ask === "ESCALATION" ? new Map((await labstackWorkerQuery<{ id: number; createdAt: Date }>(`SELECT id, "createdAt" FROM public."Order" WHERE id = ANY($1::int[])`, [list.map((i) => i.orderId)]).catch(() => [])).map((r) => [r.id, r.createdAt])) : new Map<number, Date>();
     const lines = await Promise.all(list.map(async (i, index) => {
       const p = (i.payload as { line: OutboxLine & { appointment: string | null } }).line;
       const d = details?.get(i.orderId);
@@ -167,7 +215,7 @@ async function flushGroup(key: string, group: Item[], now: Date): Promise<{ mess
       return itemLine(ask, {
         n: index + 1, orderId: i.orderId, patientName: p.patientName, appointment: p.appointment ? new Date(p.appointment) : null,
         area: p.area ?? d?.area ?? null, phlebo: p.phlebo ?? null, labRef: p.labRef ?? d?.labRef ?? null, mobile: p.mobile ?? d?.patientMobile ?? null,
-        milestone: p.milestone ?? null, dueAt: p.dueAt ? new Date(p.dueAt) : undefined, confirmUrl: link ?? (needsLink ? await confirmationUrl(i.orderId).catch(() => null) : null),
+        milestone: p.milestone ?? late.get(i.orderId)?.milestone ?? null, dueAt: p.dueAt ? new Date(p.dueAt) : late.get(i.orderId)?.dueAt, createdAt: createdAts.get(i.orderId), confirmUrl: link ?? (needsLink ? await confirmationUrl(i.orderId).catch(() => null) : null),
       }, now, tz);
     }));
     const followUp = toManager ? null : await findFollowUp(id, ask, list.map((i) => i.orderId), now);
@@ -213,7 +261,8 @@ async function flushGroup(key: string, group: Item[], now: Date): Promise<{ mess
   if (routine.length) {
     if (!toManager && (sentToday >= PER_DAY_CAP || sentThisSlot >= PER_SLOT_CAP)) { held += routine.length; }
     else {
-      const take = routine.slice(0, 50);
+      // Short lists get answered (CHAT-REVIEW-OCT-2026): ten per message, the rest next slot.
+      const take = routine.slice(0, 10);
       await sendItems(take, false);
       held += routine.length - take.length;
     }

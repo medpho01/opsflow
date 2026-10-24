@@ -145,7 +145,7 @@ export function classifyChange(before: OrderSnapshot | null, after: OrderSnapsho
 // ── Checkpoints ───────────────────────────────────────────────────────────
 
 /** Checkpoints an API lab is never asked about: the order reaches it through the API, so "confirm" is not theirs to answer (23 Oct 2026). */
-const NOT_FOR_API_LABS = new Set(["confirmed", "visit_confirmed"]);
+const NOT_FOR_API_LABS = new Set(["confirmed", "visit_confirmed", "sample_at_lab", "samples_received"]);
 
 function buildCheckpoints(order: OrderSnapshot, existing: CheckpointState[], now: Date, opts: { recomputePreCollection: boolean; rebuildAll: boolean; labTier?: LabTier | null }): CheckpointState[] {
   const offsets = offsetsFor(order.labId);

@@ -1,12 +1,11 @@
 /**
  * Tasks for people (FR-10): an ordinary OpsFlow Task with an agent task type
  * and a typed payload — the order, what happened (evidence), the exact action,
- * a console link, a due time, and how the agent verifies it landed. Assigned
- * by the existing skills, stores and roster strategies.
+ * a console link, a due time, and how the agent verifies it landed. Never
+ * assigned to an individual: it goes to the shared queue.
  */
 import { Prisma, TaskPriority, TaskStatus } from "@prisma/client";
 import prisma from "@/lib/db/client";
-import { assignTaskWithFallback } from "@/lib/task-creation/assignment-service";
 
 export const AGENT_RULE_ID = "AGENT";
 
@@ -95,19 +94,8 @@ export async function createAgentTask(input: CreateAgentTaskInput): Promise<{ ta
     },
     select: { id: true },
   });
-  // Assignment by the existing strategies; a failure leaves the task unassigned in the queue.
-  try {
-    const result = await assignTaskWithFallback({
-      sourceId: "orders", strategyName: "skill_based", storeId: input.storeId ?? undefined,
-      requiredSkills: def.skill ? [def.skill] : undefined, taskDate: new Date(), enforceRosterValidation: true,
-      entity: { id: input.orderId, type: input.orderType, status: "OPEN", metadata: { orderId: input.orderId, storeId: input.storeId, agentTask: input.type }, createdAt: new Date(), modifiedAt: new Date() },
-    });
-    if (result.success && result.assignedToId) {
-      await prisma.task.update({ where: { id: task.id }, data: { assignedToId: result.assignedToId, teamMemberId: result.teamMemberId ?? null, assignedAt: new Date(), status: TaskStatus.ASSIGNED, assignmentMethod: "auto", assignmentRuleId: AGENT_RULE_ID } });
-    }
-  } catch (error) {
-    console.warn(`[Agents] task ${task.id} left unassigned:`, error instanceof Error ? error.message : error);
-  }
+  // Never assigned to a person: agent tasks sit in the shared queue and whoever is on it picks
+  // them up (decided 24 Oct 2026).
   return { taskId: task.id, created: true };
 }
 

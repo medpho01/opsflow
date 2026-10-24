@@ -69,7 +69,7 @@ Rollback: `docker compose stop worker` stops every agent loop; the app and the l
 | Journeys, checkpoints, clock resets, promises, ladder, risk, send windows, dispatcher, caps | Real; unit-tested. |
 | Lab reply reading → facts → journey | Real (existing reader + bridge). |
 | Store desk: classify, link, answer, chase, change-request tasks, alerts, warnings | Real; store groups must be `SUPPORT` with `storeId` set in Connections. |
-| Tasks with evidence, verify loop, reopen | Real. |
+| Tasks with evidence, verify loop, reopen | Real. Never assigned to an individual — they sit in the shared queue for whoever is on it. |
 | Status writes | Through the console API when `CONSOLE_API_BASE/KEY` exist; **until then a one-click task** with the exact status and note. The API contract is in DESIGN.md §10. |
 | Lab action page (accept, phlebo started, collected with photo, handed to lab, report shared, patient unreachable) | Real; needs `APP_BASE_URL` and the confirmation key. Photos kept under `AGENT_PROOF_DIR`. |
 | Portal reads | Real framework (vault, sessions, health, reads → facts). **Each portal's selectors must be confirmed on the real portal** at setup (Controls › Portals, adapter preset + login URL); OTP logins fall back to a sign-in task. |

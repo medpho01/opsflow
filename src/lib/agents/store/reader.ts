@@ -58,23 +58,31 @@ export function explicitOrderIds(text: string): number[] {
  * (Plum, 24 Oct 2026). Only an id the store wrote, a quoted message's order, or
  * the one order we asked them about counts.
  */
-async function linkOrder(message: { orderIds: number[]; idType: string | null; refIds: string[]; text: string; replyToWaId: string | null; groupId: string }, storeId: number, now: Date): Promise<{ orderId: number; via: string } | null> {
+async function linkOrder(message: { orderIds: number[]; idType: string | null; idVia: string | null; refIds: string[]; text: string; replyToWaId: string | null; groupId: string }, storeId: number, now: Date): Promise<{ orderId: number; via: string } | null> {
   // An id the store wrote, checked against LabStack and this store.
   const written = explicitOrderIds(message.text);
   if (written.length) {
     const rows = await labstackWorkerQuery<{ id: number }>(`SELECT id FROM public."Order" WHERE id = ANY($1::int[]) AND "storeId" = $2 ORDER BY "createdAt" DESC LIMIT 1`, [written, storeId]).catch(() => []);
     if (rows[0]) return { orderId: rows[0].id, via: "ORDER_ID" };
   }
-  const explicit = message.idType === "ORDER" || (message.idType != null && message.idType !== "CONTEXT");
-  if (message.orderIds.length && explicit) return { orderId: message.orderIds[0], via: "ORDER_ID" };
+  // The gateway's tag, only when it came straight from a number in this message
+  // ("order 93312"). Tags inherited through a reply chain have been seen to
+  // disagree with their own explanation ("reply · order 93709" tagged 90381).
+  const direct = message.idType === "ORDER" && /^order \d+/i.test(message.idVia ?? "");
+  if (message.orderIds.length && direct) return { orderId: message.orderIds[0], via: "ORDER_ID" };
   const refs = [...new Set([...message.refIds, ...(message.text.match(REF_RE) ?? [])].map((r) => r.toUpperCase()))].filter((r) => /\d/.test(r));
   if (refs.length) {
     const rows = await labstackWorkerQuery<{ id: number }>(`SELECT id FROM public."Order" WHERE upper("labOrderId") = ANY($1::text[]) AND "storeId" = $2 ORDER BY "createdAt" DESC LIMIT 1`, [refs, storeId]).catch(() => []);
     if (rows[0]) return { orderId: rows[0].id, via: "LAB_REF" };
   }
   if (message.replyToWaId) {
-    const quoted = await prisma.waMessage.findUnique({ where: { waMsgId: message.replyToWaId }, select: { orderIds: true } });
-    if (quoted?.orderIds.length) return { orderId: quoted.orderIds[0], via: "QUOTED" };
+    // A quoted store message: the id the store wrote in it, not its tag.
+    const quoted = await prisma.waMessage.findUnique({ where: { waMsgId: message.replyToWaId }, select: { text: true } });
+    const quotedIds = quoted ? explicitOrderIds(quoted.text) : [];
+    if (quotedIds.length) {
+      const rows = await labstackWorkerQuery<{ id: number }>(`SELECT id FROM public."Order" WHERE id = ANY($1::int[]) AND "storeId" = $2 ORDER BY "createdAt" DESC LIMIT 1`, [quotedIds, storeId]).catch(() => []);
+      if (rows[0]) return { orderId: rows[0].id, via: "QUOTED" };
+    }
     const ours = await prisma.waOutbound.findFirst({ where: { sentWaMsgId: message.replyToWaId }, select: { id: true } });
     if (ours) {
       const item = await prisma.agentOutboxItem.findFirst({ where: { outboundId: ours.id }, select: { orderId: true } });
@@ -118,7 +126,7 @@ export async function runStoreReader(now = new Date()): Promise<StoreReaderResul
       if (word && ["status", "report", "slot", "reschedule", "cancel", "change_tests", "new_booking", "serviceability", "complaint", "noise", "other"].includes(word)) { intent = word as StoreIntent; sure = true; }
     }
     if (intent === "noise") continue;
-    const link = await linkOrder({ orderIds: m.orderIds, idType: m.idType ?? null, refIds: m.refIds, text, replyToWaId: m.replyToWaId, groupId: m.groupId }, g.storeId!, now);
+    const link = await linkOrder({ orderIds: m.orderIds, idType: m.idType ?? null, idVia: m.idVia ?? null, refIds: m.refIds, text, replyToWaId: m.replyToWaId, groupId: m.groupId }, g.storeId!, now);
     await prisma.waMessage.update({ where: { id: m.id }, data: { intent: `STORE_${intent.toUpperCase()}` } }).catch(() => undefined);
     if (!link) {
       // Ask once for the order id (FR-9.2), only for questions that need one.

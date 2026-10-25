@@ -83,11 +83,14 @@ describe("the ladder", () => {
     assert.equal(r6.actions.length, 0, "ladder exhausted");
   });
   it("API labs read the portal first — when a portal session is set up; otherwise they are asked in the group", () => {
-    const o = order({ labId: 4 });
-    const r1 = step({ now: at("2026-10-21T01:40:00Z"), order: o, journey: null, checkpoints: [], events: [], sop: SOP_A, labTier: "A", portalReady: true, timeZone: IST });
+    const o = order({ labId: 4, appointmentTime: at("2026-10-21T04:00:00Z") }); // 9:30 am IST; Orange assigns at slot − 30, so due 9:00
+    const r1 = step({ now: at("2026-10-21T03:35:00Z"), order: o, journey: null, checkpoints: [], events: [], sop: SOP_A, labTier: "A", portalReady: true, timeZone: IST });
     assert.deepEqual(acts(r1), ["portal_read"]);
-    const r2 = step({ now: at("2026-10-21T01:40:00Z"), order: o, journey: null, checkpoints: [], events: [], sop: SOP_A, labTier: "A", timeZone: IST });
+    const r2 = step({ now: at("2026-10-21T03:35:00Z"), order: o, journey: null, checkpoints: [], events: [], sop: SOP_A, labTier: "A", timeZone: IST });
     assert.deepEqual(acts(r2), ["ask"]);
+    // Ten minutes before the visit an API lab is not asked for a phlebo: LabStack has not caught up.
+    const r3 = step({ now: at("2026-10-21T03:50:00Z"), order: o, journey: null, checkpoints: [], events: [], sop: SOP_A, labTier: "A", timeZone: IST });
+    assert.deepEqual(acts(r3), []);
   });
   it("an API lab is never asked to confirm: the order is already in its system", () => {
     const o = order({ labId: 4, orderStatus: "PENDING" });
@@ -242,12 +245,16 @@ describe("people", () => {
 
 describe("send windows (§4.15)", () => {
   const ask = SOP_C.asks.phlebo_assigned;
-  it("a slot-tied ask opens at due − lead and never in the night floor unless urgent", () => {
-    const due = at("2026-10-20T23:00:00Z"); // 4:30 am IST
+  it("an ask for an early visit goes the evening before, else at 07:00 — never in the night, urgent or not", () => {
+    const due = at("2026-10-20T23:00:00Z"); // 4:30 am IST on 21 Oct
+    // Known the afternoon before: asked at 20:00 the evening before.
+    const e = sendWindow(at("2026-10-20T10:00:00Z"), due, SOP_C, ask, true, false, IST);
+    assert.equal(e.from.toISOString(), "2026-10-20T14:30:00.000Z"); // 20:00 IST, 20 Oct
+    // Known only at 01:30 IST: waits for 07:00 (the visit at 04:30 is then past; the step turns it into a task).
     const w = sendWindow(at("2026-10-20T20:00:00Z"), due, SOP_C, ask, true, false, IST);
-    assert.equal(w.from.toISOString(), "2026-10-20T23:30:00.000Z"); // 05:00 IST floor
+    assert.equal(w.from.toISOString(), "2026-10-21T01:30:00.000Z"); // 07:00 IST
     const u = sendWindow(at("2026-10-20T22:50:00Z"), due, SOP_C, ask, true, true, IST);
-    assert.equal(u.from.toISOString(), "2026-10-20T22:50:00.000Z");
+    assert.equal(u.from.toISOString(), "2026-10-21T01:30:00.000Z"); // urgent at 04:20 IST still waits for 07:00
   });
   it("an ask not tied to a slot waits for working hours", () => {
     const w = sendWindow(at("2026-10-20T16:00:00Z"), at("2026-10-20T16:00:00Z"), SOP_C, SOP_C.asks.report_delivered, false, false, IST); // 21:30 IST

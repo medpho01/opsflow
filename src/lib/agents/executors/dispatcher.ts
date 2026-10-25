@@ -16,7 +16,7 @@ import prisma from "@/lib/db/client";
 import { resolveLabTarget, toDirectJid } from "@/lib/non-api-labs/target";
 import { BATCH_FOLLOW_UP_FIRM_TEMPLATE, BATCH_FOLLOW_UP_TEMPLATE, BATCH_GENERIC_TEMPLATE, BATCH_TEMPLATE_BY_INTENT, ensureTemplate, renderLabTemplate } from "@/lib/non-api-labs/templates";
 import { coordinatorsFor } from "@/lib/wa/coordinators";
-import { currentSlot, itemLine } from "@/lib/provider-rules/batching";
+import { currentSlot, isSlotOpen, itemLine, localParts } from "@/lib/provider-rules/batching";
 import { formatTime, TIME_ZONE } from "@/lib/provider-rules/format";
 import { confirmationUrl } from "@/lib/non-api-labs/confirmation-link";
 import { fetchOrderContactDetails } from "@/lib/non-api-labs/order-details";
@@ -106,7 +106,17 @@ export async function flushOutbox(now = new Date(), opts: { urgentOnly?: boolean
     result.dropped += expired.length;
   }
   const open = items.filter((i) => i.windowTo.getTime() >= now.getTime());
-  const ready = open.filter((i) => i.windowFrom.getTime() <= now.getTime());
+  const tz = TIME_ZONE();
+  const { hour } = localParts(now, tz);
+  // Nothing to anyone between 21:00 and 07:00, urgent or not.
+  if (hour < 7 || hour >= 21) { result.held += open.length; return result; }
+  const ready = open.filter((i) => {
+    if (i.windowFrom.getTime() > now.getTime()) return false;
+    if (i.counterparty.startsWith("LAB:") && !i.urgent && !isSlotOpen(i.ask, now, tz)) return false; // routine asks keep the slot rhythm
+    // Urgent asks gather for ten minutes, so a morning's asks go as one message, not one each.
+    if (i.urgent && opts.urgentOnly && now.getTime() - i.windowFrom.getTime() < 10 * 60_000) return false;
+    return true;
+  });
   result.held += open.length - ready.length;
 
   const groups = new Map<string, Item[]>();
@@ -114,14 +124,22 @@ export async function flushOutbox(now = new Date(), opts: { urgentOnly?: boolean
     const key = `${i.counterparty}|${i.ask}`;
     groups.set(key, [...(groups.get(key) ?? []), i]);
   }
-  for (const [key, group] of groups) {
+  for (const [key, queued] of groups) {
+    // Claim before sending: the every-minute urgent flush and the :00/:30 flush must not both send a group.
+    const claimed = await prisma.agentOutboxItem.updateMany({ where: { id: { in: queued.map((i) => i.id) }, status: "QUEUED" }, data: { status: "SENDING" } });
+    if (claimed.count === 0) continue;
+    const group: Item[] = claimed.count === queued.length ? queued : await prisma.agentOutboxItem.findMany({
+      where: { id: { in: queued.map((i) => i.id) }, status: "SENDING" },
+      select: { id: true, counterparty: true, ask: true, orderId: true, journeyId: true, actionId: true, windowFrom: true, windowTo: true, urgent: true, payload: true, idemKey: true },
+    });
     try {
       const sent = await flushGroup(key, group, now);
+      await prisma.agentOutboxItem.updateMany({ where: { id: { in: group.map((i) => i.id) }, status: "SENDING" }, data: { status: "QUEUED" } }); // whatever was held stays queued
       result.messages += sent.messages; result.items += sent.items; result.held += sent.held;
     } catch (error) {
       result.errors += 1;
       console.error(`[Agents] flush ${key} failed:`, error instanceof Error ? error.message : error);
-      await prisma.agentOutboxItem.updateMany({ where: { id: { in: group.map((i) => i.id) } }, data: { status: "FAILED" } });
+      await prisma.agentOutboxItem.updateMany({ where: { id: { in: group.map((i) => i.id) }, status: "SENDING" }, data: { status: "FAILED" } });
     }
   }
   return result;
@@ -219,6 +237,9 @@ async function flushGroup(key: string, queued: Item[], now: Date): Promise<{ mes
       }, now, tz);
     }));
     const followUp = toManager ? null : await findFollowUp(id, ask, list.map((i) => i.orderId), now);
+    // A follow-up ("still open", "reminder") never within an hour of the last message on
+    // that root: Thyrocare got four in 30 minutes on 24 Oct 2026. The items stay queued.
+    if (followUp && now.getTime() - followUp.lastAt.getTime() < 60 * 60_000) { held += list.length; return; }
     const people = toManager ? [] : await coordinatorsFor(config, now);
     const mention = { text: people.map((c) => `@${c.jid.split("@")[0]}`).join(" ") || "Team", jids: people.map((c) => c.jid) };
     let text: string;
@@ -288,7 +309,7 @@ async function flushStore(storeId: number, group: Item[], now: Date) {
   return { messages, items: messages, held: 0 };
 }
 
-type FollowUp = { rootId: string; quotedWaId: string; attempt: number; since: Date; items: Array<{ n: number; orderId: number; line: string }> };
+type FollowUp = { rootId: string; quotedWaId: string; attempt: number; since: Date; lastAt: Date; items: Array<{ n: number; orderId: number; line: string }> };
 
 /** The combined message these orders were all in within 24 h, so the next ask quotes it and keeps its numbers (B4). */
 async function findFollowUp(labId: number, intent: string, orderIds: number[], now: Date): Promise<FollowUp | null> {
@@ -306,7 +327,8 @@ async function findFollowUp(labId: number, intent: string, orderIds: number[], n
     const outbound = await prisma.waOutbound.findUnique({ where: { id: root.outboundId }, select: { sentWaMsgId: true } });
     if (!outbound?.sentWaMsgId) continue;
     const attempts = await prisma.providerBatch.count({ where: { OR: [{ id: rootId }, { followUpOf: rootId }] } });
-    return { rootId, quotedWaId: outbound.sentWaMsgId, attempt: attempts, since: root.createdAt, items: root.items as FollowUp["items"] };
+    const last = await prisma.providerBatch.findFirst({ where: { OR: [{ id: rootId }, { followUpOf: rootId }] }, orderBy: { createdAt: "desc" }, select: { createdAt: true } });
+    return { rootId, quotedWaId: outbound.sentWaMsgId, attempt: attempts, since: root.createdAt, lastAt: last?.createdAt ?? root.createdAt, items: root.items as FollowUp["items"] };
   }
   return null;
 }

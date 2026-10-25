@@ -222,9 +222,17 @@ const hm = (s: string) => { const [h, m] = s.split(":").map(Number); return h * 
 export function sendWindow(now: Date, due: Date, sop: SopParams, ask: SopParams["asks"][string], slotTied: boolean, urgent: boolean, timeZone: string): { from: Date; to: Date } {
   let from = new Date(Math.max(now.getTime(), due.getTime() - ask.leadMin * MIN));
   const to = new Date(due.getTime() + ask.graceMin * MIN);
-  // Urgent (visit within the ask's urgent window): at once, alone, whatever the hour (FR-6.5).
-  if (urgent) return { from: now, to: new Date(Math.max(to.getTime(), now.getTime() + 30 * MIN)) };
   const startOfDay = (d: Date) => new Date(d.getTime() - localMinutes(d, timeZone) * MIN);
+  // Urgent (visit within the ask's urgent window): at once, alone — but never at
+  // night. Eight "phlebo needed" messages reached Redcliffe between 03:32 and
+  // 05:32 on 25 Oct 2026. A visit before 08:30 is asked about the evening
+  // before (20:00); otherwise the ask waits for 07:00.
+  if (urgent) {
+    const m = localMinutes(now, timeZone);
+    if (m >= hm("07:00") && m < hm("21:00")) return { from: now, to: new Date(Math.max(to.getTime(), now.getTime() + 30 * MIN)) };
+    const morning = new Date(startOfDay(now).getTime() + (m >= hm("21:00") ? 1440 + hm("07:00") : hm("07:00")) * MIN);
+    return { from: morning, to: new Date(Math.max(to.getTime(), morning.getTime() + 30 * MIN)) };
+  }
   const clip = (start: string, end: string) => {
     const m = localMinutes(from, timeZone);
     const s = hm(start); const e = hm(end);
@@ -232,6 +240,14 @@ export function sendWindow(now: Date, due: Date, sop: SopParams, ask: SopParams[
     else if (m >= e) from = new Date(startOfDay(from).getTime() + (1440 + s) * MIN);
   };
   if (!slotTied) clip(sop.workingHours.start, sop.workingHours.end);
+  // A pre-visit ask whose moment falls in the night, for a visit before 08:30:
+  // the evening before at 20:00 (one message), never between 21:00 and 07:00.
+  const dueLocal = localMinutes(due, timeZone);
+  const fromLocal = localMinutes(from, timeZone);
+  if (dueLocal < hm("08:30") && (fromLocal >= hm("21:00") || fromLocal < hm("07:00"))) {
+    const eveningBefore = new Date(startOfDay(due).getTime() - 1440 * MIN + hm("20:00") * MIN);
+    from = eveningBefore.getTime() >= now.getTime() - 60 * MIN ? new Date(Math.max(eveningBefore.getTime(), now.getTime())) : new Date(startOfDay(due).getTime() + hm("07:00") * MIN);
+  }
   // Night floor: 22:00–05:00 wraps midnight.
   const m = localMinutes(from, timeZone);
   const fs = hm(sop.nightFloor.start); const fe = hm(sop.nightFloor.end);
@@ -492,6 +508,10 @@ export function step(input: StepInput): StepOutput {
     // 2026): the visit happened or it did not, and LabStack does not say — one
     // task for a person, then the journey waits for the console.
     const preVisit = checkpointDefs(order.orderType).find((d) => d.name === next.name)?.preCollection === true;
+    // An API lab asked "phlebo needed?" ten minutes before the visit answers "collection in
+    // progress" (Orange, 25 Oct 2026): LabStack has not caught up. Inside the last quarter
+    // hour it is not worth a message (Orange assigns at slot − 30 min, so −30…−15 is fair).
+    const apiPhleboTooLate = input.labTier != null && input.labTier !== "C" && next.name === "phlebo_assigned" && minutesToSlot != null && minutesToSlot < 15;
     const visitLongPast = preVisit && minutesToSlot != null && minutesToSlot < -120;
     if (visitLongPast && from === "LAB" && a.n < 99) {
       rungLabel = "task";
@@ -503,7 +523,7 @@ export function step(input: StepInput): StepOutput {
       }, reason: `${LABELS[next.name]} still open ${Math.round(-minutesToSlot / 60)} h after the visit; the console shows ${order.orderStatus}`, idemKey: `visit-passed:${order.id}:${next.name}` });
       attempts[next.name] = { ...a, n: 99, at: now.toISOString() };
       journey = { ...journey, attempts };
-    } else if (from === "LAB" && ask && started && gapOk && !holding) {
+    } else if (from === "LAB" && ask && started && gapOk && !holding && !apiPhleboTooLate) {
       let rungIndex = a.n;
       if (brokenPromises >= sop.brokenPromisesSkip && rungIndex > 0 && rungIndex < ladder.length - 1) rungIndex += 1;
       const rung = ladder[Math.min(rungIndex, ladder.length - 1)];

@@ -350,6 +350,20 @@ export function step(input: StepInput): StepOutput {
       const value = String(ev.payload.value ?? "");
       const confidence = Number(ev.payload.confidence ?? 0.6);
       const source = String(ev.payload.source ?? "lab_reply");
+      const context = typeof ev.payload.context === "string" ? ev.payload.context : "";
+      // Under a re-collection ask ("… · urine sample pending — slot for re-collection?"), the lab's
+      // time is a promise for the missed sample, not an ETA or a fresh collection (25 Oct 2026).
+      const recollect = /re-collection/i.test(context) ? (/\b(urine|stool|sputum|swab)\b/i.exec(context)?.[1]?.toLowerCase() ?? "sample") : null;
+      // "the blood has been collected" under that ask is old news, not a fresh collection.
+      if (recollect && kind === "sample_collected" && !parsePromiseTime(String(ev.payload.fullText ?? value), ev.at, tz)) continue;
+      if (recollect && order.storeId != null && ["eta", "new_appointment_time", "note", "sample_collected"].includes(kind)) {
+        const when = parsePromiseTime(value, ev.at, tz) ?? parsePromiseTime(String(ev.payload.fullText ?? ""), ev.at, tz);
+        if (when) {
+          actions.push({ desk: "STORE", action: "store_alert", params: { template: "STORE_LAB_PROMISE", orderId: order.id, storeId: order.storeId, fact: "recollection_promise", detail: `${recollect} re-collection by ${LABELS_TIME(when, tz)}`, at: ev.at.toISOString() }, reason: `lab offers ${recollect} re-collection by ${LABELS_TIME(when, tz)}`, idemKey: `recollect-promise:${order.id}:${when.getTime()}` });
+          newEvents.push({ kind: "promise", at: ev.at, actor: "LAB", payload: { kind: "recollection", checkpoint: "sample_collected", dueAt: when, text: value.slice(0, 200), superseded: false } });
+          continue; // not a fresh "collected", not an ETA
+        }
+      }
       const named = ev.payload.attributedBy !== "ONLY_OPEN";
       factsSeen.push({ kind, value, confidence, source, named, id: (ev.payload.factId as string | null) ?? null, at: ev.at });
       const map = FACT_TO_CHECKPOINT[kind];
@@ -469,7 +483,7 @@ export function step(input: StepInput): StepOutput {
         actions.push({ desk: "LAB", action: "ask", params: { checkpoint: "sample_collected", orderId: order.id, labId: order.labId, attempt: 1, dueAt: now, rung: "ask", intent: "STATUS", counterparty: `LAB:${order.labId}`, windowFrom: window.from, windowTo: window.to, urgent: true, line: { orderId: order.id, patientName: order.patientName, appointment: order.appointmentTime, labRef: order.labRef ?? null, mobile: order.mobile ?? null, area: order.area ?? null, note }, forStore: true }, reason: `store says ${sampleWord ?? "a"} sample was not collected${/slot/i.test(m.text) ? " and asks for slots" : ""}`, idemKey: `${key}:recollect` });
         const collectedLine = collected?.status === "MET" ? `blood collected ${fmt(collected.metAt)}; ` : "";
         const hours = input.slotSummary ? ` ${input.slotSummary}.` : "";
-        actions.push({ desk: "STORE", action: "store_reply", params: { text: `#${order.id}: ${collectedLine}${sampleWord ? `${sampleWord} sample` : "a sample"} pending — asking ${order.labName ?? "the lab"} for a re-collection slot now.${hours} Share a preferred time and we'll book it.`, orderId: order.id, storeId: order.storeId, ...quote }, reason: `store says ${sampleWord ?? "a"} sample was not collected; the lab is being asked`, idemKey: `${key}:recollect-ack` });
+        actions.push({ desk: "STORE", action: "store_reply", params: { text: `#${order.id}: ${collectedLine}${sampleWord ? `${sampleWord} sample` : "a sample"} pending — asking the lab for a re-collection slot now.${hours} Share a preferred time and we'll book it.`, orderId: order.id, storeId: order.storeId, ...quote }, reason: `store says ${sampleWord ?? "a"} sample was not collected; the lab is being asked`, idemKey: `${key}:recollect-ack` });
         continue;
       }
       switch (m.intent) {

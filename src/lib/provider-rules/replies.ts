@@ -257,7 +257,7 @@ async function applyReply(message: ReplyMessage, labId: number, match: Attributi
     for (const [index, fact] of list.entries()) {
       await recordJourneyEvent(match.orderId, {
         kind: "fact", at: message.createdAt, actor: "LAB",
-        payload: { kind: fact.kind, value: fact.value, confidence: fact.confidence, source: "lab_reply", attributedBy: match.via, sender: message.sender, messageId: message.id, factId: `${message.id}:${index}` },
+        payload: { kind: fact.kind, value: fact.value, confidence: fact.confidence, source: "lab_reply", attributedBy: match.via, sender: message.sender, messageId: message.id, factId: `${message.id}:${index}`, context: match.context?.slice(0, 200) ?? null },
       }, index === list.length - 1);
     }
   } catch (error) {

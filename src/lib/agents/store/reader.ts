@@ -32,7 +32,7 @@ export function classifyStoreMessage(text: string): { intent: StoreIntent; sure:
   if (ACK_RE.test(text)) return { intent: "noise", sure: true };
   if (/escalat|frustrat|angry|upset|very bad|worst|unacceptable|disappoint|complain|rude|misbehav|rca|root cause|why (is|so) (much )?delay|again and again/.test(t)) return { intent: "complaint", sure: true };
   if (/(check|confirm|follow ?up) with the lab|make sure|ensure|please follow ?up|kindly follow ?up/.test(t) && !/reschedul|cancel/.test(t)) return { intent: "status", sure: true };
-  if (/reschedul|re-schedul|new slot|change (the )?(slot|time|date)|postpone|prepone|shift (it|the slot)/.test(t)) return { intent: "reschedule", sure: true };
+  if (/reschedul|re-schedul|new slot|change (the )?(slot|time|date)|postpone|prepone|shift (it|the slot)|\b(please |kindly )?(schedule|book|arrange|allot)\b[^.\n]{0,40}\b(at|for)\s*\d{1,2}(:\d{2})?\s*(am|pm)?/.test(t)) return { intent: "reschedule", sure: true };
   if (/(please|pls|kindly|can you|want to|need to).{0,20}cancel|cancel (this|the) (order|request|booking)|cancellation/.test(t)) return { intent: "cancel", sure: true };
   if (/\badd\b.{0,30}\b(test|dengue|h1n1|cbc|hba1c|vitamin|package)|change (the )?package|package should be|remove (the )?test|include .{0,20}test/.test(t)) return { intent: "change_tests", sure: true };
   if (/upload.*report|report.*(upload|pending|ready|share|awaited|missing|not received)|share.*report|tat.*(breach|over|exceed)|reports? not|complete reports?|partial report|missing (in|from) (the )?report/.test(t)) return { intent: "report", sure: true };

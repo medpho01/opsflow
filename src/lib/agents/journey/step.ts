@@ -461,6 +461,16 @@ export function step(input: StepInput): StepOutput {
       const quote = m.waMsgId ? { quotedWaId: m.waMsgId } : {};
       switch (m.intent) {
         case "slot": {
+          // "urine samples not collected, let us know the slots" (Plum, 25 Oct 2026): a sample was left
+          // behind. The lab is asked for a re-collection slot now, naming the sample; its answer comes
+          // back as a promise and is relayed to the store.
+          const left = m.text.match(/\b(urine|stool|sputum|swab|second|remaining|balance)\b[^.\n]{0,40}\b(not|pending|missed|left|skipped)\b|\bnot collected\b/i);
+          if (left && order.labId != null && sop) {
+            const sampleWord = /\b(urine|stool|sputum|swab)\b/i.exec(m.text)?.[1]?.toLowerCase();
+            const note = `${sampleWord ? `${sampleWord} sample` : "a sample"} pending — slot for re-collection?`;
+            const window = sendWindow(now, now, sop, { intent: "STATUS", leadMin: 0, graceMin: 480, urgentWithinMin: 0, nightBefore: false }, true, false, tz);
+            actions.push({ desk: "LAB", action: "ask", params: { checkpoint: "sample_collected", orderId: order.id, labId: order.labId, attempt: 1, dueAt: now, rung: "ask", intent: "STATUS", counterparty: `LAB:${order.labId}`, windowFrom: window.from, windowTo: window.to, urgent: false, line: { orderId: order.id, patientName: order.patientName, appointment: order.appointmentTime, labRef: order.labRef ?? null, mobile: order.mobile ?? null, area: order.area ?? null, note }, forStore: true }, reason: `store says ${sampleWord ?? "a"} sample was not collected and asks for slots`, idemKey: `${key}:recollect` });
+          }
           if (input.slotSummary) {
             actions.push({ desk: "STORE", action: "store_reply", params: { text: `#${order.id}: ${input.slotSummary}. Share a preferred time and we'll book it.`, orderId: order.id, storeId: order.storeId, ...quote }, reason: "store asked for slots; answered from the lab's usual hours", idemKey: `${key}:slots` });
             break;

@@ -106,6 +106,15 @@ describe("the ladder", () => {
     assert.ok(alerts.includes("STORE_COLLECTED")); assert.ok(alerts.includes("STORE_PATIENT_UNREACHABLE"));
     assert.equal(alerts.filter((t) => t === "STORE_PATIENT_UNREACHABLE").length, 1); // the SOP's own hand-off, not twice
   });
+  it("'urine not collected, slots?' asks the lab for a re-collection slot, naming the sample, and answers the store", () => {
+    const o = order({ labRef: "BLR6365554", mobile: "98xxxxxx01", area: "Bengaluru" });
+    const msg = { kind: "store_message", at: at("2026-10-20T10:00:00Z"), actor: "STORE", payload: { intent: "slot", text: "94103 - urine samples not collected\nlet us know the slots available", messageId: "m-re", waMsgId: "w8" } };
+    const r = wake(o, at("2026-10-20T10:01:00Z"), undefined, { events: [msg] as never, slotSummary: "Lab usually collects between 6 am and 11 am" } as never);
+    const ask = r.actions.find((a) => a.action === "ask");
+    assert.equal((ask?.params.line as { note: string }).note, "urine sample pending — slot for re-collection?");
+    assert.equal(ask?.params.intent, "STATUS");
+    assert.ok(r.actions.some((a) => a.action === "store_reply"));
+  });
   it("a store asking for slots gets the lab's usual hours when known", () => {
     const o = order();
     const msg = { kind: "store_message", at: at("2026-10-20T10:00:00Z"), actor: "STORE", payload: { intent: "slot", text: "slots please", messageId: "m-slot", waMsgId: "w9" } };

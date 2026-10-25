@@ -318,6 +318,8 @@ export type ItemLineData = {
   dueAt?: Date;
   /** The lab's own order reference (API labs): what their desk searches by. */
   labRef?: string | null;
+  /** A short specific note on the line ("urine sample pending — slot for re-collection?"). */
+  note?: string | null;
   /** New-order block: the patient's details the lab needs to serve the order. */
   mobile?: string | null;
   address?: string | null;
@@ -368,15 +370,16 @@ export function itemLine(intent: string, item: ItemLineData, now: Date, timeZone
   }
   // Labs find an order by their own reference or the patient's phone, not by our id (Orange, 24 Oct 2026).
   const head = [`${item.n}. ${item.labRef ? `${item.labRef} · ` : ""}#${item.orderId} · ${firstName(item.patientName)}`, item.mobile, item.area].filter(Boolean).join(" · ");
-  const link = item.confirmUrl ? `\n    ${item.confirmUrl}` : "";
+  const link = `${item.note ? ` · ${item.note}` : ""}${item.confirmUrl ? `\n    ${item.confirmUrl}` : ""}`;
   switch (intent) {
-    case "PHLEBO": return `${head} · ${when}`;
-    case "ETA": return `${head} · ${when}${item.phlebo ? ` · ${item.phlebo}` : ""}`;
+    case "PHLEBO": return `${head} · ${when}${link}`;
+    case "ETA": return `${head} · ${when}${item.phlebo ? ` · ${item.phlebo}` : ""}${link}`;
     case "UNCONFIRMED": return `${head} · ${when}${link}`;
     case "ESCALATION": return `${head} · ${when}${item.createdAt ? ` · waiting ${ago(item.createdAt, now)}` : ""}${link}`;
-    case "REPORT": return `${head} · visit ${when} (${ago(item.appointment, now)} ago)`;
-    case "OVERDUE": return `${head} · ${item.milestone ?? "update"} ${ago(item.dueAt, now)} late`;
-    default: return `${head} · ${when}`;
+    case "REPORT": return `${head} · visit ${when} (${ago(item.appointment, now)} ago)${link}`;
+    case "OVERDUE": return `${head} · ${item.milestone ?? "update"} ${ago(item.dueAt, now)} late${link}`;
+    case "STATUS": return `${head} · ${when}${link}`;
+    default: return `${head} · ${when}${link}`;
   }
 }
 

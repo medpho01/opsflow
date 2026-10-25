@@ -27,7 +27,7 @@ import { loadDirectory, tierOf } from "../directory";
 export const PER_SLOT_CAP = Number(process.env.AGENT_BATCH_PER_SLOT_CAP ?? 3);
 export const PER_DAY_CAP = Number(process.env.AGENT_BATCH_PER_DAY_CAP ?? 8);
 
-export type OutboxLine = { n?: number; orderId: number; patientName: string | null; appointment: Date | null; confirmUrl?: string | null; phlebo?: string | null; area?: string | null; labRef?: string | null; mobile?: string | null; milestone?: string | null; dueAt?: Date | string | null };
+export type OutboxLine = { n?: number; orderId: number; patientName: string | null; appointment: Date | null; confirmUrl?: string | null; phlebo?: string | null; area?: string | null; labRef?: string | null; mobile?: string | null; milestone?: string | null; dueAt?: Date | string | null; note?: string | null };
 
 export type EnqueueInput = {
   counterparty: string;          // LAB:<id> | MANAGER:<labId> | STORE:<id>
@@ -234,7 +234,7 @@ async function flushGroup(key: string, queued: Item[], now: Date): Promise<{ mes
       return itemLine(ask, {
         n: index + 1, orderId: i.orderId, patientName: p.patientName, appointment: p.appointment ? new Date(p.appointment) : null,
         area: p.area ?? d?.area ?? null, phlebo: p.phlebo ?? null, labRef: p.labRef ?? d?.labRef ?? null, mobile: p.mobile ?? d?.patientMobile ?? null,
-        milestone: p.milestone ?? late.get(i.orderId)?.milestone ?? null, dueAt: p.dueAt ? new Date(p.dueAt) : late.get(i.orderId)?.dueAt, createdAt: createdAts.get(i.orderId), confirmUrl: link ?? (needsLink ? await confirmationUrl(i.orderId).catch(() => null) : null),
+        note: p.note ?? null, milestone: p.milestone ?? late.get(i.orderId)?.milestone ?? null, dueAt: p.dueAt ? new Date(p.dueAt) : late.get(i.orderId)?.dueAt, createdAt: createdAts.get(i.orderId), confirmUrl: link ?? (needsLink ? await confirmationUrl(i.orderId).catch(() => null) : null),
       }, now, tz);
     }));
     const followUp = toManager ? null : await findFollowUp(id, ask, list.map((i) => i.orderId), now);

@@ -124,6 +124,15 @@ describe("the ladder", () => {
     const note = String((headsUp?.params.line as { note: string } | undefined)?.note);
     assert.ok(note.startsWith("urine re-collection requested at 10:45"), note);
   });
+  it("'urine samples not collected' read as a status question is still a re-collection, never 'sample collected'", () => {
+    const o = order({ orderStatus: "SAMPLE_COLLECTED", labRef: "BLR6366831", appointmentTime: at("2026-10-25T04:45:00Z") });
+    const msg = { kind: "store_message", at: at("2026-10-25T05:00:00Z"), actor: "STORE", payload: { intent: "status", text: "94178 - urine samples not collected\nlet us know the slots available today", messageId: "m-u", waMsgId: "w6" } };
+    const r = wake(o, at("2026-10-25T05:01:00Z"), undefined, { events: [msg] as never });
+    const reply = String(r.actions.find((a) => a.action === "store_reply")?.params.text);
+    assert.ok(reply.includes("urine sample pending"), reply);
+    assert.ok(!/Report expected/.test(reply));
+    assert.ok(r.actions.some((a) => a.action === "ask" && String((a.params.line as { note: string }).note).startsWith("urine sample pending")));
+  });
   it("a store asking for slots gets the lab's usual hours when known", () => {
     const o = order();
     const msg = { kind: "store_message", at: at("2026-10-20T10:00:00Z"), actor: "STORE", payload: { intent: "slot", text: "slots please", messageId: "m-slot", waMsgId: "w9" } };

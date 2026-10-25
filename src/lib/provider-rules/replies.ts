@@ -22,6 +22,7 @@
  * Otherwise the message stays in the WhatsApp console, unattributed.
  */
 import prisma from "@/lib/db/client";
+import { loadTeam, makeTeamMatcher } from "@/lib/wa/team";
 import { asksConfirmation, extractFacts, type Ask } from "./reply-extract";
 import type { FactKind } from "./types";
 import { splitBatchReply } from "./batching";
@@ -127,11 +128,15 @@ export async function runReplyPass(now = new Date()): Promise<ReplyPassResult> {
   });
   if (messages.length === 0) return result;
 
+  const isTeam = makeTeamMatcher(await loadTeam());
   for (const message of messages) {
     result.read += 1;
     const text = (message.text ?? "").trim();
     const labId = labByGroup.get(message.groupId)!;
     if (!text) continue;
+    // Our own team writing in the lab's group is not the lab answering (a relay once echoed
+    // Vijayraj's "urine sample not collected" back to the store, 25 Oct 2026).
+    if (isTeam(message.sender, message.senderJid)) continue;
     try {
       // A reply to a combined message: each numbered part is about its own order.
       const combined = await attributeToBatch(message, labId, text);

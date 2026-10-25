@@ -39,12 +39,12 @@ const fmtSlot = (d: Date | null | undefined) => (d ? d.toLocaleString("en-IN", {
 /** Render the text for a store action from its template and params. */
 export async function renderStoreText(action: ProposedAction, ctx: Pick<ExecuteContext, "orderId" | "labName" | "appointmentTime" | "patientName">): Promise<string> {
   const p = action.params;
-  if (typeof p.text === "string" && p.text.trim()) return p.text;
+  if (action.action !== "store_alert" && typeof p.text === "string" && p.text.trim()) return p.text;
   const slot = (p.slot instanceof Date ? p.slot : typeof p.slot === "string" ? new Date(p.slot) : ctx.appointmentTime) ?? null;
   switch (action.action) {
     case "store_alert": {
       const body = await storeTemplate(String(p.template ?? "STORE_PATIENT_UNREACHABLE"));
-      return renderLabTemplate(body, { order_id: String(ctx.orderId), patient_name: (ctx.patientName ?? "").trim() || "Patient", time: fmtTime(p.at ? new Date(String(p.at)) : new Date()), detail: String(p.text ?? "no response").slice(0, 120), lab_name: ctx.labName ?? "the lab" });
+      return renderLabTemplate(body, { order_id: String(ctx.orderId), patient_name: (ctx.patientName ?? "").trim() || "Patient", time: fmtTime(p.at ? new Date(String(p.at)) : new Date()), detail: String(p.detail ?? p.text ?? "no response").slice(0, 120), lab_name: ctx.labName ?? "the lab" });
     }
     case "store_warning": {
       const body = await storeTemplate(p.cannotDoToday ? "STORE_CANNOT_TODAY" : "STORE_AT_RISK");

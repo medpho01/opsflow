@@ -429,7 +429,7 @@ export function step(input: StepInput): StepOutput {
       // relayed "customer not available" by hand). Fixed behaviour; the SOP adds, never removes.
       const relay = STORE_RELAY[f.kind];
       if (relay && order.storeId != null && f.source !== "store_msg" && !sop.handoffs.some((x) => x.onFact === f.kind && x.do === "store_alert")) {
-        actions.push({ desk: "STORE", action: "store_alert", params: { template: relay, orderId: order.id, storeId: order.storeId, fact: f.kind, text: f.value, at: f.at.toISOString() }, reason: `lab says ${f.kind.replace(/_/g, " ")}: "${f.value.slice(0, 60)}"`, idemKey: `relay:${order.id}:${f.kind}:${f.id ?? f.at.getTime()}` });
+        actions.push({ desk: "STORE", action: "store_alert", params: { template: relay, orderId: order.id, storeId: order.storeId, fact: f.kind, detail: f.value, at: f.at.toISOString() }, reason: `lab says ${f.kind.replace(/_/g, " ")}: "${f.value.slice(0, 60)}"`, idemKey: `relay:${order.id}:${f.kind}:${f.id ?? f.at.getTime()}` });
       }
       for (const h of sop.handoffs.filter((x) => x.onFact === f.kind && x.do !== "status_write")) {
         const key = `${h.do}:${order.id}:${f.kind}:${f.id ?? f.at.getTime()}`;
@@ -459,18 +459,21 @@ export function step(input: StepInput): StepOutput {
         return null;
       })();
       const quote = m.waMsgId ? { quotedWaId: m.waMsgId } : {};
+      // A sample left behind ("urine samples not collected, slots please", Plum, 25 Oct 2026) wins
+      // over whatever the message otherwise looks like: never answer it with "sample collected".
+      const left = m.text.match(/\b(urine|stool|sputum|swab|second|remaining|balance)\b[^.\n]{0,40}\b(not|pending|missed|left|skipped)\b|\bnot collected\b/i);
+      if (left && order.labId != null && sop && !["reschedule", "cancel", "change_tests", "complaint"].includes(m.intent)) {
+        const sampleWord = /\b(urine|stool|sputum|swab)\b/i.exec(m.text)?.[1]?.toLowerCase();
+        const note = `${sampleWord ? `${sampleWord} sample` : "a sample"} pending — slot for re-collection?`;
+        const window = sendWindow(now, now, sop, { intent: "STATUS", leadMin: 0, graceMin: 480, urgentWithinMin: 0, nightBefore: false }, true, false, tz);
+        actions.push({ desk: "LAB", action: "ask", params: { checkpoint: "sample_collected", orderId: order.id, labId: order.labId, attempt: 1, dueAt: now, rung: "ask", intent: "STATUS", counterparty: `LAB:${order.labId}`, windowFrom: window.from, windowTo: window.to, urgent: true, line: { orderId: order.id, patientName: order.patientName, appointment: order.appointmentTime, labRef: order.labRef ?? null, mobile: order.mobile ?? null, area: order.area ?? null, note }, forStore: true }, reason: `store says ${sampleWord ?? "a"} sample was not collected${/slot/i.test(m.text) ? " and asks for slots" : ""}`, idemKey: `${key}:recollect` });
+        const collectedLine = collected?.status === "MET" ? `blood collected ${fmt(collected.metAt)}; ` : "";
+        const hours = input.slotSummary ? ` ${input.slotSummary}.` : "";
+        actions.push({ desk: "STORE", action: "store_reply", params: { text: `#${order.id}: ${collectedLine}${sampleWord ? `${sampleWord} sample` : "a sample"} pending — asking ${order.labName ?? "the lab"} for a re-collection slot now.${hours} Share a preferred time and we'll book it.`, orderId: order.id, storeId: order.storeId, ...quote }, reason: `store says ${sampleWord ?? "a"} sample was not collected; the lab is being asked`, idemKey: `${key}:recollect-ack` });
+        continue;
+      }
       switch (m.intent) {
         case "slot": {
-          // "urine samples not collected, let us know the slots" (Plum, 25 Oct 2026): a sample was left
-          // behind. The lab is asked for a re-collection slot now, naming the sample; its answer comes
-          // back as a promise and is relayed to the store.
-          const left = m.text.match(/\b(urine|stool|sputum|swab|second|remaining|balance)\b[^.\n]{0,40}\b(not|pending|missed|left|skipped)\b|\bnot collected\b/i);
-          if (left && order.labId != null && sop) {
-            const sampleWord = /\b(urine|stool|sputum|swab)\b/i.exec(m.text)?.[1]?.toLowerCase();
-            const note = `${sampleWord ? `${sampleWord} sample` : "a sample"} pending — slot for re-collection?`;
-            const window = sendWindow(now, now, sop, { intent: "STATUS", leadMin: 0, graceMin: 480, urgentWithinMin: 0, nightBefore: false }, true, false, tz);
-            actions.push({ desk: "LAB", action: "ask", params: { checkpoint: "sample_collected", orderId: order.id, labId: order.labId, attempt: 1, dueAt: now, rung: "ask", intent: "STATUS", counterparty: `LAB:${order.labId}`, windowFrom: window.from, windowTo: window.to, urgent: false, line: { orderId: order.id, patientName: order.patientName, appointment: order.appointmentTime, labRef: order.labRef ?? null, mobile: order.mobile ?? null, area: order.area ?? null, note }, forStore: true }, reason: `store says ${sampleWord ?? "a"} sample was not collected and asks for slots`, idemKey: `${key}:recollect` });
-          }
           if (input.slotSummary) {
             actions.push({ desk: "STORE", action: "store_reply", params: { text: `#${order.id}: ${input.slotSummary}. Share a preferred time and we'll book it.`, orderId: order.id, storeId: order.storeId, ...quote }, reason: "store asked for slots; answered from the lab's usual hours", idemKey: `${key}:slots` });
             break;

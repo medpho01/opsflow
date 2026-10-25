@@ -71,7 +71,7 @@ export async function storeText(action: ProposedAction, ctx: ExecuteContext): Pr
   const now = new Date();
   const r = await enqueueOutbox({
     counterparty: `STORE:${storeId}`, ask: action.action.toUpperCase(), orderId: ctx.orderId, journeyId: ctx.journeyId, actionId: ctx.actionId,
-    windowFrom: now, windowTo: new Date(now.getTime() + 6 * 3_600_000), urgent: action.action !== "store_warning",
+    windowFrom: now, windowTo: new Date(now.getTime() + 6 * 3_600_000), urgent: action.action !== "store_warning", immediate: true,
     idemKey: `outbox:${action.idemKey}`, line: { orderId: ctx.orderId, patientName: ctx.patientName ?? null, appointment: ctx.appointmentTime ?? null }, text,
   });
   if (action.params.quotedWaId && r.queued) await prisma.agentOutboxItem.update({ where: { id: r.id }, data: { payload: { line: { orderId: ctx.orderId }, text, quotedWaId: action.params.quotedWaId } } });

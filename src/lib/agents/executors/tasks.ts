@@ -84,6 +84,23 @@ export async function createAgentTask(input: CreateAgentTaskInput): Promise<{ ta
   const taskTypeId = types.get(input.type) ?? (await prisma.taskType.upsert({ where: { name: input.type }, create: { name: input.type, label: def.label }, update: {}, select: { id: true } })).id;
   await ensureAgentRule(taskTypeId);
   const slaMinutes = input.dueInMinutes ?? def.slaMinutes;
+  // Task has one agent task per order (unique taskRuleId + entityId). A second request on the
+  // same order joins the open task, or reopens a closed one — it never fails (25 Oct 2026).
+  const sameOrder = await prisma.task.findFirst({ where: { taskRuleId: AGENT_RULE_ID, entityId: input.orderId }, select: { id: true, status: true, metadata: true } });
+  if (sameOrder) {
+    const open = !([TaskStatus.COMPLETED, TaskStatus.CANCELLED] as TaskStatus[]).includes(sameOrder.status);
+    const previous = (sameOrder.metadata as { agent?: Record<string, unknown> } | null)?.agent ?? {};
+    await prisma.task.update({
+      where: { id: sameOrder.id },
+      data: {
+        taskTypeId, title: input.title, priority: def.priority, slaDeadline: new Date(Date.now() + slaMinutes * 60_000), appointmentTime: input.appointmentTime ?? null,
+        ...(open ? {} : { status: TaskStatus.CREATED, completedAt: null, assignedToId: null, teamMemberId: null, assignedAt: null, assignmentMethod: null, isArchived: false }),
+        metadata: { agent: { ...input.payload, idemKey: input.idemKey, consoleUrl: input.payload.consoleUrl ?? consoleUrl(input.orderId), type: input.type, previous: { type: previous.type, cause: previous.cause, idemKey: previous.idemKey } } } as Prisma.InputJsonValue,
+        history: { create: { status: open ? sameOrder.status : TaskStatus.CREATED, note: `${open ? "Added" : "Reopened"} by OpsFlow Agents: ${input.payload.cause} — ${input.payload.action}` } },
+      },
+    });
+    return { taskId: sameOrder.id, created: !open };
+  }
   const task = await prisma.task.create({
     data: {
       taskRuleId: AGENT_RULE_ID, taskTypeId, title: input.title, entityType: "ORDER", entityId: input.orderId, storeId: input.storeId,

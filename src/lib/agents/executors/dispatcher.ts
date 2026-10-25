@@ -38,6 +38,8 @@ export type EnqueueInput = {
   line: OutboxLine;
   /** Free text for a counterparty that gets a plain message (store alerts, manager notes). */
   text?: string;
+  /** Go on the next every-minute flush, no gathering: a store's question, or a chase it triggered. */
+  immediate?: boolean;
 };
 
 export async function enqueueOutbox(input: EnqueueInput): Promise<{ id: string; queued: boolean }> {
@@ -46,7 +48,7 @@ export async function enqueueOutbox(input: EnqueueInput): Promise<{ id: string; 
       data: {
         counterparty: input.counterparty, ask: input.ask, orderId: input.orderId, journeyId: input.journeyId, actionId: input.actionId,
         windowFrom: input.windowFrom, windowTo: input.windowTo, urgent: input.urgent, idemKey: input.idemKey,
-        payload: { line: { ...input.line, appointment: input.line.appointment?.toISOString() ?? null }, text: input.text ?? null } as Prisma.InputJsonValue,
+        payload: { line: { ...input.line, appointment: input.line.appointment?.toISOString() ?? null }, text: input.text ?? null, immediate: input.immediate === true } as Prisma.InputJsonValue,
       },
       select: { id: true },
     });
@@ -113,8 +115,11 @@ export async function flushOutbox(now = new Date(), opts: { urgentOnly?: boolean
   const ready = open.filter((i) => {
     if (i.windowFrom.getTime() > now.getTime()) return false;
     if (i.counterparty.startsWith("LAB:") && !i.urgent && !isSlotOpen(i.ask, now, tz)) return false; // routine asks keep the slot rhythm
-    // Urgent asks gather for ten minutes, so a morning's asks go as one message, not one each.
-    if (i.urgent && opts.urgentOnly && now.getTime() - i.windowFrom.getTime() < 10 * 60_000) return false;
+    // A store's reply, or a chase a store triggered, goes now. Other urgent asks gather for ten
+    // minutes, so a morning's asks go as one message, not one each.
+    const immediate = i.counterparty.startsWith("STORE:") || (i.payload as { immediate?: boolean }).immediate === true;
+    if (!immediate && i.urgent && opts.urgentOnly && now.getTime() - i.windowFrom.getTime() < 10 * 60_000) return false;
+    if (immediate && !i.urgent && opts.urgentOnly) return true; // store items ride the every-minute flush even when not marked urgent
     return true;
   });
   result.held += open.length - ready.length;

@@ -71,6 +71,33 @@ async function attribute(
 }
 
 /** The rule behind our most recent message about an order. */
+/** Reference-looking tokens in a lab's message: letters+digits (VL149129, BLR6365567) or a long number, incl. "Booking (ID: n)". */
+export function labRefTokens(text: string): Array<{ ref: string; said: string }> {
+  const out: Array<{ ref: string; said: string }> = [];
+  const re = /(?:booking\s*\(?\s*id\s*:?\s*)?\b(?=[A-Za-z0-9]*\d)([A-Za-z]{2,5}[0-9A-Za-z]{4,}|\d{7,9})\b\)?\s*[:.)\-–—]?\s*([^\n;]*)/g;
+  const matches = [...text.matchAll(re)];
+  for (const [k, m] of matches.entries()) {
+    let said = m[2].trim();
+    if (!said) { const start = (m.index ?? 0) + m[0].length; said = text.slice(start, matches[k + 1]?.index ?? text.length).trim(); }
+    out.push({ ref: m[1].toUpperCase(), said });
+  }
+  return out;
+}
+
+/** Each lab reference in the text that is one of this lab's orders → what the lab said about it. */
+async function splitByLabRef(text: string, labId: number): Promise<Map<number, string>> {
+  const tokens = labRefTokens(text);
+  const result = new Map<number, string>();
+  if (!tokens.length) return result;
+  const rows = await labstackWorkerQuery<{ id: number; ref: string }>(
+    `SELECT id, upper("labOrderId") AS ref FROM public."Order" WHERE upper("labOrderId") = ANY($1::text[]) AND "labId" = $2`,
+    [tokens.map((t) => t.ref), labId],
+  ).catch(() => []);
+  const byRef = new Map(rows.map((r) => [r.ref, r.id]));
+  for (const t of tokens) { const id = byRef.get(t.ref); if (id != null && !result.has(id)) result.set(id, t.said || text); }
+  return result;
+}
+
 async function lastRuleFor(orderId: number): Promise<string | null> {
   const last = await prisma.labCommunication.findFirst({
     where: { orderId, ruleId: { not: null } },
@@ -132,6 +159,16 @@ export async function runReplyPass(now = new Date()): Promise<ReplyPassResult> {
           if (!item) continue;
           result.attributed += 1;
           result.facts += await applyReply(message, labId, { orderId: item.orderId, via: combined.via, ruleId: item.ruleId, context: item.line }, said, text);
+        }
+        continue;
+      }
+      // The lab's own reference, for an order not in the message it replied to — or in
+      // no message at all ("VL149129 as per update customer not available", 25 Oct 2026).
+      const byRef = await splitByLabRef(text, labId);
+      if (byRef.size) {
+        for (const [orderId, said] of byRef) {
+          result.attributed += 1;
+          result.facts += await applyReply(message, labId, { orderId, via: "ORDER_ID", ruleId: await lastRuleFor(orderId), context: null }, said, text);
         }
         continue;
       }

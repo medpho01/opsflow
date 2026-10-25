@@ -15,7 +15,7 @@ export const STORE_TEMPLATES: Record<string, { name: string; body: string }> = {
   STORE_CHECKING: { name: "Store: checking with the lab", body: "#{{order_id}}: checking with {{lab_name}}, will update here." },
   STORE_NOTED: { name: "Store: change request noted", body: "#{{order_id}}: noted, we'll confirm shortly." },
   STORE_CONFIRMED_CHANGE: { name: "Store: change confirmed", body: "#{{order_id}}: done — {{change}}." },
-  STORE_PATIENT_UNREACHABLE: { name: "Store: lab could not reach the patient", body: "#{{order_id}}: the lab could not reach the customer at {{time}} ({{detail}}). Please help reach them or share a new slot." },
+  STORE_PATIENT_UNREACHABLE: { name: "Store: lab could not reach the patient", body: "#{{order_id}}\n{{patient_name}}\n\nUser is not available, pickup not done ({{detail}}, {{time}}). Please help reach them or share a new slot." },
   STORE_AT_RISK: { name: "Store: order at risk", body: "#{{order_id}}: {{slot}} collection is at risk — {{reason}}. We expect to collect by {{expected}}, or can you offer {{alternative}}?" },
   STORE_CANNOT_TODAY: { name: "Store: cannot be done today", body: "#{{order_id}}: {{slot}} collection cannot happen today — {{reason}}. Can you offer {{alternative}}?" },
   STORE_ASK_ORDER_ID: { name: "Store: which order?", body: "Which order is this about? Please share the order id." },
@@ -32,14 +32,14 @@ const fmtTime = (d: Date | null | undefined) => (d ? d.toLocaleString("en-IN", {
 const fmtSlot = (d: Date | null | undefined) => (d ? d.toLocaleString("en-IN", { timeZone: tz(), weekday: "short", hour: "numeric", minute: "2-digit" }) : "the booked");
 
 /** Render the text for a store action from its template and params. */
-export async function renderStoreText(action: ProposedAction, ctx: Pick<ExecuteContext, "orderId" | "labName" | "appointmentTime">): Promise<string> {
+export async function renderStoreText(action: ProposedAction, ctx: Pick<ExecuteContext, "orderId" | "labName" | "appointmentTime" | "patientName">): Promise<string> {
   const p = action.params;
   if (typeof p.text === "string" && p.text.trim()) return p.text;
   const slot = (p.slot instanceof Date ? p.slot : typeof p.slot === "string" ? new Date(p.slot) : ctx.appointmentTime) ?? null;
   switch (action.action) {
     case "store_alert": {
       const body = await storeTemplate(String(p.template ?? "STORE_PATIENT_UNREACHABLE"));
-      return renderLabTemplate(body, { order_id: String(ctx.orderId), time: fmtTime(p.at ? new Date(String(p.at)) : new Date()), detail: String(p.text ?? "no response").slice(0, 120), lab_name: ctx.labName ?? "the lab" });
+      return renderLabTemplate(body, { order_id: String(ctx.orderId), patient_name: (ctx.patientName ?? "").trim() || "Patient", time: fmtTime(p.at ? new Date(String(p.at)) : new Date()), detail: String(p.text ?? "no response").slice(0, 120), lab_name: ctx.labName ?? "the lab" });
     }
     case "store_warning": {
       const body = await storeTemplate(p.cannotDoToday ? "STORE_CANNOT_TODAY" : "STORE_AT_RISK");

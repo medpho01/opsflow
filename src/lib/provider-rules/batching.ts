@@ -239,11 +239,11 @@ export function splitBatchReply(text: string, items: Array<{ n: number; orderId:
   // "Booking (ID: 19457839) sample collected", "BLR6365567 — collection in progress".
   // Matched against the reference on the item, else the reference in its line.
   const refOf = (item: { labRef?: string | null; line?: string }) =>
-    (item.labRef ?? item.line?.match(/^\d+\.\s*([A-Z]{2,5}[0-9A-Z]{4,}|\d{7,})\s*·/)?.[1] ?? null)?.toUpperCase() ?? null;
+    (item.labRef ?? item.line?.match(/^\d+\.\s*([A-Z]{2,5}[0-9A-Z]{4,}|\d{7,9})\s*·/)?.[1] ?? null)?.toUpperCase() ?? null;
   const byRef = new Map(items.flatMap((item) => { const r = refOf(item); return r ? [[r, item.n] as const] : []; }));
   if (byRef.size) {
     // A reference has letters and digits (VL336FC5, BLR6365567) or is a long number; a word is never one.
-    const refTokens = [...clean.matchAll(/(?:booking\s*\(?\s*id\s*:?\s*)?\b(?=[A-Za-z0-9]*\d)([A-Za-z]{2,5}[0-9A-Za-z]{4,}|\d{7,})\b\)?\s*[:.)\-–—]?\s*([^\n;]*)/g)];
+    const refTokens = [...clean.matchAll(/(?:booking\s*\(?\s*id\s*:?\s*)?\b(?=[A-Za-z0-9]*\d)([A-Za-z]{2,5}[0-9A-Za-z]{4,}|\d{7,9})\b\)?\s*[:.)\-–—]?\s*([^\n;]*)/g)];
     let hit = false;
     for (const [k, m] of refTokens.entries()) {
       const n = byRef.get(m[1].toUpperCase());

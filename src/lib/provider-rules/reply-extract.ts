@@ -40,6 +40,7 @@ const KIND_HELP: Record<FactKind, string> = {
   report_shared: "the report has been sent/shared/uploaded ('yes')",
   cannot_fulfil: "the lab cannot do this order (short reason)",
   confirmed: "the lab accepts/confirms the order we asked it to confirm ('yes') — 'ok', 'done', 'haan', 'ho jayega', 'will do', 'theek hai', 👍. Only when our message asked for a confirmation",
+  sample_missed: "a specific sample was not collected while others were (value: 'urine', 'stool', …)",
   note: "anything else useful the lab said, in a few words",
 };
 
@@ -51,7 +52,7 @@ export function extractWithPatterns(text: string, ask: Ask = NO_ASK): ExtractedF
   };
   // A yes to "please confirm" — but not "ok, cannot do it" or "done, patient not home".
   const negative = /\b(?:cannot|can't|cant|unable|not|no|nahi|nhi|mat|reschedul\w*)\b/i.test(text);
-  if (ask.confirmation && !negative && (CONFIRM_RE.test(text) || CONFIRM_EMOJI_RE.test(text))) add("confirmed", "yes", 0.7);
+  if (ask.confirmation && !negative && (CONFIRM_RE.test(text) || CONFIRM_EMOJI_RE.test(text) || /\b(has been |is )?(scheduled|booked|confirmed)\b/i.test(text))) add("confirmed", "yes", 0.7);
   const phone = text.match(/(?:\+?91[\s-]?)?\b([6-9]\d{9})\b/);
   if (phone) add("phlebo_phone", phone[1]);
   // Keyword in any case; the name itself must be capitalised, so "phlebo is on the way" is not read as a name.
@@ -59,15 +60,16 @@ export function extractWithPatterns(text: string, ask: Ask = NO_ASK): ExtractedF
   if (name) add("phlebo_name", name[1]);
   const eta = text.match(/\b(?:eta|reach(?:ing|es)?|arriv\w*|by|in)\s*(?:is\s*|by\s*|in\s*)?(\d{1,2}(?::\d{2})?\s*(?:am|pm)|\d{1,3}\s*(?:min|mins|minutes|hr|hrs|hours))\b/i);
   if (eta) add("eta", eta[1]);
+  else if (/\b(techn\w*|phlebo\w*)\b[^.\n]{0,30}\b(at|in|reached|arrived|inside)\b[^.\n]{0,20}\b(house|home|location|site|customer|premises)\b|\bcollection (is )?in progress\b|\bon the way\b/i.test(text)) add("eta", "at the customer's location now", 0.75);
   if (/\breport\b[^.]*\b(shared|sent|uploaded|mailed|delivered|done)\b/i.test(text)) add("report_shared", "yes", 0.7);
-  else if (/\b(sample\s+(?:collected|taken|done)|collected)\b/i.test(text)) add("sample_collected", "yes", 0.7);
-  const unavailable = text.match(/\b(not available|not at home|no response|not reachable|not picking|not answering|switched off|phone (?:is )?off|unreachable|door (?:is )?locked|patient (?:not|didn't|did not) \w+)\b/i);
+  else if (/\b(sample\s+(?:collected|taken|done)|collected|serviced|completed)\b/i.test(text) || (/^\s*(?:\d+\s*)?done\b/i.test(text) && !/\bnot done\b/i.test(text))) add("sample_collected", "yes", 0.7);
+  const unavailable = text.match(/\b(not available|not at home|not home|no response|not reachable|not picking|not answering|switched off|phone (?:is )?off|unreachable|door (?:is )?locked|patient (?:not|didn't|did not) \w+)\b/i);
   if (unavailable) add("patient_unavailable", unavailable[1]);
   const cannot = text.match(/\b(?:cannot|can't|cant|unable to|won't be able to)\b[^.]*/i);
   if (cannot) add("cannot_fulfil", cannot[0]);
   const delay = text.match(/\b(?:late|delay(?:ed)?|traffic|stuck)\b[^.]*/i);
   if (delay) add("delay_reason", delay[0]);
-  if (/\breschedul\w*\b/i.test(text)) add("new_appointment_time", text);
+  if (/\breschedul\w*\b/i.test(text) || /\b(scheduled|booked|moved|shifted)\b[^.\n]{0,10}\b(on|for|to|at)\b[^.\n]{0,30}\d/i.test(text)) add("new_appointment_time", text);
   if (facts.length === 0 && text.trim()) add("note", text.trim().slice(0, 200), 0.5);
   return facts;
 }

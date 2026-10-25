@@ -112,6 +112,19 @@ Ask: 3 early-morning visits had no phlebo named the evening before — please na
 - **Dry run**: `npx tsx scripts/lab-scorecard-preview.ts [--now <iso>]` prints every lab's message and what
   would happen to it, without queuing or sending.
 
+## The reader (25 Oct 2026)
+
+Every store and lab message is read by the model first (`src/lib/agents/reader/read.ts`): a form with
+the orders named, each sample's state (blood collected, urine missed), the request (status / slot /
+reschedule with a time / cancel / report / details …), events, and whether it is only an
+acknowledgement. It is taught by anonymised phrasings from the Oct 2026 chats
+(`reader/examples.ts`; never real patients or phones — the repo is public) and by how our own team
+answered similar messages in that group in the last 14 days (`teamExamples`, from `wa_messages`).
+The pattern code is the fallback with no key. The step decides from the form; the reader never acts.
+`npm test` runs the examples through the patterns; `docker compose exec -T app npx tsx
+scripts/reader-eval.ts` runs them through the model. Every inbox correction becomes a case. The Brain
+review runs daily (22:00), not weekly.
+
 ## Known data issues
 
 **WhatsApp message order tags (fixed 24 Oct 2026).** `wa_messages.orderIds[0]` is what every reader

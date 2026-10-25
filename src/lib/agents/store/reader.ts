@@ -14,7 +14,7 @@ import prisma from "@/lib/db/client";
 import { labstackWorkerQuery } from "@/lib/db/labstack";
 import { isAutomated, loadTeam, makeTeamMatcher } from "@/lib/wa/team";
 import { recordJourneyEvent, wakeJourney } from "../journey/run";
-import { askModel } from "../llm";
+import { readMessage } from "../reader/read";
 import { enqueueOutbox } from "../executors/dispatcher";
 import { storeTemplate } from "../executors/storeReply";
 import { guard, loadGuardState } from "../guard/guard";
@@ -33,7 +33,8 @@ export function classifyStoreMessage(text: string): { intent: StoreIntent; sure:
   if (/escalat|frustrat|angry|upset|very bad|worst|unacceptable|disappoint|complain|rude|misbehav|rca|root cause|why (is|so) (much )?delay|again and again/.test(t)) return { intent: "complaint", sure: true };
   if (/(check|confirm|follow ?up) with the lab|make sure|ensure|please follow ?up|kindly follow ?up/.test(t) && !/reschedul|cancel/.test(t)) return { intent: "status", sure: true };
   if (/reschedul|re-schedul|new slot|change (the )?(slot|time|date)|postpone|prepone|shift (it|the slot)|\b(please |kindly )?(schedule|book|arrange|allot)\b[^.\n]{0,40}\b(at|for)\s*\d{1,2}(:\d{2})?\s*(am|pm)?/.test(t)) return { intent: "reschedule", sure: true };
-  if (/(please|pls|kindly|can you|want to|need to).{0,20}cancel|cancel (this|the) (order|request|booking)|cancellation/.test(t)) return { intent: "cancel", sure: true };
+  if (/why (was|is|did) .{0,30}cancel|asking why/.test(t)) return { intent: "status", sure: true };
+  if (/(please|pls|kindly|can you|want to|need to|asked to|wants? to).{0,20}cancel|cancel (this|the|it)( (order|request|booking))?|cancellation/.test(t) && !/cancelled (by|it|the)|got cancelled|marked cancel/.test(t)) return { intent: "cancel", sure: true };
   if (/\badd\b.{0,30}\b(test|dengue|h1n1|cbc|hba1c|vitamin|package)|change (the )?package|package should be|remove (the )?test|include .{0,20}test/.test(t)) return { intent: "change_tests", sure: true };
   if (/upload.*report|report.*(upload|pending|ready|share|awaited|missing|not received)|share.*report|tat.*(breach|over|exceed)|reports? not|complete reports?|partial report|missing (in|from) (the )?report/.test(t)) return { intent: "report", sure: true };
   if (/serviceab|non.?servic|not servic|no labs? found|alternate lab|pincode.{0,20}(possible|serviceable|check)/.test(t)) return { intent: "serviceability", sure: true };
@@ -46,7 +47,7 @@ export function classifyStoreMessage(text: string): { intent: StoreIntent; sure:
 export type StoreReaderResult = { read: number; linked: number; answered: number; tasks: number; review: number };
 
 /** Order ids a store writes in a message: 5–6 digits, not part of a longer number (a phone, a lab ref). */
-export const EXPLICIT_ID_RE = /(?<![\d+])#?(\d{5,6})(?![\d])/g;
+export const EXPLICIT_ID_RE = /(?<![\dA-Za-z+])#?(\d{5,6})(?![\dA-Za-z])/g; // not the digits inside VL149129
 export function explicitOrderIds(text: string): number[] {
   // A phone number written with spaces or dashes ("98765 43210") is not two order ids.
   const withoutPhones = text.replace(/\+?\d[\d\s-]{8,}\d/g, " ");
@@ -141,14 +142,13 @@ export async function runStoreReader(now = new Date()): Promise<StoreReaderResul
     if (isAutomated(m) || isTeam(m.sender, m.senderJid)) continue;
     const text = (m.text ?? "").trim();
     if (!text) continue;
-    let { intent, sure } = classifyStoreMessage(text);
-    if (!sure) {
-      const answer = await askModel({ purpose: "store_reader", maxTokens: 60, system: "Classify one WhatsApp message from a client store to a diagnostics ops team. Reply with one word from: status, report, slot, reschedule, cancel, change_tests, new_booking, serviceability, complaint, noise, other.", user: text.slice(0, 600) });
-      const word = answer?.text.trim().toLowerCase().replace(/[^a-z_]/g, "");
-      if (word && ["status", "report", "slot", "reschedule", "cancel", "change_tests", "new_booking", "serviceability", "complaint", "noise", "other"].includes(word)) { intent = word as StoreIntent; sure = true; }
-    }
+    // The reader (model first, patterns as fallback) fills in the form: orders, samples, request, ack.
+    const quoted = m.replyToWaId ? await prisma.waMessage.findUnique({ where: { waMsgId: m.replyToWaId }, select: { text: true } }).catch(() => null) : null;
+    const reading = await readMessage({ side: "store", text, quotedText: quoted?.text ?? null, scope: { storeId: g.storeId, groupId: m.groupId } });
+    const intent: StoreIntent = reading.ack || reading.request.kind === "none" ? "noise" : reading.request.kind === "details" ? "other" : reading.request.kind;
     if (intent === "noise") continue;
-    const link = await linkOrder({ orderIds: m.orderIds, idType: m.idType ?? null, idVia: m.idVia ?? null, refIds: m.refIds, text, replyToWaId: m.replyToWaId, groupId: m.groupId }, g.storeId!, now);
+    const readIds = reading.orders.map((o) => o.orderId).filter((x): x is number => typeof x === "number");
+    const link = await linkOrder({ orderIds: m.orderIds, idType: m.idType ?? null, idVia: m.idVia ?? null, refIds: m.refIds, text: readIds.length ? `${readIds.join(" ")} ${text}` : text, replyToWaId: m.replyToWaId, groupId: m.groupId }, g.storeId!, now);
     await prisma.waMessage.update({ where: { id: m.id }, data: { intent: `STORE_${intent.toUpperCase()}` } }).catch(() => undefined);
     if (!link) {
       // Ask once for the order id (FR-9.2), only for questions that need one — and never inside a
@@ -162,7 +162,7 @@ export async function runStoreReader(now = new Date()): Promise<StoreReaderResul
     result.linked += 1;
     const recorded = await recordJourneyEvent(link.orderId, {
       kind: "store_message", at: m.ts, actor: "STORE",
-      payload: { intent, text: text.slice(0, 500), messageId: m.id, waMsgId: m.waMsgId, via: link.via, storeId: g.storeId, sender: m.sender },
+      payload: { intent, text: text.slice(0, 500), messageId: m.id, waMsgId: m.waMsgId, via: link.via, storeId: g.storeId, sender: m.sender, samples: reading.samples, requestTime: reading.request.time ?? null, readVia: reading.via },
     }, false);
     if (recorded) {
       const r = await wakeJourney(link.orderId, "inbound");

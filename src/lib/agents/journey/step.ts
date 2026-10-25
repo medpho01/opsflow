@@ -335,7 +335,7 @@ export function step(input: StepInput): StepOutput {
   // 3. Events: people, facts, promises.
   const attempts: Record<string, Attempt> = { ...journey.attempts };
   const factsSeen: Array<{ kind: string; value: string; confidence: number; source: string; named: boolean; id: string | null; at: Date }> = [];
-  const storeMessages: Array<{ intent: string; text: string; messageId: string; waMsgId: string | null; at: Date }> = [];
+  const storeMessages: Array<{ intent: string; text: string; messageId: string; waMsgId: string | null; at: Date; samples?: Record<string, string>; requestTime?: string | null }> = [];
   let caseworker: StepOutput["caseworker"] = null;
   for (const ev of events) {
     if (ev.kind === "takeover") {
@@ -387,7 +387,7 @@ export function step(input: StepInput): StepOutput {
         }
       }
     } else if (ev.kind === "store_message") {
-      storeMessages.push({ intent: String(ev.payload.intent ?? "other"), text: String(ev.payload.text ?? ""), messageId: String(ev.payload.messageId ?? ""), waMsgId: (ev.payload.waMsgId as string | null) ?? null, at: ev.at });
+      storeMessages.push({ intent: String(ev.payload.intent ?? "other"), text: String(ev.payload.text ?? ""), messageId: String(ev.payload.messageId ?? ""), waMsgId: (ev.payload.waMsgId as string | null) ?? null, at: ev.at, samples: (ev.payload.samples as Record<string, string> | undefined) ?? {}, requestTime: (ev.payload.requestTime as string | null | undefined) ?? null });
     }
   }
   if (journey.pausedUntil && journey.pausedUntil.getTime() <= now.getTime()) journey = { ...journey, ownerUserId: null, pausedUntil: null };
@@ -475,9 +475,10 @@ export function step(input: StepInput): StepOutput {
       const quote = m.waMsgId ? { quotedWaId: m.waMsgId } : {};
       // A sample left behind ("urine samples not collected, slots please", Plum, 25 Oct 2026) wins
       // over whatever the message otherwise looks like: never answer it with "sample collected".
-      const left = m.text.match(/\b(urine|stool|sputum|swab|second|remaining|balance)\b[^.\n]{0,40}\b(not|pending|missed|left|skipped)\b|\bnot collected\b/i);
+      const missedSample = Object.entries(m.samples ?? {}).find(([k, s]) => s === "missed" && k !== "blood")?.[0];
+      const left = missedSample ? [missedSample] : m.text.match(/\b(urine|stool|sputum|swab|second|remaining|balance)\b[^.\n]{0,40}\b(not|pending|missed|left|skipped)\b|\bnot collected\b/i);
       if (left && order.labId != null && sop && !["reschedule", "cancel", "change_tests", "complaint"].includes(m.intent)) {
-        const sampleWord = /\b(urine|stool|sputum|swab)\b/i.exec(m.text)?.[1]?.toLowerCase();
+        const sampleWord = missedSample ?? /\b(urine|stool|sputum|swab)\b/i.exec(m.text)?.[1]?.toLowerCase();
         const note = `${sampleWord ? `${sampleWord} sample` : "a sample"} pending — slot for re-collection?`;
         const window = sendWindow(now, now, sop, { intent: "STATUS", leadMin: 0, graceMin: 480, urgentWithinMin: 0, nightBefore: false }, true, false, tz);
         actions.push({ desk: "LAB", action: "ask", params: { checkpoint: "sample_collected", orderId: order.id, labId: order.labId, attempt: 1, dueAt: now, rung: "ask", intent: "STATUS", counterparty: `LAB:${order.labId}`, windowFrom: window.from, windowTo: window.to, urgent: true, line: { orderId: order.id, patientName: order.patientName, appointment: order.appointmentTime, labRef: order.labRef ?? null, mobile: order.mobile ?? null, area: order.area ?? null, note }, forStore: true }, reason: `store says ${sampleWord ?? "a"} sample was not collected${/slot/i.test(m.text) ? " and asks for slots" : ""}`, idemKey: `${key}:recollect` });

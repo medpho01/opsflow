@@ -102,7 +102,7 @@ export async function startWorker(): Promise<PgBoss> {
   await boss.schedule(QUEUES.store, "* * * * *", {}, { tz });
   await boss.schedule(QUEUES.monitor, "*/30 6-21 * * *", {}, { tz });
   await boss.schedule(QUEUES.nightly, process.env.AGENT_NIGHTLY_CRON || "30 21 * * *", {}, { tz });
-  await boss.schedule(QUEUES.review, process.env.AGENT_REVIEW_CRON || "0 22 * * 0", {}, { tz });
+  await boss.schedule(QUEUES.review, process.env.AGENT_REVIEW_CRON || "0 22 * * *", {}, { tz }); // daily (was Sunday) — 25 Oct 2026
   await boss.schedule(QUEUES.scorecard, process.env.AGENT_SCORECARD_CRON || "30 10 * * 1", {}, { tz });
   await boss.send(QUEUES.sweep, {}, { singletonKey: "boot" });
   console.log("[Worker] started: sweep, wake, dispatch, risk, verify, store pass, brain, scorecard");

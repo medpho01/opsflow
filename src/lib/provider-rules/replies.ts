@@ -23,7 +23,7 @@
  */
 import prisma from "@/lib/db/client";
 import { loadTeam, makeTeamMatcher } from "@/lib/wa/team";
-import { asksConfirmation, extractFacts, type Ask } from "./reply-extract";
+import { asksConfirmation, type Ask } from "./reply-extract";
 import type { FactKind } from "./types";
 import { splitBatchReply } from "./batching";
 import { recordAnswered } from "./engine";
@@ -211,9 +211,17 @@ async function applyReply(message: ReplyMessage, labId: number, match: Attributi
     confirmation: rule ? asksConfirmation(rule.templateKey)
       : !!conversation && (conversation.status === "WAITING_FOR_LAB_CONFIRMATION" || conversation.status === "ESCALATED"),
   };
-  const extracted = await extractFacts(said, match.context, ask);
-  const facts = options.onlyKinds ? extracted.facts.filter((f) => options.onlyKinds!.includes(f.kind)) : extracted.facts;
-  const extractor = extracted.extractor;
+  // The reader (model first, patterns as fallback): events are the facts; a missed sample is one too.
+  const { readMessage } = await import("@/lib/agents/reader/read");
+  const reading = await readMessage({ side: "lab", text: said, quotedText: match.context, confirmation: ask.confirmation, scope: { labId } });
+  const missed = Object.entries(reading.samples).filter(([, s]) => s === "missed").map(([k]) => ({ kind: "sample_missed" as FactKind, value: k, confidence: 0.85 }));
+  const outstanding = Object.values(reading.samples).some((s) => s === "missed" || s === "pending");
+  const all = [...reading.events.map((e) => ({ kind: e.kind, value: e.value, confidence: e.confidence ?? 0.8 })), ...missed]
+    .filter((f) => f.kind !== "confirmed" || ask.confirmation)
+    // "the blood has been collected" next to a missed or pending urine is not a fresh collection
+    .filter((f) => !(f.kind === "sample_collected" && outstanding));
+  const facts = options.onlyKinds ? all.filter((f) => options.onlyKinds!.includes(f.kind)) : all;
+  const extractor = reading.via === "model" ? "claude" : "patterns";
   if (facts.length > 0) {
     await prisma.providerOrderFact.createMany({
       data: facts.map((fact) => ({

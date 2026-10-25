@@ -12,7 +12,18 @@ import prisma from "@/lib/db/client";
 import { extractWithPatterns } from "@/lib/provider-rules/reply-extract";
 import { classifyStoreMessage, explicitOrderIds } from "../store/reader";
 
-export const GATES: Record<string, number> = { lab_reply_reader: 0.97, store_intent: 0.9, store_linker: 0.95, lab_status_write: 0.98 };
+export const GATES: Record<string, number> = { lab_reply_reader: 0.97, store_intent: 0.9, store_linker: 0.95, lab_status_write: 0.98, reader: 0.85 };
+
+/** Does a reading match what the case expects (request kind; samples; event kinds; ids), ignoring what it does not specify? */
+export function readingMatches(got: { request: { kind: string }; samples: Record<string, string | undefined>; events: Array<{ kind: string }>; orders: Array<{ orderId?: number; labRef?: string }>; ack: boolean }, want: Record<string, unknown>): { pass: boolean; why: string } {
+  const w = want as { request?: { kind?: string }; samples?: Record<string, string>; events?: Array<{ kind: string }>; orders?: Array<{ orderId?: number; labRef?: string }>; ack?: boolean };
+  if (w.request?.kind && w.request.kind !== got.request.kind) return { pass: false, why: `request ${got.request.kind} ≠ ${w.request.kind}` };
+  for (const [k, v] of Object.entries(w.samples ?? {})) if (got.samples[k] !== v) return { pass: false, why: `sample ${k} ${got.samples[k] ?? "-"} ≠ ${v}` };
+  for (const e of w.events ?? []) if (!got.events.some((g) => g.kind === e.kind)) return { pass: false, why: `missing event ${e.kind}` };
+  for (const o of w.orders ?? []) if (!got.orders.some((g) => (o.orderId && g.orderId === o.orderId) || (o.labRef && g.labRef === o.labRef))) return { pass: false, why: `missing order ${o.orderId ?? o.labRef}` };
+  if (w.ack === true && !got.ack) return { pass: false, why: "not read as an acknowledgement" };
+  return { pass: true, why: "" };
+}
 
 type Case = { id: string; input: Record<string, unknown>; expected: Record<string, unknown>; labels: string[] };
 type Verdict = { pass: boolean; got: unknown; want: unknown };
@@ -48,11 +59,21 @@ function judge(suite: string, c: Case): Verdict {
   }
 }
 
+async function judgeReader(c: Case): Promise<Verdict> {
+  const { readWithPatterns } = await import("../reader/read");
+  const got = await readWithPatterns({ side: c.input.side === "lab" ? "lab" : "store", text: String(c.input.text ?? ""), quotedText: (c.input.quoted as string | undefined) ?? null });
+  const m = readingMatches(got, c.expected);
+  return { pass: m.pass, got: m.why || "ok", want: c.expected };
+}
+
 export async function runSuite(suite: string): Promise<{ suite: string; cases: number; passed: number; score: number; gate: number; passedGate: boolean; failures: Array<{ id: string; got: unknown; want: unknown; input: unknown }> }> {
   const rows = await prisma.agentEvalCase.findMany({ where: { suite }, select: { id: true, input: true, expected: true, labels: true } });
   const cases: Case[] = rows.map((r) => ({ id: r.id, input: r.input as Record<string, unknown>, expected: r.expected as Record<string, unknown>, labels: r.labels }));
   let passed = 0; const failures: Array<{ id: string; got: unknown; want: unknown; input: unknown }> = [];
-  for (const c of cases) { const v = judge(suite, c); if (v.pass) passed += 1; else if (failures.length < 50) failures.push({ id: c.id, got: v.got, want: v.want, input: c.input }); }
+  for (const c of cases) {
+    const v = suite === "reader" ? await judgeReader(c) : judge(suite, c);
+    if (v.pass) passed += 1; else if (failures.length < 50) failures.push({ id: c.id, got: v.got, want: v.want, input: c.input });
+  }
   const score = cases.length ? passed / cases.length : 0;
   const gate = GATES[suite] ?? 0.9;
   // A suite with no cases yet has nothing to disagree with: it does not block
@@ -92,6 +113,15 @@ export async function seedFromHistory(): Promise<Record<string, number>> {
     if (exists) continue;
     await prisma.agentEvalCase.create({ data: { ...s, addedFrom: "HISTORY" } });
     out[s.suite] = (out[s.suite] ?? 0) + 1;
+  }
+  // The reader's cases: the anonymised phrasings in reader/examples.ts.
+  const { EXAMPLES } = await import("../reader/examples");
+  for (const e of EXAMPLES) {
+    const input = { side: e.side, text: e.text, ...(e.quoted ? { quoted: e.quoted } : {}) };
+    const exists = await prisma.agentEvalCase.findFirst({ where: { suite: "reader", input: { equals: input } } });
+    if (exists) continue;
+    await prisma.agentEvalCase.create({ data: { suite: "reader", input, expected: e.expect as object, labels: ["seed"], addedFrom: "SEED" } });
+    out.reader = (out.reader ?? 0) + 1;
   }
   // Store messages the gateway already classified with a validated order: linker cases.
   const linked = await prisma.waMessage.findMany({ where: { direction: "IN", orderIds: { isEmpty: false }, idType: "ORDER" }, orderBy: { ts: "desc" }, take: 200, select: { text: true, orderIds: true, refIds: true, intent: true } });

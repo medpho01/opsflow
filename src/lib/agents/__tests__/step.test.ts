@@ -113,6 +113,15 @@ describe("the ladder", () => {
     const reply = r.actions.find((a) => a.action === "store_reply");
     assert.ok(String(reply?.params.text).includes("usually collects between 6 am and 11 am"));
   });
+  it("at 20:30 the evening before an early visit with no phlebo named, the store is warned once", () => {
+    const o = order({ appointmentTime: at("2026-10-21T00:30:00Z") }); // 6:00 am IST
+    const r1 = wake(o, at("2026-10-20T15:05:00Z")); // 20:35 IST
+    assert.ok(r1.actions.some((a) => a.action === "store_warning"));
+    const r2 = wake(o, at("2026-10-20T15:20:00Z"), r1);
+    const key = (r: StepOutput) => r.actions.find((a) => a.action === "store_warning")?.idemKey;
+    assert.equal(key(r2), key(r1)); // the same key every evening wake: the guard records it once
+    assert.ok(!wake(o, at("2026-10-20T16:10:00Z"), r2).actions.some((a) => a.action === "store_warning")); // not after 21:00
+  });
   it("a pre-visit checkpoint still open long after the visit becomes one task, never a chase", () => {
     const o = order({ appointmentTime: at("2026-10-19T02:30:00Z"), orderStatus: "ORDER_SCHEDULED" });
     const r1 = wake(o, at("2026-10-24T13:45:00Z"));

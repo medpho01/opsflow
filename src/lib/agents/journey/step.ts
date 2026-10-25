@@ -270,6 +270,9 @@ const STORE_RELAY: Record<string, string> = {
   cannot_fulfil: "STORE_LAB_CANNOT", report_shared: "STORE_REPORT_SHARED",
 };
 
+const startOfLocalDay = (d: Date, tz: string) => d.toLocaleDateString("en-CA", { timeZone: tz });
+const LABELS_TIME = (d: Date, tz: string) => d.toLocaleTimeString("en-IN", { timeZone: tz, hour: "numeric", minute: "2-digit" });
+
 const STUCK_TASK: Partial<Record<CheckpointName, string>> = {
   confirmed: "AGENT_COLLECTION_STUCK", visit_confirmed: "AGENT_COLLECTION_STUCK", phlebo_assigned: "AGENT_COLLECTION_STUCK", phlebo_reached: "AGENT_COLLECTION_STUCK",
   sample_collected: "AGENT_COLLECTION_STUCK", sample_at_lab: "AGENT_REPORT_STUCK", report_delivered: "AGENT_REPORT_STUCK",
@@ -510,12 +513,26 @@ export function step(input: StepInput): StepOutput {
     else if (exhausted) caseworker = { reason: `${brokenPromises} broken promises and the ladder is exhausted for ${next!.name}`, text: `console shows ${order.orderStatus}; due ${next!.dueAt.toISOString()}`, checkpoint: next!.name, at: now };
   }
 
+  // 5d. 20:30 the evening before an early visit at a manual lab with no phlebo named: the store
+  //     hears tonight, not when the customer calls at 7 am. Once per order per evening; SUGGEST by default.
+  if (sop && !taken && order.storeId != null && (input.labTier ?? "C") === "C" && slot != null && !order.phleboName.trim()) {
+    const m = localMinutes(now, tz);
+    const minutesAhead = (slot.getTime() - now.getTime()) / MIN;
+    if (m >= hm("20:30") && m < hm("21:00") && minutesAhead > 6 * 60 && minutesAhead < 14 * 60 && localMinutes(slot, tz) < hm("09:00")) {
+      const day = startOfLocalDay(now, tz);
+      actions.push({ desk: "STORE", action: "store_warning", params: { orderId: order.id, storeId: order.storeId, slot, reasons: ["no phlebo named for an early visit"], predictedDelayMin: 60, cannotDoToday: false }, reason: `visit ${LABELS_TIME(slot, tz)} tomorrow; ${order.labName ?? "the lab"} has not named a phlebo by 20:30`, idemKey: `eve-warning:${order.id}:${day}` });
+    }
+  }
+
   // 6. The ladder for the checkpoint the order waits on (FR-8.7).
   let rungLabel: string | null = null;
   if (sop && next && !taken) {
     const ask = sop.asks[next.name];
     const a = attempts[next.name] ?? { n: 0, at: null };
-    const nightBefore = ask?.nightBefore && (journey.riskLevel !== "LOW") && minutesToSlot != null && minutesToSlot > 10 * 60 && minutesToSlot < 20 * 60 && localMinutes(now, tz) >= hm("18:00");
+    // The evening before (from 18:00): any visit before 09:00 tomorrow at a lab that answers in the
+    // group, risky or not — the morning is too late to find out nobody is coming (25 Oct 2026).
+    const earlyTomorrow = slot != null && localMinutes(slot, tz) < hm("09:00");
+    const nightBefore = ask?.nightBefore && (journey.riskLevel !== "LOW" || earlyTomorrow) && minutesToSlot != null && minutesToSlot > 10 * 60 && minutesToSlot < 20 * 60 && localMinutes(now, tz) >= hm("18:00");
     const due = next.dueAt;
     const started = now.getTime() >= due.getTime() - (ask?.leadMin ?? 0) * MIN || nightBefore;
     const lastAt = a.at ? Date.parse(a.at) : null;

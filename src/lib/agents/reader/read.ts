@@ -121,7 +121,7 @@ export async function readMessage(input: ReadInput): Promise<Reading> {
       : "You read one WhatsApp message from a diagnostic lab's coordinator to the ops team, usually answering an ask about home sample collection, and fill in a form.",
     "Messages mix English and Hindi/Hinglish and are terse. Order ids are 5–6 digit numbers; a lab's own reference looks like BLR6362207, VL336FC5 or an 8-digit booking id.",
     "Samples: a visit can collect blood and also urine/stool. 'urine not collected' with blood collected is a MISSED urine sample, never 'sample collected'.",
-    "request.kind is what the writer wants from us now: status (any update / make sure it happens / check with the lab), report, slot (asks for available slots), reschedule (gives or wants a new time), cancel, change_tests, new_booking, serviceability, complaint, details (a lab asking for the patient's phone/address), other, none.",
+    "request.kind is what the writer wants from us now: status (any update, 'make sure it happens', 'check with the lab', or a question why something happened — 'why was it cancelled' is status, we answer with the fact), report, slot (asks for available slots), reschedule (gives or wants a new time), cancel, change_tests, new_booking, serviceability, complaint (only with anger, escalation or a demand for an RCA), details (ONLY a lab asking for the patient's phone/address; a store asking about tests or packages is 'other'), other, none.",
     "ack=true only for a bare acknowledgement ('ok', 'checking', 'will check', 'thanks') with no request in it.",
     input.confirmation ? "Our message asked the lab to confirm the order: a plain yes/ok/done/haan/👍 is event kind 'confirmed' with value 'yes'." : "Never return event kind 'confirmed' unless the message plainly confirms an order we asked about.",
     "Only what the message states. Return ONLY JSON matching: " + SCHEMA,
@@ -139,7 +139,8 @@ export async function readMessage(input: ReadInput): Promise<Reading> {
     const orders = (parsed.orders ?? []).map((o) => ({ ...(typeof o.orderId === "number" ? { orderId: o.orderId } : {}), ...(o.labRef ? { labRef: String(o.labRef).toUpperCase() } : {}) })).filter((o) => o.orderId || o.labRef);
     const events = (parsed.events ?? []).filter((e) => FACT_KINDS.includes(e.kind as FactKind) && String(e.value ?? "").trim()).map((e) => ({ kind: e.kind as FactKind, value: String(e.value).slice(0, 300), confidence: typeof e.confidence === "number" ? e.confidence : 0.8 }));
     const kinds: RequestKind[] = ["status", "report", "slot", "reschedule", "cancel", "change_tests", "new_booking", "serviceability", "complaint", "details", "other", "none", "noise"];
-    const kind = kinds.includes(parsed.request?.kind as RequestKind) ? (parsed.request!.kind as RequestKind) : patterns.request.kind;
+    let kind = kinds.includes(parsed.request?.kind as RequestKind) ? (parsed.request!.kind as RequestKind) : patterns.request.kind;
+    if (input.side === "store" && kind === "details") kind = "other"; // 'details' is a lab's ask for patient contact
     const reading: Reading = {
       side: input.side,
       orders: orders.length ? orders : patterns.orders, // ids the patterns saw in the text are never dropped

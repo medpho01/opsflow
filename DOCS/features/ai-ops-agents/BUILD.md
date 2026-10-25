@@ -82,6 +82,36 @@ Rollback: `docker compose stop worker` stops every agent loop; the app and the l
 | Escalation desk | Complaint → task with timeline and drafted reply (needs a key for the draft; the timeline is always built). |
 | Email to patients, per-test TAT, agents uploading reports | Not built (later per the spec). |
 
+## Weekly lab scorecard
+
+Ops Head's "can do today" list (25 Oct 2026), item 8: every Monday 10:30 each lab's coordinator
+gets last week's numbers in the lab group, because a number changes lab behaviour more than any chase.
+
+```
+@coordinator Thyrocare last week (19 Oct–25 Oct): 42 orders.
+94% of 31 asks answered within 30 min · median reply 12 min.
+3 visits missed · 2 collections over 2 h late · reports median 19 h · 8% over 24 h.
+Ask: 3 early-morning visits had no phlebo named the evening before — please name them by 8 pm.
+```
+
+- **Numbers** (`src/lib/agents/brain/scorecard.ts`, previous Mon–Sun, local time): orders whose visit fell
+  in the week (journeys); asks = combined messages the dispatcher sent (`provider_batches`, not shadow),
+  answered when the lab quoted the message or the reply reader tied a fact to one of its orders within 24 h;
+  visits missed = `PATIENT_MISSED` seen, late = collected more than 2 h after the slot; report TAT from
+  collection (else the slot) to `REPORT_DELIVERED`, "over 24 h" includes reports still undelivered 24 h on.
+  The computation is pure and unit-tested (`__tests__/scorecard.test.ts`); the DB loader is separate.
+- **Closing line**: one specific ask — early visits with no phlebo named, missed visits, slow reports,
+  unanswered asks, in that order — else one line of thanks. Four lines, never more.
+- **Sending**: the worker queue `lab.scorecard` (`AGENT_SCORECARD_CRON`, default `30 10 * * 1`) queues one
+  outbox item per lab with ask `SCORECARD` and flushes. The dispatcher sends it as plain text to the lab
+  group, @mentioning the coordinator, under the same 3-per-slot / 8-per-day caps, and writes a
+  `provider_batches` row with intent `SCORECARD`. Lab desk OFF or no group: nothing. SHADOW: a shadow batch
+  only. Idempotent per lab and week. No per-lab configuration.
+- **Ops sees the same**: Agents › Brief and tracking, "What the labs saw" — the Monday run's cards
+  (brain run kind `scorecard`), or the live computation before Monday.
+- **Dry run**: `npx tsx scripts/lab-scorecard-preview.ts [--now <iso>]` prints every lab's message and what
+  would happen to it, without queuing or sending.
+
 ## Known data issues
 
 **WhatsApp message order tags (fixed 24 Oct 2026).** `wa_messages.orderIds[0]` is what every reader

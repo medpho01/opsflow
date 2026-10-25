@@ -6,7 +6,11 @@ import Link from "next/link";
 
 type Metrics = { day: string; orders: number; autonomyRate: number | null; onTimeCollection: number | null; onTimeApi: number | null; onTimeManual: number | null; onTimeReports: number | null; teamMessagesPerOrder: number | null; storeReplyP90Min: number | null; statusLagP90Min: number | null; overrideRate: number | null; repeatAsks: number; advanceWarning: number | null; misses: unknown[]; causes: Array<{ cause: string; count: number }>; tomorrow: { orders: number; atRisk: number; high: number } };
 type Brief = { brief: string | null; metrics: Metrics | null; briefAt: string | null; findings: Array<{ kind: string; severity: string; scope: string; text: string }>; findingsAt: string | null; waiting: { proposals: Array<{ id: string; rationale: string; inBounds: boolean; sop: { desk: string } }>; promotions: Array<{ action: string; desk: string; scopeKind: string; scopeKey: string; agreementRate: number | null; sampleSize: number }>; review: number } };
-type Scores = { days: number; labs: Array<{ labId: number; labName: string; tier: string; orders: number; onTimeCollection: number | null; onTimeReports: number | null; promisesKept: number | null; overrideRate: number | null; repeatAsks: number; costPaisePerOrder: number | null }>; stores: Array<{ storeId: number; storeName: string; orders: number; onTimeCollection: number | null; overrideRate: number | null }>; desks: Array<{ desk: string; executed: number; recorded: number; review: number; blocked: number }> };
+type WeeklyCard = { labId: number; labName: string; desk: string; outcome: string; text: string; numbers: { orders: number; asks: number; answered: number; answeredWithin30: number | null; medianReplyMin: number | null; missedVisits: number; lateCollections: number; reportsDelivered: number; reportTatMedianH: number | null; reportOver24: number | null; reportOver24Count: number; earlyNoPhlebo: number } };
+type Weekly = { week: { start: string; end: string; label: string }; ranAt: string | null; cards: WeeklyCard[] };
+type Scores = { days: number; labs: Array<{ labId: number; labName: string; tier: string; orders: number; onTimeCollection: number | null; onTimeReports: number | null; promisesKept: number | null; overrideRate: number | null; repeatAsks: number; costPaisePerOrder: number | null }>; stores: Array<{ storeId: number; storeName: string; orders: number; onTimeCollection: number | null; overrideRate: number | null }>; desks: Array<{ desk: string; executed: number; recorded: number; review: number; blocked: number }>; weekly: Weekly | null };
+
+const OUTCOME_LABEL: Record<string, string> = { QUEUED: "sent", ALREADY: "sent", SHADOW: "shadow", SKIPPED_OFF: "desk off", SKIPPED_NOT_CONNECTED: "no group", SKIPPED_EMPTY: "nothing to say", PREVIEW: "not yet sent" };
 
 const pct = (v: number | null | undefined) => (v == null ? "—" : `${Math.round(v * 100)}%`);
 
@@ -70,6 +74,33 @@ export function AgentBrief() {
             {s.desks.map((d) => <div key={d.desk} className="flex justify-between border-b border-zinc-800/60 py-1 text-zinc-300"><span>{d.desk.toLowerCase()}</span><span className="text-xs">{d.executed} done · {d.review} review · {d.recorded} shadow · {d.blocked} blocked</span></div>)}
           </section>
         </div>
+      )}
+      {s?.weekly && (
+        <section className="mt-4 overflow-x-auto rounded-lg border border-zinc-800">
+          <div className="flex flex-wrap items-baseline justify-between gap-2 px-3 py-2">
+            <div className="text-base font-semibold text-zinc-100">What the labs saw · week of {s.weekly.week.label}</div>
+            <span className="text-xs text-zinc-500">{s.weekly.ranAt ? `sent Monday ${new Date(s.weekly.ranAt).toLocaleString("en-IN")}` : "computed now · goes out Monday 10:30"}</span>
+          </div>
+          <table className="w-full text-sm">
+            <thead className="bg-zinc-900/60 text-left text-[11px] uppercase tracking-wide text-zinc-500"><tr><th className="px-3 py-2">Lab</th><th className="px-3 py-2">Orders</th><th className="px-3 py-2">Asks ≤ 30 min</th><th className="px-3 py-2">Median reply</th><th className="px-3 py-2">Visits missed</th><th className="px-3 py-2">Collected 2 h late</th><th className="px-3 py-2">Report TAT</th><th className="px-3 py-2">Over 24 h</th><th className="px-3 py-2">Message</th></tr></thead>
+            <tbody className="divide-y divide-zinc-800/80">
+              {s.weekly.cards.map((c) => (
+                <tr key={c.labId}>
+                  <td className="px-3 py-2 text-zinc-100">{c.labName} <span className="text-xs text-zinc-500">{OUTCOME_LABEL[c.outcome] ?? c.outcome.toLowerCase()}</span></td>
+                  <td className="px-3 py-2 text-zinc-300">{c.numbers.orders}</td>
+                  <td className="px-3 py-2 text-zinc-300">{c.numbers.asks ? `${pct(c.numbers.answeredWithin30)} of ${c.numbers.asks}` : "—"}</td>
+                  <td className="px-3 py-2 text-zinc-300">{c.numbers.medianReplyMin == null ? "—" : `${Math.round(c.numbers.medianReplyMin)} min`}</td>
+                  <td className="px-3 py-2 text-zinc-300">{c.numbers.missedVisits}</td>
+                  <td className="px-3 py-2 text-zinc-300">{c.numbers.lateCollections}</td>
+                  <td className="px-3 py-2 text-zinc-300">{c.numbers.reportTatMedianH == null ? "—" : `${c.numbers.reportTatMedianH < 10 ? c.numbers.reportTatMedianH.toFixed(1) : Math.round(c.numbers.reportTatMedianH)} h`}</td>
+                  <td className="px-3 py-2 text-zinc-300">{c.numbers.reportOver24 == null ? "—" : `${pct(c.numbers.reportOver24)} (${c.numbers.reportOver24Count})`}</td>
+                  <td className="px-3 py-2"><details><summary className="cursor-pointer text-xs text-zinc-400">show</summary><pre className="mt-1 whitespace-pre-wrap font-sans text-xs text-zinc-300">{c.text.replace("{{coordinator}}", "@coordinator")}</pre></details></td>
+                </tr>
+              ))}
+              {s.weekly.cards.length === 0 && <tr><td className="px-3 py-3 text-zinc-500" colSpan={9}>No labs in the directory yet.</td></tr>}
+            </tbody>
+          </table>
+        </section>
       )}
     </div>
   );

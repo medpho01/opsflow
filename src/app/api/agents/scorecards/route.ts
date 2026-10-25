@@ -4,6 +4,7 @@ import prisma from "@/lib/db/client";
 import { agentsRoute } from "@/lib/agents/api";
 import { loadDirectory } from "@/lib/agents/directory";
 import { computeMetrics } from "@/lib/agents/brain/nightly";
+import { weeklyScorecards } from "@/lib/agents/brain/scorecard";
 
 export const GET = agentsRoute("scorecards", async (request, { requestId }) => {
   const days = Math.min(30, Math.max(1, Number(request.nextUrl.searchParams.get("days") ?? 7)));
@@ -44,5 +45,7 @@ export const GET = agentsRoute("scorecards", async (request, { requestId }) => {
   }).sort((a, b) => b.orders - a.orders);
   const desks = ["LAB", "STORE", "INTAKE"].map((desk) => ({ desk, executed: actions.find((a) => a.desk === desk && a.outcome === "EXECUTED")?._count._all ?? 0, recorded: actions.find((a) => a.desk === desk && a.outcome === "RECORDED")?._count._all ?? 0, review: actions.find((a) => a.desk === desk && a.outcome === "REVIEW")?._count._all ?? 0, blocked: actions.find((a) => a.desk === desk && a.outcome === "BLOCKED")?._count._all ?? 0 }));
   const yesterday = await computeMetrics(new Date(Date.now() - 86_400_000)).catch(() => null);
-  return NextResponse.json({ days, labs, stores, desks, yesterday, requestId });
+  // Last week's lab scorecards, as sent (or recorded) on Monday — what the labs saw.
+  const weekly = await weeklyScorecards(new Date()).catch(() => null);
+  return NextResponse.json({ days, labs, stores, desks, yesterday, weekly, requestId });
 });

@@ -9,6 +9,7 @@
  *   dispatch.flush    at :00 and :30 — one combined message per lab and ask
  *   risk.batch        05:45 (today) and 19:00 (tomorrow) — every journey re-scored
  *   brain.monitor     every 30 min, 06:00–21:00; brain.nightly 21:30
+ *   lab.scorecard     Monday 10:30 — last week's numbers to each lab's coordinator
  *
  * Run: `npm run worker`. Stop with SIGINT/SIGTERM; in-flight jobs finish.
  */
@@ -22,10 +23,11 @@ import { ensureAgentTaskTypes } from "@/lib/agents/executors/tasks";
 import { verifyAgentTasks } from "@/lib/agents/executors/verify";
 import { runStorePass } from "@/lib/agents/store/pass";
 import { runBrain } from "@/lib/agents/brain";
+import { runLabScorecards } from "@/lib/agents/brain/scorecard";
 
 export const QUEUES = {
   sweep: "agent.sweep", wake: "journey.wake", urgent: "dispatch.urgent", flush: "dispatch.flush", risk: "risk.batch",
-  verify: "tasks.verify", store: "store.pass", monitor: "brain.monitor", nightly: "brain.nightly", review: "brain.review",
+  verify: "tasks.verify", store: "store.pass", monitor: "brain.monitor", nightly: "brain.nightly", review: "brain.review", scorecard: "lab.scorecard",
 } as const;
 
 type WakeJob = { orderId: number; reason: WakeReason; order?: OrderSnapshot; labSilentHours?: number | null };
@@ -58,6 +60,7 @@ export async function startWorker(): Promise<PgBoss> {
   await single(QUEUES.monitor, 600);
   await single(QUEUES.nightly, 1800);
   await single(QUEUES.review, 3600);
+  await single(QUEUES.scorecard, 1200);
 
   const enqueueWake = async (orderId: number, reason: WakeReason, order?: OrderSnapshot, labSilentHours?: number | null) => {
     await boss.send(QUEUES.wake, { orderId, reason, order, labSilentHours } satisfies WakeJob, { singletonKey: String(orderId) });
@@ -87,6 +90,8 @@ export async function startWorker(): Promise<PgBoss> {
   await boss.work(QUEUES.monitor, { batchSize: 1, pollingIntervalSeconds: 10 }, async () => timed("brain monitor", () => runBrain("monitor")));
   await boss.work(QUEUES.nightly, { batchSize: 1, pollingIntervalSeconds: 10 }, async () => timed("brain nightly", () => runBrain("nightly")));
   await boss.work(QUEUES.review, { batchSize: 1, pollingIntervalSeconds: 10 }, async () => timed("brain review", () => runBrain("review")));
+  // Queue the cards, then flush at once: the 10:30 dispatch may already have run.
+  await boss.work(QUEUES.scorecard, { batchSize: 1, pollingIntervalSeconds: 10 }, async () => timed("lab scorecards", async () => { const r = await runLabScorecards(new Date()); const f = await flushOutbox(new Date()); return { ...r, sent: f.messages }; }));
 
   const tz = TZ();
   await boss.schedule(QUEUES.sweep, process.env.AGENT_SWEEP_CRON || "* * * * *", {}, { tz });
@@ -98,8 +103,9 @@ export async function startWorker(): Promise<PgBoss> {
   await boss.schedule(QUEUES.monitor, "*/30 6-21 * * *", {}, { tz });
   await boss.schedule(QUEUES.nightly, process.env.AGENT_NIGHTLY_CRON || "30 21 * * *", {}, { tz });
   await boss.schedule(QUEUES.review, process.env.AGENT_REVIEW_CRON || "0 22 * * 0", {}, { tz });
+  await boss.schedule(QUEUES.scorecard, process.env.AGENT_SCORECARD_CRON || "30 10 * * 1", {}, { tz });
   await boss.send(QUEUES.sweep, {}, { singletonKey: "boot" });
-  console.log("[Worker] started: sweep, wake, dispatch, risk, verify, store pass, brain");
+  console.log("[Worker] started: sweep, wake, dispatch, risk, verify, store pass, brain, scorecard");
   return boss;
 }
 

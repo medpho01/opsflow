@@ -79,6 +79,8 @@ export const DAILY_SLOTS: Record<string, string[]> = {
   STATUS: ["11:00", "13:30", "16:00", "18:30"],
   REPORT: ["10:30", "16:30"],
   OVERDUE: ["12:00", "17:00"],
+  /** The weekly lab scorecard (agents): Monday 10:30; the dispatcher's one-hour slot window carries it. */
+  SCORECARD: ["10:30"],
 };
 const DEFAULT_SLOTS = ["09:00", "13:00", "17:00"];
 export const slotsFor = (intent: string) => DAILY_SLOTS[intent] ?? DEFAULT_SLOTS;

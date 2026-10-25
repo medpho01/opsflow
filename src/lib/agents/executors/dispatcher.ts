@@ -174,6 +174,7 @@ async function flushGroup(key: string, queued: Item[], now: Date): Promise<{ mes
   const tz = TIME_ZONE();
 
   if (kind === "STORE") return flushStore(id, group, now);
+  if (ask === "SCORECARD") return flushScorecard(id, group, now);
 
   // Never send what no longer makes sense (seen queued on 24 Oct 2026: "phlebo
   // on time?" for a visit a week ago, "please confirm" for a past visit, report
@@ -289,6 +290,44 @@ async function flushGroup(key: string, queued: Item[], now: Date): Promise<{ mes
     }
   }
   return { messages, items, held };
+}
+
+/**
+ * The weekly scorecard (brain/scorecard.ts): plain text to the lab group, the
+ * coordinator @mentioned, under the same day and slot caps as any ask, and a
+ * provider_batches row with intent SCORECARD so the ledger shows it. One per lab
+ * per week (the outbox idemKey); never a numbered list, never a follow-up.
+ */
+async function flushScorecard(labId: number, group: Item[], now: Date): Promise<{ messages: number; items: number; held: number }> {
+  const tz = TIME_ZONE();
+  const config = await prisma.nonApiLabConfig.findUnique({ where: { labId } });
+  if (!config) {
+    await prisma.agentOutboxItem.updateMany({ where: { id: { in: group.map((i) => i.id) } }, data: { status: "DROPPED" } });
+    console.warn(`[Agents] lab ${labId} is not connected (no group); scorecard dropped`);
+    return { messages: 0, items: 0, held: 0 };
+  }
+  const dayStart = new Date(now); dayStart.setUTCHours(0, 0, 0, 0);
+  const sentToday = await prisma.providerBatch.count({ where: { labId, shadow: false, createdAt: { gte: new Date(dayStart.getTime() - 5.5 * 3_600_000) } } });
+  const sentThisSlot = await prisma.providerBatch.count({ where: { labId, shadow: false, recipient: "LAB", createdAt: { gte: currentSlot(now, tz) } } });
+  if (sentToday >= PER_DAY_CAP || sentThisSlot >= PER_SLOT_CAP) return { messages: 0, items: 0, held: group.length };
+  const [item, ...extra] = group;
+  if (extra.length) await prisma.agentOutboxItem.updateMany({ where: { id: { in: extra.map((i) => i.id) } }, data: { status: "DROPPED" } });
+  const raw = (item.payload as { text?: string | null }).text;
+  if (!raw) { await prisma.agentOutboxItem.update({ where: { id: item.id }, data: { status: "DROPPED" } }); return { messages: 0, items: 0, held: 0 }; }
+  const target = await resolveLabTarget(config, null);
+  const people = await coordinatorsFor(config, now);
+  const mention = people.map((c) => `@${c.jid.split("@")[0]}`).join(" ") || "Team";
+  const text = raw.replace("{{coordinator}}", mention);
+  const outbound = await sendWhatsApp({ targetJid: target.targetJid, groupId: target.groupId, text, mentions: people.map((c) => c.jid), now });
+  const batch = await prisma.providerBatch.create({
+    data: {
+      labId, intent: "SCORECARD", slotAt: currentSlot(now, tz), shadow: false, outboundId: outbound.id, recipient: "LAB", itemCount: 1, text,
+      items: [{ n: 1, orderId: 0, ruleId: "agent:scorecard", occurrence: 1, communicationId: null, line: text }] as Prisma.InputJsonValue,
+    },
+    select: { id: true },
+  });
+  await prisma.agentOutboxItem.update({ where: { id: item.id }, data: { status: "SENT", batchId: batch.id, outboundId: outbound.id, sentAt: now } });
+  return { messages: 1, items: 1, held: 0 };
 }
 
 /** A store counterparty gets plain text per item (answers, alerts, warnings), never a numbered ask. */

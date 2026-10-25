@@ -98,6 +98,21 @@ describe("the ladder", () => {
     assert.equal(r.checkpoints.find((c) => c.name === "confirmed")?.status, "WAIVED");
     assert.ok(!r.actions.some((a) => a.params.checkpoint === "confirmed"));
   });
+  it("what the lab says is relayed to the store at once: collected, cannot do, rescheduled", () => {
+    const o = order();
+    const fact = (kind: string, value: string, id: string) => ({ kind: "fact", at: at("2026-10-21T02:30:00Z"), actor: "LAB", payload: { kind, value, confidence: 0.9, source: "lab_reply", attributedBy: "REPLY_TO", factId: id } });
+    const r = wake(o, at("2026-10-21T02:31:00Z"), undefined, { events: [fact("sample_collected", "collected", "f1"), fact("patient_unavailable", "customer not responding", "f2")] as never });
+    const alerts = r.actions.filter((a) => a.action === "store_alert").map((a) => a.params.template);
+    assert.ok(alerts.includes("STORE_COLLECTED")); assert.ok(alerts.includes("STORE_PATIENT_UNREACHABLE"));
+    assert.equal(alerts.filter((t) => t === "STORE_PATIENT_UNREACHABLE").length, 1); // the SOP's own hand-off, not twice
+  });
+  it("a store asking for slots gets the lab's usual hours when known", () => {
+    const o = order();
+    const msg = { kind: "store_message", at: at("2026-10-20T10:00:00Z"), actor: "STORE", payload: { intent: "slot", text: "slots please", messageId: "m-slot", waMsgId: "w9" } };
+    const r = wake(o, at("2026-10-20T10:01:00Z"), undefined, { events: [msg] as never, slotSummary: "Lab usually collects between 6 am and 11 am (most bookings 7 am–8 am)" } as never);
+    const reply = r.actions.find((a) => a.action === "store_reply");
+    assert.ok(String(reply?.params.text).includes("usually collects between 6 am and 11 am"));
+  });
   it("a pre-visit checkpoint still open long after the visit becomes one task, never a chase", () => {
     const o = order({ appointmentTime: at("2026-10-19T02:30:00Z"), orderStatus: "ORDER_SCHEDULED" });
     const r1 = wake(o, at("2026-10-24T13:45:00Z"));

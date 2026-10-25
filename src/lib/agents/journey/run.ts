@@ -10,6 +10,7 @@
 import { Prisma } from "@prisma/client";
 import prisma from "@/lib/db/client";
 import { fetchOrderSnapshot } from "./window";
+import { typicalSlotsFor } from "../slots";
 import { step, type Attempt, type CheckpointState, type JourneyEvent, type JourneyState } from "./step";
 import type { OrderSnapshot } from "./policy";
 import { guard, loadGuardState, type GuardState } from "../guard/guard";
@@ -77,9 +78,12 @@ export async function wakeJourney(orderId: number, reason: WakeReason, opts: Wak
   const labSop = sops.get("LAB") ?? null;
   const sopParams = paramsFor(labSop, { labTier, labId: order.labId, storeId: order.storeId, orderType: order.orderType });
 
+  // A store asking for slots gets the lab's usual hours (slots.ts); fetched only when asked.
+  const slotSummary = events.some((e) => e.kind === "store_message" && (e.payload as { intent?: string }).intent === "slot") && order.labId != null
+    ? await typicalSlotsFor(order.labId, order.labName).catch(() => null) : null;
   const out = step({
     now, order, journey: row ? toJourneyState(row) : null, checkpoints: row ? row.checkpoints.map(toCheckpointState) : [], events,
-    sop: sopParams, sopVersionId: labSop?.versionId ?? null, labTier, portalReady, labSilentHours: opts.labSilentHours ?? null, timeZone: process.env.TIMEZONE || "Asia/Kolkata",
+    sop: sopParams, sopVersionId: labSop?.versionId ?? null, labTier, portalReady, slotSummary, labSilentHours: opts.labSilentHours ?? null, timeZone: process.env.TIMEZONE || "Asia/Kolkata",
   });
   const j = out.journey;
   const snapshot = j.consoleSnapshot ? { ...j.consoleSnapshot, __journey: { rescheduleCount: j.rescheduleCount } } : null;

@@ -101,6 +101,8 @@ export type StepInput = {
   labTier?: LabTier | null;
   /** Is a logged-in portal session set up for this lab? Without one the portal rung is skipped: ask in the group instead. */
   portalReady?: boolean;
+  /** When the lab usually collects ("6:00–11:00 am, most at 7–8 am"), for a store asking for slots. */
+  slotSummary?: string | null;
   /** Hours since the lab's group last wrote, for risk; null when unknown. */
   labSilentHours?: number | null;
   timeZone?: string;
@@ -262,6 +264,12 @@ export function sendWindow(now: Date, due: Date, sop: SopParams, ask: SopParams[
 const RUNG_TO_ACTION: Record<Rung, ActionName> = {
   portal_read: "portal_read", ask: "ask", reminder: "reminder", manager_whatsapp: "manager_whatsapp", call: "call", task: "create_task", stuck: "stuck",
 };
+/** Lab facts the store is told about the moment they land, and the template for each. */
+const STORE_RELAY: Record<string, string> = {
+  patient_unavailable: "STORE_PATIENT_UNREACHABLE", sample_collected: "STORE_COLLECTED", new_appointment_time: "STORE_LAB_RESCHEDULED",
+  cannot_fulfil: "STORE_LAB_CANNOT", report_shared: "STORE_REPORT_SHARED",
+};
+
 const STUCK_TASK: Partial<Record<CheckpointName, string>> = {
   confirmed: "AGENT_COLLECTION_STUCK", visit_confirmed: "AGENT_COLLECTION_STUCK", phlebo_assigned: "AGENT_COLLECTION_STUCK", phlebo_reached: "AGENT_COLLECTION_STUCK",
   sample_collected: "AGENT_COLLECTION_STUCK", sample_at_lab: "AGENT_REPORT_STUCK", report_delivered: "AGENT_REPORT_STUCK",
@@ -410,6 +418,12 @@ export function step(input: StepInput): StepOutput {
     }
     // Other hand-offs (FR-8.9, FR-11): a lab-raised problem starts a store alert or a task.
     for (const f of factsSeen) {
+      // What the lab said reaches the store that placed the order, at once (25 Oct 2026: ops
+      // relayed "customer not available" by hand). Fixed behaviour; the SOP adds, never removes.
+      const relay = STORE_RELAY[f.kind];
+      if (relay && order.storeId != null && f.source !== "store_msg" && !sop.handoffs.some((x) => x.onFact === f.kind && x.do === "store_alert")) {
+        actions.push({ desk: "STORE", action: "store_alert", params: { template: relay, orderId: order.id, storeId: order.storeId, fact: f.kind, text: f.value, at: f.at.toISOString() }, reason: `lab says ${f.kind.replace(/_/g, " ")}: "${f.value.slice(0, 60)}"`, idemKey: `relay:${order.id}:${f.kind}:${f.id ?? f.at.getTime()}` });
+      }
       for (const h of sop.handoffs.filter((x) => x.onFact === f.kind && x.do !== "status_write")) {
         const key = `${h.do}:${order.id}:${f.kind}:${f.id ?? f.at.getTime()}`;
         if (h.do === "store_alert") {
@@ -439,7 +453,14 @@ export function step(input: StepInput): StepOutput {
       })();
       const quote = m.waMsgId ? { quotedWaId: m.waMsgId } : {};
       switch (m.intent) {
-        case "status": case "slot": case "report": {
+        case "slot": {
+          if (input.slotSummary) {
+            actions.push({ desk: "STORE", action: "store_reply", params: { text: `#${order.id}: ${input.slotSummary}. Share a preferred time and we'll book it.`, orderId: order.id, storeId: order.storeId, ...quote }, reason: "store asked for slots; answered from the lab's usual hours", idemKey: `${key}:slots` });
+            break;
+          }
+        }
+        // falls through
+        case "status": case "report": {
           const slotPassed = slot != null && now.getTime() > slot.getTime() + 30 * MIN;
           const canAnswer = known && !(m.intent === "report" && collected?.status === "MET" && report && report.status !== "MET" && now.getTime() > report.dueAt.getTime()) && !(m.intent !== "report" && slotPassed && collected?.status !== "MET");
           if (canAnswer) {

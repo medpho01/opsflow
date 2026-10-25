@@ -17,7 +17,8 @@ import { recordJourneyEvent, wakeJourney } from "../journey/run";
 import { askModel } from "../llm";
 import { enqueueOutbox } from "../executors/dispatcher";
 import { storeTemplate } from "../executors/storeReply";
-import { loadGuardState } from "../guard/guard";
+import { guard, loadGuardState } from "../guard/guard";
+import { fetchOrderSnapshot } from "../journey/window";
 
 export type StoreIntent = "status" | "report" | "slot" | "reschedule" | "cancel" | "change_tests" | "new_booking" | "serviceability" | "complaint" | "noise" | "other";
 
@@ -94,6 +95,26 @@ async function linkOrder(message: { orderIds: number[]; idType: string | null; i
   return null;
 }
 
+const CLOSED_TASK: Partial<Record<StoreIntent, string>> = { report: "AGENT_REPORT_UPLOAD", reschedule: "AGENT_RESCHEDULE", cancel: "AGENT_CANCEL", change_tests: "AGENT_ORDER_CHANGE", complaint: "AGENT_COMPLAINT" };
+
+async function answerClosedOrder(orderId: number, storeId: number, intent: StoreIntent, text: string, waMsgId: string, at: Date, state: Awaited<ReturnType<typeof loadGuardState>>): Promise<{ executed: number; review: number }> {
+  const o = await fetchOrderSnapshot(orderId).catch(() => null);
+  if (!o) return { executed: 0, review: 0 };
+  const tz = process.env.TIMEZONE || "Asia/Kolkata";
+  const when = o.statusUpdatedAt ? o.statusUpdatedAt.toLocaleString("en-IN", { timeZone: tz, day: "numeric", month: "short", hour: "numeric", minute: "2-digit" }) : "earlier";
+  const line = o.orderStatus === "REPORT_DELIVERED" ? `report delivered on ${when}` : o.orderStatus === "CANCELED" || o.orderStatus === "CANCELLED" ? `cancelled on ${when}`
+    : o.orderStatus === "PATIENT_MISSED" ? `marked patient missed on ${when}` : `shows ${o.orderStatus.toLowerCase().replace(/_/g, " ")} since ${when}`;
+  const taskType = CLOSED_TASK[intent];
+  const ctx = { journeyId: null, orderId, labId: o.labId, storeId, orderType: o.orderType, appointmentTime: o.appointmentTime, patientName: o.patientName, labName: o.labName, storeName: o.storeName };
+  const reply = await guard({ desk: "STORE", action: "store_reply", params: { text: `#${orderId}: LabStack ${line}.${taskType ? " Raising it with the team now." : ""}`, orderId, storeId, quotedWaId: waMsgId }, reason: `store asked about a closed order (${intent}); LabStack ${line}`, idemKey: `closed:${orderId}:${waMsgId}` }, ctx, state);
+  let executed = reply.outcome === "EXECUTED" ? 1 : 0; let review = reply.outcome === "REVIEW" ? 1 : 0;
+  if (taskType) {
+    const t = await guard({ desk: "STORE", action: "create_task", params: { taskType, orderId, cause: `STORE_${intent.toUpperCase()}_CLOSED_ORDER`, evidence: [{ kind: "store_msg", at: at.toISOString(), text: text.slice(0, 300) }, { kind: "console", at: at.toISOString(), text: `LabStack ${line}` }], action: `#${orderId}: ${intent.replace("_", " ")} asked by the store; LabStack ${line}` }, reason: `store asked to ${intent.replace("_", " ")} on a closed order`, idemKey: `closed-task:${orderId}:${waMsgId}` }, ctx, state);
+    executed += t.outcome === "EXECUTED" ? 1 : 0; review += t.outcome === "REVIEW" ? 1 : 0;
+  }
+  return { executed, review };
+}
+
 export async function runStoreReader(now = new Date()): Promise<StoreReaderResult> {
   const result: StoreReaderResult = { read: 0, linked: 0, answered: 0, tasks: 0, review: 0 };
   const groups = await prisma.waGroup.findMany({ where: { role: "SUPPORT", active: true, archivedAt: null, storeId: { not: null } }, select: { id: true, storeId: true, jid: true } });
@@ -142,6 +163,11 @@ export async function runStoreReader(now = new Date()): Promise<StoreReaderResul
     }, false);
     if (recorded) {
       const r = await wakeJourney(link.orderId, "inbound");
+      result.answered += r.executed; result.review += r.review;
+    } else {
+      // No open journey — delivered, cancelled or missed. Still an answer (Plum asked about a
+      // partial report and a cancelled order on 25 Oct 2026 and heard nothing).
+      const r = await answerClosedOrder(link.orderId, g.storeId!, intent, text, m.waMsgId, m.ts, state);
       result.answered += r.executed; result.review += r.review;
     }
   }

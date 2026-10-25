@@ -364,6 +364,10 @@ export function step(input: StepInput): StepOutput {
           attempts[map.checkpoint] = { ...a, answeredAt: ev.at.toISOString(), promiseDue: promiseAt.toISOString(), promiseText: value.slice(0, 120) };
           newEvents.push({ kind: "promise", at: ev.at, actor: "LAB", payload: { kind: map.promise, checkpoint: map.checkpoint, dueAt: promiseAt, text: value.slice(0, 200), superseded } });
           withdraw.push({ asks: undefined, reason: `lab promised ${map.checkpoint} by ${promiseAt.toISOString()}` });
+          // The store hears the promise too ("lab says report by 6 pm"), so it stops asking.
+          if (order.storeId != null && (map.checkpoint === "report_delivered" || map.checkpoint === "phlebo_reached" || map.checkpoint === "sample_collected")) {
+            actions.push({ desk: "STORE", action: "store_alert", params: { template: "STORE_LAB_PROMISE", orderId: order.id, storeId: order.storeId, fact: "promise", text: `${LABELS[map.checkpoint].toLowerCase()} by ${LABELS_TIME(promiseAt, tz)}`, at: ev.at.toISOString() }, reason: `lab promised ${map.checkpoint} by ${LABELS_TIME(promiseAt, tz)}`, idemKey: `promise-relay:${order.id}:${map.checkpoint}:${promiseAt.getTime()}` });
+          }
         } else {
           attempts[map.checkpoint] = { ...a, answeredAt: ev.at.toISOString() };
         }

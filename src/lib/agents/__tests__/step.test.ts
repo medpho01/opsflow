@@ -115,6 +115,15 @@ describe("the ladder", () => {
     assert.equal(ask?.params.intent, "STATUS");
     assert.ok(r.actions.some((a) => a.action === "store_reply"));
   });
+  it("a store's reschedule with a time is noted, becomes a task, and the lab is told the time", () => {
+    const o = order({ labRef: "BLR6365554", appointmentTime: at("2026-10-25T05:15:00Z") }); // 10:45 am IST today
+    const msg = { kind: "store_message", at: at("2026-10-25T04:01:00Z"), actor: "STORE", payload: { intent: "reschedule", text: "94103 - Please schedule urine sample collection at 10:45 am", messageId: "m-rs", waMsgId: "w7" } };
+    const r = wake(o, at("2026-10-25T04:02:00Z"), undefined, { events: [msg] as never });
+    assert.ok(acts(r).includes("ack") && acts(r).includes("create_task"));
+    const headsUp = r.actions.find((a) => a.action === "ask" && a.idemKey.endsWith(":lab-heads-up"));
+    const note = String((headsUp?.params.line as { note: string } | undefined)?.note);
+    assert.ok(note.startsWith("urine re-collection requested at 10:45"), note);
+  });
   it("a store asking for slots gets the lab's usual hours when known", () => {
     const o = order();
     const msg = { kind: "store_message", at: at("2026-10-20T10:00:00Z"), actor: "STORE", payload: { intent: "slot", text: "slots please", messageId: "m-slot", waMsgId: "w9" } };

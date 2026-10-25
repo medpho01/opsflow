@@ -497,6 +497,15 @@ export function step(input: StepInput): StepOutput {
           const taskType = m.intent === "reschedule" ? "AGENT_RESCHEDULE" : m.intent === "cancel" ? "AGENT_CANCEL" : "AGENT_ORDER_CHANGE";
           const requested = parsePromiseTime(m.text, m.at, tz);
           actions.push({ desk: "STORE", action: "ack", params: { template: "STORE_NOTED", orderId: order.id, storeId: order.storeId, ...quote }, reason: `store asked to ${m.intent.replace("_", " ")}`, idemKey: `${key}:noted` });
+          // The lab hears it too, with the time, so it can confirm or push back before the
+          // booking is changed ("94103 — urine collection at 10:45?", Plum, 25 Oct 2026).
+          if (order.labId != null && sop && (m.intent !== "change_tests")) {
+            const whenText = requested ? LABELS_TIME(requested, tz) + (requested.toDateString() !== now.toDateString() ? ` ${requested.toLocaleDateString("en-IN", { timeZone: tz, weekday: "short", day: "numeric", month: "short" })}` : "") : null;
+            const sample = /\b(urine|stool|sputum|swab)\b/i.exec(m.text)?.[1]?.toLowerCase();
+            const note = m.intent === "cancel" ? "store asks to cancel — please stand down" : `${sample ? `${sample} re-collection` : "reschedule"} requested${whenText ? ` at ${whenText}` : ""} — ok?`;
+            const window = sendWindow(now, now, sop, { intent: "STATUS", leadMin: 0, graceMin: 480, urgentWithinMin: 0, nightBefore: false }, true, false, tz);
+            actions.push({ desk: "LAB", action: "ask", params: { checkpoint: next?.name ?? "sample_collected", orderId: order.id, labId: order.labId, attempt: 1, dueAt: now, rung: "ask", intent: "STATUS", counterparty: `LAB:${order.labId}`, windowFrom: window.from, windowTo: window.to, urgent: false, line: { orderId: order.id, patientName: order.patientName, appointment: order.appointmentTime, labRef: order.labRef ?? null, mobile: order.mobile ?? null, area: order.area ?? null, note }, forStore: true }, reason: `store asked to ${m.intent}${whenText ? ` at ${whenText}` : ""}; the lab is told`, idemKey: `${key}:lab-heads-up` });
+          }
           actions.push({ desk: "STORE", action: "create_task", params: { taskType, orderId: order.id, cause: `STORE_${m.intent.toUpperCase()}`, evidence: [{ kind: "store_msg", at: m.at.toISOString(), text: m.text.slice(0, 300) }], action: m.intent === "reschedule" ? `Reschedule #${order.id}${requested ? ` to ${fmtDay(requested)}` : " as the store asked"} in the console` : m.intent === "cancel" ? `Cancel #${order.id} in the console` : `Change #${order.id}'s tests as the store asked, then tell the lab`, verify: m.intent === "reschedule" ? (requested ? { kind: "slot_equals", value: requested.toISOString() } : { kind: "none" }) : m.intent === "cancel" ? { kind: "status_at_least", value: "CANCELED" } : { kind: "none" }, dueInMinutes: 30 }, reason: `store asked to ${m.intent.replace("_", " ")}: "${m.text.slice(0, 80)}"`, idemKey: `${key}:task` });
           if (!journey.subStates.includes("change_pending")) journey = { ...journey, subStates: [...journey.subStates, "change_pending"] };
           break;

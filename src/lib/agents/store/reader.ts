@@ -24,7 +24,7 @@ export type StoreIntent = "status" | "report" | "slot" | "reschedule" | "cancel"
 
 const FIRST_RUN_LOOKBACK_MS = 60 * 60_000;
 const ONLY_OPEN_WINDOW_MS = 3 * 3_600_000;
-const ACK_RE = /^\s*(ok|okay|okk|thanks?|thank you|thx|noted|sure|done|👍|🙏|✅|great|fine|received|alright)[\s.!]*$/i;
+const ACK_RE = /^\s*(ok|okay|okk|thanks?|thank you|thx|noted|sure|done|👍|🙏|✅|great|fine|received|alright|checking|will check|let me check|on it|looking into it|checking with (the )?(user|customer|cx)|sure sir|yes please|yes)[\s.!]*$/i;
 const REF_RE = /\b([A-Z]{2,4}\d{5,9}|[A-Z]{2,5}[A-Z0-9]{4,8})\b/g;
 
 export function classifyStoreMessage(text: string): { intent: StoreIntent; sure: boolean } {
@@ -150,8 +150,10 @@ export async function runStoreReader(now = new Date()): Promise<StoreReaderResul
     const link = await linkOrder({ orderIds: m.orderIds, idType: m.idType ?? null, idVia: m.idVia ?? null, refIds: m.refIds, text, replyToWaId: m.replyToWaId, groupId: m.groupId }, g.storeId!, now);
     await prisma.waMessage.update({ where: { id: m.id }, data: { intent: `STORE_${intent.toUpperCase()}` } }).catch(() => undefined);
     if (!link) {
-      // Ask once for the order id (FR-9.2), only for questions that need one.
-      if (["status", "report", "slot", "reschedule", "cancel", "change_tests"].includes(intent) && state.desks.get(`STORE:STORE:${g.storeId}`) === "LIVE") {
+      // Ask once for the order id (FR-9.2), only for questions that need one — and never inside a
+      // thread with a person: a reply to a message that is not ours is theirs to handle.
+      const inHumanThread = !!m.replyToWaId && !(await prisma.waOutbound.findFirst({ where: { sentWaMsgId: m.replyToWaId }, select: { id: true } }));
+      if (!inHumanThread && ["status", "report", "slot", "reschedule", "cancel", "change_tests"].includes(intent) && state.desks.get(`STORE:STORE:${g.storeId}`) === "LIVE") {
         await enqueueOutbox({ counterparty: `STORE:${g.storeId}`, ask: "STORE_REPLY", orderId: 0, journeyId: null, actionId: null, windowFrom: now, windowTo: new Date(now.getTime() + 2 * 3_600_000), urgent: true, idemKey: `askid:${m.id}`, line: { orderId: 0, patientName: null, appointment: null }, text: await storeTemplate("STORE_ASK_ORDER_ID") }).catch(() => undefined);
       }
       continue;

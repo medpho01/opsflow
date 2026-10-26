@@ -436,7 +436,7 @@ export function step(input: StepInput): StepOutput {
   // 3. Events: people, facts, promises.
   const attempts: Record<string, Attempt> = { ...journey.attempts };
   const factsSeen: Array<{ kind: string; value: string; confidence: number; source: string; named: boolean; id: string | null; at: Date; fullText?: string }> = [];
-  const storeMessages: Array<{ intent: string; text: string; messageId: string; waMsgId: string | null; at: Date; samples?: Record<string, string>; requestTime?: string | null }> = [];
+  const storeMessages: Array<{ intent: string; text: string; messageId: string; waMsgId: string | null; at: Date; samples?: Record<string, string>; requestTime?: string | null; thread?: { kind: string; waitingOn: string; openedAt: string } | null }> = [];
   let caseworker: StepOutput["caseworker"] = null;
   for (const ev of events) {
     if (ev.kind === "takeover") {
@@ -490,7 +490,7 @@ export function step(input: StepInput): StepOutput {
         }
       }
     } else if (ev.kind === "store_message") {
-      storeMessages.push({ intent: String(ev.payload.intent ?? "other"), text: String(ev.payload.text ?? ""), messageId: String(ev.payload.messageId ?? ""), waMsgId: (ev.payload.waMsgId as string | null) ?? null, at: ev.at, samples: (ev.payload.samples as Record<string, string> | undefined) ?? {}, requestTime: (ev.payload.requestTime as string | null | undefined) ?? null });
+      storeMessages.push({ intent: String(ev.payload.intent ?? "other"), text: String(ev.payload.text ?? ""), messageId: String(ev.payload.messageId ?? ""), waMsgId: (ev.payload.waMsgId as string | null) ?? null, at: ev.at, samples: (ev.payload.samples as Record<string, string> | undefined) ?? {}, requestTime: (ev.payload.requestTime as string | null | undefined) ?? null, thread: (ev.payload.thread as { kind: string; waitingOn: string; openedAt: string } | null | undefined) ?? null });
     }
   }
   if (journey.pausedUntil && journey.pausedUntil.getTime() <= now.getTime()) journey = { ...journey, ownerUserId: null, pausedUntil: null };
@@ -577,6 +577,14 @@ export function step(input: StepInput): StepOutput {
         return null;
       })();
       const quote = m.waMsgId ? { quotedWaId: m.waMsgId } : {};
+      // A nudge on a request still open ("is this done?" after a reschedule ask): say where it is,
+      // not "noted" again (27 Oct 2026).
+      if (m.thread && m.thread.kind !== "status" && (m.intent === "status" || m.intent === "other")) {
+        const who = m.thread.waitingOn === "LAB" ? (order.labName ?? "the lab") : "our team";
+        const since = LABELS_TIME(new Date(m.thread.openedAt), tz);
+        actions.push({ desk: "STORE", action: "store_reply", params: { text: `#${order.id}: your ${m.thread.kind.replace("_", " ")} request (asked at ${since}) is with ${who} — we'll confirm here the moment it's done.`, orderId: order.id, storeId: order.storeId, ...quote }, reason: `store nudged an open ${m.thread.kind} request`, idemKey: `${key}:thread` });
+        continue;
+      }
       // A sample left behind ("urine samples not collected, slots please", Plum, 25 Oct 2026) wins
       // over whatever the message otherwise looks like: never answer it with "sample collected".
       const missedSample = Object.entries(m.samples ?? {}).find(([k, s]) => s === "missed" && k !== "blood")?.[0];

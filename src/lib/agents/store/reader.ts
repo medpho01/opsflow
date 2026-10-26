@@ -15,6 +15,7 @@ import { labstackWorkerQuery } from "@/lib/db/labstack";
 import { isAutomated, loadTeam, makeTeamMatcher } from "@/lib/wa/team";
 import { recordJourneyEvent, wakeJourney } from "../journey/run";
 import { readMessage } from "../reader/read";
+import { openThread, teamAnswered, threadForNudge, THREAD_KINDS } from "./threads";
 import { enqueueOutbox } from "../executors/dispatcher";
 import { storeTemplate } from "../executors/storeReply";
 import { guard, loadGuardState } from "../guard/guard";
@@ -196,8 +197,13 @@ export async function runStoreReader(now = new Date()): Promise<StoreReaderResul
     result.read += 1;
     const g = storeByGroup.get(m.groupId)!;
     if (!liveOrShadow.has(g.storeId!)) continue;
-    if (isAutomated(m) || isTeam(m.sender, m.senderJid)) continue;
+    if (isAutomated(m)) continue;
     const text = (m.text ?? "").trim();
+    if (isTeam(m.sender, m.senderJid)) {
+      // A team member answering in the store group closes the threads the answer is about.
+      if (text) await teamAnswered({ storeId: g.storeId!, groupId: m.groupId, orderIds: explicitOrderIds(text), replyToWaId: m.replyToWaId, at: m.ts, sender: m.sender }).catch(() => 0);
+      continue;
+    }
     if (!text) continue;
     // The reader (model first, patterns as fallback) fills in the form: orders, samples, request, ack.
     const quoted = m.replyToWaId ? await prisma.waMessage.findUnique({ where: { waMsgId: m.replyToWaId }, select: { text: true } }).catch(() => null) : null;
@@ -208,7 +214,14 @@ export async function runStoreReader(now = new Date()): Promise<StoreReaderResul
     // model learns from the group's recent messages and has returned an order from those instead
     // (26 Oct 2026: "94301 - RNR" linked to 94188, "93807 93811 …" to 93412).
     const readIds = modelIdsToTrust(reading.orders.map((o) => o.orderId), text, quoted?.text ?? null);
-    const links = await linkOrders({ orderIds: m.orderIds, idType: m.idType ?? null, idVia: m.idVia ?? null, refIds: m.refIds, text: readIds.length ? `${text} ${readIds.join(" ")}` : text, replyToWaId: m.replyToWaId, groupId: m.groupId }, g.storeId!, now);
+    let links = await linkOrders({ orderIds: m.orderIds, idType: m.idType ?? null, idVia: m.idVia ?? null, refIds: m.refIds, text: readIds.length ? `${text} ${readIds.join(" ")}` : text, replyToWaId: m.replyToWaId, groupId: m.groupId }, g.storeId!, now);
+    // A nudge with no order id ("is this done?", "any update?") is about the thread it quotes, or
+    // the only open one in this group (27 Oct 2026: half of Plum's messages are such nudges).
+    let thread: { id: string; kind: string; waitingOn: string; openedAt: Date } | null = null;
+    if (!links.length) {
+      const t = await threadForNudge({ storeId: g.storeId!, replyToWaId: m.replyToWaId, at: m.ts }).catch(() => null);
+      if (t) { links = [{ orderId: t.orderId, via: "THREAD" }]; thread = t; }
+    }
     const link = links[0] ?? null;
     await prisma.waMessage.update({ where: { id: m.id }, data: { intent: `STORE_${intent.toUpperCase()}` } }).catch(() => undefined);
     if (!link) {
@@ -222,9 +235,12 @@ export async function runStoreReader(now = new Date()): Promise<StoreReaderResul
     }
     for (const link of links) {
     result.linked += 1;
+    // The request is tracked until it is closed (threads.ts); a nudge joins the thread it is about.
+    const snapshot = await fetchOrderSnapshot(link.orderId).catch(() => null);
+    if (!thread && THREAD_KINDS.has(intent)) await openThread({ orderId: link.orderId, storeId: g.storeId!, groupId: m.groupId, kind: intent, messageId: m.id, waMsgId: m.waMsgId, text, at: m.ts, order: snapshot });
     const recorded = await recordJourneyEvent(link.orderId, {
       kind: "store_message", at: m.ts, actor: "STORE",
-      payload: { intent, text: text.slice(0, 500), messageId: m.id, waMsgId: m.waMsgId, via: link.via, storeId: g.storeId, sender: m.sender, samples: reading.samples, requestTime: reading.request.time ?? null, readVia: reading.via },
+      payload: { intent, text: text.slice(0, 500), messageId: m.id, waMsgId: m.waMsgId, via: link.via, storeId: g.storeId, sender: m.sender, samples: reading.samples, requestTime: reading.request.time ?? null, readVia: reading.via, ...(thread ? { thread: { kind: thread.kind, waitingOn: thread.waitingOn, openedAt: thread.openedAt.toISOString() } } : {}) },
     }, false);
     if (recorded) {
       const r = await wakeJourney(link.orderId, "inbound");

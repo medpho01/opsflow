@@ -3,6 +3,8 @@
  * with its WhatsApp group (connected, or the best match by name to connect),
  * busiest first by orders in the last 30 days. Read-only on LabStack.
  *   filter: ALL | CONNECTED | NOT_CONNECTED
+ * PATCH /api/connections/stores { storeId, summaries } — the store gets the daily summaries
+ *   (09:00, 12:00, 16:00) whatever the agent's state for it.
  */
 import { NextRequest, NextResponse } from "next/server";
 import { UserRole } from "@prisma/client";
@@ -34,10 +36,12 @@ export async function GET(request: NextRequest) {
   const filter = params.get("filter") ?? "ALL";
   const pageSize = Math.min(100, Math.max(10, Number(params.get("pageSize")) || 25));
 
-  const [stores, groups] = await Promise.all([
+  const [stores, groups, settings] = await Promise.all([
     loadStores(params.get("refresh") === "1"),
     prisma.waGroup.findMany({ where: { archivedAt: null, isMember: true }, select: { id: true, jid: true, subject: true, role: true, storeId: true, labId: true, autoAskIdOnMissing: true } }),
+    prisma.agentSettings.upsert({ where: { id: "default" }, update: {}, create: { id: "default" } }),
   ]);
+  const summaries = new Set(settings.digestStoreIds);
   const byStore = new Map(groups.filter((g) => g.role === "SUPPORT" && g.storeId != null).map((g) => [g.storeId!, g]));
   // Only groups not yet connected to anything are worth suggesting.
   const free = groups.filter((g) => !(g.role === "SUPPORT" && g.storeId != null) && !(g.role === "PROVIDER" && g.labId != null) && g.role !== "INTERNAL" && g.role !== "IGNORE");
@@ -48,7 +52,7 @@ export async function GET(request: NextRequest) {
       const group = byStore.get(s.id) ?? null;
       const suggestion = group ? null : suggestGroup(s.name, free);
       return {
-        id: s.id, name: s.name, city: s.city, active: s.active !== false, orders30d: s.orders30d,
+        id: s.id, name: s.name, city: s.city, active: s.active !== false, orders30d: s.orders30d, summaries: summaries.has(s.id),
         group: group ? { id: group.id, subject: group.subject, autoAskIdOnMissing: group.autoAskIdOnMissing } : null,
         suggested: suggestion ? { id: suggestion.group.id, subject: suggestion.group.subject } : null,
       };
@@ -63,4 +67,16 @@ export async function GET(request: NextRequest) {
     stores: rows.slice((page - 1) * pageSize, page * pageSize), total, page, pageCount,
     connected: stores.filter((s) => byStore.has(s.id)).length,
   });
+}
+
+export async function PATCH(request: NextRequest) {
+  const user = await getSessionFromRequest(request);
+  if (!user || user.role !== UserRole.OPS_HEAD) return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
+  const body = await request.json().catch(() => ({})) as { storeId?: number; summaries?: boolean };
+  const storeId = Number(body.storeId);
+  if (!Number.isInteger(storeId) || typeof body.summaries !== "boolean") return NextResponse.json({ error: "storeId and summaries are required" }, { status: 400 });
+  const settings = await prisma.agentSettings.upsert({ where: { id: "default" }, update: {}, create: { id: "default" } });
+  const next = body.summaries ? [...new Set([...settings.digestStoreIds, storeId])] : settings.digestStoreIds.filter((id) => id !== storeId);
+  await prisma.agentSettings.update({ where: { id: "default" }, data: { digestStoreIds: next } });
+  return NextResponse.json({ ok: true, summaries: body.summaries });
 }

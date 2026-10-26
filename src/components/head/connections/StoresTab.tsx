@@ -10,7 +10,7 @@ import { PickGroupDialog } from "./PickGroupDialog";
 import { Toggle } from "./shared";
 
 type StoreRow = {
-  id: number; name: string; city: string | null; active: boolean; orders30d: number;
+  id: number; name: string; city: string | null; active: boolean; orders30d: number; summaries: boolean;
   group: { id: string; subject: string; autoAskIdOnMissing: boolean } | null;
   suggested: { id: string; subject: string } | null;
 };
@@ -30,6 +30,12 @@ export function StoresTab() {
     if (r.ok) setData(await r.json());
   }, [q, filter, page]);
   useEffect(() => { const t = setTimeout(() => void load(), q ? 300 : 0); return () => clearTimeout(t); }, [load, q]);
+
+  async function setSummaries(store: StoreRow, value: boolean) {
+    const r = await fetch("/api/connections/stores", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ storeId: store.id, summaries: value }) });
+    flash(r.ok ? (value ? `${store.name}: summaries at 9:00, 12:00 and 4:00 pm` : `${store.name}: summaries off`) : "Could not save");
+    void load();
+  }
 
   async function setAskId(store: StoreRow, value: boolean) {
     if (!store.group) return;
@@ -65,10 +71,11 @@ export function StoresTab() {
             <th className="px-3 py-2.5">Orders · 30d</th>
             <th className="px-3 py-2.5">WhatsApp group</th>
             <th className="px-3 py-2.5 text-center">Ask ID</th>
+            <th className="px-3 py-2.5 text-center" title="Today's visits, with RNR, samples owed and visits passed first — 9:00, 12:00, 4:00 pm. Independent of the agent.">Summaries</th>
           </tr></thead>
           <tbody>
-            {!data ? <tr><td colSpan={4} className="p-8 text-center text-sm text-zinc-500">Loading stores from LabStack…</td></tr>
-              : data.stores.length === 0 ? <tr><td colSpan={4} className="p-8 text-center text-sm text-zinc-500">No stores match.</td></tr>
+            {!data ? <tr><td colSpan={5} className="p-8 text-center text-sm text-zinc-500">Loading stores from LabStack…</td></tr>
+              : data.stores.length === 0 ? <tr><td colSpan={5} className="p-8 text-center text-sm text-zinc-500">No stores match.</td></tr>
               : data.stores.map((s) => (
                 <tr key={s.id} className="border-b border-zinc-800/60 hover:bg-zinc-900/40">
                   <td className="px-4 py-3">
@@ -85,6 +92,7 @@ export function StoresTab() {
                     </div>
                   </td>
                   <td className="px-3 py-3 text-center">{s.group ? <Toggle on={s.group.autoAskIdOnMissing} onChange={(v) => void setAskId(s, v)} /> : <span className="text-zinc-600 text-xs">—</span>}</td>
+                  <td className="px-3 py-3 text-center">{s.group ? <Toggle on={s.summaries} onChange={(v) => void setSummaries(s, v)} /> : <span className="text-zinc-600 text-xs">—</span>}</td>
                 </tr>
               ))}
           </tbody>

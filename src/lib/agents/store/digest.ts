@@ -13,6 +13,7 @@ import { labstackWorkerQuery } from "@/lib/db/labstack";
 import { reached } from "../journey/policy";
 import { relayDetail } from "../journey/step";
 import { guard, loadGuardState } from "../guard/guard";
+import { enqueueOutbox } from "../executors/dispatcher";
 import { atLocal } from "@/lib/provider-rules/batching";
 
 type Row = { id: number; storeId: number; orderStatus: string; appointmentTime: Date | null; patientName: string | null; labName: string | null; labRef: string | null };
@@ -85,11 +86,16 @@ export function digestText(day: StoreDay, storeName: string | null, now = new Da
   return lines.join("\n");
 }
 
-/** Send (LIVE) or record (SHADOW) each connected store's summary. */
+/**
+ * Each connected store's summary: sent to stores switched to "summaries" on Connections ›
+ * Stores (whatever the agent's state), and to LIVE store desks; recorded for SHADOW desks.
+ */
 export async function runStoreDigests(now = new Date()): Promise<{ stores: number; sent: number; recorded: number; rnr: number }> {
   const state = await loadGuardState();
+  const settings = await prisma.agentSettings.upsert({ where: { id: "default" }, update: {}, create: { id: "default" } });
+  const summariesOn = new Set(settings.digestStoreIds);
   const groups = await prisma.waGroup.findMany({ where: { role: "SUPPORT", storeId: { not: null }, archivedAt: null, active: true }, select: { storeId: true, subject: true } });
-  const storeIds = [...new Set(groups.map((g) => g.storeId!))].filter((id) => (state.desks.get(`STORE:STORE:${id}`) ?? "OFF") !== "OFF");
+  const storeIds = [...new Set(groups.map((g) => g.storeId!))].filter((id) => summariesOn.has(id) || (state.desks.get(`STORE:STORE:${id}`) ?? "OFF") !== "OFF");
   const days = await storeDays(storeIds, now);
   const result = { stores: storeIds.length, sent: 0, recorded: 0, rnr: 0 };
   const slot = `${atLocal(now, TZ(), 0, 0).toISOString().slice(0, 10)}:${now.toLocaleTimeString("en-GB", { timeZone: TZ(), hour: "2-digit" })}`;
@@ -97,6 +103,12 @@ export async function runStoreDigests(now = new Date()): Promise<{ stores: numbe
     result.rnr += day.rnr.length;
     const text = digestText(day, groups.find((g) => g.storeId === day.storeId)?.subject ?? null, now);
     if (!text) continue;
+    if (summariesOn.has(day.storeId)) {
+      // Summaries on: sent, whatever the agent's state for this store. Once per store per run.
+      const q = await enqueueOutbox({ counterparty: `STORE:${day.storeId}`, ask: "STORE_DIGEST", orderId: 0, journeyId: null, actionId: null, windowFrom: now, windowTo: new Date(now.getTime() + 2 * 3_600_000), urgent: true, immediate: true, idemKey: `digest:${day.storeId}:${slot}`, line: { orderId: 0, patientName: null, appointment: null }, text });
+      if (q.queued) result.sent += 1;
+      continue;
+    }
     const r = await guard({ desk: "STORE", action: "store_reply", params: { text, orderId: 0, storeId: day.storeId, digest: true }, reason: `store summary: ${day.rnr.length} RNR, ${day.owed.length} sample owed, ${day.missed.length} visit passed`, idemKey: `digest:${day.storeId}:${slot}` }, { journeyId: null, orderId: 0, labId: null, storeId: day.storeId }, state);
     if (r.outcome === "EXECUTED") result.sent += 1; else result.recorded += 1;
   }

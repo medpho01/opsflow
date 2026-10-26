@@ -2271,6 +2271,8 @@ model AgentSettings {
   /// first read, when it is seeded from the desks already in shadow or live.
   pilotLabIds    Int[]
   pilotStoreIds  Int[]
+  /// Stores that get the daily summaries whatever their store desk's state (Connections › Stores).
+  digestStoreIds Int[]
 
   @@map("agent_settings")
 }

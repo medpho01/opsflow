@@ -55,8 +55,10 @@ async function main() {
 
   // Which order the agent's reader linked each message to (its journey event).
   const events = await prisma.agentJourneyEvent.findMany({ where: { kind: "store_message", at: { gte: since } }, select: { payload: true, journey: { select: { orderId: true } } } });
-  const linked = new Map<string, { orderId: number; via: string }>();
-  for (const e of events) { const pl = e.payload as { messageId?: string; via?: string }; if (pl?.messageId) linked.set(pl.messageId, { orderId: e.journey.orderId, via: pl.via ?? "?" }); }
+  const linkedAll = new Map<string, Array<{ orderId: number; via: string }>>();
+  for (const e of events) { const pl = e.payload as { messageId?: string; via?: string }; if (pl?.messageId) linkedAll.set(pl.messageId, [...(linkedAll.get(pl.messageId) ?? []), { orderId: e.journey.orderId, via: pl.via ?? "?" }]); }
+  const linked = new Map([...linkedAll].map(([k, v]) => [k, v[0]]));
+  const allLinksOf = (id: string) => linkedAll.get(id) ?? [];
 
   const actions = await prisma.agentAction.findMany({
     where: { createdAt: { gte: since }, OR: [{ desk: "STORE", action: { in: STORE_ACTIONS } }, { desk: "LAB", action: "ask", params: { path: ["forStore"], equals: true } }] },
@@ -94,7 +96,7 @@ async function main() {
     // on the linked order within 20 minutes counts once.
     const bot = mine.filter((a) => !usedActions.has(a.id) && (
       (a.idemKey ?? "").includes(q.id) || (a.idemKey ?? "").includes(q.waMsgId) || (a.params as { quotedWaId?: string })?.quotedWaId === q.waMsgId
-      || (!!link && (a.params as { caseWorker?: boolean })?.caseWorker === true && a.orderId === link.orderId && a.createdAt >= q.ts && a.createdAt.getTime() - q.ts.getTime() <= 20 * MIN)));
+      || ((a.params as { caseWorker?: boolean })?.caseWorker === true && allLinksOf(q.id).some((l) => l.orderId === a.orderId) && a.createdAt >= q.ts && a.createdAt.getTime() - q.ts.getTime() <= 20 * MIN)));
     bot.forEach((a) => usedActions.add(a.id));
     const askedId = askedForId.has(q.id);
     const reply = team.find((m) => m.ts > q.ts && m.ts.getTime() - q.ts.getTime() <= 60 * MIN
@@ -106,11 +108,13 @@ async function main() {
     const kind = botSaid && reply ? "both" : reply ? "teamOnly" : botSaid ? "botOnly" : "neither";
     tally[kind] += 1;
     if (botAt && reply && botAt < reply.ts) tally.botFaster += 1;
-    const wrongLink = !!link && ids.length > 0 && !ids.includes(link.orderId);
-    if (wrongLink) wrongLinks.push(`${t(q.ts)} store wrote #${ids.join(",#")} → linked to #${link!.orderId} (${link!.via})`);
+    const allLinks = linkedAll.get(q.id) ?? [];
+    const strays = allLinks.filter((l) => ids.length > 0 && !ids.includes(l.orderId));
+    const wrongLink = strays.length > 0;
+    if (wrongLink) wrongLinks.push(`${t(q.ts)} store wrote #${ids.join(",#")} → linked to #${strays.map((l) => l.orderId).join(",#")} (${strays[0].via})`);
     if (kind === "teamOnly") missed.push(`${t(q.ts)} ${ids.length ? `#${ids.join(",#")}` : "(no order id)"} [${q.intent}]${link ? "" : " — not linked to an order"}`);
     const label = { both: "both answered", teamOnly: "BOT MISSED — team answered", botOnly: "bot only — team silent", neither: "NOBODY answered" }[kind];
-    say(`${t(q.ts)}  wrote ${ids.length ? `#${ids.join(",#")}` : "no id"} · linked ${link ? `#${link.orderId} (${link.via})` : "none"}${wrongLink ? "  ⚠ WRONG ORDER" : ""}  [${(q.intent ?? "").replace("STORE_", "").toLowerCase()}]  ${label}`);
+    say(`${t(q.ts)}  wrote ${ids.length ? `#${ids.join(",#")}` : "no id"} · linked ${allLinks.length ? allLinks.map((l) => `#${l.orderId} (${l.via})`).join(", ") : "none"}${wrongLink ? "  ⚠ WRONG ORDER" : ""}  [${(q.intent ?? "").replace("STORE_", "").toLowerCase()}]  ${label}`);
     say(`   store: ${one(q.text)}`);
     for (const a of bot) say(`   bot (${Math.round((a.createdAt.getTime() - q.ts.getTime()) / MIN)} min, ${a.outcome}): ${await text(a)}`);
     if (askedId && !bot.length) say(`   bot: asks for the order id`);

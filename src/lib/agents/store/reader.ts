@@ -49,8 +49,16 @@ export type StoreReaderResult = { read: number; linked: number; answered: number
 /** Order ids a store writes in a message: 5–6 digits, not part of a longer number (a phone, a lab ref). */
 export const EXPLICIT_ID_RE = /(?<![\dA-Za-z+])#?(\d{5,6})(?![\dA-Za-z])/g; // not the digits inside VL149129
 export function explicitOrderIds(text: string): number[] {
-  // A phone number written with spaces or dashes ("98765 43210") is not two order ids.
-  const withoutPhones = text.replace(/\+?\d[\d\s-]{8,}\d/g, " ");
+  // A phone number written with spaces or dashes ("98765 43210") is not two order ids — but two
+  // order ids are written the same way ("93807 93811 please share the invoices", Plum, 26 Oct
+  // 2026). It is a phone only when it looks like one: a +/country code, no spaces, or a phone
+  // word just before it.
+  const withoutPhones = text.replace(/\+?\d[\d\s-]{8,}\d/g, (match, offset: number) => {
+    const before = text.slice(Math.max(0, offset - 24), offset);
+    const phone = match.startsWith("+") || /^(91|0)[\s-]/.test(match) || !/\s/.test(match)
+      || /\b(call|mob|mobile|phone|ph|contact|number|no|num|whatsapp|wa)\b[\s.:#-]*$/i.test(before);
+    return phone ? " " : match;
+  });
   return [...new Set([...withoutPhones.matchAll(EXPLICIT_ID_RE)].map((m) => Number(m[1])))];
 }
 
@@ -61,13 +69,41 @@ export function explicitOrderIds(text: string): number[] {
  * (Plum, 24 Oct 2026). Only an id the store wrote, a quoted message's order, or
  * the one order we asked them about counts.
  */
+/**
+ * The order ids the model read that may be added to a store message's own: only ids the store
+ * wrote in the message it quoted (the message itself is already searched). An id the model took
+ * from the group's other messages is never one (26 Oct 2026).
+ */
+export function modelIdsToTrust(modelIds: Array<number | undefined>, text: string, quotedText: string | null): number[] {
+  const own = new Set(explicitOrderIds(text));
+  const quoted = new Set(explicitOrderIds(quotedText ?? ""));
+  return [...new Set(modelIds.filter((x): x is number => typeof x === "number" && quoted.has(x) && !own.has(x)))];
+}
+
+/**
+ * The ids a store wrote, in the order it wrote them, that are this store's orders. Every one
+ * counts ("93807 93811 — please share the invoices" is about both); never "the newest".
+ */
+async function writtenOrders(text: string, storeId: number): Promise<number[]> {
+  const written = explicitOrderIds(text);
+  if (!written.length) return [];
+  const rows = await labstackWorkerQuery<{ id: number }>(`SELECT id FROM public."Order" WHERE id = ANY($1::int[]) AND "storeId" = $2`, [written, storeId]).catch(() => []);
+  const mine = new Set(rows.map((r) => r.id));
+  return written.filter((id) => mine.has(id));
+}
+
+/** Every order a store message is about (see linkOrder). */
+async function linkOrders(message: Parameters<typeof linkOrder>[0], storeId: number, now: Date): Promise<Array<{ orderId: number; via: string }>> {
+  const written = await writtenOrders(message.text, storeId);
+  if (written.length) return written.slice(0, 5).map((orderId) => ({ orderId, via: "ORDER_ID" }));
+  const one = await linkOrder(message, storeId, now);
+  return one ? [one] : [];
+}
+
 async function linkOrder(message: { orderIds: number[]; idType: string | null; idVia: string | null; refIds: string[]; text: string; replyToWaId: string | null; groupId: string }, storeId: number, now: Date): Promise<{ orderId: number; via: string } | null> {
-  // An id the store wrote, checked against LabStack and this store.
-  const written = explicitOrderIds(message.text);
-  if (written.length) {
-    const rows = await labstackWorkerQuery<{ id: number }>(`SELECT id FROM public."Order" WHERE id = ANY($1::int[]) AND "storeId" = $2 ORDER BY "createdAt" DESC LIMIT 1`, [written, storeId]).catch(() => []);
-    if (rows[0]) return { orderId: rows[0].id, via: "ORDER_ID" };
-  }
+  // An id the store wrote, checked against LabStack and this store: the first one it wrote.
+  const written = await writtenOrders(message.text, storeId);
+  if (written.length) return { orderId: written[0], via: "ORDER_ID" };
   // The gateway's tag, only when it came straight from a number in this message
   // ("order 93312"). Tags inherited through a reply chain have been seen to
   // disagree with their own explanation ("reply · order 93709" tagged 90381).
@@ -168,8 +204,12 @@ export async function runStoreReader(now = new Date()): Promise<StoreReaderResul
     const reading = await readMessage({ side: "store", text, quotedText: quoted?.text ?? null, scope: { storeId: g.storeId, groupId: m.groupId } });
     const intent: StoreIntent = reading.ack || reading.request.kind === "none" ? "noise" : reading.request.kind === "details" ? "other" : reading.request.kind;
     if (intent === "noise") continue;
-    const readIds = reading.orders.map((o) => o.orderId).filter((x): x is number => typeof x === "number");
-    const link = await linkOrder({ orderIds: m.orderIds, idType: m.idType ?? null, idVia: m.idVia ?? null, refIds: m.refIds, text: readIds.length ? `${readIds.join(" ")} ${text}` : text, replyToWaId: m.replyToWaId, groupId: m.groupId }, g.storeId!, now);
+    // The model's ids count only when the store wrote them, here or in the message it quoted: the
+    // model learns from the group's recent messages and has returned an order from those instead
+    // (26 Oct 2026: "94301 - RNR" linked to 94188, "93807 93811 …" to 93412).
+    const readIds = modelIdsToTrust(reading.orders.map((o) => o.orderId), text, quoted?.text ?? null);
+    const links = await linkOrders({ orderIds: m.orderIds, idType: m.idType ?? null, idVia: m.idVia ?? null, refIds: m.refIds, text: readIds.length ? `${text} ${readIds.join(" ")}` : text, replyToWaId: m.replyToWaId, groupId: m.groupId }, g.storeId!, now);
+    const link = links[0] ?? null;
     await prisma.waMessage.update({ where: { id: m.id }, data: { intent: `STORE_${intent.toUpperCase()}` } }).catch(() => undefined);
     if (!link) {
       // Ask once for the order id (FR-9.2), only for questions that need one — and never inside a
@@ -180,6 +220,7 @@ export async function runStoreReader(now = new Date()): Promise<StoreReaderResul
       }
       continue;
     }
+    for (const link of links) {
     result.linked += 1;
     const recorded = await recordJourneyEvent(link.orderId, {
       kind: "store_message", at: m.ts, actor: "STORE",
@@ -197,6 +238,7 @@ export async function runStoreReader(now = new Date()): Promise<StoreReaderResul
       } catch (error) {
         console.error(`[Agents] store pass: closed-order answer for ${link.orderId} failed:`, error instanceof Error ? error.message : error);
       }
+    }
     }
   }
   await prisma.agentSettings.update({ where: { id: "default" }, data: { storeWatermark: messages[messages.length - 1].ts } });

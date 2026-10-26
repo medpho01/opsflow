@@ -215,7 +215,7 @@ function startLoops() {
         // to produce a fresh QR) exits the process instead.
         selfInitiatedLogout = cmd;
         try { await currentSock?.logout(); } catch {}
-        try { fs.rmSync("./auth", { recursive: true, force: true }); } catch {}
+        clearAuth(currentSock);
         // RELINK wants a new QR; LOGOUT wants to stay down. reconnect() is
         // therefore only correct for RELINK — the 401 handler does the rest.
         if (cmd === "RELINK") reconnect();
@@ -300,6 +300,25 @@ function startLoops() {
   };
   setTimeout(discoverAndSync, 15000);    // catch the fresh-link case quickly
   everyMs(discoverAndSync, 120000);  // and keep it current every 2 min
+}
+
+/**
+ * Empty ./auth — its CONTENTS, not the folder. In Docker ./auth is the wa_auth
+ * volume's mount point, and fs.rmSync("./auth", { recursive }) on a mount point
+ * fails at once with EBUSY (Node 20 tries rmdir first) without deleting a file:
+ * the dead credentials survived, and every restart was logged out again in a
+ * loop that never showed a QR (26 Oct 2026). Baileys' creds.update listener is
+ * dropped first so it cannot write the dead session back before we exit.
+ */
+function clearAuth(sock) {
+  try { sock?.ev?.removeAllListeners?.("creds.update"); } catch {}
+  let removed = 0;
+  try {
+    for (const name of fs.readdirSync("./auth")) {
+      try { fs.rmSync(`./auth/${name}`, { recursive: true, force: true }); removed += 1; } catch (e) { console.error(`clear auth ${name}:`, e.message); }
+    }
+  } catch (e) { if (e.code !== "ENOENT") console.error("clear auth:", e.message); }
+  return removed;
 }
 
 async function start() {
@@ -438,10 +457,11 @@ async function start() {
       // `restart: unless-stopped`) restarts straight back into the same 401 —
       // a loop that never shows a QR, so relinking needed shell access. With
       // auth cleared, the restart comes up with a fresh QR in the console.
-      try { fs.rmSync("./auth", { recursive: true, force: true }); } catch {}
-      banner("Logged out by WhatsApp — credentials cleared. Restart (or let Docker restart it) and scan the new QR.");
-      // Non-zero so the exit is distinguishable from a clean shutdown.
-      setTimeout(() => process.exit(2), 500);
+      const removed = clearAuth(sock);
+      banner(`Logged out by WhatsApp — credentials cleared (${removed} file(s)). Restart (or let Docker restart it) and scan the new QR.`);
+      // Non-zero so the exit is distinguishable from a clean shutdown. Clear once more on the way
+      // out in case a write was already in flight.
+      setTimeout(() => { clearAuth(sock); process.exit(2); }, 500);
     }
   });
 

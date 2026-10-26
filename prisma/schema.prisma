@@ -1237,7 +1237,10 @@ model WaGateway {
   connectedNumber    String? // e.g. 919522584955
   lastSeenAt         DateTime?
   dryRun             Boolean? // gateway's DRY_RUN kill switch — true = nothing sends
-  command            String? // "RELINK" | "LOGOUT" | "BACKFILL" — set by admin, cleared by gateway
+  command            String? // "RELINK" | "LOGOUT" | "BACKFILL" | "PAIR:<digits>" — set by admin, cleared by gateway
+  /// Link-by-phone-number: the 8-character code WhatsApp issued for the number asked in PAIR (26 Oct 2026).
+  pairingCode        String?
+  pairingCodeAt      DateTime?
   commandRequestedAt DateTime?
   updatedAt          DateTime        @updatedAt
 

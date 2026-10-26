@@ -1005,6 +1005,25 @@ export const CONSOLE_INTENT = "CONSOLE";
  * CONSOLE instead, threaded to its ticket: that one IS the team answering. A
  * failure to record never fails the send — the message is already with the lab.
  */
+/**
+ * Link by phone number (26 Oct 2026). While the gateway waits to be linked, the
+ * console can ask for a pairing code instead of a QR: it writes PAIR:<digits>
+ * into wa_gateway.command. Taken atomically and only that command — RELINK /
+ * LOGOUT / BACKFILL are left for the main loop once connected.
+ */
+export async function takePairRequest() {
+  const r = await taskosQuery(
+    `UPDATE wa_gateway SET command = NULL, "commandRequestedAt" = NULL
+      WHERE id = 'default' AND command LIKE 'PAIR:%' RETURNING command`
+  );
+  const cmd = r.rows[0]?.command;
+  return cmd ? String(cmd).slice(5).replace(/\D/g, "") : null;
+}
+
+export async function setPairingCode(code) {
+  await taskosQuery(`UPDATE wa_gateway SET "pairingCode" = $1, "pairingCodeAt" = $2 WHERE id = 'default'`, [code, code ? new Date().toISOString() : null]);
+}
+
 export async function recordSentMessage(row, waId, text) {
   if (!waId || !row.groupId) return;
   const console_ = row.createdById != null;

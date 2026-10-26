@@ -34,9 +34,14 @@ export async function GET(request: NextRequest) {
   if (gw.status === "QR" && gw.qr && qrFresh) {
     try { qrDataUrl = await QRCode.toDataURL(gw.qr, { width: 260, margin: 1 }); } catch { qrDataUrl = null; }
   }
+  // A pairing code is good for a few minutes; show it only while still waiting to link.
+  const pairAge = gw.pairingCodeAt ? Date.now() - new Date(gw.pairingCodeAt).getTime() : null;
+  const pairingCode = gw.status !== "CONNECTED" && gw.pairingCode && pairAge !== null && pairAge >= 0 && pairAge < 3 * 60_000 ? gw.pairingCode : null;
   return NextResponse.json({
     status: gw.status,
     online,
+    pairingCode,
+    pairingRequested: !!gw.command?.startsWith("PAIR:"),
     connectedNumber: gw.connectedNumber,
     lastSeenAt: gw.lastSeenAt,
     dryRun: gw.dryRun ?? null,
@@ -59,9 +64,17 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
 
   const body = await request.json().catch(() => ({}));
-  const command = String(body?.command || "").toUpperCase();
-  if (!["RELINK", "LOGOUT", "BACKFILL"].includes(command))
-    return NextResponse.json({ error: "command must be RELINK, LOGOUT or BACKFILL" }, { status: 400 });
+  let command = String(body?.command || "").toUpperCase();
+  if (!["RELINK", "LOGOUT", "BACKFILL", "PAIR"].includes(command))
+    return NextResponse.json({ error: "command must be RELINK, LOGOUT, BACKFILL or PAIR" }, { status: 400 });
+  if (command === "PAIR") {
+    // Link by phone number: the ops number with its country code (a bare 10-digit number is Indian).
+    let digits = String(body?.phone || "").replace(/\D/g, "").replace(/^0+/, "");
+    if (digits.length === 10) digits = `91${digits}`;
+    if (digits.length < 11 || digits.length > 15) return NextResponse.json({ error: "Enter the WhatsApp number with country code, e.g. 9198XXXXXXXX" }, { status: 400 });
+    command = `PAIR:${digits}`;
+    await prisma.waGateway.updateMany({ where: { id: "default" }, data: { pairingCode: null, pairingCodeAt: null } });
+  }
 
   await prisma.waGateway.upsert({
     where: { id: "default" },

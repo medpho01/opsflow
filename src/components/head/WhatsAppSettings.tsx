@@ -2,13 +2,14 @@
 
 import { useCallback, useEffect, useState } from "react";
 
-type Gateway = { status: string; online: boolean; connectedNumber: string | null; qrDataUrl: string | null; lastSeenAt: string | null; gatewayLive?: boolean };
+type Gateway = { status: string; online: boolean; connectedNumber: string | null; qrDataUrl: string | null; lastSeenAt: string | null; gatewayLive?: boolean; pairingCode?: string | null; pairingRequested?: boolean };
 
 export function WhatsAppSettings() {
   const [gw, setGw] = useState<Gateway | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [contacts, setContacts] = useState<{ id: string; name: string; phone: string | null; team: string | null }[]>([]);
   const [contactText, setContactText] = useState("");
+  const [pairPhone, setPairPhone] = useState("");
   const flash = (m: string) => { setToast(m); setTimeout(() => setToast(null), 2200); };
 
 
@@ -37,6 +38,13 @@ export function WhatsAppSettings() {
     await fetch("/api/whatsapp/gateway", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ command }) });
     flash(command === "LOGOUT" ? "Unlinking…" : command === "BACKFILL" ? "Backfilling last 3 days — re-resolving threads & pulling media…" : "Re-linking — scan the new QR");
     loadGw();
+  }
+
+  async function requestPairingCode() {
+    const r = await fetch("/api/whatsapp/gateway", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ command: "PAIR", phone: pairPhone }) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) return flash(d.error || "Could not request a code");
+    flash("Asking WhatsApp for a code…"); loadGw();
   }
 
   const connected = gw?.status === "CONNECTED";
@@ -84,6 +92,25 @@ export function WhatsAppSettings() {
               <div className="font-semibold text-zinc-100 mb-1">Scan to link</div>
               <p className="text-zinc-400 max-w-xs">On the ops phone: <b>WhatsApp → Settings → Linked Devices → Link a Device</b>, then scan this code.</p>
               <p className="text-xs text-zinc-500 mt-2">Refreshes automatically until the device connects.</p>
+              {/* QR not scanning, or the phone hangs on "Logging in"? Link with the number instead. */}
+              <div className="mt-4 pt-3 border-t border-zinc-800">
+                <div className="font-semibold text-zinc-100 mb-1 text-xs">Or link with phone number</div>
+                {gw?.pairingCode ? (
+                  <div>
+                    <div className="font-mono text-2xl tracking-[0.3em] text-emerald-400 my-1">{gw.pairingCode.slice(0, 4)}-{gw.pairingCode.slice(4)}</div>
+                    <p className="text-xs text-zinc-400 max-w-sm">On the ops phone: <b>Linked Devices → Link a Device → Link with phone number instead</b>, then enter this code. Valid for a few minutes.</p>
+                  </div>
+                ) : (
+                  <div className="flex gap-2 items-center flex-wrap">
+                    <input value={pairPhone} onChange={(e) => setPairPhone(e.target.value)} inputMode="tel" placeholder="Ops number, e.g. 9198XXXXXXXX"
+                      className="bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-1.5 text-sm text-zinc-100 focus:border-blue-500 outline-none font-mono w-56" />
+                    <button onClick={requestPairingCode} disabled={!pairPhone.trim() || gw?.pairingRequested}
+                      className="text-xs font-semibold border border-zinc-700 hover:border-blue-500 rounded-lg px-3 py-2 text-zinc-300 disabled:opacity-50">
+                      {gw?.pairingRequested ? "Waiting for the gateway…" : "Get code"}
+                    </button>
+                  </div>
+                )}
+              </div>
               {gw && gw.gatewayLive === false && (
                 <p className="text-xs text-amber-400 mt-2">
                   The gateway isn&apos;t running. On the server, start it with <code className="font-mono">docker compose -f docker-compose.yml -f docker-compose.wa.yml up -d wa-gateway</code> (or <code className="font-mono">./run-gateway.sh start</code> if it runs outside Docker); this code then refreshes on its own.

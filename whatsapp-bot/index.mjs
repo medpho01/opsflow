@@ -364,6 +364,23 @@ async function start() {
   currentSock = sock;
   sock.ev.on("creds.update", saveCreds);
 
+  // Not linked yet: besides the QR, the console may ask to link by phone number. Watch for that
+  // request until this socket links or closes (the main command loop only runs once connected).
+  if (CT_ENABLED && !state.creds.registered) {
+    const pairWatch = setInterval(async () => {
+      if (currentSock !== sock || state.creds.registered) { clearInterval(pairWatch); return; }
+      try {
+        const phone = await CT.takePairRequest();
+        if (!phone) return;
+        console.log(`pairing code requested for a number ending ${phone.slice(-4)}`);
+        const code = await sock.requestPairingCode(phone);
+        await CT.setPairingCode(code);
+        banner(`Pairing code: ${code} — on the phone: Linked Devices → Link a Device → Link with phone number instead.`);
+      } catch (e) { console.error("pairing code:", e?.message || e); }
+    }, 3000);
+    sock.ev.on("connection.update", (u) => { if (u.connection === "open" || u.connection === "close") clearInterval(pairWatch); });
+  }
+
   sock.ev.on("connection.update", async (u) => {
     const { connection, lastDisconnect, qr } = u;
     if (qr) {
@@ -382,6 +399,7 @@ async function start() {
           await CT.refreshGroups();
           const num = String(sock.user?.id || "").split(/[:@]/)[0];
           await CT.setConnected(num);
+          await CT.setPairingCode(null).catch(() => {});
         } catch (e) { console.error("CT connect:", e.message); }
         // Messages we sent before they were recorded for the chat view (idempotent).
         CT.backfillSentMessages()

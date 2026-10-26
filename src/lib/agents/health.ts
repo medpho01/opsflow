@@ -32,9 +32,14 @@ const MIN = 60_000;
 
 async function wakeBacklog(): Promise<Check> {
   const schema = process.env.PGBOSS_SCHEMA || "pgboss";
-  const rows = await prisma.$queryRawUnsafe<Array<{ n: bigint }>>(`SELECT count(*)::bigint AS n FROM "${schema}".job WHERE name = 'journey.wake' AND state IN ('created','retry')`).catch(() => [{ n: BigInt(-1) }]);
-  const n = Number(rows[0]?.n ?? -1);
-  return { key: "wake_backlog", ok: n >= 0 && n < 300, detail: n < 0 ? "could not read the job queue" : `${n} order checks waiting` };
+  const rows = await prisma.$queryRawUnsafe<Array<{ waiting: bigint; failed: bigint }>>(
+    `SELECT count(*) FILTER (WHERE state IN ('created','retry'))::bigint AS waiting,
+            count(*) FILTER (WHERE state = 'failed' AND completed_on > now() - interval '1 hour')::bigint AS failed
+       FROM "${schema}".job WHERE name = 'journey.wake'`,
+  ).catch(() => null);
+  if (!rows) return { key: "wake_backlog", ok: false, detail: "could not read the job queue" };
+  const waiting = Number(rows[0]?.waiting ?? 0); const failed = Number(rows[0]?.failed ?? 0);
+  return { key: "wake_backlog", ok: waiting < 300 && failed < 20, detail: `${waiting} order checks waiting, ${failed} failed in the last hour (worker logs: "wake … failed")` };
 }
 
 async function staleJourneys(now: Date): Promise<Check> {

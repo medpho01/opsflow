@@ -73,12 +73,24 @@ export async function startWorker(): Promise<PgBoss> {
 
   // Ten wakes at a time (one job per order, so never the same order twice): one a second could
   // not keep up with ~250 due a minute, and the backlog delayed every reaction (26 Oct 2026).
+  // Each order succeeds or fails on its own: pg-boss fails (and retries) a whole batch when its
+  // handler throws or runs past the queue's 60 s, so one bad or slow order must not take nine
+  // others with it. A failed job is failed here; pg-boss then completes only the rest.
   await boss.work<WakeJob>(QUEUES.wake, { batchSize: 10, pollingIntervalSeconds: 1 }, async (jobs) => {
     await Promise.all(jobs.map(async (job) => {
       const { orderId, reason, order, labSilentHours } = job.data;
-      const result = await wakeJourney(orderId, reason, { order: order ? reviveDates(order) : undefined, labSilentHours });
-      if (result.opened || result.events || result.actions || result.closed) {
-        console.log(`[Agents] wake ${orderId} (${reason}): ${result.opened ? "opened " : ""}${result.closed ? "closed " : ""}events=${result.events} actions=${result.actions} executed=${result.executed} review=${result.review}`);
+      try {
+        const result = await Promise.race([
+          wakeJourney(orderId, reason, { order: order ? reviveDates(order) : undefined, labSilentHours }),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error("wake took over 45 s")), 45_000).unref()),
+        ]);
+        if (result.opened || result.events || result.actions || result.closed) {
+          console.log(`[Agents] wake ${orderId} (${reason}): ${result.opened ? "opened " : ""}${result.closed ? "closed " : ""}events=${result.events} actions=${result.actions} executed=${result.executed} review=${result.review}`);
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`[Agents] wake ${orderId} (${reason}) failed: ${message.slice(0, 200)}`);
+        await boss.fail(QUEUES.wake, job.id, { message }).catch(() => undefined);
       }
     }));
   });

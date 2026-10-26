@@ -25,11 +25,12 @@ import { runStorePass } from "@/lib/agents/store/pass";
 import { runBrain } from "@/lib/agents/brain";
 import { runLabScorecards } from "@/lib/agents/brain/scorecard";
 import { runStoreDigests } from "@/lib/agents/store/digest";
+import { runHealth } from "@/lib/agents/health";
 
 export const QUEUES = {
   sweep: "agent.sweep", wake: "journey.wake", urgent: "dispatch.urgent", flush: "dispatch.flush", risk: "risk.batch",
   verify: "tasks.verify", store: "store.pass", monitor: "brain.monitor", nightly: "brain.nightly", review: "brain.review", scorecard: "lab.scorecard",
-  digest: "store.digest",
+  digest: "store.digest", health: "agent.health",
 } as const;
 
 type WakeJob = { orderId: number; reason: WakeReason; order?: OrderSnapshot; labSilentHours?: number | null };
@@ -64,6 +65,7 @@ export async function startWorker(): Promise<PgBoss> {
   await single(QUEUES.review, 3600);
   await single(QUEUES.scorecard, 1200);
   await single(QUEUES.digest, 600);
+  await single(QUEUES.health, 280);
 
   const enqueueWake = async (orderId: number, reason: WakeReason, order?: OrderSnapshot, labSilentHours?: number | null) => {
     await boss.send(QUEUES.wake, { orderId, reason, order, labSilentHours } satisfies WakeJob, { singletonKey: String(orderId) });
@@ -95,6 +97,7 @@ export async function startWorker(): Promise<PgBoss> {
   await boss.work(QUEUES.monitor, { batchSize: 1, pollingIntervalSeconds: 10 }, async () => timed("brain monitor", () => runBrain("monitor")));
   await boss.work(QUEUES.nightly, { batchSize: 1, pollingIntervalSeconds: 10 }, async () => timed("brain nightly", () => runBrain("nightly")));
   await boss.work(QUEUES.review, { batchSize: 1, pollingIntervalSeconds: 10 }, async () => timed("brain review", () => runBrain("review")));
+  await boss.work(QUEUES.health, { batchSize: 1, pollingIntervalSeconds: 10 }, async () => timed("health", async () => { const r = await runHealth(new Date()); return { problems: r.problems }; }));
   // Queue the cards, then flush at once: the 10:30 dispatch may already have run.
   await boss.work(QUEUES.digest, { batchSize: 1, pollingIntervalSeconds: 10 }, async () => timed("store digests", async () => { const r = await runStoreDigests(new Date()); const f = await flushOutbox(new Date()); return { ...r, messages: f.messages }; }));
   await boss.work(QUEUES.scorecard, { batchSize: 1, pollingIntervalSeconds: 10 }, async () => timed("lab scorecards", async () => { const r = await runLabScorecards(new Date()); const f = await flushOutbox(new Date()); return { ...r, sent: f.messages }; }));
@@ -110,10 +113,12 @@ export async function startWorker(): Promise<PgBoss> {
   await boss.schedule(QUEUES.nightly, process.env.AGENT_NIGHTLY_CRON || "30 21 * * *", {}, { tz });
   await boss.schedule(QUEUES.review, process.env.AGENT_REVIEW_CRON || "0 22 * * *", {}, { tz }); // daily (was Sunday) — 25 Oct 2026
   await boss.schedule(QUEUES.scorecard, process.env.AGENT_SCORECARD_CRON || "30 10 * * 1", {}, { tz });
+  // Self-diagnosis and healing (health.ts): every 5 minutes; alerts only on what it could not fix.
+  await boss.schedule(QUEUES.health, process.env.AGENT_HEALTH_CRON || "*/5 * * * *", {}, { tz });
   // Each store's day before it asks: needs-you first (RNR with the lab's slots, sample owed, visit passed).
   await boss.schedule(QUEUES.digest, process.env.AGENT_DIGEST_CRON || "0 9,12,16 * * *", {}, { tz });
   await boss.send(QUEUES.sweep, {}, { singletonKey: "boot" });
-  console.log("[Worker] started: sweep, wake, dispatch, risk, verify, store pass, brain, scorecard");
+  console.log("[Worker] started: sweep, wake, dispatch, risk, verify, store pass, brain, scorecard, digest, health");
   return boss;
 }
 

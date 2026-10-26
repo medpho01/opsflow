@@ -94,6 +94,8 @@ type Item = Prisma.AgentOutboxItemGetPayload<{ select: { id: true; counterparty:
  */
 export async function flushOutbox(now = new Date(), opts: { urgentOnly?: boolean } = {}): Promise<FlushResult> {
   const result: FlushResult = { messages: 0, items: 0, held: 0, dropped: 0, errors: 0 };
+  // A claim left by a worker that stopped mid-send (a deploy restarts it) goes back to the queue.
+  await prisma.agentOutboxItem.updateMany({ where: { status: "SENDING", OR: [{ claimedAt: null }, { claimedAt: { lt: new Date(now.getTime() - 5 * 60_000) } }] }, data: { status: "QUEUED", claimedAt: null } }).catch(() => undefined);
   const items = await prisma.agentOutboxItem.findMany({
     where: { status: "QUEUED", ...(opts.urgentOnly ? { urgent: true } : {}) },
     select: { id: true, counterparty: true, ask: true, orderId: true, journeyId: true, actionId: true, windowFrom: true, windowTo: true, urgent: true, payload: true, idemKey: true },
@@ -131,7 +133,7 @@ export async function flushOutbox(now = new Date(), opts: { urgentOnly?: boolean
   }
   for (const [key, queued] of groups) {
     // Claim before sending: the every-minute urgent flush and the :00/:30 flush must not both send a group.
-    const claimed = await prisma.agentOutboxItem.updateMany({ where: { id: { in: queued.map((i) => i.id) }, status: "QUEUED" }, data: { status: "SENDING" } });
+    const claimed = await prisma.agentOutboxItem.updateMany({ where: { id: { in: queued.map((i) => i.id) }, status: "QUEUED" }, data: { status: "SENDING", claimedAt: new Date() } });
     if (claimed.count === 0) continue;
     const group: Item[] = claimed.count === queued.length ? queued : await prisma.agentOutboxItem.findMany({
       where: { id: { in: queued.map((i) => i.id) }, status: "SENDING" },

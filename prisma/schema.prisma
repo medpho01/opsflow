@@ -2400,6 +2400,8 @@ model AgentOutboxItem {
   idemKey      String    @unique
   createdAt    DateTime  @default(now())
   sentAt       DateTime?
+  /// When a flush claimed it (status SENDING); a claim older than 5 min is a stopped worker's and is released.
+  claimedAt    DateTime?
 
   @@index([counterparty, ask, status])
   @@index([orderId, status])

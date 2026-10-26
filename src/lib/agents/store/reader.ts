@@ -99,10 +99,31 @@ async function linkOrder(message: { orderIds: number[]; idType: string | null; i
 
 const CLOSED_TASK: Partial<Record<StoreIntent, string>> = { report: "AGENT_REPORT_UPLOAD", reschedule: "AGENT_RESCHEDULE", cancel: "AGENT_CANCEL", change_tests: "AGENT_ORDER_CHANGE", complaint: "AGENT_COMPLAINT" };
 
-async function answerClosedOrder(orderId: number, storeId: number, intent: StoreIntent, text: string, waMsgId: string, at: Date, state: Awaited<ReturnType<typeof loadGuardState>>): Promise<{ executed: number; review: number }> {
+async function answerClosedOrder(orderId: number, storeId: number, intent: StoreIntent, text: string, waMsgId: string, at: Date, state: Awaited<ReturnType<typeof loadGuardState>>, samples: Record<string, string> = {}): Promise<{ executed: number; review: number }> {
   const o = await fetchOrderSnapshot(orderId).catch(() => null);
   if (!o) return { executed: 0, review: 0 };
   const tz = process.env.TIMEZONE || "Asia/Kolkata";
+  // A sample still owed on an order LabStack calls done: the blood report went out, the urine
+  // did not ("93586 — urine samples not collected, slots?", 25 Oct 2026, REPORT_DELIVERED).
+  // The same re-collection as on an open order: ask the lab now, tell the store.
+  const missed = Object.entries(samples).find(([k, s]) => s === "missed" && k !== "blood")?.[0]
+    ?? /\b(urine|stool|swab|sputum)\b[^.\n]{0,30}\bnot\b|\bnot collected\b/i.exec(text)?.[1]?.toLowerCase();
+  if (missed && o.labId != null && intent !== "cancel") {
+    const ctx = { journeyId: null, orderId, labId: o.labId, storeId, orderType: o.orderType, appointmentTime: o.appointmentTime, patientName: o.patientName, labName: o.labName, storeName: o.storeName };
+    const sample = ["urine", "stool", "swab", "sputum"].includes(missed) ? missed : "a";
+    const timeAsked = /\d{1,2}(:\d{2})?\s*(am|pm)/i.exec(text)?.[0] ?? null;
+    const note = intent === "reschedule" && timeAsked ? `${sample} re-collection requested at ${timeAsked} — ok?` : `${sample === "a" ? "a" : sample} sample pending — slot for re-collection?`;
+    const now = new Date();
+    const ask = await guard({ desk: "LAB", action: "ask", params: { checkpoint: "sample_collected", orderId, labId: o.labId, attempt: 1, dueAt: now, rung: "ask", intent: "STATUS", counterparty: `LAB:${o.labId}`, windowFrom: now, windowTo: new Date(now.getTime() + 8 * 3_600_000), urgent: true, forStore: true, line: { orderId, patientName: o.patientName, appointment: o.appointmentTime, labRef: o.labRef ?? null, mobile: o.mobile ?? null, area: o.area ?? null, note } }, reason: `store says the ${sample} sample was not collected on an order LabStack shows ${o.orderStatus}`, idemKey: `closed-recollect:${orderId}:${waMsgId}` }, ctx, state);
+    const reply = await guard({ desk: "STORE", action: "store_reply", params: { text: `#${orderId}: the report shared was without the ${sample} sample — asking ${o.labName ?? "the lab"} for a re-collection slot now. Share a preferred time and we'll book it.`, orderId, storeId, quotedWaId: waMsgId }, reason: `${sample} sample owed on a delivered order`, idemKey: `closed-recollect-ack:${orderId}:${waMsgId}` }, ctx, state);
+    let executed = 0; let review = 0;
+    for (const r of [ask, reply]) { if (r.outcome === "EXECUTED") executed += 1; else if (r.outcome === "REVIEW") review += 1; }
+    if (intent === "reschedule") {
+      const t = await guard({ desk: "STORE", action: "create_task", params: { taskType: "AGENT_RESCHEDULE", orderId, cause: "SAMPLE_RECOLLECTION", evidence: [{ kind: "store_msg", at: at.toISOString(), text: text.slice(0, 300) }], action: `#${orderId}: book ${sample} re-collection${timeAsked ? ` at ${timeAsked}` : ""} (report was delivered without it)` }, reason: `store asked to book the ${sample} re-collection`, idemKey: `closed-recollect-task:${orderId}:${waMsgId}` }, ctx, state);
+      if (t.outcome === "EXECUTED") executed += 1; else if (t.outcome === "REVIEW") review += 1;
+    }
+    return { executed, review };
+  }
   const when = o.statusUpdatedAt ? o.statusUpdatedAt.toLocaleString("en-IN", { timeZone: tz, day: "numeric", month: "short", hour: "numeric", minute: "2-digit" }) : "earlier";
   const line = o.orderStatus === "REPORT_DELIVERED" ? `report delivered on ${when}` : o.orderStatus === "CANCELED" || o.orderStatus === "CANCELLED" ? `cancelled on ${when}`
     : o.orderStatus === "PATIENT_MISSED" ? `marked patient missed on ${when}` : `shows ${o.orderStatus.toLowerCase().replace(/_/g, " ")} since ${when}`;
@@ -170,8 +191,12 @@ export async function runStoreReader(now = new Date()): Promise<StoreReaderResul
     } else {
       // No open journey — delivered, cancelled or missed. Still an answer (Plum asked about a
       // partial report and a cancelled order on 25 Oct 2026 and heard nothing).
-      const r = await answerClosedOrder(link.orderId, g.storeId!, intent, text, m.waMsgId, m.ts, state);
-      result.answered += r.executed; result.review += r.review;
+      try {
+        const r = await answerClosedOrder(link.orderId, g.storeId!, intent, text, m.waMsgId, m.ts, state, reading.samples as Record<string, string>);
+        result.answered += r.executed; result.review += r.review;
+      } catch (error) {
+        console.error(`[Agents] store pass: closed-order answer for ${link.orderId} failed:`, error instanceof Error ? error.message : error);
+      }
     }
   }
   await prisma.agentSettings.update({ where: { id: "default" }, data: { storeWatermark: messages[messages.length - 1].ts } });

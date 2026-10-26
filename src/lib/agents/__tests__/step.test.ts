@@ -149,6 +149,24 @@ describe("the ladder", () => {
     assert.equal(key(r2), key(r1)); // the same key every evening wake: the guard records it once
     assert.ok(!wake(o, at("2026-10-20T16:10:00Z"), r2).actions.some((a) => a.action === "store_warning")); // not after 21:00
   });
+  it("API lab: the console moved around the visit — no WhatsApp ask; quiet console — ask", () => {
+    const slotAt = at("2026-10-26T00:30:00Z"); // 6:00 am IST
+    const live = order({ labId: 4, appointmentTime: slotAt, orderStatus: "PATIENT_VISITED", statusUpdatedAt: at("2026-10-26T00:35:00Z") });
+    const r1 = step({ now: at("2026-10-26T01:40:00Z"), order: live, journey: null, checkpoints: [], events: [], sop: SOP_A, labTier: "A", timeZone: IST });
+    assert.ok(!r1.actions.some((a) => a.desk === "LAB" && a.action === "ask"), JSON.stringify(acts(r1)));
+    const quiet = order({ labId: 4, appointmentTime: at("2026-10-26T04:30:00Z"), orderStatus: "ORDER_SCHEDULED", statusUpdatedAt: at("2026-10-24T10:00:00Z") }); // 10:00 am IST
+    const r2 = step({ now: at("2026-10-26T04:05:00Z"), order: quiet, journey: null, checkpoints: [], events: [], sop: SOP_A, labTier: "A", timeZone: IST });
+    assert.ok(r2.actions.some((a) => a.desk === "LAB" && a.action === "ask"), JSON.stringify(acts(r2)));
+  });
+  it("the console says patient missed: the store is told, with LabStack's reason, and asks are withdrawn", () => {
+    const slotAt = at("2026-10-26T00:30:00Z");
+    const o1 = order({ labId: 4, appointmentTime: slotAt, orderStatus: "ORDER_SCHEDULED", statusUpdatedAt: at("2026-10-25T10:00:00Z") });
+    const r1 = step({ now: at("2026-10-26T00:00:00Z"), order: o1, journey: null, checkpoints: [], events: [], sop: SOP_A, labTier: "A", timeZone: IST });
+    const o2 = { ...o1, orderStatus: "PATIENT_MISSED", statusUpdatedAt: at("2026-10-26T01:37:00Z"), statusNote: "RNR - customer did not respond" };
+    const r2 = step({ now: at("2026-10-26T01:38:00Z"), order: o2, journey: r1.journey, checkpoints: r1.checkpoints, events: [], sop: SOP_A, labTier: "A", timeZone: IST });
+    const alert = r2.actions.find((a) => a.action === "store_alert");
+    assert.match(String(alert?.params.detail), /patient missed — RNR - customer did not respond/);
+  });
   it("a pre-visit checkpoint still open long after the visit becomes one task, never a chase", () => {
     const o = order({ appointmentTime: at("2026-10-19T02:30:00Z"), orderStatus: "ORDER_SCHEDULED" });
     const r1 = wake(o, at("2026-10-24T13:45:00Z"));

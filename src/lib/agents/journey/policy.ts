@@ -33,6 +33,8 @@ export type OrderSnapshot = {
   labRef?: string | null;
   mobile?: string | null;
   area?: string | null;
+  /** LabStack's own note on the latest change (reschedule or cancel reason), when there is one. */
+  statusNote?: string | null;
 };
 
 /** LabStack order statuses in the order an order moves through them. */

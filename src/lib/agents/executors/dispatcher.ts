@@ -158,6 +158,28 @@ export async function flushOutbox(now = new Date(), opts: { urgentOnly?: boolean
  * (sample-at-lab is the API's to report), and a second item for the same order.
  * Shared with scripts/agents-preview-outbox.ts so the preview shows what will go.
  */
+/**
+ * Orders not worth asking about again: anyone in the lab's group wrote about them in the last
+ * 2 hours (our team or the lab), or the lab gave a fact on them in the last 3 hours. On 26 Oct
+ * 2026 our team asked about BLR6366990 at 07:00, the lab answered RNR at 07:07, and the bot
+ * asked "phlebo on time?" about the same order at 07:11.
+ */
+async function alreadyInHand(groupJid: string, items: Array<{ orderId: number; payload: unknown }>, now: Date): Promise<Set<number>> {
+  const out = new Set<number>();
+  const g = await prisma.waGroup.findUnique({ where: { jid: groupJid }, select: { id: true } });
+  const ids = items.map((i) => i.orderId);
+  const [msgs, facts] = await Promise.all([
+    g ? prisma.waMessage.findMany({ where: { groupId: g.id, ts: { gte: new Date(now.getTime() - 2 * 3_600_000) }, NOT: { intent: "AUTOMATED" } }, select: { text: true, orderIds: true } }) : Promise.resolve([]),
+    prisma.providerOrderFact.findMany({ where: { orderId: { in: ids }, createdAt: { gte: new Date(now.getTime() - 3 * 3_600_000) }, kind: { in: ["patient_unavailable", "sample_collected", "eta", "phlebo_name", "new_appointment_time", "cannot_fulfil", "sample_missed"] } }, select: { orderId: true } }),
+  ]);
+  for (const f of facts) out.add(f.orderId);
+  for (const i of items) {
+    const ref = (i.payload as { line?: { labRef?: string | null } }).line?.labRef?.toUpperCase();
+    if (msgs.some((m) => m.orderIds.includes(i.orderId) || m.text.includes(String(i.orderId)) || (ref && m.text.toUpperCase().includes(ref)))) out.add(i.orderId);
+  }
+  return out;
+}
+
 export function partitionQueued<T extends { orderId: number; payload: unknown }>(group: T[], ask: string, now: Date, tier: string | null): { fresh: T[]; stale: T[] } {
   const PRE_VISIT = new Set(["UNCONFIRMED", "PHLEBO", "ETA", "ESCALATION"]);
   const stale: T[] = []; const seen = new Set<number>(); const fresh: T[] = [];
@@ -204,6 +226,15 @@ async function flushGroup(key: string, queued: Item[], now: Date): Promise<{ mes
     return { messages: 0, items: 0, held: 0 };
   }
   const toManager = kind === "MANAGER";
+  if (!toManager && config.waGroupJid) {
+    const answered = await alreadyInHand(config.waGroupJid, group, now);
+    if (answered.size) {
+      await prisma.agentOutboxItem.updateMany({ where: { id: { in: group.filter((i) => answered.has(i.orderId)).map((i) => i.id) } }, data: { status: "DROPPED" } });
+      console.log(`[Agents] ${counterparty} ${ask}: ${answered.size} order(s) already discussed or answered in the group — not asked again`);
+      group = group.filter((i) => !answered.has(i.orderId));
+      if (!group.length) return { messages: 0, items: 0, held: 0 };
+    }
+  }
   if (toManager && !config.managerWhatsapp) {
     await prisma.agentOutboxItem.updateMany({ where: { id: { in: group.map((i) => i.id) } }, data: { status: "DROPPED" } });
     return { messages: 0, items: 0, held: 0 };

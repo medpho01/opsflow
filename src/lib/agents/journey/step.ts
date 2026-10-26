@@ -264,6 +264,17 @@ export function sendWindow(now: Date, due: Date, sop: SopParams, ask: SopParams[
 const RUNG_TO_ACTION: Record<Rung, ActionName> = {
   portal_read: "portal_read", ask: "ask", reminder: "reminder", manager_whatsapp: "manager_whatsapp", call: "call", task: "create_task", stuck: "stuck",
 };
+/**
+ * Has an API lab's webhook moved this order around its visit? Then LabStack's status is the
+ * answer to "phlebo on time? / collected?": updated within 2 h before the visit or any time after.
+ * Manual labs (tier C) have no webhook — always ask them.
+ */
+export function consoleIsLive(order: OrderSnapshot, labTier: LabTier | null | undefined, now: Date): boolean {
+  if (!labTier || labTier === "C" || !order.statusUpdatedAt || !order.appointmentTime) return false;
+  const from = order.appointmentTime.getTime() - 2 * 3_600_000;
+  return order.statusUpdatedAt.getTime() >= from && order.statusUpdatedAt.getTime() <= now.getTime();
+}
+
 /** What the store reads in a relay: RNR named as such, and the slots the lab offers (Orange, 26 Oct 2026). */
 export function relayDetail(f: { kind: string; value: string; fullText?: string }): string {
   if (f.kind !== "patient_unavailable") return f.value.slice(0, 160);
@@ -327,6 +338,19 @@ export function step(input: StepInput): StepOutput {
       },
     });
     journey = { ...journey, consoleFingerprint: fp, consoleSnapshot: order };
+    // The console already has the answer (an API lab's webhook, 26 Oct 2026): the store hears it
+    // from LabStack, no WhatsApp ask needed. Patient missed, or the lab moved the visit.
+    const tzc = input.timeZone ?? "Asia/Kolkata";
+    const note = order.statusNote ? ` — ${order.statusNote.slice(0, 120)}` : "";
+    if (before && order.storeId != null && changes.includes("PATIENT_MISSED")) {
+      actions.push({ desk: "STORE", action: "store_alert", params: { template: "STORE_PATIENT_UNREACHABLE", orderId: order.id, storeId: order.storeId, fact: "console_patient_missed", detail: `the lab marked the patient missed${note}`, at: now.toISOString() }, reason: `LabStack: PATIENT_MISSED${note}`, idemKey: `console-missed:${order.id}:${order.statusUpdatedAt?.getTime() ?? now.getTime()}` });
+      withdraw.push({ asks: ["ETA", "PHLEBO", "STATUS"], reason: "patient missed (console)" });
+    }
+    const movedByLab = before && (changes.includes("RESCHEDULED") || (order.orderStatus === "RESCHEDULED" && before.orderStatus !== "RESCHEDULED"));
+    if (movedByLab && order.storeId != null && order.appointmentTime) {
+      const when = order.appointmentTime.toLocaleString("en-IN", { timeZone: tzc, weekday: "short", day: "numeric", month: "short", hour: "numeric", minute: "2-digit" });
+      actions.push({ desk: "STORE", action: "store_alert", params: { template: "STORE_LAB_RESCHEDULED", orderId: order.id, storeId: order.storeId, fact: "console_rescheduled", detail: `now ${when}${note}`, at: now.toISOString() }, reason: `LabStack: visit moved to ${when}${note}`, idemKey: `console-moved:${order.id}:${order.appointmentTime.getTime()}` });
+    }
   } else {
     checkpoints = waiveImplied(buildCheckpoints(order, checkpoints, now, { recomputePreCollection: false, rebuildAll: false, labTier: input.labTier }));
   }
@@ -477,7 +501,8 @@ export function step(input: StepInput): StepOutput {
       const fmtDay = (d: Date | null | undefined) => (d ? d.toLocaleString("en-IN", { timeZone: tz, weekday: "short", day: "numeric", month: "short", hour: "numeric", minute: "2-digit" }) : "");
       const known = (() => {
         if (order.orderStatus === "REPORT_DELIVERED") return { statusLine: "report delivered.", nextLine: "" };
-        if (order.orderStatus === "PATIENT_MISSED") return { statusLine: "the lab marked the patient as missed.", nextLine: "Please share a new slot." };
+        if (order.orderStatus === "PATIENT_MISSED") return { statusLine: `the lab marked the patient as missed${order.statusNote ? ` (${order.statusNote.slice(0, 80)})` : ""}.`, nextLine: "Please share a new slot." };
+        if (order.orderStatus === "RESCHEDULED") return { statusLine: `rescheduled to ${fmtDay(slot)}${order.statusNote ? ` (${order.statusNote.slice(0, 80)})` : ""}.`, nextLine: "" };
         if (collected?.status === "MET") return { statusLine: `sample collected ${fmt(collected.metAt)}.`, nextLine: report ? `Report expected by ${fmtDay(report.dueAt)}.` : "" };
         if (order.phleboName.trim()) return { statusLine: `phlebo ${order.phleboName.trim()} assigned for ${fmtDay(slot)}.`, nextLine: "" };
         if (checkpoints.find((c) => c.name === "confirmed")?.status === "MET") return { statusLine: `confirmed by the lab for ${fmtDay(slot)}.`, nextLine: "" };
@@ -513,7 +538,7 @@ export function step(input: StepInput): StepOutput {
             actions.push({ desk: "STORE", action: "store_reply", params: { template: "STORE_STATUS_ANSWER", orderId: order.id, storeId: order.storeId, ...known, ...quote }, reason: `store asked for ${m.intent}; the console knows`, idemKey: `${key}:answer` });
           } else {
             actions.push({ desk: "STORE", action: "store_reply", params: { template: "STORE_CHECKING", orderId: order.id, storeId: order.storeId, ...quote }, reason: `store asked for ${m.intent}; the console does not know yet`, idemKey: `${key}:checking` });
-            if (next && sop && from === "LAB" && sop.asks[next.name]) {
+            if (next && sop && from === "LAB" && sop.asks[next.name] && !consoleIsLive(order, input.labTier, now)) {
               const ask = sop.asks[next.name];
               const urgent = slotPassed || (minutesToSlot != null && minutesToSlot <= ask.urgentWithinMin);
               const window = sendWindow(now, now, sop, { ...ask, leadMin: 0, graceMin: 240 }, true, urgent, tz);
@@ -598,6 +623,9 @@ export function step(input: StepInput): StepOutput {
     // 2026): the visit happened or it did not, and LabStack does not say — one
     // task for a person, then the journey waits for the console.
     const preVisit = checkpointDefs(order.orderType).find((d) => d.name === next.name)?.preCollection === true;
+    // An API lab whose webhook updated this order around the visit has told us where it is: no
+    // WhatsApp ask for the visit checkpoints; ask only when the console has gone quiet (26 Oct 2026).
+    const consoleAnswers = preVisit && consoleIsLive(order, input.labTier, now);
     // An API lab asked "phlebo needed?" ten minutes before the visit answers "collection in
     // progress" (Orange, 25 Oct 2026): LabStack has not caught up. Inside the last quarter
     // hour it is not worth a message (Orange assigns at slot − 30 min, so −30…−15 is fair).
@@ -613,7 +641,7 @@ export function step(input: StepInput): StepOutput {
       }, reason: `${LABELS[next.name]} still open ${Math.round(-minutesToSlot / 60)} h after the visit; the console shows ${order.orderStatus}`, idemKey: `visit-passed:${order.id}:${next.name}` });
       attempts[next.name] = { ...a, n: 99, at: now.toISOString() };
       journey = { ...journey, attempts };
-    } else if (from === "LAB" && ask && started && gapOk && !holding && !apiPhleboTooLate) {
+    } else if (from === "LAB" && ask && started && gapOk && !holding && !apiPhleboTooLate && !consoleAnswers) {
       let rungIndex = a.n;
       if (brokenPromises >= sop.brokenPromisesSkip && rungIndex > 0 && rungIndex < ladder.length - 1) rungIndex += 1;
       const rung = ladder[Math.min(rungIndex, ladder.length - 1)];

@@ -15,7 +15,7 @@ const TERMINAL = ["CANCELED", "REPORT_DELIVERED"];
 type Row = {
   id: number; orderType: string; orderStatus: string; appointmentTime: Date | null; storeId: number | null; labId: number | null;
   createdAt: Date; statusUpdatedAt: Date | null; phleboName: string; patientName: string | null; labName: string | null; storeName: string | null;
-  labRef: string | null; mobile: string | null; area: string | null;
+  labRef: string | null; mobile: string | null; area: string | null; statusNote: string | null;
 };
 
 const SELECT = `
@@ -23,7 +23,7 @@ const SELECT = `
          o."createdAt", o."statusUpdatedAt", COALESCE(o."phleboName", '') AS "phleboName",
          u.name AS "patientName", l."labName" AS "labName", s."storeName" AS "storeName",
          NULLIF(o."labOrderId", '') AS "labRef",
-         u.mobile AS mobile, COALESCE(NULLIF(p.locality, ''), NULLIF(p.city, ''), p.pincode::text) AS area
+         u.mobile AS mobile, COALESCE(NULLIF(o."rescheduleReason", ''), NULLIF(o."cancelReason", '')) AS "statusNote", COALESCE(NULLIF(p.locality, ''), NULLIF(p.city, ''), p.pincode::text) AS area
   FROM public."Order" o
   LEFT JOIN public."User" u ON u.id = o."userId"
   LEFT JOIN public."Profile" p ON p."profileUserId" = o."userId"
@@ -62,6 +62,6 @@ export function toSnapshot(r: Row): OrderSnapshot {
     id: r.id, orderType: r.orderType, orderStatus: r.orderStatus, appointmentTime: r.appointmentTime ?? null,
     labId: r.labId, storeId: r.storeId, createdAt: r.createdAt, statusUpdatedAt: r.statusUpdatedAt ?? null,
     phleboName: r.phleboName ?? "", patientName: r.patientName ?? null, labName: r.labName ?? null, storeName: r.storeName ?? null,
-    labRef: r.labRef?.trim() || null, mobile: r.mobile?.trim() || null, area: r.area?.trim() || null,
+    labRef: r.labRef?.trim() || null, mobile: r.mobile?.trim() || null, area: r.area?.trim() || null, statusNote: r.statusNote?.trim() || null,
   };
 }

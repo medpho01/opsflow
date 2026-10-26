@@ -62,7 +62,10 @@ export async function wakeJourney(orderId: number, reason: WakeReason, opts: Wak
   const row = await prisma.agentJourney.findUnique({ where: { orderId }, include: { checkpoints: true } });
   if (row?.closedAt) return { ...empty("journey closed"), closed: true };
 
-  let order = opts.order ?? await fetchOrderSnapshot(orderId);
+  // Read the order now, not from the job: a queued wake carries the snapshot of when it was
+  // queued, and a backlog made the agent act on 20-minute-old statuses (26 Oct 2026: a
+  // reminder at 8:16 for an order LabStack marked collected at 7:56).
+  let order = (await fetchOrderSnapshot(orderId).catch(() => null)) ?? opts.order ?? null;
   if (!order && row) order = toJourneyState(row).consoleSnapshot;
   if (!order) return empty("order not in the replica");
 

@@ -69,14 +69,16 @@ export async function startWorker(): Promise<PgBoss> {
     await boss.send(QUEUES.wake, { orderId, reason, order, labSilentHours } satisfies WakeJob, { singletonKey: String(orderId) });
   };
 
-  await boss.work<WakeJob>(QUEUES.wake, { batchSize: 1, pollingIntervalSeconds: 1 }, async (jobs) => {
-    for (const job of jobs) {
+  // Ten wakes at a time (one job per order, so never the same order twice): one a second could
+  // not keep up with ~250 due a minute, and the backlog delayed every reaction (26 Oct 2026).
+  await boss.work<WakeJob>(QUEUES.wake, { batchSize: 10, pollingIntervalSeconds: 1 }, async (jobs) => {
+    await Promise.all(jobs.map(async (job) => {
       const { orderId, reason, order, labSilentHours } = job.data;
       const result = await wakeJourney(orderId, reason, { order: order ? reviveDates(order) : undefined, labSilentHours });
       if (result.opened || result.events || result.actions || result.closed) {
         console.log(`[Agents] wake ${orderId} (${reason}): ${result.opened ? "opened " : ""}${result.closed ? "closed " : ""}events=${result.events} actions=${result.actions} executed=${result.executed} review=${result.review}`);
       }
-    }
+    }));
   });
 
   const log = (label: string, result: Record<string, number>, ms: number) => {

@@ -65,8 +65,15 @@ async function linkOrder(message: { orderIds: number[]; idType: string | null; i
   // An id the store wrote, checked against LabStack and this store.
   const written = explicitOrderIds(message.text);
   if (written.length) {
-    const rows = await labstackWorkerQuery<{ id: number }>(`SELECT id FROM public."Order" WHERE id = ANY($1::int[]) AND "storeId" = $2 ORDER BY "createdAt" DESC LIMIT 1`, [written, storeId]).catch(() => []);
-    if (rows[0]) return { orderId: rows[0].id, via: "ORDER_ID" };
+    // The store wrote it in its own group: a real order is accepted under any LabStack store
+    // (one client books under several — 93350, 94204, 93586 were ignored on 25 Oct 2026). This
+    // store's own orders are preferred when the text names more than one.
+    const rows = await labstackWorkerQuery<{ id: number; storeId: number | null }>(`SELECT id, "storeId" FROM public."Order" WHERE id = ANY($1::int[])`, [written]).catch(() => []);
+    const pick = rows.find((r) => r.storeId === storeId) ?? rows.find((r) => r.id === written[0]) ?? rows[0];
+    if (pick) {
+      if (pick.storeId !== storeId) console.log(`[Agents] store ${storeId} asked about order ${pick.id} (booked under store ${pick.storeId ?? "?"})`);
+      return { orderId: pick.id, via: "ORDER_ID" };
+    }
   }
   // The gateway's tag, only when it came straight from a number in this message
   // ("order 93312"). Tags inherited through a reply chain have been seen to
@@ -83,7 +90,7 @@ async function linkOrder(message: { orderIds: number[]; idType: string | null; i
     const quoted = await prisma.waMessage.findUnique({ where: { waMsgId: message.replyToWaId }, select: { text: true } });
     const quotedIds = quoted ? explicitOrderIds(quoted.text) : [];
     if (quotedIds.length) {
-      const rows = await labstackWorkerQuery<{ id: number }>(`SELECT id FROM public."Order" WHERE id = ANY($1::int[]) AND "storeId" = $2 ORDER BY "createdAt" DESC LIMIT 1`, [quotedIds, storeId]).catch(() => []);
+      const rows = await labstackWorkerQuery<{ id: number }>(`SELECT id FROM public."Order" WHERE id = ANY($1::int[]) ORDER BY ("storeId" = $2) DESC, "createdAt" DESC LIMIT 1`, [quotedIds, storeId]).catch(() => []);
       if (rows[0]) return { orderId: rows[0].id, via: "QUOTED" };
     }
     const ours = await prisma.waOutbound.findFirst({ where: { sentWaMsgId: message.replyToWaId }, select: { id: true } });

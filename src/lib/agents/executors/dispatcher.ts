@@ -16,6 +16,7 @@ import prisma from "@/lib/db/client";
 import { resolveLabTarget, toDirectJid } from "@/lib/non-api-labs/target";
 import { BATCH_FOLLOW_UP_FIRM_TEMPLATE, BATCH_FOLLOW_UP_TEMPLATE, BATCH_GENERIC_TEMPLATE, BATCH_TEMPLATE_BY_INTENT, ensureTemplate, renderLabTemplate } from "@/lib/non-api-labs/templates";
 import { coordinatorsFor } from "@/lib/wa/coordinators";
+import { opsGroup } from "../ops/group";
 import { currentSlot, isSlotOpen, itemLine, localParts } from "@/lib/provider-rules/batching";
 import { formatTime, TIME_ZONE } from "@/lib/provider-rules/format";
 import { confirmationUrl } from "@/lib/non-api-labs/confirmation-link";
@@ -40,6 +41,8 @@ export type EnqueueInput = {
   text?: string;
   /** Go on the next every-minute flush, no gathering: a store's question, or a chase it triggered. */
   immediate?: boolean;
+  /** Anything else the flush needs (an ops post's taskId, a message to quote). */
+  extra?: Record<string, unknown>;
 };
 
 export async function enqueueOutbox(input: EnqueueInput): Promise<{ id: string; queued: boolean }> {
@@ -48,7 +51,7 @@ export async function enqueueOutbox(input: EnqueueInput): Promise<{ id: string; 
       data: {
         counterparty: input.counterparty, ask: input.ask, orderId: input.orderId, journeyId: input.journeyId, actionId: input.actionId,
         windowFrom: input.windowFrom, windowTo: input.windowTo, urgent: input.urgent, idemKey: input.idemKey,
-        payload: { line: { ...input.line, appointment: input.line.appointment?.toISOString() ?? null }, text: input.text ?? null, immediate: input.immediate === true } as Prisma.InputJsonValue,
+        payload: { line: { ...input.line, appointment: input.line.appointment?.toISOString() ?? null }, text: input.text ?? null, immediate: input.immediate === true, ...(input.extra ?? {}) } as Prisma.InputJsonValue,
       },
       select: { id: true },
     });
@@ -204,6 +207,7 @@ async function flushGroup(key: string, queued: Item[], now: Date): Promise<{ mes
   const tz = TIME_ZONE();
 
   if (kind === "STORE") return flushStore(id, group, now);
+  if (kind === "OPS") return flushOps(group, now);
   if (ask === "SCORECARD") return flushScorecard(id, group, now);
 
   // Never send what no longer makes sense (seen queued on 24 Oct 2026: "phlebo
@@ -235,11 +239,19 @@ async function flushGroup(key: string, queued: Item[], now: Date): Promise<{ mes
       if (!group.length) return { messages: 0, items: 0, held: 0 };
     }
   }
+  // No manager number on file: the escalation goes to LabStack's own ops group instead of being
+  // dropped (24 escalations a day vanished that way, 26 Oct 2026). A person there calls the lab.
+  let toOps = false;
+  let opsTarget: { targetJid: string; groupId: string | null } | null = null;
   if (toManager && !config.managerWhatsapp) {
-    await prisma.agentOutboxItem.updateMany({ where: { id: { in: group.map((i) => i.id) } }, data: { status: "DROPPED" } });
-    return { messages: 0, items: 0, held: 0 };
+    const ops = await opsGroup();
+    if (!ops) {
+      await prisma.agentOutboxItem.updateMany({ where: { id: { in: group.map((i) => i.id) } }, data: { status: "DROPPED" } });
+      return { messages: 0, items: 0, held: 0 };
+    }
+    toOps = true; opsTarget = { targetJid: ops.jid, groupId: ops.id };
   }
-  const target = toManager ? { targetJid: toDirectJid(config.managerWhatsapp!), groupId: null } : await resolveLabTarget(config, null);
+  const target = toOps ? opsTarget! : toManager ? { targetJid: toDirectJid(config.managerWhatsapp!), groupId: null } : await resolveLabTarget(config, null);
 
   // Caps: per day per lab (urgent exempt) and per slot (urgent alone).
   const dayStart = new Date(now); dayStart.setUTCHours(0, 0, 0, 0);
@@ -299,6 +311,8 @@ async function flushGroup(key: string, queued: Item[], now: Date): Promise<{ mes
       text = renderLabTemplate(t.isActive ? t.body : "{{coordinator}} still open: {{numbers}}", {
         lab_name: config.labName, coordinator: mention.text, count: String(list.length), numbers: named.join(", "), since: formatTime(followUp.since),
       });
+    } else if (toOps) {
+      text = `🔴 *${config.labName}: no answer on ${list.length} ${list.length === 1 ? "order" : "orders"}* — no manager number on file\n\n${lines.join("\n")}\n\nPlease call the lab, or reply *on it*.`;
     } else {
       const t = await ensureTemplate(BATCH_TEMPLATE_BY_INTENT[ask] ?? BATCH_GENERIC_TEMPLATE);
       text = renderLabTemplate(t.body, {
@@ -310,7 +324,7 @@ async function flushGroup(key: string, queued: Item[], now: Date): Promise<{ mes
     const batch = await prisma.providerBatch.create({
       data: {
         labId: id, intent: ask, slotAt: currentSlot(now, tz), shadow: false, outboundId: outbound.id, followUpOf: followUp?.rootId ?? null,
-        recipient: toManager ? "MANAGER" : "LAB", itemCount: list.length, text,
+        recipient: toOps ? "OPS" : toManager ? "MANAGER" : "LAB", itemCount: list.length, text,
         items: list.map((i, index) => ({ n: numbers[index], orderId: i.orderId, ruleId: `agent:${i.actionId ?? ask}`, occurrence: 1, communicationId: null, line: storedLines[index] })) as Prisma.InputJsonValue,
       },
       select: { id: true },
@@ -377,6 +391,23 @@ async function flushScorecard(labId: number, group: Item[], now: Date): Promise<
 }
 
 /** A store counterparty gets plain text per item (answers, alerts, warnings), never a numbered ask. */
+/** Posts to LabStack's own ops group: tasks, escalations, questions, cancellations (ops/post.ts). */
+async function flushOps(group: Item[], now: Date) {
+  const g = await opsGroup();
+  if (!g) { await prisma.agentOutboxItem.updateMany({ where: { id: { in: group.map((i) => i.id) } }, data: { status: "DROPPED" } }); return { messages: 0, items: 0, held: 0 }; }
+  let messages = 0;
+  for (const i of group) {
+    const p = i.payload as { text?: string | null; quotedWaId?: string | null; taskId?: number | null };
+    if (!p.text) { await prisma.agentOutboxItem.update({ where: { id: i.id }, data: { status: "DROPPED" } }); continue; }
+    const outbound = await sendWhatsApp({ targetJid: g.jid, groupId: g.id, text: p.text, quotedWaId: p.quotedWaId ?? null, now });
+    await prisma.agentOutboxItem.update({ where: { id: i.id }, data: { status: "SENT", outboundId: outbound.id, sentAt: now } });
+    if (i.actionId) await prisma.agentAction.update({ where: { id: i.actionId }, data: { outcome: "EXECUTED" } }).catch(() => undefined);
+    if (i.journeyId) await prisma.agentJourneyEvent.create({ data: { journeyId: i.journeyId, at: now, kind: "ops_post", actor: "AGENT", applied: true, payload: { kind: i.ask, taskId: p.taskId ?? null, text: p.text.slice(0, 500) } } });
+    messages += 1;
+  }
+  return { messages, items: messages, held: 0 };
+}
+
 async function flushStore(storeId: number, group: Item[], now: Date) {
   const g = await prisma.waGroup.findFirst({ where: { storeId, role: "SUPPORT", archivedAt: null, active: true }, select: { id: true, jid: true } });
   if (!g) { await prisma.agentOutboxItem.updateMany({ where: { id: { in: group.map((i) => i.id) } }, data: { status: "DROPPED" } }); return { messages: 0, items: 0, held: 0 }; }

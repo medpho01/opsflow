@@ -2211,7 +2211,7 @@ model AgentCheckpoint {
 
 /// The audit log: one row per action the guard saw, whatever happened to it (FR-14.1).
 model AgentAction {
-  id           String   @id @default(cuid())
+  id           String    @id @default(cuid())
   journeyId    String?
   orderId      Int?
   /// LAB | INTAKE | STORE | KIT | ESCALATION | BRAIN
@@ -2230,8 +2230,11 @@ model AgentAction {
   model        String?
   tokens       Int?
   costPaise    Int?
-  idemKey      String?  @unique
-  createdAt    DateTime @default(now())
+  idemKey      String?   @unique
+  createdAt    DateTime  @default(now())
+  /// What came of it, scored later (brain/outcomes.ts): { answered, minutes, settled, … }.
+  effect       Json?
+  effectAt     DateTime?
 
   journey AgentJourney? @relation(fields: [journeyId], references: [id], onDelete: SetNull)
 
@@ -2276,6 +2279,8 @@ model AgentSettings {
   pilotStoreIds  Int[]
   /// Stores that get the daily summaries whatever their store desk's state (Connections › Stores).
   digestStoreIds Int[]
+  /// The ops-group reader's watermark over wa_messages ("on it" / "done" replies, 27 Oct 2026).
+  opsWatermark   DateTime?
 
   @@map("agent_settings")
 }
@@ -2411,6 +2416,40 @@ model AgentOutboxItem {
   @@index([counterparty, ask, status])
   @@index([orderId, status])
   @@map("agent_outbox_items")
+}
+
+/// A store's request, tracked until it is closed (27 Oct 2026): what was asked, who it waits
+/// on, when to remind, and how it closed. One row per store message that asked for something.
+model AgentThread {
+  id           String    @id @default(cuid())
+  orderId      Int
+  storeId      Int
+  groupId      String?
+  /// status | report | slot | reschedule | cancel | change_tests | new_booking | serviceability | complaint | other
+  kind         String
+  /// LAB | OPS | STORE | CONSOLE — who the next move is with
+  waitingOn    String
+  openedAt     DateTime
+  /// wa_messages.id of the store message that opened it, and its WhatsApp id (to quote)
+  messageId    String    @unique
+  waMsgId      String?
+  text         String
+  /// What the console showed when it opened (appointmentTime, status) — to notice the change
+  snapshot     Json?
+  nextRemindAt DateTime?
+  reminders    Int       @default(0)
+  lastRemindAt DateTime?
+  /// OPEN | CLOSED
+  status       String    @default("OPEN")
+  closedAt     DateTime?
+  closeReason  String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@index([storeId, status, openedAt])
+  @@index([orderId, status])
+  @@index([status, nextRemindAt])
+  @@map("agent_threads")
 }
 
 model AgentPromise {

@@ -29,6 +29,8 @@ const ALLOWED_TRANSITIONS = new Set(["PHLEBO_STARTED", "SAMPLE_COLLECTED", "SAMP
 export const DEFAULT_LEVELS: Partial<Record<ActionName, Level>> = {
   ask: "ACT", reminder: "ACT", manager_whatsapp: "ACT_NOTIFY", call: "ACT_NOTIFY", create_task: "ACT", stuck: "ACT", portal_read: "ACT",
   status_write: "SUGGEST", store_reply: "ACT_NOTIFY", store_alert: "ACT", store_warning: "SUGGEST", ack: "ACT", wait: "ACT",
+  // A post to LabStack's own ops group is never a message to a lab or store: always allowed.
+  ops_post: "ACT",
 };
 
 export type GuardContext = {
@@ -109,7 +111,7 @@ export async function guard(action: ProposedAction, ctx: GuardContext, state: Gu
 
   const violation = hardRuleViolation(action);
   if (violation) { outcome = "BLOCKED"; blockedBy = violation; }
-  else if (ctx.menus?.[action.desk] && !ctx.menus[action.desk]!.includes(action.action)) { outcome = "BLOCKED"; blockedBy = `not on the ${action.desk} desk's menu`; }
+  else if (action.action !== "ops_post" && ctx.menus?.[action.desk] && !ctx.menus[action.desk]!.includes(action.action)) { outcome = "BLOCKED"; blockedBy = `not on the ${action.desk} desk's menu`; }
   else if (state.settings.pausedAll) { outcome = "BLOCKED"; blockedBy = "kill switch: everything paused"; }
   else if (state.settings.pausedDesks.includes(action.desk)) { outcome = "BLOCKED"; blockedBy = `kill switch: ${action.desk} desk paused`; }
   else if (ctx.labId != null && state.settings.pausedLabIds.includes(ctx.labId)) { outcome = "BLOCKED"; blockedBy = "kill switch: lab paused"; }

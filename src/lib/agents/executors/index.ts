@@ -13,6 +13,9 @@ import { storeText } from "./storeReply";
 import { placeManagerCall } from "./calls";
 import { enqueuePortalRead } from "../queue";
 import { draftComplaintReply } from "../escalation/drafter";
+import { postToOps, orderLine, type OpsPostKind } from "../ops/post";
+import { AGENT_TASK_TYPES } from "./tasks";
+import { LABELS } from "../journey/step";
 
 export type ExecuteContext = {
   actionId: string; journeyId: string | null; orderId: number; labId: number | null; storeId: number | null;
@@ -46,6 +49,16 @@ export async function execute(action: ProposedAction, ctx: ExecuteContext): Prom
         dueInMinutes: typeof p.dueInMinutes === "number" ? p.dueInMinutes : undefined,
       });
       if (ctx.journeyId) await prisma.agentJourneyEvent.create({ data: { journeyId: ctx.journeyId, at: new Date(), kind: "task", actor: "AGENT", applied: true, payload: { taskId: r.taskId, type: p.taskType, cause: payload.cause, created: r.created } as Prisma.InputJsonValue } });
+      // The ops group hears every new task (27 Oct 2026): nobody is assigned; whoever takes it replies "on it".
+      if (r.created) {
+        const def = AGENT_TASK_TYPES[String(p.taskType ?? "")];
+        const why = payload.evidence[0]?.text ? `\nWhy: ${payload.evidence[0].text.slice(0, 160)}` : "";
+        const link = payload.consoleUrl ?? (process.env.LABSTACK_CONSOLE_URL ? `${process.env.LABSTACK_CONSOLE_URL.replace(/\/$/, "")}/orders/${ctx.orderId}` : null);
+        await postToOps({
+          kind: "OPS_TASK", orderId: ctx.orderId, journeyId: ctx.journeyId, actionId: ctx.actionId, taskId: r.taskId, idemKey: `task:${action.idemKey}`,
+          text: `📌 *${def?.label ?? String(p.taskType ?? "Task")}* · task #${r.taskId}\n${orderLine({ id: ctx.orderId, patientName: ctx.patientName, labName: ctx.labName, appointmentTime: ctx.appointmentTime ?? null })}\n${payload.action}${why}${link ? `\n${link}` : ""}\n\nReply *on it* to take it, *done* when finished.`,
+        }).catch((e) => console.warn("[Agents] ops post failed:", e instanceof Error ? e.message : e));
+      }
       // Escalation desk (FR-9.5): a complaint's task carries the timeline and a drafted reply; a person sends it.
       if (p.draft === true && r.created) await draftComplaintReply(r.taskId, ctx.orderId, ctx.journeyId, String(payload.evidence[0]?.text ?? "")).catch((e) => console.warn("[Agents] draft failed:", e instanceof Error ? e.message : e));
       return { outcome: "EXECUTED", note: `task #${r.taskId}${r.created ? "" : " (existing)"}` };
@@ -60,7 +73,17 @@ export async function execute(action: ProposedAction, ctx: ExecuteContext): Prom
     }
     case "stuck": {
       if (ctx.journeyId) await prisma.agentJourneyEvent.create({ data: { journeyId: ctx.journeyId, at: new Date(), kind: "escalation", actor: "AGENT", applied: true, payload: { rung: "stuck", checkpoint: p.checkpoint } as Prisma.InputJsonValue } });
-      return { outcome: "EXECUTED", note: "on the stuck list" };
+      // The end of the ladder reaches a person (27 Oct 2026): the ops group, not a list nobody reads.
+      const milestone = LABELS[String(p.checkpoint) as keyof typeof LABELS] ?? String(p.checkpoint ?? "the next step");
+      await postToOps({
+        kind: "OPS_ESCALATION", orderId: ctx.orderId, journeyId: ctx.journeyId, actionId: ctx.actionId, idemKey: `stuck:${action.idemKey}`,
+        text: `🔴 *Stuck — ${milestone.toLowerCase()}*\n${orderLine({ id: ctx.orderId, patientName: ctx.patientName, labName: ctx.labName, appointmentTime: ctx.appointmentTime ?? null })}\n${ctx.labName ?? "The lab"} has not answered any ask. Please decide: another lab, a call, or a new slot.\n\nReply *on it* to take it.`,
+      }).catch((e) => console.warn("[Agents] ops post failed:", e instanceof Error ? e.message : e));
+      return { outcome: "EXECUTED", note: "on the stuck list; ops group told" };
+    }
+    case "ops_post": {
+      const r = await postToOps({ kind: (p.kind as OpsPostKind) ?? "OPS_ESCALATION", orderId: ctx.orderId, journeyId: ctx.journeyId, actionId: ctx.actionId, text: String(p.text ?? action.reason), idemKey: action.idemKey });
+      return r.queued ? { outcome: "EXECUTED", note: "posted to the ops group" } : { outcome: "RECORDED", note: "ops group not connected, or already posted" };
     }
     case "wait": return { outcome: "RECORDED" };
     default: return { outcome: "FAILED", note: `no executor for ${action.action}` };

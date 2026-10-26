@@ -70,6 +70,7 @@ async function gateway(now: Date): Promise<Check> {
   const failed = await prisma.waOutbound.count({ where: { status: "FAILED", createdAt: { gte: new Date(now.getTime() - 60 * MIN) } } });
   const seen = g?.lastSeenAt ? Math.round((now.getTime() - g.lastSeenAt.getTime()) / MIN) : null;
   const ok = g?.status === "CONNECTED" && (seen == null || seen < 10) && pending < 10 && failed < 5;
+  if (g?.status === "LOGGED_OUT" || g?.status === "QR") return { key: "gateway", ok: false, detail: `WhatsApp is ${g.status === "QR" ? "waiting for a QR scan" : "logged out"} — nothing can be sent. Open Settings › WhatsApp and scan the QR (${pending} message(s) waiting)` };
   return { key: "gateway", ok, detail: `WhatsApp ${g?.status ?? "unknown"}${seen != null ? `, seen ${seen} min ago` : ""}; ${pending} message(s) waiting over 5 min, ${failed} failed in the last hour` };
 }
 
@@ -140,12 +141,17 @@ export async function runHealth(now = new Date(), opts: { alert?: boolean } = { 
   const toAlert = problems.filter((c) => last.some((l) => l.key === c.key && !l.ok) && !alertedRecently.has(c.key));
   const recovered = checks.filter((c) => c.ok && alertedRecently.has(c.key) && last.some((l) => l.key === c.key && !l.ok));
   const jids = (process.env.AGENT_BRIEF_JIDS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
-  if ((toAlert.length || recovered.length) && jids.length) {
+  if (toAlert.length || recovered.length) {
     const text = [
       toAlert.length ? `⚠️ *OpsFlow health* — needs a look:\n${toAlert.map((c) => `• ${c.detail}${c.healed ? ` (tried: ${c.healed})` : ""}`).join("\n")}` : "",
       recovered.length ? `✅ Recovered: ${recovered.map((c) => c.key.replace(/_/g, " ")).join(", ")}` : "",
     ].filter(Boolean).join("\n\n");
     for (const jid of jids) await sendWhatsApp({ targetJid: jid, groupId: null, text, now }).catch(() => undefined);
+    // WhatsApp cannot report its own outage (26 Oct 2026: logged out at 09:08, nobody knew). A
+    // chat webhook (Google Chat or Slack incoming webhook; both take {"text"}) gets every alert too.
+    const hook = process.env.AGENT_ALERT_WEBHOOK_URL;
+    if (hook) await fetch(hook, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text }), signal: AbortSignal.timeout(10_000) }).catch((e) => console.error("[Health] webhook:", e instanceof Error ? e.message : e));
+    if (!jids.length && !hook) console.warn("[Health] problems found but no AGENT_BRIEF_JIDS or AGENT_ALERT_WEBHOOK_URL to tell anyone");
   }
   if (toAlert.length) {
     const latest = await prisma.agentBrainRun.findFirst({ where: { kind: "health", startedAt: now }, select: { id: true } });

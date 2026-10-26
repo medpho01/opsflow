@@ -41,6 +41,11 @@ export async function sweep(now = new Date(), wake?: Wake, opts: { reason?: Wake
 
   const open = await prisma.agentJourney.findMany({ where: { closedAt: null }, select: { orderId: true, consoleFingerprint: true, nextCheckAt: true } });
   const known = new Map(open.map((j) => [j.orderId, j]));
+  // Orders whose journey is already closed (delivered, cancelled, done) stay in the window for a
+  // week, and a wake of a closed journey does nothing. They used to be re-queued as "opened" on
+  // every sweep — ~1,500 a minute, a backlog that delayed every real wake (26 Oct 2026).
+  const unknownIds = orders.filter((o) => !known.has(o.id)).map((o) => o.id);
+  const closed = new Set(unknownIds.length ? (await prisma.agentJourney.findMany({ where: { orderId: { in: unknownIds }, closedAt: { not: null } }, select: { orderId: true } })).map((j) => j.orderId) : []);
 
   const [guardState, sops, directory] = await Promise.all([loadGuardState(), loadLiveSops(), loadDirectory()]);
   const silence = await labSilence([...new Set(orders.map((o) => o.labId).filter((x): x is number => x != null))], now);
@@ -48,6 +53,7 @@ export async function sweep(now = new Date(), wake?: Wake, opts: { reason?: Wake
 
   for (const order of orders) {
     const j = known.get(order.id);
+    if (!j && closed.has(order.id)) continue;
     let reason: WakeReason | null = null;
     if (!j) reason = "opened";
     else if (j.consoleFingerprint !== fingerprint(order)) reason = "console_change";

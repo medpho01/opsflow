@@ -191,7 +191,7 @@ export function partitionQueued<T extends { orderId: number; payload: unknown }>
     const appt = line.appointment ? new Date(line.appointment).getTime() : null;
     // "phlebo on time?" for a 6:00 visit at 7:11 is noise (26 Oct 2026): ETA and phlebo asks end at the visit.
     const pastVisit = appt != null && appt < now.getTime() - (ask === "ETA" || ask === "PHLEBO" ? 0 : 2 * 3_600_000);
-    const oldReport = ask === "REPORT" && appt != null && appt < now.getTime() - 7 * 86_400_000;
+    const oldReport = ask === "REPORT" && appt != null && appt < now.getTime() - 30 * 86_400_000;
     const apiOverdue = ask === "OVERDUE" && tier != null && tier !== "C";
     if ((PRE_VISIT.has(ask) && pastVisit) || oldReport || apiOverdue || seen.has(i.orderId)) { stale.push(i); continue; }
     seen.add(i.orderId); fresh.push(i);
@@ -213,7 +213,7 @@ async function flushGroup(key: string, queued: Item[], now: Date): Promise<{ mes
   // Never send what no longer makes sense (seen queued on 24 Oct 2026: "phlebo
   // on time?" for a visit a week ago, "please confirm" for a past visit, report
   // chases 14 days old): a pre-visit ask after the visit, a report chase older
-  // than a week, and a second rung for an order already in this message.
+  // than a month, and a second rung for an order already in this message.
   const { fresh, stale } = partitionQueued(group, ask, now, kind === "LAB" ? tierOf(await loadDirectory(), id) : null);
   if (stale.length) {
     await prisma.agentOutboxItem.updateMany({ where: { id: { in: stale.map((i) => i.id) } }, data: { status: "DROPPED" } });

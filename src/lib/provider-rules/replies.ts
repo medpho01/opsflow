@@ -28,6 +28,9 @@ import type { FactKind } from "./types";
 import { splitBatchReply } from "./batching";
 import { recordAnswered } from "./engine";
 import { labstackWorkerQuery } from "@/lib/db/labstack";
+import { matchOrdersByPatient } from "./match-patient";
+import { interpretImage } from "@/lib/wa/vision";
+import { postToOps } from "@/lib/agents/ops/post";
 
 const BATCH = 200;
 const ONLY_OPEN_WINDOW_MS = 3 * 3_600_000;
@@ -36,7 +39,15 @@ const FIRST_RUN_LOOKBACK_MS = 60 * 60_000;
 
 export type ReplyPassResult = { read: number; attributed: number; facts: number };
 
-type Attribution = { orderId: number; via: "REPLY_TO" | "ORDER_ID" | "ONLY_OPEN"; ruleId: string | null; context: string | null };
+type Attribution = { orderId: number; via: "REPLY_TO" | "ORDER_ID" | "ONLY_OPEN" | "PATIENT" | "IMAGE"; ruleId: string | null; context: string | null };
+
+/** A lab asking us something, rather than answering: a question quoting our message, or addressed to our number. */
+const QUESTION_RE = /\?\s*$|\b(clarify|which order|what (is|exactly|do you)|could you|can you (please )?(confirm|share|tell)|please (confirm|share|explain|specify)|kindly (confirm|share|specify)|share (the )?(order|booking) (id|number)|what happened|exact issue)\b/i;
+export function isQuestionToUs(text: string, quotesUs: boolean, botNumber: string | null): boolean {
+  if (!QUESTION_RE.test(text)) return false;
+  const addressed = quotesUs || /labstack operations/i.test(text) || (!!botNumber && text.includes(`@${botNumber}`));
+  return addressed;
+}
 
 async function attribute(
   message: { replyToWaId: string | null; orderIds: number[]; createdAt: Date },
@@ -129,14 +140,26 @@ export async function runReplyPass(now = new Date()): Promise<ReplyPassResult> {
   if (messages.length === 0) return result;
 
   const isTeam = makeTeamMatcher(await loadTeam());
+  const botNumber = (await prisma.waGateway.findUnique({ where: { id: "default" }, select: { connectedNumber: true } }).catch(() => null))?.connectedNumber ?? null;
+  const labNames = new Map<number, string>();
   for (const message of messages) {
     result.read += 1;
-    const text = (message.text ?? "").trim();
+    let text = (message.text ?? "").trim();
     const labId = labByGroup.get(message.groupId)!;
-    if (!text) continue;
     // Our own team writing in the lab's group is not the lab answering (a relay once echoed
     // Vijayraj's "urine sample not collected" back to the store, 25 Oct 2026).
     if (isTeam(message.sender, message.senderJid)) continue;
+    // A screenshot (a slot list, a booking confirmation, an order page) is read by the vision
+    // model into a sentence with the ids it shows; the sentence is then read like any reply.
+    let fromImage = false;
+    if (message.mediaType === "image") {
+      const v = await interpretImage(message.waMsgId).catch(() => null);
+      if (v?.ok) { text = `${v.ocrText}${v.candRefs.length ? ` ${v.candRefs.join(" ")}` : ""}${v.resolvedOrderIds.length ? ` ${v.resolvedOrderIds.map((id) => `#${id}`).join(" ")}` : ""}`.trim(); fromImage = true; }
+    }
+    if (!text) continue;
+    const quotesUs = !!message.replyToWaId && !!(await prisma.waOutbound.findFirst({ where: { sentWaMsgId: message.replyToWaId }, select: { id: true } }));
+    const asksUs = !fromImage && isQuestionToUs(text, quotesUs, botNumber);
+    const factsBefore = result.facts;
     try {
       // A reply to a combined message: each numbered part is about its own order.
       const combined = await attributeToBatch(message, labId, text);
@@ -179,12 +202,34 @@ export async function runReplyPass(now = new Date()): Promise<ReplyPassResult> {
         }
         continue;
       }
+      // The patient's name or phone, or a report file named after the patient (27 Oct 2026).
+      const byPatient = await matchOrdersByPatient(text, labId);
+      if (byPatient.size) {
+        const isDocument = message.mediaType === "document";
+        for (const [orderId, said] of byPatient) {
+          result.attributed += 1;
+          result.facts += await applyReply(message, labId, { orderId, via: "PATIENT", ruleId: await lastRuleFor(orderId), context: null }, said, text,
+            isDocument ? { presetFacts: [{ kind: "report_shared", value: text.replace(/^📄\s*/, "").slice(0, 120), confidence: 0.9 }] } : {});
+        }
+        continue;
+      }
       const match = await attribute(message, labId);
       if (!match) continue;
       result.attributed += 1;
       result.facts += await applyReply(message, labId, match, text, text);
     } catch (error) {
       console.error(`[Replies] message ${message.id} failed:`, error instanceof Error ? error.message : error);
+    } finally {
+      // A question to us that no fact answered reaches a person (27 Oct 2026: "could you please
+      // clarify the exact issue?" and "kindly confirm the same BLR…" went unanswered).
+      if (asksUs && result.facts === factsBefore) {
+        const orderId = (await prisma.providerOrderFact.findFirst({ where: { sourceMessageId: message.id }, select: { orderId: true } }))?.orderId ?? message.orderIds[0] ?? 0;
+        if (!labNames.has(labId)) labNames.set(labId, (await prisma.nonApiLabConfig.findUnique({ where: { labId }, select: { labName: true } }))?.labName ?? `lab ${labId}`);
+        await postToOps({
+          kind: "OPS_QUESTION", orderId, idemKey: `question:${message.id}`, now,
+          text: `❓ *${labNames.get(labId)} asks in its group*${orderId ? ` (about #${orderId})` : ""}\n"${text.slice(0, 240)}"\n— ${message.sender}\n\nPlease answer there; reply *done* here once you have.`,
+        }).catch(() => undefined);
+      }
     }
   }
   await prisma.providerCommsSettings.update({ where: { id: "default" }, data: { replyWatermark: messages[messages.length - 1].createdAt } });
@@ -197,6 +242,8 @@ type ApplyOptions = {
   onlyKinds?: FactKind[];
   /** The reply could not be split by item: the note says so. */
   unparsed?: boolean;
+  /** Facts known without reading the text (a report file named after the patient). */
+  presetFacts?: Array<{ kind: FactKind; value: string; confidence: number }>;
 };
 
 /**
@@ -215,7 +262,9 @@ async function applyReply(message: ReplyMessage, labId: number, match: Attributi
   };
   // The reader (model first, patterns as fallback): events are the facts; a missed sample is one too.
   const { readMessage } = await import("@/lib/agents/reader/read");
-  const reading = await readMessage({ side: "lab", text: said, quotedText: match.context, confirmation: ask.confirmation, scope: { labId } });
+  const reading = options.presetFacts
+    ? { samples: {} as Record<string, string>, events: options.presetFacts.map((f) => ({ kind: f.kind, value: f.value, confidence: f.confidence })), via: "patterns" as const }
+    : await readMessage({ side: "lab", text: said, quotedText: match.context, confirmation: ask.confirmation, scope: { labId } });
   const missed = Object.entries(reading.samples).filter(([, s]) => s === "missed").map(([k]) => ({ kind: "sample_missed" as FactKind, value: k, confidence: 0.85 }));
   const outstanding = Object.values(reading.samples).some((s) => s === "missed" || s === "pending");
   const all = [...reading.events.map((e) => ({ kind: e.kind, value: e.value, confidence: e.confidence ?? 0.8 })), ...missed]

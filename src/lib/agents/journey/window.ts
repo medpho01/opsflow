@@ -30,7 +30,8 @@ const SELECT = `
   LEFT JOIN public."Lab" l ON l.id = o."labId"
   LEFT JOIN public."Store" s ON s.id = o."storeId"`;
 
-export type WindowOptions = { lookbackDays?: number; lookaheadDays?: number; kitLookbackDays?: number };
+/** reportLookbackDays: a sample collected but no report is tracked this long (Advaith had 29 pending reports older than a week, 27 Oct 2026). */
+export type WindowOptions = { lookbackDays?: number; lookaheadDays?: number; kitLookbackDays?: number; reportLookbackDays?: number };
 
 export async function fetchActiveWindow(opts: WindowOptions = {}): Promise<OrderSnapshot[]> {
   const lookback = opts.lookbackDays ?? 7;
@@ -41,8 +42,9 @@ export async function fetchActiveWindow(opts: WindowOptions = {}): Promise<Order
       (o."appointmentTime" >= NOW() - ($1 || ' days')::interval AND o."appointmentTime" < NOW() + ($2 || ' days')::interval)
       OR (o."orderStatus"::text <> ALL($3::text[]) AND o."updatedAt" >= NOW() - ($1 || ' days')::interval)
       OR (o."orderType" = 'KIT_BASED' AND o."orderStatus"::text <> ALL($3::text[]) AND o."createdAt" >= NOW() - ($4 || ' days')::interval)
+      OR (o."orderStatus"::text IN ('SAMPLE_COLLECTED','SAMPLE_DELIVERED','SAMPLE_PROCESSED') AND o."appointmentTime" >= NOW() - ($5 || ' days')::interval)
     )
-    ORDER BY o."appointmentTime" ASC NULLS LAST`, [String(lookback), String(lookahead), TERMINAL, String(kitLookback)]);
+    ORDER BY o."appointmentTime" ASC NULLS LAST`, [String(lookback), String(lookahead), TERMINAL, String(kitLookback), String(opts.reportLookbackDays ?? 30)]);
   return rows.map(toSnapshot);
 }
 

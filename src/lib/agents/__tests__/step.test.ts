@@ -279,7 +279,8 @@ describe("the console moving", () => {
     const before = wake(o, at("2026-10-21T00:10:00Z"));
     const out = wake(order({ orderStatus: "CANCELED" }), at("2026-10-21T00:40:00Z"), before);
     assert.ok(out.journey.closedAt);
-    assert.equal(out.actions.length, 0);
+    // The store and the ops group hear a lab's cancellation (27 Oct 2026); the lab is asked nothing.
+    assert.deepEqual(out.actions.map((a) => a.action).sort(), ["ops_post", "store_alert"]);
     assert.equal(out.withdraw[0].reason, "cancelled");
   });
   it("patient missed keeps the journey open, waiting on ops", () => {
@@ -406,5 +407,31 @@ describe("the time a store asked for (26 Oct 2026)", () => {
   it("a written time is read", () => {
     assert.equal(ist(requestedTime("93312 - please reschedule to tomorrow at 8 am", at, appt, "Asia/Kolkata")), ist(new Date("2026-10-27T02:30:00Z")));
     assert.equal(ist(requestedTime("94103 - Please schedule urine sample collection at 10:45 am", at, appt, "Asia/Kolkata")), ist(new Date("2026-10-26T05:15:00Z")));
+  });
+});
+
+describe("the lab cancelled (27 Oct 2026)", () => {
+  const before = order({ orderStatus: "ORDER_SCHEDULED", appointmentTime: at("2026-10-27T02:30:00Z") });
+  it("the store hears it with the reason; the ops group hears it when the area is non-serviceable", () => {
+    const r1 = wake(before, at("2026-10-26T04:00:00Z"));
+    const cancelled = { ...before, orderStatus: "CANCELLED", statusNote: "NSA (Non-Serviceable Area)", statusUpdatedAt: at("2026-10-26T05:00:00Z") };
+    const r2 = wake(cancelled, at("2026-10-26T05:01:00Z"), r1);
+    const alert = r2.actions.find((a) => a.action === "store_alert");
+    assert.equal(alert?.params.template, "STORE_LAB_CANCELLED");
+    assert.match(String(alert?.params.detail), /Non-Serviceable/);
+    const ops = r2.actions.find((a) => a.action === "ops_post");
+    assert.ok(ops, "ops post expected");
+    assert.match(String(ops?.params.text), /non-serviceable/);
+  });
+  it("cancelled after the sample was taken: ops hears it needs a new order id", () => {
+    const collected = { ...before, orderStatus: "SAMPLE_COLLECTED" };
+    const r1 = wake(collected, at("2026-10-26T04:00:00Z"));
+    const r2 = wake({ ...collected, orderStatus: "CANCELLED", statusNote: "cancellation requested via chat", statusUpdatedAt: at("2026-10-26T05:00:00Z") }, at("2026-10-26T05:01:00Z"), r1);
+    assert.match(String(r2.actions.find((a) => a.action === "ops_post")?.params.text), /already collected/);
+  });
+  it("a cancellation the customer made through the store's API reaches neither", () => {
+    const r1 = wake(before, at("2026-10-26T04:00:00Z"));
+    const r2 = wake({ ...before, orderStatus: "CANCELLED", statusNote: "Customer requested cancellation through API", statusUpdatedAt: at("2026-10-26T05:00:00Z") }, at("2026-10-26T05:01:00Z"), r1);
+    assert.ok(!r2.actions.some((a) => a.action === "store_alert" || a.action === "ops_post"));
   });
 });

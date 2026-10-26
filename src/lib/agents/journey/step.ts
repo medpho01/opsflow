@@ -16,8 +16,7 @@
  */
 import {
   checkpointDefs, offsetsFor, waitingFrom, TERMINAL_STATUSES, PLACEHOLDER_LAB_ID,
-  type CheckpointName, type OrderSnapshot, type WaitingFrom,
-} from "./policy";
+  type CheckpointName, type OrderSnapshot, type WaitingFrom, reached } from "./policy";
 import { FACT_TO_CHECKPOINT, parsePromiseTime } from "./promises";
 import { scoreRisk, type RiskLevel } from "./risk";
 import type { SopParams, ActionName, Rung } from "../sop/schema";
@@ -319,7 +318,7 @@ export function requestedTime(text: string, at: Date, appointment: Date | null, 
  *    + "rescheduled to 28th" → the reschedule), and the same template never twice.
  */
 const ALERT_RANK: Record<string, number> = {
-  STORE_PATIENT_UNREACHABLE: 5, STORE_SAMPLE_OWED: 5, STORE_LAB_CANNOT: 5, STORE_LAB_DATA_CHECK: 5,
+  STORE_PATIENT_UNREACHABLE: 5, STORE_SAMPLE_OWED: 5, STORE_LAB_CANNOT: 5, STORE_LAB_DATA_CHECK: 5, STORE_LAB_CANCELLED: 6,
   STORE_LAB_RESCHEDULED: 4, STORE_REPORT_SHARED: 3, STORE_COLLECTED: 2, STORE_LAB_PROMISE: 1,
 };
 const SAMPLE_LEFT = /\b(urine|stool|sputum|swab)\b[^.\n]{0,40}\b(not|pending|missed|left|skipped)\b|\b(not|pending)\b[^.\n]{0,20}\b(urine|stool|sputum|swab)\b/i;
@@ -357,6 +356,9 @@ export function curateStoreAlerts(actions: ProposedAction[]): ProposedAction[] {
   }
   return out;
 }
+
+/** Minutes between rungs for a report chase: once a day. */
+export const REPORT_RUNG_GAP_MIN = 24 * 60;
 
 const startOfLocalDay = (d: Date, tz: string) => d.toLocaleDateString("en-CA", { timeZone: tz });
 const LABELS_TIME = (d: Date, tz: string) => d.toLocaleTimeString("en-IN", { timeZone: tz, hour: "numeric", minute: "2-digit" });
@@ -414,6 +416,25 @@ export function step(input: StepInput): StepOutput {
       actions.push({ desk: "STORE", action: "store_alert", params: { template: "STORE_PATIENT_UNREACHABLE", orderId: order.id, storeId: order.storeId, fact: "console_patient_missed", detail: `the lab marked the patient missed${note}`, at: now.toISOString() }, reason: `LabStack: PATIENT_MISSED${note}`, idemKey: `console-missed:${order.id}:${order.statusUpdatedAt?.getTime() ?? now.getTime()}` });
       withdraw.push({ asks: ["ETA", "PHLEBO", "STATUS"], reason: "patient missed (console)" });
     }
+    // The lab cancelled (27 Oct 2026: Orange's kit order died as "non-serviceable", Thyrocare
+    // cancelled after the sample was taken, and nobody heard until the store escalated). The
+    // store is told, with the reason; our ops group is told when the sample was already collected
+    // (a new order id is needed) or the area was not serviceable. A cancellation the customer made
+    // through the store's own API is theirs: curateStoreAlerts drops that alert.
+    if (before && changes.includes("CANCELLED") && !TERMINAL_STATUSES.has(before.orderStatus)) {
+      const reason = (order.statusNote ?? "").trim().slice(0, 140);
+      const byCustomer = /customer requested|requested (through|via|by) (the )?(api|customer|user)/i.test(reason);
+      const collectedBefore = reached(before.orderStatus, "SAMPLE_COLLECTED") || checkpoints.some((c) => c.name === "sample_collected" && c.status === "MET");
+      const nsa = /\bNSA\b|non.?serviceable|not serviceable/i.test(reason);
+      const idem = `console-cancel:${order.id}:${order.statusUpdatedAt?.getTime() ?? now.getTime()}`;
+      if (order.storeId != null) {
+        actions.push({ desk: "STORE", action: "store_alert", params: { template: "STORE_LAB_CANCELLED", orderId: order.id, storeId: order.storeId, fact: "console_cancelled", detail: reason || "no reason given", at: now.toISOString() }, reason: `LabStack: CANCELLED${reason ? ` — ${reason}` : ""}`, idemKey: idem });
+      }
+      if (!byCustomer || collectedBefore) {
+        const why = collectedBefore ? "the sample was already collected — the lab needs a new order id to process it" : nsa ? "the area is marked non-serviceable — needs another lab or a centre visit" : `reason: ${reason || "none given"}`;
+        actions.push({ desk: "LAB", action: "ops_post", params: { kind: "OPS_CANCEL", orderId: order.id, text: `⛔ *${order.labName ?? "The lab"} cancelled #${order.id}* · ${(order.patientName ?? "").trim().split(/\s+/)[0] || "patient"}${order.area ? ` · ${order.area}` : ""}${order.appointmentTime ? ` · visit ${LABELS_TIME(order.appointmentTime, tzc)}` : ""}\n${why}\n\nReply *on it* to take it.` }, reason: `LabStack: CANCELLED — ${why}`, idemKey: `${idem}:ops` });
+      }
+    }
     const movedByLab = before && (changes.includes("RESCHEDULED") || (order.orderStatus === "RESCHEDULED" && before.orderStatus !== "RESCHEDULED"));
     if (movedByLab && order.storeId != null && order.appointmentTime) {
       const when = order.appointmentTime.toLocaleString("en-IN", { timeZone: tzc, weekday: "short", day: "numeric", month: "short", hour: "numeric", minute: "2-digit" });
@@ -429,7 +450,7 @@ export function step(input: StepInput): StepOutput {
     if (!journey.closedAt) { newEvents.push({ kind: "closed", at: now, actor: "SYSTEM", payload: { reason } }); withdraw.push({ reason: reason.toLowerCase() }); }
     return {
       journey: { ...journey, closedAt: journey.closedAt ?? now, closeReason: reason, waitingFor: null, dueAt: null, dueSource: null, nextCheckAt: null, health: "ON_TRACK", plan: planOf(checkpoints, now, undefined, null) },
-      checkpoints, newEvents, actions, withdraw, risk: null, caseworker: null,
+      checkpoints, newEvents, actions: curateStoreAlerts(actions), withdraw, risk: null, caseworker: null,
     };
   }
 
@@ -547,6 +568,10 @@ export function step(input: StepInput): StepOutput {
       const relay = STORE_RELAY[f.kind];
       if (relay && order.storeId != null && f.source !== "store_msg" && !sop.handoffs.some((x) => x.onFact === f.kind && x.do === "store_alert")) {
         actions.push({ desk: "STORE", action: "store_alert", params: { template: relay, orderId: order.id, storeId: order.storeId, fact: f.kind, detail: relayDetail(f), at: f.at.toISOString() }, reason: `lab says ${f.kind.replace(/_/g, " ")}: "${f.value.slice(0, 60)}"`, idemKey: `relay:${order.id}:${f.kind}:${f.id ?? f.at.getTime()}` });
+      }
+      // A lab that cannot do the order needs a person now, not just the store (27 Oct 2026).
+      if (f.kind === "cannot_fulfil" && f.source !== "store_msg") {
+        actions.push({ desk: "LAB", action: "ops_post", params: { kind: "OPS_CANCEL", orderId: order.id, text: `⛔ *${order.labName ?? "The lab"} cannot do #${order.id}* · ${(order.patientName ?? "").trim().split(/\s+/)[0] || "patient"}${order.area ? ` · ${order.area}` : ""}${slot ? ` · visit ${LABELS_TIME(slot, tz)}` : ""}\n"${f.value.slice(0, 160)}"\nNeeds another lab, a centre visit, or a new slot.\n\nReply *on it* to take it.` }, reason: `lab cannot fulfil: "${f.value.slice(0, 60)}"`, idemKey: `ops-cannot:${order.id}:${f.id ?? f.at.getTime()}` });
       }
       for (const h of sop.handoffs.filter((x) => x.onFact === f.kind && x.do !== "status_write")) {
         const key = `${h.do}:${order.id}:${f.kind}:${f.id ?? f.at.getTime()}`;
@@ -692,7 +717,10 @@ export function step(input: StepInput): StepOutput {
     const due = next.dueAt;
     const started = now.getTime() >= due.getTime() - (ask?.leadMin ?? 0) * MIN || nightBefore;
     const lastAt = a.at ? Date.parse(a.at) : null;
-    const gapOk = lastAt == null || now.getTime() - lastAt >= sop.rungGapMin * MIN;
+    // A report chase climbs its ladder a day at a time — a 20-day backlog must not reach "stuck"
+    // by lunch (27 Oct 2026). Everything else keeps the SOP's gap.
+    const gapMin = next.name === "report_delivered" ? Math.max(sop.rungGapMin, REPORT_RUNG_GAP_MIN) : sop.rungGapMin;
+    const gapOk = lastAt == null || now.getTime() - lastAt >= gapMin * MIN;
     const answeredAt = a.answeredAt ? Date.parse(a.answeredAt) : null;
     const holding = answeredAt != null && now.getTime() - answeredAt < sop.answerHoldMin * MIN && next.dueSource !== "RESET";
     // No portal session: there is nothing to read, so the ask goes straight to the group.
@@ -791,7 +819,7 @@ export function step(input: StepInput): StepOutput {
     if (atRisk > now.getTime()) candidates.push(atRisk);
     if (next.dueAt.getTime() > now.getTime()) candidates.push(next.dueAt.getTime());
     const a = attempts[next.name];
-    if (sop && a?.at && now.getTime() > next.dueAt.getTime()) candidates.push(Date.parse(a.at) + sop.rungGapMin * MIN);
+    if (sop && a?.at && now.getTime() > next.dueAt.getTime()) candidates.push(Date.parse(a.at) + (next.name === "report_delivered" ? Math.max(sop.rungGapMin, REPORT_RUNG_GAP_MIN) : sop.rungGapMin) * MIN);
     if (sop && a?.answeredAt) candidates.push(Date.parse(a.answeredAt) + sop.answerHoldMin * MIN);
   }
   if (journey.pausedUntil && journey.pausedUntil.getTime() > now.getTime()) candidates.push(journey.pausedUntil.getTime());

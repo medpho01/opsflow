@@ -346,7 +346,7 @@ Tap a link to confirm, or reply *1 can't do*` },
 
 {{items}}
 
-Reply *1 shared, 2 by 6 pm*` },
+Reply *1 shared*, or the time it will be ready: *2 by 6 pm*, *3 tomorrow*` },
   BATCH_OVERDUE: { name: "Combined: running late", body: `{{coordinator}} running late ({{count}})
 
 {{items}}
@@ -365,6 +365,15 @@ Reply with the number and the update, e.g. *1 done*.` },
   // Follow-ups reply to (quote) the earlier combined message and keep its numbers.
   BATCH_FOLLOW_UP: { name: "Combined: follow-up (2nd ask)", body: `{{coordinator}} still open: {{numbers}} 🙏` },
   BATCH_FOLLOW_UP_FIRM: { name: "Combined: follow-up (3rd ask on)", body: `{{coordinator}} reminder — {{numbers}} still pending since {{since}}. Please update in LabStack or reply here.` },
+};
+
+/** Later defaults that were replaced in turn (27 Oct 2026: the report chase's reply hint). */
+const BATCH_SUPERSEDED_LATER: Record<string, string[]> = {
+  BATCH_REPORT_CHASE: [`{{coordinator}} reports pending ({{count}})
+
+{{items}}
+
+Reply *1 shared, 2 by 6 pm*`],
 };
 
 // The Phase 1 wording; stored copies nobody edited move to the bodies above.
@@ -498,8 +507,9 @@ const SUPERSEDED_DEFAULTS: Record<string, { bodies: string[]; names: string[] }>
   [NON_API_APPOINTMENT_TEMPLATE]: { bodies: [LEGACY_APPOINTMENT_BODY], names: ["Non-API lab: appointment reminder"] },
   [PROVIDER_DAILY_DIGEST_TEMPLATE]: { bodies: [LEGACY_DAILY_DIGEST_BODY], names: ["Any lab: daily summary (today & tomorrow)"] },
   [NON_API_STATUS_CHECK_TEMPLATE]: { bodies: [LEGACY_STATUS_CHECK_BODY], names: [] },
-  ...Object.fromEntries(Object.entries(BATCH_PHASE1_BODIES).map(([key, body]) => [key, { bodies: [body], names: [] }])),
+  ...Object.fromEntries(Object.entries(BATCH_PHASE1_BODIES).map(([key, body]) => [key, { bodies: [body, ...(BATCH_SUPERSEDED_LATER[key] ?? [])], names: [] }])),
 };
+
 
 /** Is this stored body a default we used to ship (and nobody has edited)? */
 export function isSupersededDefault(key: string, body: string): boolean {

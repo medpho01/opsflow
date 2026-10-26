@@ -32,6 +32,9 @@ async function phleboTimingProposals(live: SopBody): Promise<Proposal[]> {
     const labId = r.journey.labId; const slot = (r.journey.consoleSnapshot as { appointmentTime?: string } | null)?.appointmentTime;
     if (labId == null || !slot || !r.metAt) continue;
     const beforeMin = (Date.parse(slot) - r.metAt.getTime()) / MIN;
+    // Marked after the slot is the console catching up (API labs), not when the lab assigned:
+    // it proposed "Thyrocare assigns a median −166 min before the slot" on 25 Oct 2026.
+    if (beforeMin < 0) continue;
     byLab.set(labId, [...(byLab.get(labId) ?? []), beforeMin]);
   }
   const dir = await loadDirectory();
@@ -60,11 +63,14 @@ async function rungGapProposals(live: SopBody): Promise<Proposal[]> {
   const asks = await prisma.agentAction.groupBy({ by: ["action"], where: { createdAt: { gte: since }, action: { in: ["ask", "reminder", "manager_whatsapp"] }, outcome: "EXECUTED" }, _count: { _all: true } });
   const n = (a: string) => asks.find((x) => x.action === a)?._count._all ?? 0;
   if (n("ask") < 100) return [];
-  const escalationRate = (n("reminder") + n("manager_whatsapp")) / n("ask");
-  if (escalationRate < 0.6 || live.params.rungGapMin <= 20) return [];
+  const escalationRate = Math.min(1, n("reminder") / n("ask"));
+  // Chasing faster is not the answer when labs do not answer the first ask (25 Oct 2026: it
+  // auto-applied a 20-min gap from a "104%" rate). A high rate widens the gap instead —
+  // fewer, better-timed asks — and only ever as a proposal for a person.
+  if (escalationRate < 0.6 || live.params.rungGapMin >= 60) return [];
   const body = JSON.parse(JSON.stringify(live)) as SopBody;
-  body.params.rungGapMin = Math.max(20, live.params.rungGapMin - 10);
-  return [{ body, rationale: `${Math.round(escalationRate * 100)}% of asks needed a reminder in 14 days; a shorter gap (${body.params.rungGapMin} min) reaches the coordinator sooner.`, evidence: { asks: n("ask"), reminders: n("reminder"), manager: n("manager_whatsapp"), escalationRate } }];
+  body.params.rungGapMin = Math.min(60, live.params.rungGapMin + 15);
+  return [{ body, rationale: `${Math.round(escalationRate * 100)}% of asks needed a reminder in 14 days; a longer gap (${body.params.rungGapMin} min) gives the lab time to answer before we ask again.`, evidence: { asks: n("ask"), reminders: n("reminder"), manager: n("manager_whatsapp"), escalationRate } }];
 }
 
 async function modelProposals(live: SopBody): Promise<Proposal[]> {
@@ -108,7 +114,10 @@ export async function runReview(now = new Date()): Promise<Record<string, number
         select: { id: true },
       });
       filed += 1;
-      if (bounds.inBounds) {
+      // More messages is never applied on its own: a shorter gap between asks, or a shorter
+      // hold after an answer, always waits for a person.
+      const louder = c.body.params.rungGapMin < lab.body.params.rungGapMin || c.body.params.answerHoldMin < lab.body.params.answerHoldMin;
+      if (bounds.inBounds && !louder) {
         const version = await prisma.agentSopVersion.create({ data: { sopId: lab.sopId, version: lab.version + 1 + applied, body: c.body as object, author: "BRAIN", status: "LIVE", approvedAt: now, summary: c.rationale } });
         await prisma.agentSopVersion.updateMany({ where: { sopId: lab.sopId, status: "LIVE", id: { not: version.id } }, data: { status: "RETIRED" } });
         await prisma.agentSop.update({ where: { id: lab.sopId }, data: { currentVersionId: version.id } });

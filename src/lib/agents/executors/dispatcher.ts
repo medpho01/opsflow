@@ -286,7 +286,8 @@ async function flushGroup(key: string, queued: Item[], now: Date): Promise<{ mes
     messages += 1; items += list.length;
   };
 
-  if (urgent.length) await sendItems(urgent, true);
+  // Ten per message for urgent asks too (07:00 can release a night's worth at once); the rest next minute.
+  if (urgent.length) { await sendItems(urgent.slice(0, 10), true); held += Math.max(0, urgent.length - 10); }
   if (routine.length) {
     if (!toManager && (sentToday >= PER_DAY_CAP || sentThisSlot >= PER_SLOT_CAP)) { held += routine.length; }
     else {

@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { step, fingerprint, classifyChange, sendWindow, curateStoreAlerts, type ProposedAction, type StepInput, type StepOutput } from "../journey/step";
+import { step, fingerprint, classifyChange, sendWindow, curateStoreAlerts, requestedTime, type ProposedAction, type StepInput, type StepOutput } from "../journey/step";
 import { checkpointDefs, offsetsFor, type OrderSnapshot } from "../journey/policy";
 import { LAB_SOP_V1 } from "../sop/baseline";
 import { resolveParams } from "../sop/schema";
@@ -390,5 +390,21 @@ describe("what the store is told unprompted (Plum readiness, 26 Oct 2026)", () =
   it("other actions pass through untouched", () => {
     const reply = { desk: "STORE", action: "store_reply", params: { text: "x" }, reason: "r", idemKey: "k" } as ProposedAction;
     assert.deepEqual(curateStoreAlerts([reply]), [reply]);
+  });
+});
+
+describe("the time a store asked for (26 Oct 2026)", () => {
+  const at = new Date("2026-10-26T02:48:00Z"); // 8:18 am IST
+  const appt = new Date("2026-10-26T00:30:00Z"); // 6:00 am IST today
+  const ist = (d: Date | null) => d && d.toLocaleString("en-IN", { timeZone: "Asia/Kolkata", day: "numeric", hour: "numeric", minute: "2-digit" });
+  it("'tomorrow same slot' is the current visit time, tomorrow — not 10 am", () => {
+    assert.equal(ist(requestedTime("94188 - reschedule to tomorrow same slot", at, appt, "Asia/Kolkata")), ist(new Date("2026-10-27T00:30:00Z")));
+  });
+  it("a day without a time is no time", () => {
+    assert.equal(requestedTime("94188 - please reschedule to tomorrow", at, appt, "Asia/Kolkata"), null);
+  });
+  it("a written time is read", () => {
+    assert.equal(ist(requestedTime("93312 - please reschedule to tomorrow at 8 am", at, appt, "Asia/Kolkata")), ist(new Date("2026-10-27T02:30:00Z")));
+    assert.equal(ist(requestedTime("94103 - Please schedule urine sample collection at 10:45 am", at, appt, "Asia/Kolkata")), ist(new Date("2026-10-26T05:15:00Z")));
   });
 });

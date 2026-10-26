@@ -291,6 +291,23 @@ const STORE_RELAY: Record<string, string> = {
 };
 
 /**
+ * The time a store asked for, if it named one (26 Oct 2026: "reschedule to tomorrow same slot"
+ * reached Orange as "10:00 am" — the parser's default for a bare "tomorrow"):
+ *  - "same slot" / "same time" is the order's current visit time, on the day asked;
+ *  - a day with no time ("tomorrow") is no time at all — never an invented 10 am;
+ *  - otherwise the clock time written ("at 10:45 am", "tomorrow 8 am", "at 7").
+ */
+export function requestedTime(text: string, at: Date, appointment: Date | null, tz: string): Date | null {
+  const tomorrow = /\btomorrow\b|\bkal\b|\bnext day\b/i.test(text);
+  if (/\bsame (slot|time)\b/i.test(text) && appointment) {
+    const clock = appointment.toLocaleTimeString("en-IN", { timeZone: tz, hour: "numeric", minute: "2-digit" });
+    return parsePromiseTime(`${tomorrow ? "tomorrow " : ""}${clock}`, at, tz);
+  }
+  const hasClock = /\b\d{1,2}(?:[:.]\d{2})?\s*(?:am|pm|a\.m\.|p\.m\.)(?![a-z])|\b\d{1,2}[:.]\d{2}\b|\bat \d{1,2}\b/i.test(text);
+  return hasClock ? parsePromiseTime(text, at, tz) : null;
+}
+
+/**
  * What the store is told unprompted, made coherent (Plum readiness replay, 26 Oct 2026). Applied
  * to every step's store alerts:
  *  - a sample left behind is not "customer not reachable": it gets the sample-owed wording;
@@ -600,14 +617,17 @@ export function step(input: StepInput): StepOutput {
         }
         case "reschedule": case "cancel": case "change_tests": {
           const taskType = m.intent === "reschedule" ? "AGENT_RESCHEDULE" : m.intent === "cancel" ? "AGENT_CANCEL" : "AGENT_ORDER_CHANGE";
-          const requested = parsePromiseTime(m.text, m.at, tz);
+          const requested = requestedTime(m.text, m.at, order.appointmentTime, tz);
+          const tomorrowOnly = !requested && /\btomorrow\b|\bkal\b|\bnext day\b/i.test(m.text);
           actions.push({ desk: "STORE", action: "ack", params: { template: "STORE_NOTED", orderId: order.id, storeId: order.storeId, ...quote }, reason: `store asked to ${m.intent.replace("_", " ")}`, idemKey: `${key}:noted` });
           // The lab hears it too, with the time, so it can confirm or push back before the
           // booking is changed ("94103 — urine collection at 10:45?", Plum, 25 Oct 2026).
           if (order.labId != null && sop && (m.intent !== "change_tests")) {
             const whenText = requested ? LABELS_TIME(requested, tz) + (requested.toDateString() !== now.toDateString() ? ` ${requested.toLocaleDateString("en-IN", { timeZone: tz, weekday: "short", day: "numeric", month: "short" })}` : "") : null;
             const sample = /\b(urine|stool|sputum|swab)\b/i.exec(m.text)?.[1]?.toLowerCase();
-            const note = m.intent === "cancel" ? "store asks to cancel — please stand down" : `${sample ? `${sample} re-collection` : "reschedule"} requested${whenText ? ` at ${whenText}` : ""} — ok?`;
+            const note = m.intent === "cancel" ? "store asks to cancel — please stand down"
+              : tomorrowOnly ? `${sample ? `${sample} re-collection` : "reschedule"} requested for tomorrow — which slot?`
+              : `${sample ? `${sample} re-collection` : "reschedule"} requested${whenText ? ` at ${whenText}` : ""} — ok?`;
             const window = sendWindow(now, now, sop, { intent: "STATUS", leadMin: 0, graceMin: 480, urgentWithinMin: 0, nightBefore: false }, true, false, tz);
             actions.push({ desk: "LAB", action: "ask", params: { checkpoint: next?.name ?? "sample_collected", orderId: order.id, labId: order.labId, attempt: 1, dueAt: now, rung: "ask", intent: "STATUS", counterparty: `LAB:${order.labId}`, windowFrom: window.from, windowTo: window.to, urgent: false, line: { orderId: order.id, patientName: order.patientName, appointment: order.appointmentTime, labRef: order.labRef ?? null, mobile: order.mobile ?? null, area: order.area ?? null, note }, forStore: true }, reason: `store asked to ${m.intent}${whenText ? ` at ${whenText}` : ""}; the lab is told`, idemKey: `${key}:lab-heads-up` });
           }

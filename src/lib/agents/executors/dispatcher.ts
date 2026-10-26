@@ -290,8 +290,14 @@ async function flushGroup(key: string, queued: Item[], now: Date): Promise<{ mes
       numbers = list.map((i) => original.get(i.orderId)!.n);
       storedLines = list.map((i) => original.get(i.orderId)!.line);
       const t = await ensureTemplate(followUp.attempt === 1 ? BATCH_FOLLOW_UP_TEMPLATE : BATCH_FOLLOW_UP_FIRM_TEMPLATE);
+      // Each number carries its order: "still open: 1" alone made Redcliffe ask "could you clarify
+      // the exact issue?" (26 Oct 2026) — the quoted message is hours up the chat.
+      const named = list
+        .map((i) => ({ n: original.get(i.orderId)!.n, ref: details?.get(i.orderId)?.labRef ?? (i.payload as { line?: { labRef?: string | null } }).line?.labRef ?? null, orderId: i.orderId }))
+        .sort((x, y) => x.n - y.n)
+        .map((x) => `${x.n} (${x.ref ? `${x.ref} · ` : ""}#${x.orderId})`);
       text = renderLabTemplate(t.isActive ? t.body : "{{coordinator}} still open: {{numbers}}", {
-        lab_name: config.labName, coordinator: mention.text, count: String(list.length), numbers: [...numbers].sort((a, b) => a - b).join(", "), since: formatTime(followUp.since),
+        lab_name: config.labName, coordinator: mention.text, count: String(list.length), numbers: named.join(", "), since: formatTime(followUp.since),
       });
     } else {
       const t = await ensureTemplate(BATCH_TEMPLATE_BY_INTENT[ask] ?? BATCH_GENERIC_TEMPLATE);

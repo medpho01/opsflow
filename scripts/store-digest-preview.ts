@@ -15,13 +15,13 @@ async function main() {
   const groups = await prisma.waGroup.findMany({ where: { role: "SUPPORT", storeId: { not: null }, archivedAt: null }, select: { storeId: true, subject: true } });
   const ids = arg.length ? arg : [...new Set(groups.map((g) => g.storeId!))];
   const days = await storeDays(ids, new Date());
-  let rnr = 0, owed = 0, missed = 0, total = 0;
+  let rnr = 0, owed = 0, missed = 0, centre = 0, total = 0;
   for (const d of days) {
-    rnr += d.rnr.length; owed += d.owed.length; missed += d.missed.length; total += d.total;
+    rnr += d.rnr.length; owed += d.owed.length; missed += d.missed.length; centre += d.centreMissed.length; total += d.total;
     const text = digestText(d, groups.find((g) => g.storeId === d.storeId)?.subject ?? `store ${d.storeId}`);
     if (!text) continue;
     console.log(`\n──── store ${d.storeId}\n${text}`);
   }
-  console.log(`\nToday across ${days.length} store(s): ${total} visits · ${rnr} at risk — customer not reachable (RNR) · ${owed} sample owed · ${missed} visit passed, not collected`);
+  console.log(`\nToday across ${days.length} store(s): ${total} visits · ${rnr} at risk — customer not reachable (RNR) · ${owed} sample owed · ${missed} visit passed, not collected · ${centre} centre visit not attended yet`);
 }
 main().then(() => process.exit(0)).catch((e) => { console.error(e); process.exit(1); });

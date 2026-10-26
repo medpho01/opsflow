@@ -16,12 +16,14 @@ import { guard, loadGuardState } from "../guard/guard";
 import { enqueueOutbox } from "../executors/dispatcher";
 import { atLocal } from "@/lib/provider-rules/batching";
 
-type Row = { id: number; storeId: number; orderStatus: string; appointmentTime: Date | null; patientName: string | null; labName: string | null; labRef: string | null };
+type Row = { id: number; storeId: number; orderType: string; orderStatus: string; appointmentTime: Date | null; patientName: string | null; labName: string | null; labRef: string | null };
 export type StoreDay = {
   storeId: number; total: number; collected: number; upcoming: number;
   rnr: Array<{ orderId: number; name: string; time: string; lab: string; detail: string }>;
   owed: Array<{ orderId: number; name: string; sample: string; lab: string }>;
   missed: Array<{ orderId: number; name: string; time: string; lab: string }>;
+  /** Centre / clinic visits past their time: the customer has not gone yet — nothing for the lab to do. */
+  centreMissed: Array<{ orderId: number; name: string; time: string; lab: string }>;
 };
 
 const TZ = () => process.env.TIMEZONE || "Asia/Kolkata";
@@ -33,7 +35,7 @@ export async function storeDays(storeIds: number[], now = new Date()): Promise<S
   if (!storeIds.length) return [];
   const from = atLocal(now, TZ(), 0, 0); const to = new Date(from.getTime() + 86_400_000);
   const rows = await labstackWorkerQuery<Row>(
-    `SELECT o.id, o."storeId", o."orderStatus"::text AS "orderStatus", o."appointmentTime", u.name AS "patientName", l."labName", NULLIF(o."labOrderId", '') AS "labRef"
+    `SELECT o.id, o."storeId", o."orderType"::text AS "orderType", o."orderStatus"::text AS "orderStatus", o."appointmentTime", u.name AS "patientName", l."labName", NULLIF(o."labOrderId", '') AS "labRef"
        FROM public."Order" o LEFT JOIN public."User" u ON u.id = o."userId" LEFT JOIN public."Lab" l ON l.id = o."labId"
       WHERE o."storeId" = ANY($1::int[]) AND o."appointmentTime" >= $2 AND o."appointmentTime" < $3 AND o."orderStatus"::text NOT IN ('CANCELED','CANCELLED')`,
     [storeIds, from, to],
@@ -43,7 +45,7 @@ export async function storeDays(storeIds: number[], now = new Date()): Promise<S
   const latest = (orderId: number, kind: string) => facts.find((f) => f.orderId === orderId && f.kind === kind);
   return storeIds.map((storeId) => {
     const mine = rows.filter((r) => r.storeId === storeId);
-    const day: StoreDay = { storeId, total: mine.length, collected: 0, upcoming: 0, rnr: [], owed: [], missed: [] };
+    const day: StoreDay = { storeId, total: mine.length, collected: 0, upcoming: 0, rnr: [], owed: [], missed: [], centreMissed: [] };
     for (const r of mine) {
       const collected = reached(r.orderStatus, "SAMPLE_COLLECTED");
       const unreachable = latest(r.id, "patient_unavailable");
@@ -56,7 +58,9 @@ export async function storeDays(storeIds: number[], now = new Date()): Promise<S
         day.rnr.push({ orderId: r.id, name: first(r.patientName), time: hhmm(r.appointmentTime), lab, detail: relayDetail({ kind: "patient_unavailable", value: unreachable.value, fullText: unreachable.sourceText ?? unreachable.value }) });
         continue;
       }
-      if (r.appointmentTime && r.appointmentTime.getTime() < now.getTime() - 45 * 60_000) day.missed.push({ orderId: r.id, name: first(r.patientName), time: hhmm(r.appointmentTime), lab });
+      // A centre visit past its time means the customer has not walked in — not a lab delay (26 Oct 2026:
+      // Apollo Clinic and hospital visits were listed as "we're on it with the lab").
+      if (r.appointmentTime && r.appointmentTime.getTime() < now.getTime() - 45 * 60_000) (r.orderType === "CENTER_VISIT" ? day.centreMissed : day.missed).push({ orderId: r.id, name: first(r.patientName), time: hhmm(r.appointmentTime), lab });
       else day.upcoming += 1;
     }
     return day;
@@ -80,6 +84,11 @@ export function digestText(day: StoreDay, storeName: string | null, now = new Da
   if (day.missed.length) {
     lines.push(`⏳ *Visit time passed, not collected yet (${day.missed.length})* — we're on it with the lab:`);
     day.missed.forEach((o, i) => lines.push(`${i + 1}. #${o.orderId} · ${o.name} · ${o.time} · ${o.lab}`));
+    lines.push("");
+  }
+  if (day.centreMissed.length) {
+    lines.push(`🏥 *Centre visit time passed (${day.centreMissed.length})* — the customer hasn't visited yet; please remind them or share a new time:`);
+    day.centreMissed.forEach((o, i) => lines.push(`${i + 1}. #${o.orderId} · ${o.name} · ${o.time} · ${o.lab}`));
     lines.push("");
   }
   lines.push(`✅ Collected: ${day.collected}   🕐 Still to come: ${day.upcoming}   Total: ${day.total}`);

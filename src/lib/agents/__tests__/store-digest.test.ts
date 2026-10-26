@@ -8,6 +8,7 @@ const day: StoreDay = {
   rnr: [{ orderId: 90001, name: "Harshit", time: "6:00 am", lab: "Orange Health - Bangalore", detail: relayDetail({ kind: "patient_unavailable", value: "customer not available", fullText: "marked as RNR (Ring No Response). Slots available today: 9:00 AM - 10:00 AM, 11:30 AM" }) }],
   owed: [{ orderId: 90002, name: "Gururaj", sample: "urine", lab: "Orange Health - Bangalore" }],
   missed: [{ orderId: 90003, name: "Anvesh", time: "7:00 am", lab: "Thyrocare India" }],
+  centreMissed: [{ orderId: 90004, name: "Meera", time: "8:00 am", lab: "City Clinic" }],
 };
 
 describe("store summary", () => {
@@ -19,9 +20,11 @@ describe("store summary", () => {
     assert.match(lines[3], /#90001 · Harshit · 6:00 am · lab offers 9:00 am - 10:00 am, 11:30 am — reply with the customer's preferred slot/);
     assert.match(text, /Sample still to collect \(1\)[\s\S]*#90002 · Gururaj · urine/);
     assert.match(text, /Visit time passed, not collected yet \(1\)[\s\S]*#90003/);
+    assert.match(text, /Centre visit time passed \(1\)\* — the customer hasn't visited yet[\s\S]*#90004 · Meera/);
+    assert.doesNotMatch(text.split("Centre visit")[0], /#90004/);
     assert.match(text, /Collected: 15 .* Still to come: 4 .* Total: 24/);
   });
   it("sends nothing for a store with no visits", () => {
-    assert.equal(digestText({ ...day, total: 0, collected: 0, upcoming: 0, rnr: [], owed: [], missed: [] }, "x"), null);
+    assert.equal(digestText({ ...day, total: 0, collected: 0, upcoming: 0, rnr: [], owed: [], missed: [], centreMissed: [] }, "x"), null);
   });
 });

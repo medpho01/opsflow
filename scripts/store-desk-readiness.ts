@@ -45,25 +45,39 @@ async function main() {
   const msgs = await prisma.waMessage.findMany({
     where: { groupId: { in: groups.map((g) => g.id) }, ts: { gte: since } },
     orderBy: { ts: "asc" },
-    select: { id: true, waMsgId: true, ts: true, fromMe: true, sender: true, senderJid: true, text: true, intent: true, orderIds: true },
+    select: { id: true, waMsgId: true, ts: true, fromMe: true, sender: true, senderJid: true, text: true, intent: true, replyToWaId: true },
   });
   const team = msgs.filter((m) => !isAutomated(m) && (m.fromMe || !!isTeam(m.sender, m.senderJid)) && m.text?.trim());
   const questions = msgs.filter((m) => !m.fromMe && !isTeam(m.sender, m.senderJid) && !isAutomated(m) && m.intent?.startsWith("STORE_") && !["STORE_NOISE"].includes(m.intent) && m.text?.trim());
+  // Ids the store actually wrote. The gateway's own tags are NOT used: they carry the group's
+  // "current thread" order onto messages that never named it.
+  const written = (text: string) => [...new Set((text.match(/(?<![\d@+])\d{5,6}(?!\d)/g) ?? []).map(Number))];
+
+  // Which order the agent's reader linked each message to (its journey event).
+  const events = await prisma.agentJourneyEvent.findMany({ where: { kind: "store_message", at: { gte: since } }, select: { payload: true, journey: { select: { orderId: true } } } });
+  const linked = new Map<string, { orderId: number; via: string }>();
+  for (const e of events) { const pl = e.payload as { messageId?: string; via?: string }; if (pl?.messageId) linked.set(pl.messageId, { orderId: e.journey.orderId, via: pl.via ?? "?" }); }
 
   const actions = await prisma.agentAction.findMany({
-    where: { desk: "STORE", action: { in: STORE_ACTIONS }, createdAt: { gte: since } },
+    where: { createdAt: { gte: since }, OR: [{ desk: "STORE", action: { in: STORE_ACTIONS } }, { desk: "LAB", action: "ask", params: { path: ["forStore"], equals: true } }] },
     orderBy: { createdAt: "asc" },
-    select: { id: true, orderId: true, action: true, params: true, reason: true, level: true, outcome: true, blockedBy: true, createdAt: true, idemKey: true },
+    select: { id: true, orderId: true, desk: true, action: true, params: true, reason: true, level: true, outcome: true, blockedBy: true, createdAt: true, idemKey: true },
   });
-  const mine = actions.filter((a) => (a.params as { storeId?: number })?.storeId === storeId || (a.params as { storeId?: number })?.storeId == null);
-  const orderIds = [...new Set([...mine.map((a) => a.orderId).filter((x): x is number => x != null), ...questions.flatMap((q) => q.orderIds)])];
+  const orderIds = [...new Set([...actions.map((a) => a.orderId).filter((x): x is number => x != null), ...[...linked.values()].map((l) => l.orderId)])];
   const snaps = await fetchOrderSnapshots(orderIds);
+  // An action goes to the store it names, or — naming none — to its order's own store.
+  const storeOf = (a: (typeof actions)[number]) => (a.params as { storeId?: number | null })?.storeId ?? (a.orderId != null ? snaps.get(a.orderId)?.storeId ?? null : null);
+  const mine = actions.filter((a) => storeOf(a) === storeId);
   const askedForId = new Set((await prisma.agentOutboxItem.findMany({ where: { counterparty: `STORE:${storeId}`, idemKey: { startsWith: "askid:" }, createdAt: { gte: since } }, select: { idemKey: true } })).map((o) => o.idemKey.slice(6)));
 
+  let wouldFail = 0;
   const text = async (a: (typeof mine)[number]) => {
     const o = a.orderId != null ? snaps.get(a.orderId) : undefined;
     if (a.action === "create_task") return `[task] ${one(String((a.params as { action?: string }).action ?? a.reason))}`;
-    return one(await renderStoreText({ desk: "STORE", action: a.action, params: a.params as Record<string, unknown>, reason: a.reason, idemKey: a.idemKey ?? "" } as unknown as ProposedAction, { orderId: a.orderId ?? 0, labName: o?.labName ?? null, appointmentTime: o?.appointmentTime ?? null, patientName: o?.patientName ?? null }).catch(() => a.reason), 200);
+    if (a.desk === "LAB") return `[asks the lab] ${one(String((a.params as { line?: { note?: string } }).line?.note ?? a.reason))}`;
+    try {
+      return one(await renderStoreText({ desk: "STORE", action: a.action, params: a.params as Record<string, unknown>, reason: a.reason, idemKey: a.idemKey ?? "" } as unknown as ProposedAction, { orderId: a.orderId ?? 0, labName: o?.labName ?? null, appointmentTime: o?.appointmentTime ?? null, patientName: o?.patientName ?? null }), 200);
+    } catch (e) { wouldFail += 1; return `(WOULD FAIL TO SEND: ${e instanceof Error ? e.message : e}) — ${one(a.reason, 120)}`; }
   };
 
   // ── 1. Store questions: bot vs team ──
@@ -71,15 +85,20 @@ async function main() {
   say(`\n1. STORE QUESTIONS — what the bot would have said vs what the team said\n`);
   const tally = { both: 0, teamOnly: 0, botOnly: 0, neither: 0, botFaster: 0 };
   const teamLatency: number[] = []; const botLatency: number[] = [];
-  const missed: string[] = [];
+  const missed: string[] = []; const wrongLinks: string[] = [];
   const usedActions = new Set<string>();
   for (const q of questions) {
-    const ids = q.orderIds;
-    const bot = mine.filter((a) => a.action !== "create_task" && a.createdAt >= new Date(q.ts.getTime() - MIN) && a.createdAt <= new Date(q.ts.getTime() + 20 * MIN)
-      && ((a.orderId != null && ids.includes(a.orderId)) || (a.idemKey ?? "").includes(q.waMsgId)));
+    const ids = written(q.text);
+    const link = linked.get(q.id) ?? null;
+    // The bot's response to THIS message: actions keyed on it or quoting it; a case-worker reply
+    // on the linked order within 20 minutes counts once.
+    const bot = mine.filter((a) => !usedActions.has(a.id) && (
+      (a.idemKey ?? "").includes(q.id) || (a.idemKey ?? "").includes(q.waMsgId) || (a.params as { quotedWaId?: string })?.quotedWaId === q.waMsgId
+      || (!!link && (a.params as { caseWorker?: boolean })?.caseWorker === true && a.orderId === link.orderId && a.createdAt >= q.ts && a.createdAt.getTime() - q.ts.getTime() <= 20 * MIN)));
     bot.forEach((a) => usedActions.add(a.id));
     const askedId = askedForId.has(q.id);
-    const reply = team.find((m) => m.ts > q.ts && m.ts.getTime() - q.ts.getTime() <= 60 * MIN && (!ids.length || m.orderIds.some((x) => ids.includes(x)) || m.ts.getTime() - q.ts.getTime() <= 15 * MIN));
+    const reply = team.find((m) => m.ts > q.ts && m.ts.getTime() - q.ts.getTime() <= 60 * MIN
+      && (m.replyToWaId === q.waMsgId || written(m.text).some((x) => ids.includes(x)) || m.ts.getTime() - q.ts.getTime() <= 15 * MIN));
     const botAt = bot[0]?.createdAt ?? null;
     const botSaid = bot.length > 0 || askedId;
     if (reply) teamLatency.push((reply.ts.getTime() - q.ts.getTime()) / MIN);
@@ -87,11 +106,13 @@ async function main() {
     const kind = botSaid && reply ? "both" : reply ? "teamOnly" : botSaid ? "botOnly" : "neither";
     tally[kind] += 1;
     if (botAt && reply && botAt < reply.ts) tally.botFaster += 1;
-    if (kind === "teamOnly") missed.push(`${t(q.ts)} ${ids.length ? `#${ids.join(",#")}` : "(no order id)"} [${q.intent}]`);
+    const wrongLink = !!link && ids.length > 0 && !ids.includes(link.orderId);
+    if (wrongLink) wrongLinks.push(`${t(q.ts)} store wrote #${ids.join(",#")} → linked to #${link!.orderId} (${link!.via})`);
+    if (kind === "teamOnly") missed.push(`${t(q.ts)} ${ids.length ? `#${ids.join(",#")}` : "(no order id)"} [${q.intent}]${link ? "" : " — not linked to an order"}`);
     const label = { both: "both answered", teamOnly: "BOT MISSED — team answered", botOnly: "bot only — team silent", neither: "NOBODY answered" }[kind];
-    say(`${t(q.ts)}  ${ids.length ? `#${ids.join(",#")}` : "(no id)"}  [${(q.intent ?? "").replace("STORE_", "").toLowerCase()}]  ${label}`);
+    say(`${t(q.ts)}  wrote ${ids.length ? `#${ids.join(",#")}` : "no id"} · linked ${link ? `#${link.orderId} (${link.via})` : "none"}${wrongLink ? "  ⚠ WRONG ORDER" : ""}  [${(q.intent ?? "").replace("STORE_", "").toLowerCase()}]  ${label}`);
     say(`   store: ${one(q.text)}`);
-    for (const a of bot) say(`   bot (${Math.round((a.createdAt.getTime() - q.ts.getTime()) / MIN)} min, ${a.outcome}${a.blockedBy ? ` — ${one(a.blockedBy, 60)}` : ""}): ${await text(a)}`);
+    for (const a of bot) say(`   bot (${Math.round((a.createdAt.getTime() - q.ts.getTime()) / MIN)} min, ${a.outcome}): ${await text(a)}`);
     if (askedId && !bot.length) say(`   bot: asks for the order id`);
     if (reply) say(`   team (${Math.round((reply.ts.getTime() - q.ts.getTime()) / MIN)} min): ${one(reply.text)}`);
     say("");
@@ -100,11 +121,16 @@ async function main() {
   // ── 2. Proactive: alerts the bot would have sent without being asked ──
   const proactive = mine.filter((a) => !usedActions.has(a.id) && ["store_alert", "store_warning"].includes(a.action));
   say(`\n2. PROACTIVE — told the store before it asked (${proactive.length})\n`);
-  let teamAlsoTold = 0;
+  let teamAlsoTold = 0; let repeats = 0;
+  const seenAlert = new Map<string, Date>();
   for (const a of proactive) {
-    const teamSaid = team.find((m) => a.orderId != null && m.orderIds.includes(a.orderId) && Math.abs(m.ts.getTime() - a.createdAt.getTime()) <= 2 * 60 * MIN);
-    const storeAsked = questions.find((q) => a.orderId != null && q.orderIds.includes(a.orderId) && q.ts > a.createdAt && q.ts.getTime() - a.createdAt.getTime() <= 3 * 60 * MIN);
+    const teamSaid = team.find((m) => a.orderId != null && written(m.text).includes(a.orderId) && Math.abs(m.ts.getTime() - a.createdAt.getTime()) <= 2 * 60 * MIN);
+    const storeAsked = questions.find((q) => a.orderId != null && (written(q.text).includes(a.orderId) || linked.get(q.id)?.orderId === a.orderId) && q.ts > a.createdAt && q.ts.getTime() - a.createdAt.getTime() <= 3 * 60 * MIN);
     if (teamSaid) teamAlsoTold += 1;
+    const alertKey = `${a.orderId}:${(a.params as { template?: string }).template ?? a.action}`;
+    const prev = seenAlert.get(alertKey);
+    if (prev && a.createdAt.getTime() - prev.getTime() < 2 * 60 * MIN) { repeats += 1; say(`   ↻ repeat of an alert ${Math.round((a.createdAt.getTime() - prev.getTime()) / MIN)} min earlier`); }
+    seenAlert.set(alertKey, a.createdAt);
     say(`${t(a.createdAt)}  #${a.orderId}  ${a.action} ${a.outcome}${a.blockedBy ? ` (${one(a.blockedBy, 60)})` : ""}`);
     say(`   bot: ${await text(a)}`);
     if (teamSaid) say(`   team also (${Math.round((teamSaid.ts.getTime() - a.createdAt.getTime()) / MIN)} min): ${one(teamSaid.text)}`);
@@ -132,7 +158,10 @@ async function main() {
   console.log(`  neither answered:         ${tally.neither} (${pct(tally.neither)})`);
   console.log(`  bot first, where both:    ${tally.botFaster} of ${tally.both}`);
   console.log(`Median reply time:          bot ${bm == null ? "—" : `${Math.round(bm)} min`} · team ${tm == null ? "—" : `${Math.round(tm)} min`}`);
-  console.log(`Proactive alerts:           ${proactive.length} (team also told the store about ${teamAlsoTold})`);
+  console.log(`Linked to the WRONG order:  ${wrongLinks.length}`);
+  for (const w of wrongLinks.slice(0, 10)) console.log(`  ${w}`);
+  console.log(`Replies that would FAIL:    ${wouldFail}`);
+  console.log(`Proactive alerts:           ${proactive.length} (team also told the store about ${teamAlsoTold}; ${repeats} repeat the same alert within 2 h)`);
   console.log(`Held for review / blocked:  ${held.length}`);
   for (const [k, v] of [...reasons].sort((a, b) => b[1] - a[1]).slice(0, 8)) console.log(`  ${String(v).padStart(3)}  ${k}`);
   console.log(`Wrong-store actions:        ${wrong.length}`);

@@ -58,8 +58,12 @@ export async function renderStoreText(action: ProposedAction, ctx: Pick<ExecuteC
       return renderLabTemplate(body, { order_id: String(ctx.orderId), lab_name: ctx.labName ?? "the lab", change: String(p.change ?? "updated") });
     }
     default: {
-      const body = await storeTemplate(String(p.template ?? "STORE_STATUS_ANSWER"));
-      return renderLabTemplate(body, { order_id: String(ctx.orderId), status_line: String(p.statusLine ?? ""), next_line: p.nextLine ? ` ${String(p.nextLine)}` : "", lab_name: ctx.labName ?? "the lab" });
+      // {{next_line}} is optional — most answers have no next step ("report delivered."). The renderer
+      // rejects any blank variable, so a blank one is removed here rather than passed: every status
+      // answer without a next step used to FAIL instead of sending (Plum readiness check, 26 Oct 2026).
+      const body = (await storeTemplate(String(p.template ?? "STORE_STATUS_ANSWER"))).replace(/\s*{{\s*next_line\s*}}/g, p.nextLine ? ` ${String(p.nextLine)}` : "");
+      if (!String(p.statusLine ?? "").trim() && /{{\s*status_line\s*}}/.test(body)) throw new Error("store reply has no text and no status line");
+      return renderLabTemplate(body, { order_id: String(ctx.orderId), status_line: String(p.statusLine ?? ""), lab_name: ctx.labName ?? "the lab" });
     }
   }
 }

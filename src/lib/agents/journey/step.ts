@@ -290,6 +290,57 @@ const STORE_RELAY: Record<string, string> = {
   cannot_fulfil: "STORE_LAB_CANNOT", report_shared: "STORE_REPORT_SHARED",
 };
 
+/**
+ * What the store is told unprompted, made coherent (Plum readiness replay, 26 Oct 2026). Applied
+ * to every step's store alerts:
+ *  - a sample left behind is not "customer not reachable": it gets the sample-owed wording;
+ *  - "age mismatch" and other detail fixes are not "the lab cannot do this one";
+ *  - a change the customer made (through the store's own API) is not news to the store;
+ *  - a "reschedule" relayed from a lab message needs a concrete new time, not a request
+ *    ("please reschedule after 8 am");
+ *  - one lab message gives one alert: the strongest of what it said ("collected by 2:38"
+ *    + "rescheduled to 28th" → the reschedule), and the same template never twice.
+ */
+const ALERT_RANK: Record<string, number> = {
+  STORE_PATIENT_UNREACHABLE: 5, STORE_SAMPLE_OWED: 5, STORE_LAB_CANNOT: 5, STORE_LAB_DATA_CHECK: 5,
+  STORE_LAB_RESCHEDULED: 4, STORE_REPORT_SHARED: 3, STORE_COLLECTED: 2, STORE_LAB_PROMISE: 1,
+};
+const SAMPLE_LEFT = /\b(urine|stool|sputum|swab)\b[^.\n]{0,40}\b(not|pending|missed|left|skipped)\b|\b(not|pending)\b[^.\n]{0,20}\b(urine|stool|sputum|swab)\b/i;
+const DATA_FIX = /\bmismatch\b|\b(wrong|incorrect)\b|\b(age|gender|dob|date of birth)\b/i;
+const CUSTOMER_MADE = /customer requested|requested (through|via|by) (the )?(api|customer|user)|cancell?ation/i;
+const CONCRETE_TIME = /\d|\b(today|tomorrow|tonight|mon|tue|wed|thu|fri|sat|sun)/i;
+const A_REQUEST = /\b(please|kindly|pls|request(ed|s)?|wants?|asks?|asked)\b/i;
+
+export function curateStoreAlerts(actions: ProposedAction[]): ProposedAction[] {
+  const out: ProposedAction[] = [];
+  const best = new Map<string, number>(); // lab message → index in out
+  for (const original of actions) {
+    if (original.desk !== "STORE" || original.action !== "store_alert") { out.push(original); continue; }
+    const p = { ...original.params };
+    const said = `${String(p.detail ?? "")} ${String(p.text ?? "")}`;
+    const fact = String(p.fact ?? "");
+    if (p.template === "STORE_PATIENT_UNREACHABLE" && SAMPLE_LEFT.test(said)) {
+      const sample = /\b(urine|stool|sputum|swab)\b/i.exec(said)?.[1]?.toLowerCase() ?? "a";
+      p.template = "STORE_SAMPLE_OWED"; p.detail = `${sample} sample not collected`;
+    }
+    if (p.template === "STORE_LAB_CANNOT" && DATA_FIX.test(said)) p.template = "STORE_LAB_DATA_CHECK";
+    if (fact.startsWith("console_") && CUSTOMER_MADE.test(said)) continue;
+    if (p.template === "STORE_LAB_RESCHEDULED" && !fact.startsWith("console_")) {
+      const value = String(p.detail ?? p.text ?? "");
+      if (A_REQUEST.test(value) || !CONCRETE_TIME.test(value) || CUSTOMER_MADE.test(value)) continue;
+    }
+    const action = { ...original, params: p };
+    const at = p.at instanceof Date ? p.at.toISOString() : String(p.at ?? "");
+    const key = fact.startsWith("console_") ? `console:${fact}:${p.template}` : `msg:${at}`;
+    const rank = ALERT_RANK[String(p.template)] ?? 0;
+    const prior = best.get(key);
+    if (prior == null) { best.set(key, out.length); out.push(action); continue; }
+    const kept = out[prior];
+    if (rank > (ALERT_RANK[String(kept.params.template)] ?? 0)) out[prior] = action;
+  }
+  return out;
+}
+
 const startOfLocalDay = (d: Date, tz: string) => d.toLocaleDateString("en-CA", { timeZone: tz });
 const LABELS_TIME = (d: Date, tz: string) => d.toLocaleTimeString("en-IN", { timeZone: tz, hour: "numeric", minute: "2-digit" });
 
@@ -692,7 +743,11 @@ export function step(input: StepInput): StepOutput {
   if (risk) {
     journey = { ...journey, riskLevel: risk.level, riskReasons: risk.reasons };
     const target = checkpoints.find((c) => c.name === "sample_collected" || c.name === "patient_visited" || c.name === "kit_delivered");
-    if (sop && !taken && risk.level === "HIGH" && target && target.status !== "MET" && order.storeId != null && minutesToSlot != null && minutesToSlot > sop.warnStoreBeforeMin && minutesToSlot <= 24 * 60) {
+    // Not at night: a warning raised at 23:00 ("lab silent for 3 h") is noise, and it would wait
+    // until morning anyway — the morning's risk check raises it again if it still holds.
+    const localHour = Number(now.toLocaleString("en-GB", { timeZone: tz, hour: "2-digit", hour12: false })) % 24;
+    const night = localHour >= 21 || localHour < 7;
+    if (sop && !taken && !night && risk.level === "HIGH" && target && target.status !== "MET" && order.storeId != null && minutesToSlot != null && minutesToSlot > sop.warnStoreBeforeMin && minutesToSlot <= 24 * 60) {
       actions.push({
         desk: "STORE", action: "store_warning",
         params: { orderId: order.id, storeId: order.storeId, slot, reasons: risk.reasons, cannotDoToday: risk.cannotDoToday, predictedDelayMin: risk.predictedDelayMin },
@@ -720,5 +775,5 @@ export function step(input: StepInput): StepOutput {
     dueAt: next?.dueAt ?? null, dueSource: next ? (next.dueSource === "PROMISE" ? "PROMISE" : "POLICY") : null,
     nextCheckAt, health, plan: planOf(checkpoints, now, next, rungLabel),
   };
-  return { journey, checkpoints, newEvents, actions, withdraw, risk, caseworker };
+  return { journey, checkpoints, newEvents, actions: curateStoreAlerts(actions), withdraw, risk, caseworker };
 }

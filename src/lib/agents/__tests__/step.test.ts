@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { step, fingerprint, classifyChange, sendWindow, type StepInput, type StepOutput } from "../journey/step";
+import { step, fingerprint, classifyChange, sendWindow, curateStoreAlerts, type ProposedAction, type StepInput, type StepOutput } from "../journey/step";
 import { checkpointDefs, offsetsFor, type OrderSnapshot } from "../journey/policy";
 import { LAB_SOP_V1 } from "../sop/baseline";
 import { resolveParams } from "../sop/schema";
@@ -100,8 +100,9 @@ describe("the ladder", () => {
   });
   it("what the lab says is relayed to the store at once: collected, cannot do, rescheduled", () => {
     const o = order();
-    const fact = (kind: string, value: string, id: string) => ({ kind: "fact", at: at("2026-10-21T02:30:00Z"), actor: "LAB", payload: { kind, value, confidence: 0.9, source: "lab_reply", attributedBy: "REPLY_TO", factId: id } });
-    const r = wake(o, at("2026-10-21T02:31:00Z"), undefined, { events: [fact("sample_collected", "collected", "f1"), fact("patient_unavailable", "customer not responding", "f2")] as never });
+    // Two lab messages (one alert per message): collected, then not responding.
+    const fact = (kind: string, value: string, id: string, iso: string) => ({ kind: "fact", at: at(iso), actor: "LAB", payload: { kind, value, confidence: 0.9, source: "lab_reply", attributedBy: "REPLY_TO", factId: id } });
+    const r = wake(o, at("2026-10-21T02:31:00Z"), undefined, { events: [fact("sample_collected", "collected", "f1", "2026-10-21T02:20:00Z"), fact("patient_unavailable", "customer not responding", "f2", "2026-10-21T02:30:00Z")] as never });
     const alerts = r.actions.filter((a) => a.action === "store_alert").map((a) => a.params.template);
     assert.ok(alerts.includes("STORE_COLLECTED")); assert.ok(alerts.includes("STORE_PATIENT_UNREACHABLE"));
     assert.equal(alerts.filter((t) => t === "STORE_PATIENT_UNREACHABLE").length, 1); // the SOP's own hand-off, not twice
@@ -297,6 +298,12 @@ describe("risk and warnings", () => {
     assert.equal(out.risk?.level, "HIGH");
     assert.ok(out.actions.some((a) => a.action === "store_warning" && a.desk === "STORE"));
   });
+  it("no 'at risk' warning at night: it would only wait for morning (26 Oct 2026)", () => {
+    const o = order({ orderStatus: "CREATED", appointmentTime: at("2026-10-21T04:30:00Z") }); // 10:00 am tomorrow
+    const out = wake(o, at("2026-10-20T17:30:00Z"), undefined, { labSilentHours: 5 }); // 11 pm IST
+    assert.equal(out.risk?.level, "HIGH");
+    assert.ok(!out.actions.some((a) => a.action === "store_warning"));
+  });
 });
 
 describe("people", () => {
@@ -337,5 +344,51 @@ describe("fingerprints", () => {
     assert.equal(fingerprint(o), fingerprint({ ...o, patientName: "Someone else" }));
     assert.notEqual(fingerprint(o), fingerprint({ ...o, phleboName: "R" }));
     assert.deepEqual(classifyChange(o, { ...o, labId: 2, orderStatus: "CREATED" }), ["REROUTED", "STATUS_PROGRESS"]);
+  });
+});
+
+describe("what the store is told unprompted (Plum readiness, 26 Oct 2026)", () => {
+  const alert = (template: string, params: Record<string, unknown> = {}): ProposedAction =>
+    ({ desk: "STORE", action: "store_alert", params: { template, orderId: 90001, storeId: 6, at: "2026-10-25T05:00:00.000Z", ...params }, reason: "r", idemKey: `${template}:${JSON.stringify(params)}` }) as ProposedAction;
+  const templates = (xs: ProposedAction[]) => xs.filter((a) => a.action === "store_alert").map((a) => a.params.template);
+
+  it("one lab message, one alert: the strongest of what it said", () => {
+    const out = curateStoreAlerts([alert("STORE_LAB_PROMISE", { fact: "promise", text: "sample collected by 2:38 pm" }), alert("STORE_LAB_RESCHEDULED", { fact: "new_appointment_time", detail: "28th Oct 9 am" })]);
+    assert.deepEqual(templates(out), ["STORE_LAB_RESCHEDULED"]);
+    const report = curateStoreAlerts([alert("STORE_LAB_PROMISE", { fact: "promise", text: "report delivered by 1:51 pm" }), alert("STORE_REPORT_SHARED", { fact: "report_shared", detail: "shared" })]);
+    assert.deepEqual(templates(report), ["STORE_REPORT_SHARED"]);
+  });
+  it("the same alert twice from one message is sent once", () => {
+    const out = curateStoreAlerts([alert("STORE_PATIENT_UNREACHABLE", { fact: "patient_unavailable", detail: "RNR" }), alert("STORE_PATIENT_UNREACHABLE", { fact: "patient_unavailable", detail: "no response" })]);
+    assert.equal(out.length, 1);
+  });
+  it("alerts from different lab messages all go", () => {
+    const out = curateStoreAlerts([alert("STORE_COLLECTED", { fact: "sample_collected" }), alert("STORE_PATIENT_UNREACHABLE", { fact: "patient_unavailable", detail: "RNR", at: "2026-10-25T06:00:00.000Z" })]);
+    assert.equal(out.length, 2);
+  });
+  it("a sample left behind is not 'customer not reachable'", () => {
+    const [a] = curateStoreAlerts([alert("STORE_PATIENT_UNREACHABLE", { fact: "patient_unavailable", detail: "urine sample not collected" })]);
+    assert.equal(a.params.template, "STORE_SAMPLE_OWED");
+    assert.equal(a.params.detail, "urine sample not collected");
+  });
+  it("an age mismatch is a detail to check, not 'the lab cannot do this one'", () => {
+    const [a] = curateStoreAlerts([alert("STORE_LAB_CANNOT", { fact: "cannot_fulfil", detail: "Age mismatch in report (expected: 46, found: 26)" })]);
+    assert.equal(a.params.template, "STORE_LAB_DATA_CHECK");
+    const [b] = curateStoreAlerts([alert("STORE_LAB_CANNOT", { fact: "cannot_fulfil", detail: "home collection not possible due to long distance" })]);
+    assert.equal(b.params.template, "STORE_LAB_CANNOT");
+  });
+  it("a customer's request is not 'the lab has rescheduled'", () => {
+    assert.equal(curateStoreAlerts([alert("STORE_LAB_RESCHEDULED", { fact: "new_appointment_time", detail: "please reschedule after 8 am" })]).length, 0);
+    assert.equal(curateStoreAlerts([alert("STORE_LAB_RESCHEDULED", { fact: "new_appointment_time", detail: "rescheduled" })]).length, 0); // no time
+    assert.equal(curateStoreAlerts([alert("STORE_LAB_RESCHEDULED", { fact: "new_appointment_time", detail: "Tomorrow, 27th October, 11:45 am" })]).length, 1);
+  });
+  it("a change the customer made through the store's API is not news to the store", () => {
+    assert.equal(curateStoreAlerts([alert("STORE_LAB_RESCHEDULED", { fact: "console_rescheduled", detail: "now Thu, 29 Oct, 9:00 am — Customer requested cancellation through API" })]).length, 0);
+    assert.equal(curateStoreAlerts([alert("STORE_PATIENT_UNREACHABLE", { fact: "console_patient_missed", detail: "the lab marked the patient missed — Customer requested reschedule through API" })]).length, 0);
+    assert.equal(curateStoreAlerts([alert("STORE_LAB_RESCHEDULED", { fact: "console_rescheduled", detail: "now Tue, 27 Oct, 9:00 am" })]).length, 1);
+  });
+  it("other actions pass through untouched", () => {
+    const reply = { desk: "STORE", action: "store_reply", params: { text: "x" }, reason: "r", idemKey: "k" } as ProposedAction;
+    assert.deepEqual(curateStoreAlerts([reply]), [reply]);
   });
 });

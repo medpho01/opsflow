@@ -18,6 +18,8 @@ export const STORE_TEMPLATES: Record<string, { name: string; body: string }> = {
   STORE_PATIENT_UNREACHABLE: { name: "Store: lab could not reach the patient", body: "#{{order_id}}\n{{patient_name}}\n\nUser is not available, pickup not done ({{detail}}, {{time}}). Please help reach them or share a new slot." },
   STORE_COLLECTED: { name: "Store: sample collected", body: "#{{order_id}}\n{{patient_name}}\n\nSample collected ({{time}}). Report will follow." },
   STORE_LAB_RESCHEDULED: { name: "Store: lab rescheduled", body: "#{{order_id}}\n{{patient_name}}\n\nThe lab has rescheduled: {{detail}}. Please let the customer know." },
+  STORE_SAMPLE_OWED: { name: "Store: a sample still to collect", body: "#{{order_id}}\n{{patient_name}}\n\nLab update: {{detail}}. We're asking the lab for a re-collection slot and will confirm here." },
+  STORE_LAB_DATA_CHECK: { name: "Store: the lab flagged a detail", body: "#{{order_id}}\n{{patient_name}}\n\nThe lab flagged a detail to check: {{detail}}. Please confirm the correct details here." },
   STORE_LAB_CANNOT: { name: "Store: lab cannot fulfil", body: "#{{order_id}}\n{{patient_name}}\n\nThe lab cannot do this one ({{detail}}). We are arranging an alternative and will confirm here." },
   STORE_REPORT_SHARED: { name: "Store: report shared by the lab", body: "#{{order_id}}\n{{patient_name}}\n\nReport received from the lab; uploading to the console now." },
   STORE_LAB_PROMISE: { name: "Store: the lab's promise", body: "#{{order_id}}\n{{patient_name}}\n\nLab says: {{detail}}. We'll confirm once it's done." },
@@ -68,6 +70,19 @@ export async function renderStoreText(action: ProposedAction, ctx: Pick<ExecuteC
   }
 }
 
+/**
+ * How long a store message may wait. Nothing goes out 21:00–07:00, and a six-hour window made an
+ * alert raised at 23:00 expire before morning: it now lasts until 09:00 the next morning.
+ */
+export function storeWindowTo(now: Date): Date {
+  const sixHours = new Date(now.getTime() + 6 * 3_600_000);
+  const hour = Number(now.toLocaleString("en-GB", { timeZone: tz(), hour: "2-digit", hour12: false })) % 24;
+  if (hour < 21 && hour >= 3) return sixHours;
+  const hoursTo9 = ((9 - hour + 24) % 24) || 24;
+  const minute = Number(now.toLocaleString("en-GB", { timeZone: tz(), minute: "2-digit" }));
+  return new Date(Math.max(sixHours.getTime(), now.getTime() + hoursTo9 * 3_600_000 - minute * 60_000));
+}
+
 export async function storeText(action: ProposedAction, ctx: ExecuteContext): Promise<ExecuteResult> {
   const storeId = (action.params.storeId as number | null | undefined) ?? ctx.storeId;
   if (storeId == null) return { outcome: "FAILED", note: "no store for this order" };
@@ -75,7 +90,7 @@ export async function storeText(action: ProposedAction, ctx: ExecuteContext): Pr
   const now = new Date();
   const r = await enqueueOutbox({
     counterparty: `STORE:${storeId}`, ask: action.action.toUpperCase(), orderId: ctx.orderId, journeyId: ctx.journeyId, actionId: ctx.actionId,
-    windowFrom: now, windowTo: new Date(now.getTime() + 6 * 3_600_000), urgent: action.action !== "store_warning", immediate: true,
+    windowFrom: now, windowTo: storeWindowTo(now), urgent: action.action !== "store_warning", immediate: true,
     idemKey: `outbox:${action.idemKey}`, line: { orderId: ctx.orderId, patientName: ctx.patientName ?? null, appointment: ctx.appointmentTime ?? null }, text,
   });
   if (action.params.quotedWaId && r.queued) await prisma.agentOutboxItem.update({ where: { id: r.id }, data: { payload: { line: { orderId: ctx.orderId }, text, quotedWaId: action.params.quotedWaId } } });

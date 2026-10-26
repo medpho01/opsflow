@@ -11,7 +11,7 @@ import { Prisma } from "@prisma/client";
 import prisma from "@/lib/db/client";
 import { fetchOrderSnapshot } from "./window";
 import { typicalSlotsFor } from "../slots";
-import { step, type Attempt, type CheckpointState, type JourneyEvent, type JourneyState } from "./step";
+import { step, type Attempt, type CheckpointState, type JourneyEvent, type JourneyState, type ProposedAction } from "./step";
 import type { OrderSnapshot } from "./policy";
 import { guard, loadGuardState, type GuardState } from "../guard/guard";
 import { loadLiveSops, paramsFor, type LiveSop } from "../sop/load";
@@ -54,6 +54,24 @@ export function toJourneyState(row: Prisma.AgentJourneyGetPayload<{ include: { c
 
 const toCheckpointState = (c: { name: string; dueAt: Date; dueSource: string; metAt: Date | null; status: string }): CheckpointState =>
   ({ name: c.name as CheckpointState["name"], dueAt: c.dueAt, dueSource: c.dueSource as CheckpointState["dueSource"], metAt: c.metAt, status: c.status as CheckpointState["status"] });
+
+/**
+ * The same store alert for the same order within two hours is a repeat (Plum, 25 Oct 2026: "sample
+ * collected" three times in 20 minutes, "not reachable" twice). A promise or a reschedule repeats
+ * only when it says the same thing — a new time is news.
+ */
+export async function repeatsRecentAlert(orderId: number, action: ProposedAction, now: Date): Promise<boolean> {
+  if (action.desk !== "STORE" || action.action !== "store_alert") return false;
+  const template = String(action.params.template ?? "");
+  const recent = await prisma.agentAction.findMany({
+    where: { orderId, action: "store_alert", outcome: { in: ["EXECUTED", "RECORDED", "REVIEW"] }, createdAt: { gte: new Date(now.getTime() - 2 * 3_600_000) }, params: { path: ["template"], equals: template } },
+    select: { params: true }, take: 20,
+  }).catch(() => []);
+  if (!recent.length) return false;
+  if (template !== "STORE_LAB_PROMISE" && template !== "STORE_LAB_RESCHEDULED") return true;
+  const said = (x: Record<string, unknown>) => String(x.detail ?? x.text ?? "").trim().toLowerCase();
+  return recent.some((r) => said(r.params as Record<string, unknown>) === said(action.params));
+}
 
 /** Wake one journey. The sweep passes shared context to save reads. */
 export async function wakeJourney(orderId: number, reason: WakeReason, opts: WakeContext = {}): Promise<WakeResult> {
@@ -150,6 +168,7 @@ export async function wakeJourney(orderId: number, reason: WakeReason, opts: Wak
   if (out.actions.length) {
     const state = opts.guardState ?? await loadGuardState();
     for (const action of out.actions) {
+      if (await repeatsRecentAlert(orderId, action, now)) continue;
       const r = await guard(action, {
         journeyId, orderId, labId: j.labId, storeId: j.storeId, labTier, sopVersionId: labSop?.versionId ?? null,
         menus: {

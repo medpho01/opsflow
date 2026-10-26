@@ -23,6 +23,7 @@ import { wakeJourney } from "./journey/run";
 import { flushOutbox, sendWhatsApp } from "./executors/dispatcher";
 import { runNightly } from "./brain/nightly";
 import { loadGuardState } from "./guard/guard";
+import { opsGroup } from "./ops/group";
 
 export type Check = { key: string; ok: boolean; detail: string; healed?: string };
 
@@ -105,6 +106,11 @@ async function brain(now: Date): Promise<Check> {
   return { key: "brain", ok: !monitorLate, detail: monitorLate ? `the Brain monitor has not run for ${lastMonitor ? Math.round((now.getTime() - lastMonitor.startedAt.getTime()) / MIN) : "?"} min` : "running" };
 }
 
+async function opsGroupConnected(): Promise<Check> {
+  const g = await opsGroup();
+  return g ? { key: "ops_group", ok: true, detail: `ops group connected: ${g.subject}` } : { key: "ops_group", ok: false, detail: "no internal ops group connected — tasks, escalations and questions have nowhere to go. Connect \"Internal <> ops\" as INTERNAL on Connections › Groups" };
+}
+
 async function storeSilence(now: Date): Promise<Check> {
   const state = await loadGuardState();
   const live = [...state.desks].filter(([k, v]) => k.startsWith("STORE:STORE:") && v === "LIVE").map(([k]) => Number(k.split(":")[2]));
@@ -126,7 +132,7 @@ async function storeSilence(now: Date): Promise<Check> {
 /** Run every check, heal, record, and alert on what stays broken. */
 export async function runHealth(now = new Date(), opts: { alert?: boolean } = { alert: true }): Promise<{ checks: Check[]; problems: number }> {
   const checks: Check[] = [];
-  for (const fn of [wakeBacklog, () => staleJourneys(now), () => stuckOutbox(now), () => gateway(now), () => noSends(now), () => failedActions(now), () => brain(now), () => storeSilence(now)]) {
+  for (const fn of [wakeBacklog, () => staleJourneys(now), () => stuckOutbox(now), () => gateway(now), () => noSends(now), () => failedActions(now), () => brain(now), () => storeSilence(now), opsGroupConnected]) {
     try { checks.push(await fn()); } catch (error) { checks.push({ key: fn.name || "check", ok: false, detail: `check failed: ${error instanceof Error ? error.message.slice(0, 120) : error}` }); }
   }
   const problems = checks.filter((c) => !c.ok);

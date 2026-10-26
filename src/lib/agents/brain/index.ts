@@ -12,13 +12,15 @@
 import { runMonitor } from "./monitor";
 import { runNightly } from "./nightly";
 import { runReview } from "./review";
+import { runLearn } from "./learn";
 
-export type BrainKind = "monitor" | "nightly" | "review";
+export type BrainKind = "monitor" | "nightly" | "review" | "learn";
 
 export async function runBrain(kind: BrainKind): Promise<Record<string, number>> {
   switch (kind) {
     case "monitor": return runMonitor();
     case "nightly": return runNightly();
     case "review": return runReview();
+    case "learn": return runLearn();
   }
 }

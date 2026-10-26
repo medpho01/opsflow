@@ -35,6 +35,11 @@ export const EXAMPLES: Example[] = [
   S("90010 - This user has booked these tests, he is asking if all the tests will be included in the package", { orders: [{ orderId: 90010 }], request: { kind: "other" } }),
   S("Thanks", { ack: true, request: { kind: "none" } }),
   S("90011 - user is asking why was his health check cancelled", { orders: [{ orderId: 90011 }], request: { kind: "status" } }),
+  // Nudges on an open request (27 Oct 2026): a status ask with no id — the thread it quotes answers which order.
+  S("is this done ??", { request: { kind: "status" } }),
+  S("any updates ?", { request: { kind: "status" } }),
+  S("90012 - reschedule to tomorrow same slot", { orders: [{ orderId: 90012 }], request: { kind: "reschedule" } }),
+  S("90013 90014 Please share the invoices and scanner for these tests for payment", { orders: [{ orderId: 90013 }, { orderId: 90014 }], request: { kind: "other" } }),
   // ── Lab side ──
   L("VL000001 As per update customer not available", { orders: [{ labRef: "VL000001" }], events: [{ kind: "patient_unavailable", value: "customer not available" }] }),
   L("VL000002 serviced\nVL000003 Serviced", { orders: [{ labRef: "VL000002" }, { labRef: "VL000003" }], events: [{ kind: "sample_collected", value: "yes" }] }),
@@ -52,4 +57,9 @@ export const EXAMPLES: Example[] = [
   L("ok will do", { events: [{ kind: "confirmed", value: "yes" }] }, "please confirm (1)\n1. #90004 · Patient · tomorrow 7:00 am"),
   L("Report shared on mail", { events: [{ kind: "report_shared", value: "yes" }] }),
   L("1 done, 2 not home", { events: [{ kind: "sample_collected", value: "yes" }, { kind: "patient_unavailable", value: "not home" }] }, "quick check — collected? (2)\n1. #90005 · Patient · 8:00 am\n2. #90006 · Patient · 8:30 am"),
+  // 27 Oct 2026: a lab's one-word answers, a lab cancelling after collection, a lab asking us back.
+  L("Collected ✅", { events: [{ kind: "sample_collected", value: "yes" }] }, "Patient · 98xxxxxx09 @coordinator Kindly update the sample collection status?"),
+  L("Non serviceable", { events: [{ kind: "cannot_fulfil", value: "non serviceable" }] }, "517425 Is this serviceable -?"),
+  L("Sample has been collected order shows cancelled kindly share us new pre paid order id so that we can complete the WOE", { events: [{ kind: "sample_collected", value: "yes" }, { kind: "note", value: "cancelled; needs a new prepaid order id" }] }),
+  L("Could you please clarify the exact issue? is there anything pending from our end", { request: { kind: "other" }, events: [] }, "@coordinator still open: 1 🙏"),
 ];

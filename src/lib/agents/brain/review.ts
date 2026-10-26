@@ -15,6 +15,7 @@ import { replaySop } from "./replay";
 import { loadDirectory } from "../directory";
 import { LAB_OFFSETS } from "../journey/policy";
 import { askModel } from "../llm";
+import { lessonsSince } from "./learn";
 
 type Proposal = { body: SopBody; rationale: string; evidence: Record<string, unknown> };
 
@@ -70,6 +71,11 @@ async function rungGapProposals(live: SopBody): Promise<Proposal[]> {
 async function modelProposals(live: SopBody): Promise<Proposal[]> {
   const latest = await prisma.agentBrainRun.findFirst({ where: { kind: "nightly", brief: { not: null } }, orderBy: { startedAt: "desc" }, select: { inputs: true } });
   const causes = (latest?.inputs as { causes?: Array<{ cause: string; count: number }> } | null)?.causes ?? [];
+  // The hourly learning pass's "timing" and "rule" lessons of the week count as causes too (27 Oct 2026).
+  const lessons = await lessonsSince(new Date(Date.now() - 7 * 86_400_000)).catch(() => null);
+  const counted = new Map<string, number>();
+  for (const w of lessons?.wrong ?? []) if (w.kind === "timing" || w.kind === "rule") counted.set(w.what.slice(0, 80), (counted.get(w.what.slice(0, 80)) ?? 0) + 1);
+  for (const [cause, count] of counted) causes.push({ cause: `lesson: ${cause}`, count });
   if (!causes.length) return [];
   const answer = await askModel({
     purpose: "brain", maxTokens: 1200,

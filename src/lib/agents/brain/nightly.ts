@@ -12,6 +12,9 @@ import { loadDirectory } from "../directory";
 import { sendWhatsApp } from "../executors/dispatcher";
 import { auditSample } from "./audit";
 import { isAutomated, loadTeam, makeTeamMatcher } from "@/lib/wa/team";
+import { scoreOutcomes } from "./outcomes";
+import { computeEfficiency, renderEfficiency } from "./efficiency";
+import { lessonsSince } from "./learn";
 
 const H = 3_600_000;
 const tz = () => process.env.TIMEZONE || "Asia/Kolkata";
@@ -127,9 +130,18 @@ export async function runNightly(now = new Date()): Promise<Record<string, numbe
   const run = await prisma.agentBrainRun.create({ data: { kind: "nightly" }, select: { id: true } });
   try {
     const metrics = await computeMetrics(new Date(now.getTime() - 6 * H));
-    const brief = renderBrief(metrics, new Date(now.getTime() + 12 * H));
+    // What came of the day's actions, the efficiency index, and the hour-by-hour lessons (27 Oct 2026).
+    const outcomes = await scoreOutcomes(now).catch((e) => { console.warn("[Brain] outcomes:", e instanceof Error ? e.message : e); return null; });
+    const dayStart = new Date(now.getTime() - 6 * H); dayStart.setUTCHours(0, 0, 0, 0);
+    const efficiency = await computeEfficiency(new Date(dayStart.getTime() - 5.5 * H), new Date(dayStart.getTime() + 18.5 * H)).catch((e) => { console.warn("[Brain] efficiency:", e instanceof Error ? e.message : e); return null; });
+    const lessons = await lessonsSince(new Date(now.getTime() - 24 * H)).catch(() => null);
+    const brief = [
+      renderBrief(metrics, new Date(now.getTime() + 12 * H)),
+      ...(efficiency ? renderEfficiency(efficiency) : []),
+      ...(lessons && lessons.runs ? [`Learned today (${lessons.runs} passes): ${lessons.wrong.length} things to fix, ${lessons.unanswered} questions nobody answered${lessons.wrong.length ? ` · top: ${lessons.wrong.slice(0, 3).map((w) => `${w.kind}${w.order ? ` #${w.order}` : ""}: ${w.what.slice(0, 70)}`).join(" | ")}` : ""}`] : []),
+    ].join("\n");
     const audit = await auditSample(now).catch((e) => ({ sampled: 0, disagreements: 0, cases: 0, error: e instanceof Error ? e.message : String(e) }));
-    await prisma.agentBrainRun.update({ where: { id: run.id }, data: { finishedAt: new Date(), inputs: metrics as object, brief, findings: { audit } as object } });
+    await prisma.agentBrainRun.update({ where: { id: run.id }, data: { finishedAt: new Date(), inputs: metrics as object, brief, findings: { audit, outcomes, efficiency, lessons: lessons ? { runs: lessons.runs, wrong: lessons.wrong.slice(0, 20), unanswered: lessons.unanswered, people: lessons.people.slice(0, 10) } : null } as object } });
     const jids = (process.env.AGENT_BRIEF_JIDS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
     for (const jid of jids) await sendWhatsApp({ targetJid: jid, groupId: null, text: brief }).catch(() => undefined);
     return { orders: metrics.orders, misses: metrics.misses.length, audited: audit.sampled, disagreements: audit.disagreements, sent: jids.length };

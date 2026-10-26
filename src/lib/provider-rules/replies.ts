@@ -143,7 +143,9 @@ export async function runReplyPass(now = new Date()): Promise<ReplyPassResult> {
       if (combined) {
         // "Share the details / contact number / address" about the orders we just asked
         // about is a question, not an answer: reply with what the lab needs (Orange, 24 Oct 2026).
-        if (DETAILS_REQUEST_RE.test(text)) {
+        // Only a short ask for details — "kindly confirm the cx preferred slot" in a long status
+        // update is not one (07:09, 26 Oct 2026).
+        if (DETAILS_REQUEST_RE.test(text) && text.length < 160 && !/\bslots?\b|\bRNR\b|ring no response/i.test(text)) {
           await answerDetailsRequest(message, labId, combined.items, combined.parts, now);
           result.attributed += 1;
           continue;
@@ -265,7 +267,7 @@ async function applyReply(message: ReplyMessage, labId: number, match: Attributi
     for (const [index, fact] of list.entries()) {
       await recordJourneyEvent(match.orderId, {
         kind: "fact", at: message.createdAt, actor: "LAB",
-        payload: { kind: fact.kind, value: fact.value, confidence: fact.confidence, source: "lab_reply", attributedBy: match.via, sender: message.sender, messageId: message.id, factId: `${message.id}:${index}`, context: match.context?.slice(0, 200) ?? null },
+        payload: { fullText: fullText.slice(0, 600), kind: fact.kind, value: fact.value, confidence: fact.confidence, source: "lab_reply", attributedBy: match.via, sender: message.sender, messageId: message.id, factId: `${message.id}:${index}`, context: match.context?.slice(0, 200) ?? null },
       }, index === list.length - 1);
     }
   } catch (error) {
@@ -285,7 +287,7 @@ type BatchItem = { n: number; orderId: number; ruleId: string; line: string };
  * in the batch rather than guessing one.
  */
 /** A lab asking for what it needs to find or serve the order, rather than answering. */
-const DETAILS_REQUEST_RE = /\b(share|send|give|provide|need|kindly|please|pls|which|what)\b[^\n]{0,40}\b(details?|contact|number|mobile|phone|address|location|cx|customer|patient|order ?id|ref(?:erence)?)\b|\b(cx|customer|patient) (details?|contact|number|address)\b|\bregistered (contact|number|mobile)\b/i;
+const DETAILS_REQUEST_RE = /\b(share|send|give|provide|need)\b[^\n]{0,40}\b(details?|contact|number|mobile|phone|address|location)\b|\bregistered (contact|number|mobile)\b/i;
 
 /**
  * Reply, quoting the lab's message, with the details for the items they asked about

@@ -264,6 +264,15 @@ export function sendWindow(now: Date, due: Date, sop: SopParams, ask: SopParams[
 const RUNG_TO_ACTION: Record<Rung, ActionName> = {
   portal_read: "portal_read", ask: "ask", reminder: "reminder", manager_whatsapp: "manager_whatsapp", call: "call", task: "create_task", stuck: "stuck",
 };
+/** What the store reads in a relay: RNR named as such, and the slots the lab offers (Orange, 26 Oct 2026). */
+export function relayDetail(f: { kind: string; value: string; fullText?: string }): string {
+  if (f.kind !== "patient_unavailable") return f.value.slice(0, 160);
+  const text = f.fullText ?? f.value;
+  const reason = /\bRNR\b|ring no response|did not (respond|answer)|no response/i.test(text) ? "RNR — the customer did not answer the phlebo's call" : f.value.slice(0, 80);
+  const slots = [...new Set([...text.matchAll(/\b(\d{1,2}(?::\d{2})?\s*(?:am|pm)(?:\s*(?:-|to|–)\s*\d{1,2}(?::\d{2})?\s*(?:am|pm))?)/gi)].map((m) => m[1].replace(/\s+/g, " ").toLowerCase()))].slice(0, 6);
+  return slots.length ? `${reason}; lab offers ${slots.join(", ")} — reply with the customer's preferred slot` : reason;
+}
+
 /** Lab facts the store is told about the moment they land, and the template for each. */
 const STORE_RELAY: Record<string, string> = {
   patient_unavailable: "STORE_PATIENT_UNREACHABLE", sample_collected: "STORE_COLLECTED", new_appointment_time: "STORE_LAB_RESCHEDULED",
@@ -334,7 +343,7 @@ export function step(input: StepInput): StepOutput {
 
   // 3. Events: people, facts, promises.
   const attempts: Record<string, Attempt> = { ...journey.attempts };
-  const factsSeen: Array<{ kind: string; value: string; confidence: number; source: string; named: boolean; id: string | null; at: Date }> = [];
+  const factsSeen: Array<{ kind: string; value: string; confidence: number; source: string; named: boolean; id: string | null; at: Date; fullText?: string }> = [];
   const storeMessages: Array<{ intent: string; text: string; messageId: string; waMsgId: string | null; at: Date; samples?: Record<string, string>; requestTime?: string | null }> = [];
   let caseworker: StepOutput["caseworker"] = null;
   for (const ev of events) {
@@ -365,7 +374,9 @@ export function step(input: StepInput): StepOutput {
         }
       }
       const named = ev.payload.attributedBy !== "ONLY_OPEN";
-      factsSeen.push({ kind, value, confidence, source, named, id: (ev.payload.factId as string | null) ?? null, at: ev.at });
+      factsSeen.push({ kind, value, confidence, source, named, id: (ev.payload.factId as string | null) ?? null, at: ev.at, fullText: typeof ev.payload.fullText === "string" ? ev.payload.fullText : value });
+      // The lab says the visit failed (RNR, not home): "phlebo on time?" and "phlebo needed?" are moot.
+      if (kind === "patient_unavailable") withdraw.push({ asks: ["ETA", "PHLEBO"], reason: "patient unreachable" });
       const map = FACT_TO_CHECKPOINT[kind];
       if (map && sop) {
         const cp = checkpoints.find((c) => c.name === map.checkpoint);
@@ -443,12 +454,12 @@ export function step(input: StepInput): StepOutput {
       // relayed "customer not available" by hand). Fixed behaviour; the SOP adds, never removes.
       const relay = STORE_RELAY[f.kind];
       if (relay && order.storeId != null && f.source !== "store_msg" && !sop.handoffs.some((x) => x.onFact === f.kind && x.do === "store_alert")) {
-        actions.push({ desk: "STORE", action: "store_alert", params: { template: relay, orderId: order.id, storeId: order.storeId, fact: f.kind, detail: f.value, at: f.at.toISOString() }, reason: `lab says ${f.kind.replace(/_/g, " ")}: "${f.value.slice(0, 60)}"`, idemKey: `relay:${order.id}:${f.kind}:${f.id ?? f.at.getTime()}` });
+        actions.push({ desk: "STORE", action: "store_alert", params: { template: relay, orderId: order.id, storeId: order.storeId, fact: f.kind, detail: relayDetail(f), at: f.at.toISOString() }, reason: `lab says ${f.kind.replace(/_/g, " ")}: "${f.value.slice(0, 60)}"`, idemKey: `relay:${order.id}:${f.kind}:${f.id ?? f.at.getTime()}` });
       }
       for (const h of sop.handoffs.filter((x) => x.onFact === f.kind && x.do !== "status_write")) {
         const key = `${h.do}:${order.id}:${f.kind}:${f.id ?? f.at.getTime()}`;
         if (h.do === "store_alert") {
-          actions.push({ desk: "STORE", action: "store_alert", params: { template: h.template ?? "STORE_PATIENT_UNREACHABLE", orderId: order.id, storeId: order.storeId, fact: f.kind, text: f.value.slice(0, 200), at: f.at }, reason: `lab says ${f.kind.replace("_", " ")}: "${f.value.slice(0, 60)}"`, evidenceIds: f.id ? [f.id] : [], idemKey: key });
+          actions.push({ desk: "STORE", action: "store_alert", params: { template: h.template ?? "STORE_PATIENT_UNREACHABLE", orderId: order.id, storeId: order.storeId, fact: f.kind, text: f.value.slice(0, 200), detail: relayDetail(f), at: f.at }, reason: `lab says ${f.kind.replace("_", " ")}: "${f.value.slice(0, 60)}"`, evidenceIds: f.id ? [f.id] : [], idemKey: key });
         } else if (h.do === "create_task") {
           actions.push({ desk: "LAB", action: "create_task", params: { taskType: h.taskType ?? "AGENT_CONSOLE_UPDATE", orderId: order.id, cause: f.kind.toUpperCase(), evidence: [{ kind: f.source, at: f.at.toISOString(), text: f.value.slice(0, 200) }], action: h.taskType === "AGENT_REPORT_UPLOAD" ? "Check the lab's portal and upload the report to the console" : `Act on the lab's message: "${f.value.slice(0, 120)}"` }, reason: `lab says ${f.kind.replace("_", " ")}`, evidenceIds: f.id ? [f.id] : [], idemKey: key });
         }

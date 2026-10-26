@@ -1,0 +1,27 @@
+import { describe, it } from "node:test";
+import assert from "node:assert/strict";
+import { digestText, type StoreDay } from "../store/digest";
+import { relayDetail } from "../journey/step";
+
+const day: StoreDay = {
+  storeId: 6, total: 24, collected: 15, upcoming: 4,
+  rnr: [{ orderId: 90001, name: "Harshit", time: "6:00 am", lab: "Orange Health - Bangalore", detail: relayDetail({ kind: "patient_unavailable", value: "customer not available", fullText: "marked as RNR (Ring No Response). Slots available today: 9:00 AM - 10:00 AM, 11:30 AM" }) }],
+  owed: [{ orderId: 90002, name: "Gururaj", sample: "urine", lab: "Orange Health - Bangalore" }],
+  missed: [{ orderId: 90003, name: "Anvesh", time: "7:00 am", lab: "Thyrocare India" }],
+};
+
+describe("store summary", () => {
+  it("leads with what needs the store, RNR with the lab's slots", () => {
+    const text = digestText(day, "Labstack<>Plum Ops", new Date("2026-10-26T04:30:00Z"))!;
+    const lines = text.split("\n");
+    assert.match(lines[0], /Today's visits — Labstack<>Plum Ops/);
+    assert.match(lines[2], /Customer not reachable \(1\)/);
+    assert.match(lines[3], /#90001 · Harshit · 6:00 am · lab offers 9:00 am - 10:00 am, 11:30 am — reply with the customer's preferred slot/);
+    assert.match(text, /Sample still to collect \(1\)[\s\S]*#90002 · Gururaj · urine/);
+    assert.match(text, /Visit time passed, not collected yet \(1\)[\s\S]*#90003/);
+    assert.match(text, /Collected: 15 .* Still to come: 4 .* Total: 24/);
+  });
+  it("sends nothing for a store with no visits", () => {
+    assert.equal(digestText({ ...day, total: 0, collected: 0, upcoming: 0, rnr: [], owed: [], missed: [] }, "x"), null);
+  });
+});

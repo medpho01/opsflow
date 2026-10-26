@@ -164,7 +164,8 @@ export function partitionQueued<T extends { orderId: number; payload: unknown }>
   for (const i of group) {
     const line = (i.payload as { line?: { appointment?: string | null } }).line ?? {};
     const appt = line.appointment ? new Date(line.appointment).getTime() : null;
-    const pastVisit = appt != null && appt < now.getTime() - 2 * 3_600_000;
+    // "phlebo on time?" for a 6:00 visit at 7:11 is noise (26 Oct 2026): ETA and phlebo asks end at the visit.
+    const pastVisit = appt != null && appt < now.getTime() - (ask === "ETA" || ask === "PHLEBO" ? 0 : 2 * 3_600_000);
     const oldReport = ask === "REPORT" && appt != null && appt < now.getTime() - 7 * 86_400_000;
     const apiOverdue = ask === "OVERDUE" && tier != null && tier !== "C";
     if ((PRE_VISIT.has(ask) && pastVisit) || oldReport || apiOverdue || seen.has(i.orderId)) { stale.push(i); continue; }

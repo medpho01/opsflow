@@ -3,6 +3,7 @@ import { whatsappDigits } from "@/lib/wa/phone";
 import prisma from "@/lib/db/client";
 import { getSessionFromRequest } from "@/lib/auth/session";
 import { normalizeMentions } from "@/lib/wa/mentions";
+import { namesAnOrder } from "@/lib/wa/order-mention";
 import { UserRole } from "@prisma/client";
 
 // POST /api/whatsapp/send — free text to a group (by id) or a raw number.
@@ -36,6 +37,11 @@ export async function POST(request: NextRequest) {
   if (body.groupId) {
     const group = await prisma.waGroup.findUnique({ where: { id: String(body.groupId) } });
     if (!group) return NextResponse.json({ error: "group not found" }, { status: 404 });
+    // A message to a lab must name an order (27 Oct 2026); the composer may confirm and send anyway.
+    if (group.role === "PROVIDER" && !body.confirmNoOrder && !media) {
+      const quotedText = body?.quotedWaMsgId ? (await prisma.waMessage.findUnique({ where: { waMsgId: String(body.quotedWaMsgId) }, select: { text: true } }))?.text : null;
+      if (!namesAnOrder(text) && !namesAnOrder(quotedText)) return NextResponse.json({ error: "This message to the lab names no order. Add the order id or the lab's reference (BLR…, VL…, booking id), or send it anyway.", needsConfirm: true }, { status: 409 });
+    }
     targetJid = group.jid;
     groupId = group.id;
   } else if (body.toNumber) {

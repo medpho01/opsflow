@@ -4,6 +4,7 @@ import prisma from "@/lib/db/client";
 import labstack, { labstackOr } from "@/lib/db/labstack";
 import { getSessionFromRequest } from "@/lib/auth/session";
 import { normalizeMentions } from "@/lib/wa/mentions";
+import { namesAnOrder } from "@/lib/wa/order-mention";
 import { UserRole } from "@prisma/client";
 
 // POST /api/whatsapp/tickets/:id/reply
@@ -81,6 +82,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   const quotedWaId = body?.quotedWaMsgId ? String(body.quotedWaMsgId) : null;
   const mentions = normalizeMentions(body?.mentions);
 
+  // A message to a lab must name an order (27 Oct 2026): the lab cannot act on "kindly update
+  // the status?" alone. The composer may confirm and send anyway.
+  if (target === "lab" && !body?.confirmNoOrder && !media) {
+    const quotedText = quotedWaId ? (await prisma.waMessage.findUnique({ where: { waMsgId: quotedWaId }, select: { text: true } }))?.text : null;
+    if (!namesAnOrder(text) && !namesAnOrder(quotedText)) return NextResponse.json({ error: "This message to the lab names no order. Add the order id or the lab's reference (BLR…, VL…, booking id), or send it anyway.", needsConfirm: true }, { status: 409 });
+  }
   await prisma.waOutbound.create({
     data: {
       targetJid, text, groupId: targetGroupId, ticketId: ticket.id, createdById: user.id, quotedWaId,

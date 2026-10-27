@@ -423,7 +423,15 @@ export function WhatsAppControlTower({ canAdmin = true }: { canAdmin?: boolean }
       });
     }
     setBusy(false);
-    const data = await res.json().catch(() => ({}));
+    let data = await res.json().catch(() => ({}));
+    // The lab message names no order: send anyway only when the person says so.
+    if (res.status === 409 && data.needsConfirm) {
+      if (!window.confirm(`${data.error}\n\nSend anyway?`)) return;
+      setBusy(true);
+      res = await fetch(`/api/whatsapp/tickets/${activeId}/reply`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: outText, target, toNumber, labGroupId: labGroupId || undefined, quotedWaMsgId, mentions: jids, confirmNoOrder: true }) });
+      setBusy(false);
+      data = await res.json().catch(() => ({}));
+    }
     if (!res.ok) return flash(data.error || "Send failed");
     flash(`Queued → ${target === "store" ? "store group" : target === "lab" ? "lab group" : "number"}`);
     setReply(""); autoDraft.current = ""; setReplyTo(null); setAttachment(null); setMentions([]); loadConvos(); if (openGroup) loadCases(openGroup.id); loadDetail(activeId);
@@ -457,9 +465,14 @@ export function WhatsAppControlTower({ canAdmin = true }: { canAdmin?: boolean }
     if (!ncText.trim()) return flash("Write a message");
     const { text: outText, jids } = applyMentions(ncText.trim(), ncMentions);
     setNcBusy(true);
-    const res = await fetch("/api/whatsapp/send", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...to, text: outText, mentions: jids }) });
+    let res = await fetch("/api/whatsapp/send", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...to, text: outText, mentions: jids }) });
+    let d = await res.json().catch(() => ({}));
+    if (res.status === 409 && d.needsConfirm) {
+      if (!window.confirm(`${d.error}\n\nSend anyway?`)) { setNcBusy(false); return; }
+      res = await fetch("/api/whatsapp/send", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...to, text: outText, mentions: jids, confirmNoOrder: true }) });
+      d = await res.json().catch(() => ({}));
+    }
     setNcBusy(false);
-    const d = await res.json().catch(() => ({}));
     if (!res.ok) return flash(d.error || "Send failed");
     flash("Sending…");
     setNewChat(false); setNcText(""); setNcNumber(""); setNcGroupId(""); setNcMentions([]); loadConvos();
@@ -606,7 +619,7 @@ export function WhatsAppControlTower({ canAdmin = true }: { canAdmin?: boolean }
               <button onClick={() => setNewChat(false)} className="text-sm text-zinc-400 hover:text-zinc-200 px-3 py-2">Cancel</button>
               <button onClick={sendNewChat} disabled={ncBusy} className="text-sm font-semibold text-white bg-blue-600 hover:bg-blue-500 disabled:opacity-50 rounded-lg px-4 py-2">{ncBusy ? "Sending…" : "Send ▸"}</button>
             </div>
-            <p className="text-[11px] text-zinc-600">Signed automatically as “Sent by Labstack Operations”.</p>
+            <p className="text-[11px] text-zinc-600">Signed with your first name, e.g. “Kavita, Labstack Operations”.</p>
           </div>
         </div>
       )}

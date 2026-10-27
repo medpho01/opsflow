@@ -781,11 +781,15 @@ export async function enqueueOutbound({ targetJid, text, groupId = null, ticketI
 // Every message we send is signed so partners always know it came from ops.
 // Configurable via WA_SIGNATURE (set empty to disable). Italic in WhatsApp.
 const SIGNATURE = (process.env.WA_SIGNATURE ?? "Sent by Labstack Operations").trim();
-function signText(text) {
+// A person's console message carries their name (27 Oct 2026: a team member's "kindly update
+// the status?" read as the bot's); the engine's own messages keep the plain signature.
+function signText(text, senderName = null) {
   const body = (text || "").trimEnd();
   if (!SIGNATURE) return body;
   if (body.includes(SIGNATURE)) return body; // already signed — don't double-sign
-  return body ? `${body}\n\n_${SIGNATURE}_` : `_${SIGNATURE}_`;
+  const first = (senderName || "").trim().split(/\s+/)[0];
+  const signature = first ? `${first}, ${SIGNATURE.replace(/^Sent by\s+/i, "")}` : SIGNATURE;
+  return body ? `${body}\n\n_${signature}_` : `_${signature}_`;
 }
 
 /**
@@ -1068,8 +1072,8 @@ export async function drainOutbound(send, { limit = 5, sendPoll = null } = {}) {
      )
      SELECT c.id, c."targetJid", c.text, c."groupId", c."quotedWaId", c."mentions",
             c."mediaMime", c."mediaName", c."mediaBytes", c."pollName", c."pollOptions",
-            c."createdAt", c."createdById", c."ticketId", g."sendEnabled", g.subject
-       FROM claimed c LEFT JOIN wa_groups g ON g.id = c."groupId"
+            c."createdAt", c."createdById", c."ticketId", g."sendEnabled", g.subject, u.name AS "senderName"
+       FROM claimed c LEFT JOIN wa_groups g ON g.id = c."groupId" LEFT JOIN users u ON u.id = c."createdById"
       ORDER BY c."createdAt" ASC`, [limit]
   )).rows;
   let sent = 0;
@@ -1098,7 +1102,7 @@ export async function drainOutbound(send, { limit = 5, sendPoll = null } = {}) {
       // @-mentions: jids to notify (the text already carries "@<localpart>").
       let mentions = null;
       try { mentions = Array.isArray(row.mentions) ? row.mentions : (row.mentions ? JSON.parse(row.mentions) : null); } catch { mentions = null; }
-      const signed = signText(row.text);
+      const signed = signText(row.text, row.createdById != null ? row.senderName : null);
       const waId = await send(row.targetJid, signed, { quoted, media, mentions: mentions?.length ? mentions : null });
       await taskosQuery(`UPDATE wa_outbound SET status='SENT', "sentWaMsgId"=$2, "sentAt"=now() WHERE id=$1`, [row.id, waId || null]);
       await recordSentMessage(row, waId, signed);

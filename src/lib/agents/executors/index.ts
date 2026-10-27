@@ -14,7 +14,7 @@ import { placeManagerCall } from "./calls";
 import { enqueuePortalRead } from "../queue";
 import { draftComplaintReply } from "../escalation/drafter";
 import { postToOps, orderLine, type OpsPostKind } from "../ops/post";
-import { AGENT_TASK_TYPES } from "./tasks";
+import { AGENT_TASK_TYPES, consoleOrderUrl } from "./tasks";
 import { LABELS } from "../journey/step";
 
 export type ExecuteContext = {
@@ -53,7 +53,7 @@ export async function execute(action: ProposedAction, ctx: ExecuteContext): Prom
       if (r.created) {
         const def = AGENT_TASK_TYPES[String(p.taskType ?? "")];
         const why = payload.evidence[0]?.text ? `\nWhy: ${payload.evidence[0].text.slice(0, 160)}` : "";
-        const link = payload.consoleUrl ?? (process.env.LABSTACK_CONSOLE_URL ? `${process.env.LABSTACK_CONSOLE_URL.replace(/\/$/, "")}/orders/${ctx.orderId}` : null);
+        const link = payload.consoleUrl ?? consoleOrderUrl(ctx.orderId);
         await postToOps({
           kind: "OPS_TASK", orderId: ctx.orderId, journeyId: ctx.journeyId, actionId: ctx.actionId, taskId: r.taskId, idemKey: `task:${action.idemKey}`,
           text: `📌 *${def?.label ?? String(p.taskType ?? "Task")}* · task #${r.taskId}\n${orderLine({ id: ctx.orderId, patientName: ctx.patientName, labName: ctx.labName, appointmentTime: ctx.appointmentTime ?? null })}\n${payload.action}${why}${link ? `\n${link}` : ""}\n\nReply *on it* to take it, *done* when finished.`,

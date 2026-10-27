@@ -41,10 +41,13 @@ export type AgentTaskPayload = {
   labId?: number | null;
 };
 
-const consoleUrl = (orderId: number) => {
-  const base = process.env.LABSTACK_CONSOLE_URL || process.env.CONSOLE_BASE_URL;
-  return base ? `${base.replace(/\/$/, "")}/orders/${orderId}` : null;
+/** The order's page in the LabStack console: <base>/dashboard/orders/<id> (27 Oct 2026). */
+export const consoleOrderUrl = (orderId: number): string | null => {
+  const base = (process.env.LABSTACK_CONSOLE_URL || process.env.CONSOLE_BASE_URL || "").replace(/\/$/, "");
+  if (!base) return null;
+  return `${base}${base.endsWith("/dashboard") ? "" : "/dashboard"}/orders/${orderId}`;
 };
+const consoleUrl = consoleOrderUrl;
 
 async function ensureAgentRule(taskTypeId: number) {
   const anchor = await prisma.dataSource.findFirst({ where: { isActive: true }, select: { id: true } }) ?? await prisma.dataSource.findFirst({ select: { id: true } });

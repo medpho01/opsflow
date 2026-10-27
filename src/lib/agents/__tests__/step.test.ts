@@ -461,3 +461,26 @@ describe("the console answers only while it keeps updating (27 Oct 2026)", () =>
     assert.match(String(r.actions.find((a) => a.action === "store_reply")?.params.statusLine ?? ""), /missed/);
   });
 });
+
+describe("the console settles queued asks (27 Oct 2026)", () => {
+  it("a checkpoint met since the last wake withdraws its ask and any escalation", () => {
+    const o = order({ orderStatus: "ORDER_SCHEDULED", appointmentTime: at("2026-10-27T01:15:00Z") }); // 6:45 am
+    const r1 = wake(o, at("2026-10-26T14:30:00Z"), undefined, { labTier: "A" } as never);
+    const r2 = wake({ ...o, orderStatus: "PHLEBO_STARTED", phleboName: "Chandra", statusUpdatedAt: at("2026-10-26T23:37:00Z") }, at("2026-10-26T23:40:00Z"), r1, { labTier: "A" } as never);
+    const w = r2.withdraw.find((x) => x.reason.includes("met (console)"));
+    assert.ok(w, "a withdraw for the met checkpoint");
+    assert.ok(w!.asks?.includes("ESCALATION"));
+  });
+  it("an API lab's pre-visit ladder stops at the reminder — no manager escalation before the visit", () => {
+    const o = order({ orderStatus: "ORDER_SCHEDULED", appointmentTime: at("2026-10-27T02:30:00Z") }); // 8:00 am
+    let prev = wake(o, at("2026-10-26T14:30:00Z"), undefined, { labTier: "A", labSilentHours: 0 } as never);
+    const rungs: string[] = [];
+    for (let i = 0; i < 6; i += 1) {
+      const t = new Date(Date.parse("2026-10-27T00:00:00Z") + i * 40 * 60_000); // 5:30 am onwards, every 40 min
+      const r = wake({ ...o, statusUpdatedAt: null }, t, prev, { labTier: "A", labSilentHours: 0 } as never);
+      rungs.push(...r.actions.filter((a) => ["ask", "reminder", "manager_whatsapp", "create_task", "stuck"].includes(a.action)).map((a) => a.action));
+      prev = r;
+    }
+    assert.ok(!rungs.includes("manager_whatsapp") && !rungs.includes("stuck"), `rungs before the visit: ${rungs.join(",")}`);
+  });
+});

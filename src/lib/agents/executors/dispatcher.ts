@@ -17,6 +17,8 @@ import { resolveLabTarget, toDirectJid } from "@/lib/non-api-labs/target";
 import { BATCH_FOLLOW_UP_FIRM_TEMPLATE, BATCH_FOLLOW_UP_TEMPLATE, BATCH_GENERIC_TEMPLATE, BATCH_TEMPLATE_BY_INTENT, ensureTemplate, renderLabTemplate } from "@/lib/non-api-labs/templates";
 import { coordinatorsFor } from "@/lib/wa/coordinators";
 import { opsGroup } from "../ops/group";
+import { fetchOrderSnapshots } from "../journey/window";
+import { reached, type OrderSnapshot } from "../journey/policy";
 import { currentSlot, isSlotOpen, itemLine, localParts } from "@/lib/provider-rules/batching";
 import { formatTime, TIME_ZONE } from "@/lib/provider-rules/format";
 import { confirmationUrl } from "@/lib/non-api-labs/confirmation-link";
@@ -183,6 +185,28 @@ async function alreadyInHand(groupJid: string, items: Array<{ orderId: number; p
   return out;
 }
 
+/**
+ * Has the console already settled what this ask is about? Checked at send time, so a message
+ * queued overnight never goes out about an order LabStack moved since (27 Oct 2026). Pure.
+ */
+export function settledByConsole(ask: string, o: Pick<OrderSnapshot, "orderStatus" | "phleboName">): string | null {
+  const s = o.orderStatus;
+  const cancelled = s === "CANCELLED" || s === "CANCELED";
+  const collected = reached(s, "SAMPLE_COLLECTED");
+  const phleboKnown = !!o.phleboName.trim() || s === "PHLEBO_ASSIGNED" || s === "PHLEBO_STARTED" || collected;
+  const visitOver = collected || s === "PATIENT_MISSED" || cancelled;
+  switch (ask) {
+    case "PHLEBO": return phleboKnown ? `phlebo known (${s})` : visitOver ? `visit over (${s})` : null;
+    case "UNCONFIRMED": return reached(s, "ORDER_SCHEDULED") || phleboKnown ? `confirmed (${s})` : cancelled ? "cancelled" : null;
+    case "ETA": return visitOver ? `visit over (${s})` : null;
+    case "STATUS": return visitOver ? `settled (${s})` : null;
+    case "ESCALATION": return visitOver ? `settled (${s})` : s === "PHLEBO_STARTED" ? "phlebo on the way" : null;
+    case "OVERDUE": return reached(s, "SAMPLE_DELIVERED") || cancelled ? `settled (${s})` : null;
+    case "REPORT": return s === "REPORT_DELIVERED" || cancelled ? `settled (${s})` : null;
+    default: return cancelled ? "cancelled" : null;
+  }
+}
+
 export function partitionQueued<T extends { orderId: number; payload: unknown }>(group: T[], ask: string, now: Date, tier: string | null): { fresh: T[]; stale: T[] } {
   const PRE_VISIT = new Set(["UNCONFIRMED", "PHLEBO", "ETA", "ESCALATION"]);
   const stale: T[] = []; const seen = new Set<number>(); const fresh: T[] = [];
@@ -221,6 +245,15 @@ async function flushGroup(key: string, queued: Item[], now: Date): Promise<{ mes
   }
   group = fresh;
   if (!group.length) return { messages: 0, items: 0, held: 0 };
+  // The console, read now: what it has settled since the item was queued is not sent.
+  const snapshots = await fetchOrderSnapshots(group.map((i) => i.orderId)).catch(() => new Map<number, OrderSnapshot>());
+  const settled = group.filter((i) => { const o = snapshots.get(i.orderId); return !!o && !!settledByConsole(ask, o); });
+  if (settled.length) {
+    await prisma.agentOutboxItem.updateMany({ where: { id: { in: settled.map((i) => i.id) } }, data: { status: "DROPPED" } });
+    console.log(`[Agents] ${counterparty} ${ask}: ${settled.length} item(s) settled by the console since queued — not sent`);
+    group = group.filter((i) => !settled.includes(i));
+    if (!group.length) return { messages: 0, items: 0, held: 0 };
+  }
 
   const config = await prisma.nonApiLabConfig.findUnique({ where: { labId: id } });
   if (!config) {

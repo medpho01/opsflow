@@ -540,6 +540,15 @@ export function step(input: StepInput): StepOutput {
   });
   journey = { ...journey, attempts, brokenPromises };
 
+  // A checkpoint the console met since the last wake makes its queued ask — and any escalation
+  // for it — moot (27 Oct 2026: Orange's phlebo started at 5:07, the manager escalation queued
+  // overnight still went to the ops group at 7:00).
+  for (const c of checkpoints) {
+    if (c.status !== "MET" || input.checkpoints.find((p) => p.name === c.name)?.status === "MET") continue;
+    const intent = sop?.asks[c.name]?.intent;
+    withdraw.push({ asks: [...(intent ? [intent] : []), "ESCALATION"], reason: `${LABELS[c.name]} met (console)` });
+  }
+
   // 4. Where the order is and what it waits for.
   if (order.orderStatus === "PATIENT_MISSED" && !journey.subStates.includes("patient_missed")) journey = { ...journey, subStates: [...journey.subStates, "patient_missed"] };
   const next = checkpoints.find((c) => c.status === "PENDING" || c.status === "BREACHED");
@@ -761,6 +770,11 @@ export function step(input: StepInput): StepOutput {
     // hour it is not worth a message (Orange assigns at slot − 30 min, so −30…−15 is fair).
     const apiPhleboTooLate = input.labTier != null && input.labTier !== "C" && next.name === "phlebo_assigned" && minutesToSlot != null && minutesToSlot < 15;
     const visitLongPast = preVisit && minutesToSlot != null && minutesToSlot < -120;
+    // An API lab's console names the phlebo and starts the visit by itself: before the visit the
+    // group gets an ask and one reminder, never a manager escalation (27 Oct 2026: ten Orange
+    // orders reached the ops group at 7:00 with their phlebos already on the way). Once the visit
+    // is two hours past with no update, visitLongPast hands it to a person.
+    const apiLadderCapped = input.labTier != null && input.labTier !== "C" && preVisit && minutesToSlot != null && minutesToSlot >= -120 && a.n > Math.max(0, ladder.indexOf("reminder"));
     if (visitLongPast && from === "LAB" && a.n < 99) {
       rungLabel = "task";
       actions.push({ desk: "LAB", action: "create_task", params: {
@@ -771,7 +785,7 @@ export function step(input: StepInput): StepOutput {
       }, reason: `${LABELS[next.name]} still open ${Math.round(-minutesToSlot / 60)} h after the visit; the console shows ${order.orderStatus}`, idemKey: `visit-passed:${order.id}:${next.name}` });
       attempts[next.name] = { ...a, n: 99, at: now.toISOString() };
       journey = { ...journey, attempts };
-    } else if (from === "LAB" && ask && started && gapOk && !holding && !apiPhleboTooLate && !consoleAnswers) {
+    } else if (from === "LAB" && ask && started && gapOk && !holding && !apiPhleboTooLate && !consoleAnswers && !apiLadderCapped) {
       let rungIndex = a.n;
       if (brokenPromises >= sop.brokenPromisesSkip && rungIndex > 0 && rungIndex < ladder.length - 1) rungIndex += 1;
       const rung = ladder[Math.min(rungIndex, ladder.length - 1)];

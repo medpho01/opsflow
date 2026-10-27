@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { step, fingerprint, classifyChange, sendWindow, curateStoreAlerts, requestedTime, type ProposedAction, type StepInput, type StepOutput } from "../journey/step";
+import { step, fingerprint, classifyChange, sendWindow, curateStoreAlerts, requestedTime, consoleIsLive, type ProposedAction, type StepInput, type StepOutput } from "../journey/step";
 import { checkpointDefs, offsetsFor, type OrderSnapshot } from "../journey/policy";
 import { LAB_SOP_V1 } from "../sop/baseline";
 import { resolveParams } from "../sop/schema";
@@ -433,5 +433,31 @@ describe("the lab cancelled (27 Oct 2026)", () => {
     const r1 = wake(before, at("2026-10-26T04:00:00Z"));
     const r2 = wake({ ...before, orderStatus: "CANCELLED", statusNote: "Customer requested cancellation through API", statusUpdatedAt: at("2026-10-26T05:00:00Z") }, at("2026-10-26T05:01:00Z"), r1);
     assert.ok(!r2.actions.some((a) => a.action === "store_alert" || a.action === "ops_post"));
+  });
+});
+
+describe("the console answers only while it keeps updating (27 Oct 2026)", () => {
+  it("an API lab's update around the visit counts for 90 minutes, then the lab is asked again", () => {
+    const o = order({ orderStatus: "PHLEBO_ASSIGNED", appointmentTime: at("2026-10-27T02:30:00Z"), statusUpdatedAt: at("2026-10-27T02:20:00Z") }); // visit 8:00, updated 7:50
+    assert.equal(consoleIsLive(o, "A", at("2026-10-27T03:00:00Z")), true);  // 8:30
+    assert.equal(consoleIsLive(o, "A", at("2026-10-27T04:30:00Z")), false); // 10:00: quiet for over 90 min
+    assert.equal(consoleIsLive(o, "C", at("2026-10-27T03:00:00Z")), false); // manual labs never
+  });
+  it("a store reporting a no-show gets the lab asked at once, whatever the console shows", () => {
+    const o = order({ orderStatus: "PHLEBO_ASSIGNED", appointmentTime: at("2026-10-27T01:30:00Z"), statusUpdatedAt: at("2026-10-27T01:55:00Z"), phleboName: "Ramesh" }); // visit 7:00, updated 7:25
+    const msg = { kind: "store_message", at: at("2026-10-27T02:09:00Z"), actor: "STORE", payload: { intent: "status", text: "94669 - phlebo no show", messageId: "m-ns", waMsgId: "w-ns" } };
+    const r = wake(o, at("2026-10-27T02:10:00Z"), undefined, { events: [msg], labTier: "A" } as never);
+    const ask = r.actions.find((a) => a.action === "ask");
+    assert.ok(ask, "the lab is asked");
+    assert.match(String((ask?.params.line as { note: string }).note), /phlebo no show/);
+    assert.equal(ask?.params.urgent, true);
+    assert.equal(r.actions.find((a) => a.action === "store_reply")?.params.template, "STORE_CHECKING");
+  });
+  it("when the console already says the patient was missed, that is the answer — no ask", () => {
+    const o = order({ orderStatus: "PATIENT_MISSED", appointmentTime: at("2026-10-27T01:30:00Z"), statusUpdatedAt: at("2026-10-27T01:55:00Z"), statusNote: "RNR" });
+    const msg = { kind: "store_message", at: at("2026-10-27T02:09:00Z"), actor: "STORE", payload: { intent: "status", text: "94669 - phlebo no show", messageId: "m-ns2", waMsgId: "w-ns2" } };
+    const r = wake(o, at("2026-10-27T02:10:00Z"), undefined, { events: [msg], labTier: "A" } as never);
+    assert.ok(!r.actions.some((a) => a.action === "ask"));
+    assert.match(String(r.actions.find((a) => a.action === "store_reply")?.params.statusLine ?? ""), /missed/);
   });
 });

@@ -91,7 +91,10 @@ services:
   # ── The OpsFlow app ─────────────────────────────────────────────────
   app:
     build: .
-    image: opsflow-app
+    # The image to run. A build on this machine makes opsflow-app; set OPSFLOW_APP_IMAGE in .env
+    # to a registry image (ghcr.io/<owner>/opsflow-app:latest) to pull instead of building —
+    # the VM has not the memory for `next build` (27 Oct 2026).
+    image: ${OPSFLOW_APP_IMAGE:-opsflow-app}
     volumes:
       # Ops scripts run from the checkout: `git pull` is enough, no rebuild.
       - ./scripts:/app/scripts:ro
@@ -178,7 +181,7 @@ services:
   # db push or seed here (the app's entrypoint does that). Scale to 1.
   worker:
     # Same image as app — built once, not twice.
-    image: opsflow-app
+    image: ${OPSFLOW_APP_IMAGE:-opsflow-app}
     volumes:
       - ./scripts:/app/scripts:ro
     restart: unless-stopped

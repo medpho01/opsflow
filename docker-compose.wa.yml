@@ -9,6 +9,7 @@
 services:
   wa-gateway:
     build: ./whatsapp-bot
+    image: ${OPSFLOW_GATEWAY_IMAGE:-opsflow-wa-gateway}
     restart: unless-stopped
     depends_on:
       - db

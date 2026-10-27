@@ -1,0 +1,45 @@
+# Build the deployable images on GitHub's runners on every push to main, so the
+# VM never builds (27 Oct 2026: `next build` needs more memory than the VM has).
+# The VM then only pulls:  docker compose pull app wa-gateway && docker compose up -d --no-build
+#
+# Images: ghcr.io/<owner>/opsflow-app and ghcr.io/<owner>/opsflow-wa-gateway, tagged
+# `latest` and with the commit sha. Make both packages public once (GitHub › Packages ›
+# package settings › Change visibility) or `docker login ghcr.io` on the VM with a token.
+name: images
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+  packages: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - name: opsflow-app
+            context: .
+          - name: opsflow-wa-gateway
+            context: ./whatsapp-bot
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: owner
+        run: echo "owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ghcr.io/${{ steps.owner.outputs.owner }}/${{ matrix.name }}:latest
+            ghcr.io/${{ steps.owner.outputs.owner }}/${{ matrix.name }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

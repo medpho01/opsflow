@@ -36,7 +36,12 @@ export async function runOpsReader(now = new Date()): Promise<OpsReaderResult> {
     try {
       const outbound = await prisma.waOutbound.findFirst({ where: { sentWaMsgId: m.replyToWaId }, select: { id: true } });
       if (!outbound) continue;
-      const item = await prisma.agentOutboxItem.findFirst({ where: { outboundId: outbound.id, counterparty: "OPS" }, select: { ask: true, orderId: true, journeyId: true, payload: true } });
+      const items = await prisma.agentOutboxItem.findMany({ where: { outboundId: outbound.id, counterparty: "OPS" }, select: { ask: true, orderId: true, journeyId: true, payload: true } });
+      if (!items.length) continue;
+      // One post, one item: the reply is about it. A combined post: the reply names the task or
+      // order ("on it #4512", "done #93412"); a bare "on it" to a list means nothing.
+      const named = [...new Set((text.match(/#\s?(\d{1,7})/g) ?? []).map((x) => Number(x.replace(/[^\d]/g, ""))))];
+      const item = items.length === 1 ? items[0] : items.find((i) => named.includes(i.orderId) || named.includes(Number((i.payload as { taskId?: number | null })?.taskId ?? -1))) ?? null;
       if (!item) continue;
       const taskId = (item.payload as { taskId?: number | null })?.taskId ?? null;
       const done = DONE.test(text); const take = !done && TAKE.test(text);

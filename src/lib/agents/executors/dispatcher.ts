@@ -391,21 +391,37 @@ async function flushScorecard(labId: number, group: Item[], now: Date): Promise<
 }
 
 /** A store counterparty gets plain text per item (answers, alerts, warnings), never a numbered ask. */
-/** Posts to LabStack's own ops group: tasks, escalations, questions, cancellations (ops/post.ts). */
+const OPS_HEADERS: Record<string, string> = { OPS_TASK: "📌 *Tasks for the team*", OPS_ESCALATION: "🔴 *Escalations*", OPS_THREAD: "⏳ *Stores waiting*", OPS_QUESTION: "❓ *Questions asked of us in lab groups*", OPS_CANCEL: "⛔ *Cancellations*" };
+
+/**
+ * Posts to LabStack's own ops group: tasks, escalations, questions, cancellations (ops/post.ts).
+ * Several of one kind due together go as ONE numbered message, ten at a time (80 stuck orders in a
+ * day are one post an hour, not 80 — 27 Oct 2026); a reply "on it #<task>" or "done #<order>"
+ * names the one it means.
+ */
 async function flushOps(group: Item[], now: Date) {
   const g = await opsGroup();
   if (!g) { await prisma.agentOutboxItem.updateMany({ where: { id: { in: group.map((i) => i.id) } }, data: { status: "DROPPED" } }); return { messages: 0, items: 0, held: 0 }; }
-  let messages = 0;
-  for (const i of group) {
-    const p = i.payload as { text?: string | null; quotedWaId?: string | null; taskId?: number | null };
-    if (!p.text) { await prisma.agentOutboxItem.update({ where: { id: i.id }, data: { status: "DROPPED" } }); continue; }
-    const outbound = await sendWhatsApp({ targetJid: g.jid, groupId: g.id, text: p.text, quotedWaId: p.quotedWaId ?? null, now });
-    await prisma.agentOutboxItem.update({ where: { id: i.id }, data: { status: "SENT", outboundId: outbound.id, sentAt: now } });
-    if (i.actionId) await prisma.agentAction.update({ where: { id: i.actionId }, data: { outcome: "EXECUTED" } }).catch(() => undefined);
-    if (i.journeyId) await prisma.agentJourneyEvent.create({ data: { journeyId: i.journeyId, at: now, kind: "ops_post", actor: "AGENT", applied: true, payload: { kind: i.ask, taskId: p.taskId ?? null, text: p.text.slice(0, 500) } } });
-    messages += 1;
+  const ready = group.filter((i) => !!(i.payload as { text?: string | null }).text);
+  const empty = group.filter((i) => !(i.payload as { text?: string | null }).text);
+  if (empty.length) await prisma.agentOutboxItem.updateMany({ where: { id: { in: empty.map((i) => i.id) } }, data: { status: "DROPPED" } });
+  const list = ready.slice(0, 10);
+  if (!list.length) return { messages: 0, items: 0, held: 0 };
+  const texts = list.map((i) => String((i.payload as { text: string }).text));
+  const single = list.length === 1;
+  const strip = (t: string) => t.replace(/\n+Reply \*on it\*[^\n]*$/i, "").trim();
+  const text = single ? texts[0]
+    : `${OPS_HEADERS[list[0].ask] ?? "*For the team*"} (${list.length})\n\n${texts.map((t, n) => `${n + 1}. ${strip(t).replace(/\n+/g, "\n   ")}`).join("\n\n")}\n\nReply *on it #<task or order>* to take one, *done #<task or order>* when finished.`;
+  const quoted = single ? (list[0].payload as { quotedWaId?: string | null }).quotedWaId ?? null : null;
+  const outbound = await sendWhatsApp({ targetJid: g.jid, groupId: g.id, text, quotedWaId: quoted, now });
+  await prisma.agentOutboxItem.updateMany({ where: { id: { in: list.map((i) => i.id) } }, data: { status: "SENT", outboundId: outbound.id, sentAt: now } });
+  await prisma.agentAction.updateMany({ where: { id: { in: list.map((i) => i.actionId).filter((x): x is string => !!x) } }, data: { outcome: "EXECUTED" } }).catch(() => undefined);
+  for (const i of list) {
+    if (!i.journeyId) continue;
+    const p = i.payload as { taskId?: number | null; text: string };
+    await prisma.agentJourneyEvent.create({ data: { journeyId: i.journeyId, at: now, kind: "ops_post", actor: "AGENT", applied: true, payload: { kind: i.ask, taskId: p.taskId ?? null, combined: !single, text: p.text.slice(0, 500) } } });
   }
-  return { messages, items: messages, held: 0 };
+  return { messages: 1, items: list.length, held: ready.length - list.length };
 }
 
 async function flushStore(storeId: number, group: Item[], now: Date) {

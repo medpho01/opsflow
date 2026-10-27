@@ -426,9 +426,11 @@ export async function deliverBatch(input: DeliverBatchInput): Promise<BatchOutco
     numbers = items.map((item) => original.get(item.order.id)!.n);
     lines = items.map((item) => original.get(item.order.id)!.line);
     const followTemplate = await ensureTemplate(followUp.attempt === 1 ? BATCH_FOLLOW_UP_TEMPLATE : BATCH_FOLLOW_UP_FIRM_TEMPLATE);
+    // Each number carries its order — "still open: 1" alone means nothing hours later (27 Oct 2026).
+    const named = items.map((item) => ({ n: original.get(item.order.id)!.n, ref: item.contact?.labRef ?? null, id: item.order.id })).sort((x, y) => x.n - y.n).map((x) => `${x.n} (${x.ref ? `${x.ref} · ` : ""}#${x.id})`);
     text = renderLabTemplate(followTemplate.isActive ? followTemplate.body : "{{coordinator}} still open: {{numbers}}", {
       lab_name: config.labName, coordinator: mention.text, count: String(items.length),
-      numbers: [...numbers].sort((a, b) => a - b).join(", "), since: formatTime(followUp.since),
+      numbers: named.join(", "), since: formatTime(followUp.since),
     });
   } else {
     numbers = items.map((_, index) => index + 1);

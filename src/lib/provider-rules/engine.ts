@@ -193,9 +193,11 @@ export async function runMessageRulesPass(now = new Date()): Promise<RulesPassRe
   await ensureMigratedToRules();
   const [rules, allLabs] = await Promise.all([loadActiveRules(), loadLiveLabs()]);
   // A lab whose Lab desk is LIVE belongs to OpsFlow Agents (DESIGN.md §1 item 6): the
-  // follow-up rules and the evening list step aside for it, so nothing is sent twice.
-  // The new-order message (patient details, confirm link) is not an ask the agent
-  // makes — it stays with these rules for every lab, live desk or not.
+  // follow-up rules step aside for it, so nothing is asked twice. What the agent does not
+  // send stays with these rules for every lab, live desk or not: the new-order message
+  // (patient details, confirm link) and the summaries — the evening list stopped reaching
+  // Advaith and Star Pathology the day their desks went LIVE, and the team built it by hand
+  // (27 Oct 2026). No per-lab switch: the rule decides.
   const liveDesks = await prisma.agentDeskState.findMany({ where: { desk: "LAB", scopeKind: "LAB", state: "LIVE" }, select: { scopeId: true } });
   const agentLabs = new Set(liveDesks.map((d) => d.scopeId));
   const labs = allLabs;
@@ -305,8 +307,7 @@ export async function runMessageRulesPass(now = new Date()): Promise<RulesPassRe
     }
   }
 
-  const legacyLabs = new Map([...labs].filter(([labId]) => !agentLabs.has(labId)));
-  result.summaries = await runSummaries(rules.filter((rule) => rule.kind === "SUMMARY"), legacyLabs, orders, facts, now, result);
+  result.summaries = await runSummaries(rules.filter((rule) => rule.kind === "SUMMARY"), labs, orders, facts, now, result);
   return result;
 }
 

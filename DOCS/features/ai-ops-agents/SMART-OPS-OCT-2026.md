@@ -15,10 +15,9 @@ store requests serviced and tracked until closed; and a system that learns.
   reference, the order id, the patient's name or phone, a report file named
   after the patient, or what the vision model reads in a screenshot
   (`provider-rules/replies.ts`, `match-patient.ts`, `wa/vision.ts`).
-- Manual labs get the new-order message (gathered for 10 minutes), the
-  confirmation asks and the 7 pm "Tomorrow's orders" list from the rule engine.
-  Check that list is switched on per lab on Provider Communication; the team
-  should not build it by hand.
+- Every connected lab gets the new-order message (gathered for 10 minutes)
+  and the 7 pm "Tomorrow's orders" list from the rule engine, whatever its
+  desk state — no per-lab switch. The team should not build the list by hand.
 
 ## 2. Exceptions
 

@@ -90,6 +90,8 @@ export const sopParamsSchema = z.object({
     "no[- ]?show", "not (come|came|turned? up|reached|arrived|visited)", "nobody (came|turned up|visited)", "no one (came|turned up|visited)",
     "didn'?t (come|turn up|show|visit)", "phlebo (is )?(not|un)(reachable|answering|picking)", "waiting (since|for) \\d", "still waiting", "not responding", "rnr",
   ]),
+  /** A visit that passed this recently with the console quiet is asked about now, not at the next slot (27 Oct 2026). */
+  urgentAfterVisitMin: z.number().int().min(0).default(240),
   /** A store request waiting on the lab / on our team is reminded after this long. */
   storeRemindLabMin: z.number().int().min(10).default(60),
   storeRemindOpsMin: z.number().int().min(10).default(45),

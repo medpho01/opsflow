@@ -484,3 +484,20 @@ describe("the console settles queued asks (27 Oct 2026)", () => {
     assert.ok(!rungs.includes("manager_whatsapp") && !rungs.includes("stuck"), `rungs before the visit: ${rungs.join(",")}`);
   });
 });
+
+describe("a visit that passed with the console quiet is asked about now (27 Oct 2026)", () => {
+  it("'phlebo on time?' after the visit is urgent, not slot-bound", () => {
+    const o = order({ orderStatus: "PHLEBO_STARTED", phleboName: "Nakul", appointmentTime: at("2026-10-27T02:30:00Z"), statusUpdatedAt: at("2026-10-27T01:39:00Z") }); // 8:00 visit, started 7:09
+    const r = wake(o, at("2026-10-27T04:21:00Z"), undefined, { labTier: "A" } as never); // 9:51
+    const ask = r.actions.find((a) => a.action === "ask" && a.params.intent === "ETA");
+    assert.ok(ask, "an ETA ask");
+    assert.equal(ask?.params.urgent, true);
+  });
+  it("a report chase stays on its slots", () => {
+    const o = order({ orderStatus: "SAMPLE_DELIVERED", appointmentTime: at("2026-10-25T02:30:00Z"), statusUpdatedAt: at("2026-10-25T03:00:00Z") });
+    const r = wake(o, at("2026-10-27T04:21:00Z"), undefined, { labTier: "C" } as never);
+    const ask = r.actions.find((a) => a.action === "ask" && a.params.intent === "REPORT");
+    assert.ok(ask, "a report ask");
+    assert.equal(ask?.params.urgent, false);
+  });
+});

@@ -790,7 +790,11 @@ export function step(input: StepInput): StepOutput {
       if (brokenPromises >= sop.brokenPromisesSkip && rungIndex > 0 && rungIndex < ladder.length - 1) rungIndex += 1;
       const rung = ladder[Math.min(rungIndex, ladder.length - 1)];
       rungLabel = rung;
-      const urgent = minutesToSlot != null && minutesToSlot >= 0 && minutesToSlot <= ask.urgentWithinMin;
+      // Urgent before the visit when it is close; urgent after it while it is recent — a visit an
+      // hour past with the console quiet is asked about within minutes, not at the next slot
+      // (27 Oct 2026). Report chases never are: they keep their two daily slots.
+      const urgent = minutesToSlot != null && next.name !== "report_delivered" && (
+        (minutesToSlot >= 0 && minutesToSlot <= ask.urgentWithinMin) || (minutesToSlot < 0 && -minutesToSlot <= sop.urgentAfterVisitMin));
       const window = sendWindow(now, due, sop, ask, minutesToSlot != null && Math.abs(minutesToSlot) <= 180, urgent, tz);
       const common = { checkpoint: next.name, orderId: order.id, labId: order.labId, attempt: rungIndex + 1, dueAt: due, rung };
       const overdue = Math.round((now.getTime() - due.getTime()) / MIN);

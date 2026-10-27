@@ -47,3 +47,6 @@ docker/labstack-dummy/02-seed.sql
 
 # local provider-comms demo output
 .sim/
+
+# A Next build made elsewhere, unpacked here for the Docker build (scripts/prebuilt-next.sh)
+prebuilt-next/

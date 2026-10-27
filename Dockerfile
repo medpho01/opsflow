@@ -58,8 +58,16 @@ RUN node node_modules/prisma/build/index.js generate
 
 # Build Next.js. distDir=build (set in next.config.ts) so the output
 # lives under build/ not .next/.
+#
+# Or take a build made elsewhere: `next build` needs more memory than the VM
+# has (27 Oct 2026), so scripts/prebuilt-next.sh runs it on a laptop in seconds
+# and ships only build/ (a few tens of MB). When prebuilt-next/ is in the
+# context it is used as is and nothing is compiled here.
+# Either way the compiler cache is dropped: it is most of the folder and the
+# runtime never reads it.
 ENV NEXT_TELEMETRY_DISABLED=1
-RUN node node_modules/next/dist/bin/next build
+RUN if [ -d prebuilt-next ]; then echo "using prebuilt-next/ (no next build)"; rm -rf build && mv prebuilt-next build; \
+    else node node_modules/next/dist/bin/next build; fi && rm -rf build/cache
 
 # ── Runtime stage ─────────────────────────────────────────────────────
 FROM node:${NODE_VERSION} AS runner

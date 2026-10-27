@@ -16,8 +16,13 @@ store requests serviced and tracked until closed; and a system that learns.
   after the patient, or what the vision model reads in a screenshot
   (`provider-rules/replies.ts`, `match-patient.ts`, `wa/vision.ts`).
 - Every connected lab gets the new-order message (gathered for 10 minutes)
-  and the 7 pm "Tomorrow's orders" list from the rule engine, whatever its
-  desk state — no per-lab switch. The team should not build the list by hand.
+  and the evening "Tomorrow's orders" list, whatever its desk state — no
+  per-lab switch. Both are LAB SOP policy (`params.briefings`), as is when each
+  checkpoint is due (`asks.<checkpoint>.dueOffsetMin`, by order type and lab)
+  and how often a silent manual lab is asked again (`reaskEveryMin`, daily).
+  The old message rules now send only what the SOP tells them to; every
+  manual lab's Lab desk should be LIVE, and the health check names any that
+  is not. The team should not build the list by hand.
 
 ## 2. Exceptions
 

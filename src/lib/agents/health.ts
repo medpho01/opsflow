@@ -24,6 +24,7 @@ import { flushOutbox, sendWhatsApp } from "./executors/dispatcher";
 import { runNightly } from "./brain/nightly";
 import { loadGuardState } from "./guard/guard";
 import { opsGroup } from "./ops/group";
+import { loadDirectory } from "./directory";
 
 export type Check = { key: string; ok: boolean; detail: string; healed?: string };
 
@@ -129,10 +130,18 @@ async function storeSilence(now: Date): Promise<Check> {
   return { key: "store_silence", ok: silent.length === 0, detail: silent.length ? `${silent.length} store question(s) with an order id got no response: ${[...new Set(silent)].slice(0, 8).join(", ")}` : "every store question was handled" };
 }
 
+/** Every connected manual lab should be chased by the SOP, not the legacy message rules (27 Oct 2026). */
+async function labsOnLegacyRules(): Promise<Check> {
+  const [dir, state] = await Promise.all([loadDirectory(), loadGuardState()]);
+  const notLive = [...dir.labs.values()].filter((l) => l.tier === "C" && l.groupJid && state.desks.get(`LAB:LAB:${l.labId}`) !== "LIVE");
+  if (!notLive.length) return { key: "labs_on_sop", ok: true, detail: "every connected manual lab is chased by the SOP" };
+  return { key: "labs_on_sop", ok: false, detail: `${notLive.length} manual lab(s) still on the legacy message rules, not the SOP: ${notLive.map((l) => l.labName).slice(0, 8).join(", ")} — set each Lab desk LIVE on Agents › Desks` };
+}
+
 /** Run every check, heal, record, and alert on what stays broken. */
 export async function runHealth(now = new Date(), opts: { alert?: boolean } = { alert: true }): Promise<{ checks: Check[]; problems: number }> {
   const checks: Check[] = [];
-  for (const fn of [wakeBacklog, () => staleJourneys(now), () => stuckOutbox(now), () => gateway(now), () => noSends(now), () => failedActions(now), () => brain(now), () => storeSilence(now), opsGroupConnected]) {
+  for (const fn of [wakeBacklog, () => staleJourneys(now), () => stuckOutbox(now), () => gateway(now), () => noSends(now), () => failedActions(now), () => brain(now), () => storeSilence(now), opsGroupConnected, labsOnLegacyRules]) {
     try { checks.push(await fn()); } catch (error) { checks.push({ key: fn.name || "check", ok: false, detail: `check failed: ${error instanceof Error ? error.message.slice(0, 120) : error}` }); }
   }
   const problems = checks.filter((c) => !c.ok);

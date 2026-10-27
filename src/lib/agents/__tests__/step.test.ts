@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { step, fingerprint, classifyChange, sendWindow, curateStoreAlerts, requestedTime, consoleIsLive, type ProposedAction, type StepInput, type StepOutput } from "../journey/step";
-import { checkpointDefs, offsetsFor, type OrderSnapshot } from "../journey/policy";
+import { checkpointDefs, type OrderSnapshot } from "../journey/policy";
 import { LAB_SOP_V1 } from "../sop/baseline";
 import { resolveParams } from "../sop/schema";
 
@@ -25,13 +25,18 @@ function wake(order: OrderSnapshot, now: Date, prev?: StepOutput, opts: Opts = {
 const acts = (o: StepOutput) => o.actions.map((a) => a.action);
 
 describe("checkpoint policy", () => {
-  it("home sample: 6 checkpoints; phlebo at slot − 2 h by default and slot − 30 min for a last-moment lab", () => {
+  it("home sample: 6 checkpoints; phlebo at slot − 2 h by default and slot − 30 min where the SOP says so (27 Oct 2026: timings are SOP, not code)", () => {
     const defs = checkpointDefs("HOME_SAMPLE");
     assert.deepEqual(defs.map((d) => d.name), ["confirmed", "phlebo_assigned", "phlebo_reached", "sample_collected", "sample_at_lab", "report_delivered"]);
     const o = order();
     const phlebo = defs.find((d) => d.name === "phlebo_assigned")!;
-    assert.equal(phlebo.dueAt(o, offsetsFor(2229))!.getTime(), o.appointmentTime!.getTime() - 2 * H);
-    assert.equal(phlebo.dueAt(o, offsetsFor(4))!.getTime(), o.appointmentTime!.getTime() - 0.5 * H);
+    assert.equal(phlebo.dueAt(o)!.getTime(), o.appointmentTime!.getTime() - 2 * H);
+    assert.equal(phlebo.dueAt(o, SOP_C.asks.phlebo_assigned.dueOffsetMin)!.getTime(), o.appointmentTime!.getTime() - 2 * H);
+    assert.equal(phlebo.dueAt(o, SOP_A.asks.phlebo_assigned.dueOffsetMin)!.getTime(), o.appointmentTime!.getTime() - 0.5 * H);
+    // The report is due by order type: 24 h at home, 36 h at a centre, 48 h for a kit.
+    const centre = resolveParams(LAB_SOP_V1, { labTier: "C", labId: 2229, orderType: "CENTER_VISIT" });
+    assert.equal(centre.asks.report_delivered.dueOffsetMin, 2160);
+    assert.equal(resolveParams(LAB_SOP_V1, { labTier: "C", labId: 2229, orderType: "KIT_BASED" }).asks.report_delivered.dueOffsetMin, 2880);
   });
   it("other order types get their own sets", () => {
     assert.equal(checkpointDefs("CENTER_VISIT")[1].name, "patient_visited");

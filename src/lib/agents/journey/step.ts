@@ -15,7 +15,7 @@
  * waits on, run hand-offs, score risk, and set the next check.
  */
 import {
-  checkpointDefs, offsetsFor, waitingFrom, TERMINAL_STATUSES, PLACEHOLDER_LAB_ID,
+  checkpointDefs, waitingFrom, TERMINAL_STATUSES, PLACEHOLDER_LAB_ID,
   type CheckpointName, type OrderSnapshot, type WaitingFrom, reached } from "./policy";
 import { FACT_TO_CHECKPOINT, parsePromiseTime } from "./promises";
 import { scoreRisk, type RiskLevel } from "./risk";
@@ -148,12 +148,12 @@ export function classifyChange(before: OrderSnapshot | null, after: OrderSnapsho
 /** Checkpoints an API lab is never asked about: the order reaches it through the API, so "confirm" is not theirs to answer (23 Oct 2026). */
 const NOT_FOR_API_LABS = new Set(["confirmed", "visit_confirmed", "sample_at_lab", "samples_received"]);
 
-function buildCheckpoints(order: OrderSnapshot, existing: CheckpointState[], now: Date, opts: { recomputePreCollection: boolean; rebuildAll: boolean; labTier?: LabTier | null }): CheckpointState[] {
-  const offsets = offsetsFor(order.labId);
+function buildCheckpoints(order: OrderSnapshot, existing: CheckpointState[], now: Date, opts: { recomputePreCollection: boolean; rebuildAll: boolean; labTier?: LabTier | null; sop?: SopParams | null }): CheckpointState[] {
   const byName = new Map(existing.map((c) => [c.name, c]));
   const out: CheckpointState[] = [];
   for (const def of checkpointDefs(order.orderType)) {
-    const due = def.dueAt(order, offsets);
+    // When each checkpoint is due is SOP policy (asks.<name>.dueOffsetMin); the policy's default otherwise.
+    const due = def.dueAt(order, opts.sop?.asks[def.name]?.dueOffsetMin);
     const prior = opts.rebuildAll ? undefined : byName.get(def.name);
     const isMet = def.met(order);
     if (prior?.status === "MET") { out.push(prior); continue; }
@@ -405,7 +405,7 @@ export function step(input: StepInput): StepOutput {
     const resets = changes.includes("RESCHEDULED") || changes.includes("REROUTED");
     const rebuild = changes.includes("TYPE_CHANGED");
     const oldDue = Object.fromEntries(checkpoints.map((c) => [c.name, c.dueAt.toISOString()]));
-    checkpoints = waiveImplied(buildCheckpoints(order, checkpoints, now, { recomputePreCollection: resets, rebuildAll: rebuild, labTier: input.labTier }));
+    checkpoints = waiveImplied(buildCheckpoints(order, checkpoints, now, { recomputePreCollection: resets, rebuildAll: rebuild, labTier: input.labTier, sop: input.sop }));
     if (resets || rebuild) {
       journey = { ...journey, attempts: {}, subStates: journey.subStates.filter((s) => s !== "change_pending"), rescheduleCount: journey.rescheduleCount + (changes.includes("RESCHEDULED") ? 1 : 0) };
       withdraw.push({ reason: changes.includes("REROUTED") ? "re-routed to another lab" : "rescheduled" });
@@ -452,7 +452,7 @@ export function step(input: StepInput): StepOutput {
       actions.push({ desk: "STORE", action: "store_alert", params: { template: "STORE_LAB_RESCHEDULED", orderId: order.id, storeId: order.storeId, fact: "console_rescheduled", detail: `now ${when}${note}`, at: now.toISOString() }, reason: `LabStack: visit moved to ${when}${note}`, idemKey: `console-moved:${order.id}:${order.appointmentTime.getTime()}` });
     }
   } else {
-    checkpoints = waiveImplied(buildCheckpoints(order, checkpoints, now, { recomputePreCollection: false, rebuildAll: false, labTier: input.labTier }));
+    checkpoints = waiveImplied(buildCheckpoints(order, checkpoints, now, { recomputePreCollection: false, rebuildAll: false, labTier: input.labTier, sop: input.sop }));
   }
 
   // 2. Terminal: stop everything (FR-1.9, FR-2.8).

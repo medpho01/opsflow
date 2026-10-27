@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { parseSop, resolveParams, withinBounds, changedPaths, type SopBody } from "../sop/schema";
-import { LAB_SOP_V1, STORE_SOP_V1, INTAKE_SOP_V1 } from "../sop/baseline";
+import { carryForward, LAB_SOP_V1, STORE_SOP_V1, INTAKE_SOP_V1 } from "../sop/baseline";
 
 describe("SOP format", () => {
   it("the baselines parse and every ask uses a known combined-message intent", () => {
@@ -60,8 +60,28 @@ describe("what every lab is told unasked lives in the SOP (27 Oct 2026)", () => 
     assert.equal(p.reaskEveryMin, 1440);
     assert.equal(p.briefings.eveningList.enabled, true);
     assert.equal(p.briefings.eveningList.at, "19:00");
+    assert.equal(p.briefings.newOrder.enabled, true);
+    assert.equal(p.asks.sample_collected.dueOffsetMin, 30);
     const body = JSON.parse(JSON.stringify(LAB_SOP_V1)) as SopBody;
     body.params.reaskEveryMin = 720;
     assert.equal(withinBounds(LAB_SOP_V1, body).inBounds, true);
+  });
+});
+
+describe("the live SOP gains what the baseline gained, nothing more (27 Oct 2026)", () => {
+  it("new params, bounds and overrides are carried forward; what the live SOP says stays", () => {
+    const old = JSON.parse(JSON.stringify(LAB_SOP_V1)) as SopBody;
+    const p = old.params as unknown as Record<string, unknown>;
+    delete p.reaskEveryMin; delete p.briefings;
+    for (const a of Object.values(old.params.asks)) delete (a as { dueOffsetMin?: number }).dueOffsetMin;
+    old.overrides = old.overrides.filter((o) => o.when.labId == null && !o.when.orderType);
+    old.params.rungGapMin = 20; // the team's own edit
+    const { body, added } = carryForward(parseSop(old), LAB_SOP_V1);
+    assert.equal(body.params.rungGapMin, 20);
+    assert.equal(body.params.reaskEveryMin, 1440);
+    assert.equal(body.params.asks.sample_collected.dueOffsetMin, 30);
+    assert.equal(resolveParams(body, { labTier: "A", labId: 4 }).asks.phlebo_assigned.dueOffsetMin, -30);
+    assert.ok(added.some((a) => a.startsWith("override")));
+    assert.deepEqual(carryForward(body, LAB_SOP_V1).added, []);
   });
 });

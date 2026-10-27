@@ -9,11 +9,10 @@
  * is set, may add proposals from the misses' causes, still gated by replay.
  */
 import prisma from "@/lib/db/client";
-import { parseSop, withinBounds, changedPaths, type SopBody } from "../sop/schema";
+import { parseSop, withinBounds, changedPaths, resolveParams, type SopBody } from "../sop/schema";
 import { loadLiveSops, invalidateSopCache } from "../sop/load";
 import { replaySop } from "./replay";
 import { loadDirectory } from "../directory";
-import { LAB_OFFSETS } from "../journey/policy";
 import { askModel } from "../llm";
 import { lessonsSince } from "./learn";
 
@@ -41,12 +40,12 @@ async function phleboTimingProposals(live: SopBody): Promise<Proposal[]> {
     if (mins.length < 30) continue;
     const sorted = [...mins].sort((a, b) => a - b);
     const p50 = sorted[Math.floor(sorted.length / 2)];
-    const current = LAB_OFFSETS[labId]?.phleboBeforeSlotMin ?? 120;
+    const current = -(resolveParams(live, { labId, labTier: dir.labs.get(labId)?.tier ?? null }).asks.phlebo_assigned?.dueOffsetMin ?? -120);
     // Ask when the lab usually has not yet assigned: 30 min before its median, clipped to the bounds.
     const proposed = Math.max(30, Math.min(180, Math.round((p50 + 30) / 15) * 15));
     if (Math.abs(proposed - current) < 30) continue;
     const body = JSON.parse(JSON.stringify(live)) as SopBody;
-    body.overrides = [...body.overrides.filter((o) => o.when.labId !== labId), { when: { labId }, set: { asks: { phlebo_assigned: { intent: "PHLEBO", leadMin: Math.max(0, current - proposed), graceMin: 180, urgentWithinMin: 90, nightBefore: true } } } }];
+    body.overrides = [...body.overrides.filter((o) => !(o.when.labId === labId && (o.set as { asks?: { phlebo_assigned?: unknown } }).asks?.phlebo_assigned)), { when: { labId }, set: { asks: { phlebo_assigned: { dueOffsetMin: -proposed } } } }];
     proposals.push({
       body, rationale: `${dir.labs.get(labId)?.labName ?? labId}: assigns phlebos a median ${Math.round(p50)} min before the slot (n=${mins.length}); ask at slot − ${proposed} min instead of − ${current}.`,
       evidence: { labId, sample: mins.length, p50BeforeSlotMin: Math.round(p50), currentMin: current, proposedMin: proposed },

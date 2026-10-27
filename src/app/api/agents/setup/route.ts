@@ -9,7 +9,7 @@ import prisma from "@/lib/db/client";
 import { labstackWorkerQuery } from "@/lib/db/labstack";
 import { agentsRoute, bad } from "@/lib/agents/api";
 import { loadDirectory, loadPilot, setPilot } from "@/lib/agents/directory";
-import { LAB_OFFSETS } from "@/lib/agents/journey/policy";
+import { loadLiveSops, paramsFor } from "@/lib/agents/sop/load";
 import { consoleClient } from "@/lib/agents/console/client";
 
 export const GET = agentsRoute("setup", async (_request, { requestId }) => {
@@ -32,10 +32,13 @@ export const GET = agentsRoute("setup", async (_request, { requestId }) => {
   for (const e of evals) if (!latestEval.has(e.suite)) latestEval.set(e.suite, e);
   const shadowCells = desks.filter((d) => d.state !== "OFF").length;
   const anyLive = desks.some((d) => d.state === "LIVE");
+  const labSop = (await loadLiveSops().catch(() => new Map())).get("LAB");
+  const labOffsets = [...dir.labs.values()].map((l) => ({ labId: l.labId, labName: l.labName, phleboBeforeSlotMin: -(paramsFor(labSop, { labId: l.labId, labTier: l.tier, orderType: "HOME_SAMPLE" })?.asks.phlebo_assigned?.dueOffsetMin ?? -120) }))
+    .filter((o) => o.phleboBeforeSlotMin !== 120);
   const steps = [
     { n: 1, key: "connections", name: "Connections", status: replica === "OK" && gateway?.status === "CONNECTED" ? "done" : "in_progress", detail: { replica, gateway: gateway?.status ?? "NOT_CONFIGURED", gatewayNumber: gateway?.connectedNumber ?? null, consoleApi: consoleClient() ? "configured" : "not yet — status writes become tasks", portals: portals.map((p) => ({ labId: p.labId, status: p.status, lastOkAt: p.lastOkAt })), modelKey: !!process.env.ANTHROPIC_API_KEY, exotel: !!process.env.EXOTEL_API_KEY || !!process.env.EXOTEL_SID } },
     { n: 2, key: "directory", name: "Directory", status: pilotLabs.length >= 4 && pilotStores.length >= 1 && groupsOk === pilotLabs.length ? "done" : "in_progress", detail: { labs: pilotLabs.map((l) => ({ labId: l.labId, labName: l.labName, tier: l.tier, group: !!l.groupJid, manager: !!l.managerWhatsapp })), stores: pilotStores.map((s) => ({ storeId: s.storeId, storeName: s.storeName, group: !!s.groupJid, weight: s.weight })), pick: { labs: [...dir.labs.values()].filter((l) => !pilot.labIds.includes(l.labId)).map((l) => ({ labId: l.labId, labName: l.labName, tier: l.tier, group: !!l.groupJid })).sort((a, b) => a.labName.localeCompare(b.labName)), stores: [...dir.stores.values()].filter((s) => !pilot.storeIds.includes(s.storeId)).map((s) => ({ storeId: s.storeId, storeName: s.storeName })) } } },
-    { n: 3, key: "sla", name: "SLA timings", status: "done", detail: { offsets: Object.entries(LAB_OFFSETS).map(([labId, o]) => ({ labId: Number(labId), labName: dir.labs.get(Number(labId))?.labName ?? labId, ...o })), note: "Defaults per order type; the Brain proposes per-lab timings from history at each review." } },
+    { n: 3, key: "sla", name: "SLA timings", status: "done", detail: { offsets: labOffsets, note: "From the LAB SOP (asks.<checkpoint>.dueOffsetMin); the Brain proposes per-lab timings from history at each review." } },
     { n: 4, key: "sops", name: "Baseline SOPs", status: sops.length >= 3 && sops.every((s) => s.versions.length) ? (sops.every((s) => s.versions[0]?.approvedBy != null) ? "done" : "needs_approval") : "in_progress", detail: { sops: sops.map((s) => ({ desk: s.desk, version: s.versions[0]?.version ?? null, author: s.versions[0]?.author ?? null, approvedBy: s.versions[0]?.approvedBy ?? null })) } },
     { n: 5, key: "evals", name: "Accuracy tests", status: latestEval.size === 0 ? "not_started" : [...latestEval.values()].every((e) => e.passedGate) ? "done" : "failing", detail: { suites: [...latestEval.values()].map((e) => ({ suite: e.suite, cases: e.cases, score: e.score, gate: e.gate, passed: e.passedGate, ranAt: e.ranAt })) } },
     { n: 6, key: "shadow", name: "Pilot in shadow", status: shadowCells >= pilotLabs.length + pilotStores.length ? "done" : shadowCells > 0 ? "in_progress" : "not_started", detail: { cells: shadowCells, needed: pilotLabs.length * 2 + pilotStores.length } },

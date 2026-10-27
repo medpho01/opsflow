@@ -39,6 +39,12 @@ const askSpec = z.object({
   urgentWithinMin: z.number().int().min(0).default(90),
   /** Medium and high risk orders are asked the evening before (FR-16.3). */
   nightBefore: z.boolean().default(false),
+  /**
+   * When the checkpoint is due, in minutes from its anchor (the order's creation, the slot, or the
+   * collection — fixed per checkpoint in journey/policy.ts). Unset: the policy's default for the
+   * order type. Negative = before the anchor ("phlebo at slot − 120").
+   */
+  dueOffsetMin: z.number().int().optional(),
 });
 
 export const sopParamsSchema = z.object({
@@ -103,6 +109,8 @@ export const sopParamsSchema = z.object({
   reaskEveryMin: z.number().int().min(60).default(1440),
   /** What every lab is told unasked. The evening list: tomorrow's orders with address, tests and confirm link. */
   briefings: z.object({
+    /** As soon as an order is placed: the details and the confirmation link (orders gather for a few minutes). */
+    newOrder: z.object({ enabled: z.boolean().default(true) }).prefault({}),
     eveningList: z.object({ enabled: z.boolean().default(true), at: z.string().regex(/^\d{2}:\d{2}$/).default("19:00") }).prefault({}),
   }).prefault({}),
 });

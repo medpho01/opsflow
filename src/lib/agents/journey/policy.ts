@@ -1,8 +1,10 @@
 /**
  * The checkpoint policy: which checkpoints an order passes and when each is
- * due (DESIGN.md §4.1, FR-2). Defaults per order type come from the ops
- * team's rules; per-lab offsets are the interim shim until the console holds
- * the SLA policy (FR-2.1) and the Brain tunes them from history (FR-2.5).
+ * due (DESIGN.md §4.1, FR-2). Each checkpoint has an anchor (the order's
+ * creation, the slot, the collection) and a default offset per order type,
+ * taken from the ops team's rules. The LAB SOP owns the offset
+ * (`asks.<checkpoint>.dueOffsetMin`, with per-lab or per-tier overrides the
+ * Brain proposes from history, FR-2.5) — nothing per lab lives in code.
  *
  * Everything here is pure: a snapshot of the order in, checkpoints out.
  */
@@ -54,8 +56,12 @@ export const PLACEHOLDER_LAB_ID = 1;
 export type CheckpointDef = {
   name: CheckpointName;
   from: WaitingFrom;
+  /** What the due time is measured from. */
+  anchor: Anchor;
+  /** Minutes from the anchor by default; the SOP's `dueOffsetMin` replaces it. */
+  defaultOffsetMin: number;
   /** Due time from the order; null when the checkpoint does not apply (no slot yet). */
-  dueAt: (order: OrderSnapshot, offsets: LabOffsets) => Date | null;
+  dueAt: (order: OrderSnapshot, offsetMin?: number | null) => Date | null;
   /** Is it met, from the console alone? */
   met: (order: OrderSnapshot) => boolean;
   /** Checkpoints before the sample is taken are recomputed on a reschedule (FR-2.7). */
@@ -66,86 +72,64 @@ const MIN = 60_000;
 const H = 60 * MIN;
 const add = (at: Date | null, ms: number): Date | null => (at ? new Date(at.getTime() + ms) : null);
 
-/** Per-lab overrides, in minutes relative to the default anchor. */
-export type LabOffsets = {
-  /** Minutes BEFORE the slot a phlebo should be assigned (default 120). */
-  phleboBeforeSlotMin?: number;
-  /** Hours from collection to the full report (default 24). */
-  reportTatHours?: number;
-};
-
-/**
- * Interim per-lab offsets (the SLA shim, FR-2.1/2.5). Lab A assigns phlebos about 30 min
- * before the slot, so the default slot − 2 h would only produce noise. Everything else
- * is the default until the Brain proposes a lab's own timing from history.
- */
-export const LAB_OFFSETS: Record<number, LabOffsets> = {
-  4: { phleboBeforeSlotMin: 30 }, 5: { phleboBeforeSlotMin: 30 }, 6: { phleboBeforeSlotMin: 30 }, 7: { phleboBeforeSlotMin: 30 },
-};
-export const offsetsFor = (labId: number | null): LabOffsets => (labId != null ? LAB_OFFSETS[labId] ?? {} : {});
+/** Anchors a checkpoint's due time is measured from. */
+export type Anchor = "created" | "slot" | "collected";
 
 const collectedAt = (order: OrderSnapshot): Date | null => {
   if (!reached(order.orderStatus, "SAMPLE_COLLECTED")) return null;
   return order.orderStatus === "SAMPLE_COLLECTED" && order.statusUpdatedAt ? order.statusUpdatedAt : order.appointmentTime ?? order.statusUpdatedAt;
 };
 
-const confirmed: CheckpointDef = {
-  name: "confirmed", from: "LAB", preCollection: true,
-  dueAt: (o) => add(o.createdAt, 2 * H),
+const anchorAt = (anchor: Anchor, o: OrderSnapshot): Date | null =>
+  anchor === "created" ? o.createdAt : anchor === "slot" ? o.appointmentTime : collectedAt(o) ?? add(o.appointmentTime, 30 * MIN);
+
+type Spec = Omit<CheckpointDef, "dueAt">;
+const cp = (spec: Spec): CheckpointDef => ({
+  ...spec,
+  dueAt: (o, offsetMin) => add(anchorAt(spec.anchor, o), (offsetMin ?? spec.defaultOffsetMin) * MIN),
+});
+
+const confirmed = cp({
+  name: "confirmed", from: "LAB", preCollection: true, anchor: "created", defaultOffsetMin: 2 * 60,
   met: (o) => reached(o.orderStatus, "ORDER_SCHEDULED"),
-};
-const report = (tatHoursDefault: number): CheckpointDef => ({
-  name: "report_delivered", from: "LAB", preCollection: false,
-  dueAt: (o, off) => add(collectedAt(o) ?? o.appointmentTime, (off.reportTatHours ?? tatHoursDefault) * H),
+});
+const report = (tatHoursDefault: number): CheckpointDef => cp({
+  name: "report_delivered", from: "LAB", preCollection: false, anchor: "collected", defaultOffsetMin: tatHoursDefault * 60,
   met: (o) => o.orderStatus === "REPORT_DELIVERED",
 });
 
 const HOME_SAMPLE: CheckpointDef[] = [
   confirmed,
-  {
-    name: "phlebo_assigned", from: "LAB", preCollection: true,
-    dueAt: (o, off) => add(o.appointmentTime, -(off.phleboBeforeSlotMin ?? 120) * MIN),
+  cp({
+    name: "phlebo_assigned", from: "LAB", preCollection: true, anchor: "slot", defaultOffsetMin: -120,
     met: (o) => reached(o.orderStatus, "PHLEBO_ASSIGNED") || o.phleboName.trim().length > 0,
-  },
-  {
-    name: "phlebo_reached", from: "LAB", preCollection: true,
-    dueAt: (o) => add(o.appointmentTime, 15 * MIN),
-    met: (o) => reached(o.orderStatus, "PATIENT_VISITED"),
-  },
-  {
-    name: "sample_collected", from: "LAB", preCollection: true,
-    dueAt: (o) => add(o.appointmentTime, 30 * MIN),
-    met: (o) => reached(o.orderStatus, "SAMPLE_COLLECTED"),
-  },
-  {
-    name: "sample_at_lab", from: "LAB", preCollection: false,
-    dueAt: (o) => add(collectedAt(o) ?? add(o.appointmentTime, 30 * MIN), 4 * H),
-    met: (o) => reached(o.orderStatus, "SAMPLE_DELIVERED"),
-  },
+  }),
+  cp({ name: "phlebo_reached", from: "LAB", preCollection: true, anchor: "slot", defaultOffsetMin: 15, met: (o) => reached(o.orderStatus, "PATIENT_VISITED") }),
+  cp({ name: "sample_collected", from: "LAB", preCollection: true, anchor: "slot", defaultOffsetMin: 30, met: (o) => reached(o.orderStatus, "SAMPLE_COLLECTED") }),
+  cp({ name: "sample_at_lab", from: "LAB", preCollection: false, anchor: "collected", defaultOffsetMin: 4 * 60, met: (o) => reached(o.orderStatus, "SAMPLE_DELIVERED") }),
   report(24),
 ];
 
 const CENTER_VISIT: CheckpointDef[] = [
   { ...confirmed, name: "visit_confirmed" },
-  {
-    name: "patient_visited", from: "LAB", preCollection: true,
-    dueAt: (o) => add(o.appointmentTime, 45 * MIN),
+  cp({
+    name: "patient_visited", from: "LAB", preCollection: true, anchor: "slot", defaultOffsetMin: 45,
     met: (o) => reached(o.orderStatus, "PATIENT_VISITED") || reached(o.orderStatus, "SAMPLE_COLLECTED"),
-  },
+  }),
   report(36),
 ];
 
 const KIT_BASED: CheckpointDef[] = [
   confirmed,
-  { name: "kit_dispatched", from: "LAB", preCollection: true, dueAt: (o) => add(o.createdAt, 24 * H), met: (o) => reached(o.orderStatus, "KIT_DISPATCHED") },
-  { name: "kit_delivered", from: "COURIER", preCollection: true, dueAt: (o) => add(o.createdAt, 72 * H), met: (o) => reached(o.orderStatus, "PATIENT_VISITED") },
-  { name: "kit_picked_up", from: "COURIER", preCollection: true, dueAt: (o) => add(o.createdAt, 120 * H), met: (o) => reached(o.orderStatus, "SAMPLE_COLLECTED") },
-  { name: "sample_at_lab", from: "COURIER", preCollection: false, dueAt: (o) => add(o.createdAt, 192 * H), met: (o) => reached(o.orderStatus, "SAMPLE_DELIVERED") },
+  cp({ name: "kit_dispatched", from: "LAB", preCollection: true, anchor: "created", defaultOffsetMin: 24 * 60, met: (o) => reached(o.orderStatus, "KIT_DISPATCHED") }),
+  cp({ name: "kit_delivered", from: "COURIER", preCollection: true, anchor: "created", defaultOffsetMin: 72 * 60, met: (o) => reached(o.orderStatus, "PATIENT_VISITED") }),
+  cp({ name: "kit_picked_up", from: "COURIER", preCollection: true, anchor: "created", defaultOffsetMin: 120 * 60, met: (o) => reached(o.orderStatus, "SAMPLE_COLLECTED") }),
+  cp({ name: "sample_at_lab", from: "COURIER", preCollection: false, anchor: "created", defaultOffsetMin: 192 * 60, met: (o) => reached(o.orderStatus, "SAMPLE_DELIVERED") }),
   report(48),
 ];
 
 const CAMP: CheckpointDef[] = [
-  { name: "samples_received", from: "LAB", preCollection: true, dueAt: (o) => add(o.appointmentTime, 6 * H), met: (o) => reached(o.orderStatus, "SAMPLE_DELIVERED") },
+  cp({ name: "samples_received", from: "LAB", preCollection: true, anchor: "slot", defaultOffsetMin: 6 * 60, met: (o) => reached(o.orderStatus, "SAMPLE_DELIVERED") }),
   report(48),
 ];
 

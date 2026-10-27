@@ -25,7 +25,7 @@ import { formatTime } from "./format";
 import { NEW_ORDER_INTENT, batchIntentOf, currentSlot, intentRank, isSlotOpen, nextSlot, releaseAt, slotMissesVisit, startOfLocalDay, type BatchingMode } from "./batching";
 import { newOrderReleaseAt } from "./new-order";
 import { buildEntries, summaryVariables } from "./summary";
-import { loadLiveSops, paramsFor } from "@/lib/agents/sop/load";
+import { loadLiveSops, paramsFor, type LiveSop } from "@/lib/agents/sop/load";
 import { ensureMigratedToRules } from "./migrate";
 import { TIME_ZONE } from "./format";
 import {
@@ -218,7 +218,10 @@ export async function runMessageRulesPass(now = new Date()): Promise<RulesPassRe
   const timeZone = TIME_ZONE();
   const orderRules = rules.filter((rule) => rule.kind === "ORDER");
   const introRules = orderRules.filter((rule) => rule.introduces);
-  const rulesFor = (labId: number) => (agentLabs.has(labId) ? introRules : orderRules);
+  // The new-order message is SOP policy too (params.briefings.newOrder).
+  const sops = await loadLiveSops().catch(() => new Map());
+  const newOrderOn = (labId: number) => paramsFor(sops.get("LAB"), { labTier: null, labId, storeId: null, orderType: "HOME_SAMPLE" })?.briefings.newOrder.enabled ?? true;
+  const rulesFor = (labId: number) => (agentLabs.has(labId) ? introRules : orderRules).filter((rule) => !rule.introduces || newOrderOn(labId));
   const modeOf = (labId: number) => (labs.get(labId)?.config.batchingMode ?? "OFF") as BatchingMode;
   // New orders gather for a few minutes (new-order.ts): the window starts at the
   // earliest order of the lab still waiting for its message — decided without a
@@ -308,7 +311,7 @@ export async function runMessageRulesPass(now = new Date()): Promise<RulesPassRe
     }
   }
 
-  result.summaries = await runSummaries(rules.filter((rule) => rule.kind === "SUMMARY"), labs, orders, facts, now, result);
+  result.summaries = await runSummaries(rules.filter((rule) => rule.kind === "SUMMARY"), labs, orders, facts, now, result, sops);
   return result;
 }
 
@@ -334,6 +337,7 @@ async function recordConfirmations(orders: RuleOrder[], conversations: Map<numbe
 
 async function runSummaries(
   rules: MessageRule[], labs: Map<number, LiveLab>, orders: RuleOrder[], facts: Map<number, Facts>, now: Date, result: RulesPassResult,
+  sops: Map<string, LiveSop>,
 ): Promise<number> {
   if (rules.length === 0) return 0;
   const timeZone = TIME_ZONE();
@@ -345,7 +349,6 @@ async function runSummaries(
   const done = new Set(sent.map((row) => `${row.ruleId}:${row.entityId}`));
   // The evening list is SOP policy (params.briefings.eveningList): its time and on/off come from
   // the LAB SOP, resolved per lab, not from the rule row (27 Oct 2026).
-  const sops = await loadLiveSops().catch(() => new Map());
   let count = 0;
   for (const rule of rules) {
     for (const { lab, config } of labs.values()) {

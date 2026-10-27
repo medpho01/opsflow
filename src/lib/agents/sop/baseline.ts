@@ -17,16 +17,17 @@ export const LAB_SOP_V1: SopBody = parseSop({
     workingHours: { start: "08:30", end: "20:00" },
     nightFloor: { start: "22:00", end: "05:00" },
     ladder: ["ask", "reminder", "manager_whatsapp", "task", "stuck"],
+    // dueOffsetMin: minutes from the checkpoint's anchor (order placed / the slot / the collection).
     asks: {
-      confirmed: { intent: "UNCONFIRMED", leadMin: 0, graceMin: 600, urgentWithinMin: 90, nightBefore: true },
-      phlebo_assigned: { intent: "PHLEBO", leadMin: 0, graceMin: 180, urgentWithinMin: 90, nightBefore: true },
-      phlebo_reached: { intent: "ETA", leadMin: 0, graceMin: 90, urgentWithinMin: 90, nightBefore: false },
-      sample_collected: { intent: "STATUS", leadMin: 0, graceMin: 480, urgentWithinMin: 0, nightBefore: false },
-      sample_at_lab: { intent: "OVERDUE", leadMin: 0, graceMin: 720, urgentWithinMin: 0, nightBefore: false },
-      report_delivered: { intent: "REPORT", leadMin: 0, graceMin: 2880, urgentWithinMin: 0, nightBefore: false },
-      visit_confirmed: { intent: "UNCONFIRMED", leadMin: 0, graceMin: 600, urgentWithinMin: 90, nightBefore: true },
-      patient_visited: { intent: "STATUS", leadMin: 0, graceMin: 480, urgentWithinMin: 0, nightBefore: false },
-      samples_received: { intent: "OVERDUE", leadMin: 0, graceMin: 720, urgentWithinMin: 0, nightBefore: false },
+      confirmed: { intent: "UNCONFIRMED", dueOffsetMin: 120, leadMin: 0, graceMin: 600, urgentWithinMin: 90, nightBefore: true },
+      phlebo_assigned: { intent: "PHLEBO", dueOffsetMin: -120, leadMin: 0, graceMin: 180, urgentWithinMin: 90, nightBefore: true },
+      phlebo_reached: { intent: "ETA", dueOffsetMin: 15, leadMin: 0, graceMin: 90, urgentWithinMin: 90, nightBefore: false },
+      sample_collected: { intent: "STATUS", dueOffsetMin: 30, leadMin: 0, graceMin: 480, urgentWithinMin: 0, nightBefore: false },
+      sample_at_lab: { intent: "OVERDUE", dueOffsetMin: 240, leadMin: 0, graceMin: 720, urgentWithinMin: 0, nightBefore: false },
+      report_delivered: { intent: "REPORT", dueOffsetMin: 1440, leadMin: 0, graceMin: 2880, urgentWithinMin: 0, nightBefore: false },
+      visit_confirmed: { intent: "UNCONFIRMED", dueOffsetMin: 120, leadMin: 0, graceMin: 600, urgentWithinMin: 90, nightBefore: true },
+      patient_visited: { intent: "STATUS", dueOffsetMin: 45, leadMin: 0, graceMin: 480, urgentWithinMin: 0, nightBefore: false },
+      samples_received: { intent: "OVERDUE", dueOffsetMin: 360, leadMin: 0, graceMin: 720, urgentWithinMin: 0, nightBefore: false },
     },
     evidenceBar: {
       SAMPLE_COLLECTED: { sources: ["console", "portal", "action_page", "lab_reply"], minConfidence: 0.85, needsOrderNamed: true },
@@ -51,14 +52,24 @@ export const LAB_SOP_V1: SopBody = parseSop({
     riskThresholds: { medium: 3, high: 5 },
     warnStoreBeforeMin: 120,
     consoleQuietMin: 90, reportRungGapMin: 1440, urgentAfterVisitMin: 240, reaskEveryMin: 1440,
-    briefings: { eveningList: { enabled: true, at: "19:00" } },
+    briefings: { newOrder: { enabled: true }, eveningList: { enabled: true, at: "19:00" } },
   },
   overrides: [
+    // Report TAT by order type: a centre visit 36 h, a kit or camp 48 h.
+    { when: { orderType: "CENTER_VISIT" }, set: { asks: { report_delivered: { dueOffsetMin: 2160 } } } },
+    { when: { orderType: "KIT_BASED" }, set: { asks: { report_delivered: { dueOffsetMin: 2880 } } } },
+    { when: { orderType: "CAMP" }, set: { asks: { report_delivered: { dueOffsetMin: 2880 } } } },
+    { when: { orderType: "SAMPLE_DROP_OFF" }, set: { asks: { report_delivered: { dueOffsetMin: 2880 } } } },
+    // Labs that assign phlebos about 30 min before the slot: asking at slot − 2 h was noise (FR-2.5).
+    { when: { labId: 4 }, set: { asks: { phlebo_assigned: { dueOffsetMin: -30 } } } },
+    { when: { labId: 5 }, set: { asks: { phlebo_assigned: { dueOffsetMin: -30 } } } },
+    { when: { labId: 6 }, set: { asks: { phlebo_assigned: { dueOffsetMin: -30 } } } },
+    { when: { labId: 7 }, set: { asks: { phlebo_assigned: { dueOffsetMin: -30 } } } },
     // API labs: the portal is the first rung when an order runs late (FR-17.2).
     { when: { labTier: "A" }, set: { ladder: ["portal_read", "ask", "reminder", "manager_whatsapp", "task", "stuck"] } },
     { when: { labTier: "B" }, set: { ladder: ["portal_read", "ask", "reminder", "manager_whatsapp", "task", "stuck"] } },
     // Manual labs: no portal; chase early and the night before (FR-2.5).
-    { when: { labTier: "C" }, set: { asks: { phlebo_assigned: { intent: "PHLEBO", leadMin: 0, graceMin: 180, urgentWithinMin: 90, nightBefore: true } } } },
+    { when: { labTier: "C" }, set: { asks: { phlebo_assigned: { intent: "PHLEBO", dueOffsetMin: -120, leadMin: 0, graceMin: 180, urgentWithinMin: 90, nightBefore: true } } } },
   ],
   bounds: {
     "params.rungGapMin": { min: 20, max: 60 },
@@ -70,10 +81,15 @@ export const LAB_SOP_V1: SopBody = parseSop({
     "params.reportRungGapMin": { min: 240, max: 2880 },
     "params.urgentAfterVisitMin": { min: 60, max: 480 },
     "params.reaskEveryMin": { min: 240, max: 2880 },
+    "params.asks.phlebo_assigned.dueOffsetMin": { min: -180, max: -30 },
+    "params.asks.sample_collected.dueOffsetMin": { min: 15, max: 120 },
+    "params.asks.report_delivered.dueOffsetMin": { min: 720, max: 4320 },
   },
   provenance: {
     ladder: "Ops rules; FR-8.7; CHAT-REVIEW-OCT-2026 (hourly @mention asks are what gets answered)",
     "asks.confirmed": "Standard message set: reminders 1 h / 3 h, final reminder 5 h, 2 h before",
+    "asks.sample_collected": "Standard message set: status check 30 min after the appointment",
+    "asks.*.dueOffsetMin": "27 Oct 2026: checkpoint timings were code; now SOP, per order type and lab, so the Brain can move them",
     "asks.phlebo_assigned": "Standard message set: assign a phlebo 2 h before; Lab A assigns at slot − 30 min (FR-2.5)",
     "asks.report_delivered": "Standard message set: report chase every 3 h, 08:00–20:00",
     evidenceBar: "Decision 21 Oct: one bar per transition, 0.85; patient missed and no-show always suggest",
@@ -83,7 +99,7 @@ export const LAB_SOP_V1: SopBody = parseSop({
     storeExceptionPhrases: "27 Oct 2026: '94669 - phlebo no show' (Plum) — the lab is asked at once, whatever the console shows",
     urgentAfterVisitMin: "27 Oct 2026: Redcliffe's phlebo started 7:09 for an 8:00 visit and went quiet; 'on time?' waited for the 10:30 slot",
     reaskEveryMin: "27 Oct 2026: after one task the agent never asked Advaith again; a manual lab's reply is the only source, so ask daily until the console moves",
-    briefings: "27 Oct 2026: the evening list is SOP policy, not a per-lab rule — it stopped for Advaith and Star when their desks went LIVE",
+    briefings: "27 Oct 2026: the new-order message and the evening list are SOP policy, not per-lab rules — the list stopped for Advaith and Star when their desks went LIVE",
   },
 });
 
@@ -135,12 +151,66 @@ export const INTAKE_SOP_V1: SopBody = parseSop({
 
 export const BASELINE: Record<string, SopBody> = { LAB: LAB_SOP_V1, STORE: STORE_SOP_V1, INTAKE: INTAKE_SOP_V1 };
 
-/** Seed the baseline SOPs where a desk has none. Safe on every boot. */
+type Json = Record<string, unknown>;
+const isObj = (v: unknown): v is Json => v != null && typeof v === "object" && !Array.isArray(v);
+
+/**
+ * What the baseline says that a live SOP does not say yet: keys the live body lacks
+ * (new params, new bounds, provenance) and baseline overrides it has no counterpart for.
+ * Nothing the live SOP already says is touched — the Brain's and the team's edits win.
+ */
+export function carryForward(live: SopBody, base: SopBody): { body: SopBody; added: string[] } {
+  const added: string[] = [];
+  const fill = (into: Json, from: Json, path: string): Json => {
+    const out: Json = { ...into };
+    for (const [k, v] of Object.entries(from)) {
+      const at = path ? `${path}.${k}` : k;
+      if (!(k in out)) { out[k] = v; added.push(at); continue; }
+      if (isObj(out[k]) && isObj(v)) out[k] = fill(out[k] as Json, v, at);
+    }
+    return out;
+  };
+  const body = JSON.parse(JSON.stringify(live)) as SopBody;
+  body.params = fill(body.params as unknown as Json, base.params as unknown as Json, "params") as unknown as SopBody["params"];
+  body.bounds = fill(body.bounds, base.bounds, "bounds") as SopBody["bounds"];
+  body.provenance = fill(body.provenance, base.provenance, "provenance") as SopBody["provenance"];
+  // An override counts as present when the live SOP has one for the same `when` touching the same leaf paths.
+  const leaves = (o: unknown, prefix = ""): string[] => (isObj(o) ? Object.entries(o).flatMap(([k, v]) => leaves(v, prefix ? `${prefix}.${k}` : k)) : [prefix]);
+  for (const o of base.overrides) {
+    const when = JSON.stringify(o.when);
+    const wanted = leaves(o.set);
+    const covered = body.overrides.some((l) => JSON.stringify(l.when) === when && wanted.every((leaf) => leaves(l.set).includes(leaf)));
+    if (covered) continue;
+    body.overrides.push(o);
+    added.push(`override ${when} → ${wanted.join(", ")}`);
+  }
+  return { body: parseSop(body), added };
+}
+
+/**
+ * Seed the baseline SOPs where a desk has none, and carry forward anything the
+ * baseline has gained since the live version was written (policy that used to be
+ * code, 27 Oct 2026). Safe on every boot.
+ */
 export async function ensureBaselineSops(): Promise<string[]> {
   const seeded: string[] = [];
   for (const [desk, body] of Object.entries(BASELINE)) {
-    const existing = await prisma.agentSop.findUnique({ where: { desk } });
-    if (existing?.currentVersionId) continue;
+    const existing = await prisma.agentSop.findUnique({ where: { desk }, include: { versions: { orderBy: { version: "desc" }, take: 1 } } });
+    if (existing?.currentVersionId) {
+      const current = await prisma.agentSopVersion.findUnique({ where: { id: existing.currentVersionId } });
+      if (!current) continue;
+      let live: SopBody;
+      try { live = parseSop(current.body); } catch { continue; }
+      const { body: merged, added } = carryForward(live, body);
+      if (added.length === 0) continue;
+      const version = await prisma.agentSopVersion.create({
+        data: { sopId: existing.id, version: (existing.versions[0]?.version ?? current.version) + 1, body: merged as object, author: "SYSTEM", status: "LIVE", approvedAt: new Date(), summary: `Carried forward from the baseline: ${added.slice(0, 6).join("; ")}${added.length > 6 ? ` (+${added.length - 6})` : ""}` },
+      });
+      await prisma.agentSopVersion.updateMany({ where: { sopId: existing.id, status: "LIVE", id: { not: version.id } }, data: { status: "RETIRED" } });
+      await prisma.agentSop.update({ where: { id: existing.id }, data: { currentVersionId: version.id } });
+      seeded.push(`${desk} v${version.version}`);
+      continue;
+    }
     const sop = existing ?? await prisma.agentSop.create({ data: { desk } });
     const version = await prisma.agentSopVersion.create({
       data: { sopId: sop.id, version: 1, body: body as object, author: "SYSTEM", status: "LIVE", approvedAt: new Date(), summary: "Baseline from the ops rules and the current message set" },

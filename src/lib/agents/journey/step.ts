@@ -785,6 +785,19 @@ export function step(input: StepInput): StepOutput {
       }, reason: `${LABELS[next.name]} still open ${Math.round(-minutesToSlot / 60)} h after the visit; the console shows ${order.orderStatus}`, idemKey: `visit-passed:${order.id}:${next.name}` });
       attempts[next.name] = { ...a, n: 99, at: now.toISOString() };
       journey = { ...journey, attempts };
+    } else if (sop && from === "LAB" && ask && (a.n >= 99 || a.n >= ladder.length) && (!a.at || now.getTime() - Date.parse(a.at) >= sop.reaskEveryMin * MIN) && !consoleIsLive(order, input.labTier, now, sop.consoleQuietMin)) {
+      // The ladder ran out, or the visit is long past with a person told: the lab is still asked,
+      // once a day, in the routine combined list, until the console moves (27 Oct 2026). Always a
+      // STATUS ask — "what happened with this visit?" — whatever checkpoint is open.
+      rungLabel = "reask";
+      const window = sendWindow(now, now, sop, { ...ask, intent: "STATUS", leadMin: 0, graceMin: 720, urgentWithinMin: 0, nightBefore: false }, false, false, tz);
+      actions.push({ desk: "LAB", action: "ask", params: {
+        checkpoint: next.name, orderId: order.id, labId: order.labId, attempt: a.n, dueAt: due, rung: "ask", intent: "STATUS", counterparty: `LAB:${order.labId}`,
+        windowFrom: window.from, windowTo: window.to, urgent: false,
+        line: { orderId: order.id, patientName: order.patientName, appointment: order.appointmentTime, labRef: order.labRef ?? null, mobile: order.mobile ?? null, area: order.area ?? null, milestone: LABELS[next.name], dueAt: due, phlebo: order.phleboName || null },
+      }, reason: `${LABELS[next.name]} still open after every ask; asked again (every ${Math.round(sop.reaskEveryMin / 60)} h until the console moves)`, idemKey: `reask:${order.id}:${next.name}:${startOfLocalDay(now, tz)}` });
+      attempts[next.name] = { ...a, at: now.toISOString() };
+      journey = { ...journey, attempts };
     } else if (from === "LAB" && ask && started && gapOk && !holding && !apiPhleboTooLate && !consoleAnswers && !apiLadderCapped) {
       let rungIndex = a.n;
       if (brokenPromises >= sop.brokenPromisesSkip && rungIndex > 0 && rungIndex < ladder.length - 1) rungIndex += 1;

@@ -501,3 +501,18 @@ describe("a visit that passed with the console quiet is asked about now (27 Oct 
     assert.equal(ask?.params.urgent, false);
   });
 });
+
+describe("a manual lab is asked again every day until the console moves (27 Oct 2026)", () => {
+  it("after the visit-passed task, a daily STATUS re-ask; not twice in a day", () => {
+    const o = order({ orderStatus: "ORDER_SCHEDULED", appointmentTime: at("2026-10-24T02:30:00Z") }); // visit Sat 24 Oct 8:00
+    const r1 = wake(o, at("2026-10-24T05:00:00Z"), undefined, { labTier: "C" } as never); // 10:30, visit 2.5 h past → task
+    assert.ok(r1.actions.some((a) => a.action === "create_task"));
+    const r2 = wake(o, at("2026-10-25T05:00:00Z"), r1, { labTier: "C" } as never); // next day
+    const reask = r2.actions.find((a) => a.action === "ask" && String(a.idemKey).startsWith("reask:"));
+    assert.ok(reask, "a daily re-ask");
+    assert.equal(reask?.params.intent, "STATUS");
+    assert.equal(reask?.params.urgent, false);
+    const r3 = wake(o, at("2026-10-25T08:00:00Z"), r2, { labTier: "C" } as never); // same day, later
+    assert.ok(!r3.actions.some((a) => a.action === "ask"), "not twice in a day");
+  });
+});

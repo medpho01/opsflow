@@ -53,3 +53,15 @@ describe("policy lives in the SOP, not the code (27 Oct 2026)", () => {
     assert.equal(withinBounds(LAB_SOP_V1, body).inBounds, false);
   });
 });
+
+describe("what every lab is told unasked lives in the SOP (27 Oct 2026)", () => {
+  it("the daily re-ask and the evening list are SOP parameters", () => {
+    const p = resolveParams(LAB_SOP_V1, { labTier: "C", labId: 2229 });
+    assert.equal(p.reaskEveryMin, 1440);
+    assert.equal(p.briefings.eveningList.enabled, true);
+    assert.equal(p.briefings.eveningList.at, "19:00");
+    const body = JSON.parse(JSON.stringify(LAB_SOP_V1)) as SopBody;
+    body.params.reaskEveryMin = 720;
+    assert.equal(withinBounds(LAB_SOP_V1, body).inBounds, true);
+  });
+});

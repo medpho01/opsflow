@@ -25,6 +25,7 @@ import { formatTime } from "./format";
 import { NEW_ORDER_INTENT, batchIntentOf, currentSlot, intentRank, isSlotOpen, nextSlot, releaseAt, slotMissesVisit, startOfLocalDay, type BatchingMode } from "./batching";
 import { newOrderReleaseAt } from "./new-order";
 import { buildEntries, summaryVariables } from "./summary";
+import { loadLiveSops, paramsFor } from "@/lib/agents/sop/load";
 import { ensureMigratedToRules } from "./migrate";
 import { TIME_ZONE } from "./format";
 import {
@@ -342,11 +343,23 @@ async function runSummaries(
     select: { ruleId: true, entityId: true },
   });
   const done = new Set(sent.map((row) => `${row.ruleId}:${row.entityId}`));
+  // The evening list is SOP policy (params.briefings.eveningList): its time and on/off come from
+  // the LAB SOP, resolved per lab, not from the rule row (27 Oct 2026).
+  const sops = await loadLiveSops().catch(() => new Map());
   let count = 0;
   for (const rule of rules) {
     for (const { lab, config } of labs.values()) {
       if (inScope(rule, lab.labId, lab)) continue;
-      if (!summaryDue(rule, now, timeZone, done.has(`${rule.id}:${lab.labId}`))) continue;
+      let timed = rule;
+      if (rule.builtInKey === "SUMMARY_TOMORROW") {
+        const ev = paramsFor(sops.get("LAB"), { labTier: null, labId: lab.labId, storeId: null, orderType: "HOME_SAMPLE" })?.briefings?.eveningList;
+        if (ev) {
+          if (!ev.enabled) continue;
+          const [h, m] = ev.at.split(":").map(Number);
+          timed = { ...rule, summaryHour: h, summaryMinute: m };
+        }
+      }
+      if (!summaryDue(timed, now, timeZone, done.has(`${rule.id}:${lab.labId}`))) continue;
       try {
         const outcome = await sendSummary(rule, config, orders.filter((o) => o.labId === lab.labId), facts, now, occurrence);
         if (outcome === "sent") count += 1;

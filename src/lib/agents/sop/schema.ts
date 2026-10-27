@@ -95,6 +95,16 @@ export const sopParamsSchema = z.object({
   /** A store request waiting on the lab / on our team is reminded after this long. */
   storeRemindLabMin: z.number().int().min(10).default(60),
   storeRemindOpsMin: z.number().int().min(10).default(45),
+  /**
+   * An order the ladder has run out on, or whose visit is long past with the console silent, is
+   * asked about again this often — one routine combined "still pending" ask — until the console
+   * moves (27 Oct 2026: Advaith's orders went silent after one task; the team asked by hand).
+   */
+  reaskEveryMin: z.number().int().min(60).default(1440),
+  /** What every lab is told unasked. The evening list: tomorrow's orders with address, tests and confirm link. */
+  briefings: z.object({
+    eveningList: z.object({ enabled: z.boolean().default(true), at: z.string().regex(/^\d{2}:\d{2}$/).default("19:00") }).prefault({}),
+  }).prefault({}),
 });
 export type SopParams = z.infer<typeof sopParamsSchema>;
 

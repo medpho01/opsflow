@@ -135,7 +135,13 @@ async function labsOnLegacyRules(): Promise<Check> {
   const [dir, state] = await Promise.all([loadDirectory(), loadGuardState()]);
   const notLive = [...dir.labs.values()].filter((l) => l.tier === "C" && l.groupJid && state.desks.get(`LAB:LAB:${l.labId}`) !== "LIVE");
   if (!notLive.length) return { key: "labs_on_sop", ok: true, detail: "every connected manual lab is chased by the SOP" };
-  return { key: "labs_on_sop", ok: false, detail: `${notLive.length} manual lab(s) still on the legacy message rules, not the SOP: ${notLive.map((l) => l.labName).slice(0, 8).join(", ")} — set each Lab desk LIVE on Agents › Desks` };
+  // Policy, not configuration: a connected manual lab's Lab desk is LIVE. Heal it here.
+  let healed = 0;
+  for (const l of notLive) {
+    const where = { desk_scopeKind_scopeId: { desk: "LAB", scopeKind: "LAB", scopeId: l.labId } };
+    await prisma.agentDeskState.upsert({ where, update: { state: "LIVE", liveSince: new Date() }, create: { desk: "LAB", scopeKind: "LAB", scopeId: l.labId, state: "LIVE", liveSince: new Date() } }).then(() => { healed += 1; }).catch(() => undefined);
+  }
+  return { key: "labs_on_sop", ok: healed === notLive.length, detail: `${notLive.length} manual lab(s) were on the legacy message rules, not the SOP: ${notLive.map((l) => l.labName).slice(0, 8).join(", ")}`, healed: `set ${healed} Lab desk(s) LIVE` };
 }
 
 /** Run every check, heal, record, and alert on what stays broken. */

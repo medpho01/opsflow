@@ -81,6 +81,18 @@ export const sopParamsSchema = z.object({
   riskThresholds: z.object({ medium: z.number().default(3), high: z.number().default(5) }).prefault({}),
   /** Warn the store at least this many minutes before the checkpoint (FR-16.4). */
   warnStoreBeforeMin: z.number().int().default(120),
+  /** An API lab's console counts as answering only while it updated this recently (27 Oct 2026). */
+  consoleQuietMin: z.number().int().min(15).default(90),
+  /** Minutes between rungs for a report chase: once a day by default. */
+  reportRungGapMin: z.number().int().min(60).default(1440),
+  /** A store saying the visit failed, in its words: any of these in a store message asks the lab now. */
+  storeExceptionPhrases: z.array(z.string()).default([
+    "no[- ]?show", "not (come|came|turned? up|reached|arrived|visited)", "nobody (came|turned up|visited)", "no one (came|turned up|visited)",
+    "didn'?t (come|turn up|show|visit)", "phlebo (is )?(not|un)(reachable|answering|picking)", "waiting (since|for) \\d", "still waiting", "not responding", "rnr",
+  ]),
+  /** A store request waiting on the lab / on our team is reminded after this long. */
+  storeRemindLabMin: z.number().int().min(10).default(60),
+  storeRemindOpsMin: z.number().int().min(10).default(45),
 });
 export type SopParams = z.infer<typeof sopParamsSchema>;
 

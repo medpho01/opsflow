@@ -22,6 +22,14 @@ import { loadGuardState } from "../guard/guard";
 import { enqueueOutbox } from "../executors/dispatcher";
 import { postToOps, orderLine } from "../ops/post";
 import { AGENT_RULE_ID } from "../executors/tasks";
+import { loadLiveSops, paramsFor } from "../sop/load";
+
+/** The store desk's reminder timings for a store, from its SOP (params.storeRemindLabMin / storeRemindOpsMin). */
+async function remindMinutes(storeId: number): Promise<{ lab: number; ops: number }> {
+  const sops = await loadLiveSops().catch(() => new Map());
+  const p = paramsFor(sops.get("STORE") ?? sops.get("LAB") ?? null, { labTier: null, labId: null, storeId, orderType: "HOME_SAMPLE" });
+  return { lab: p?.storeRemindLabMin ?? 60, ops: p?.storeRemindOpsMin ?? 45 };
+}
 
 const MIN = 60_000;
 const TZ = () => process.env.TIMEZONE || "Asia/Kolkata";
@@ -36,9 +44,9 @@ export function waitingOnFor(kind: string): "LAB" | "OPS" | "STORE" {
   return "OPS";
 }
 
-/** First reminder: the lab gets an hour, our own team 45 minutes. */
-export function firstRemindAt(kind: string, openedAt: Date): Date {
-  return new Date(openedAt.getTime() + (waitingOnFor(kind) === "LAB" ? 60 : 45) * MIN);
+/** First reminder: the lab gets an hour, our own team 45 minutes — the SOP's numbers when given. */
+export function firstRemindAt(kind: string, openedAt: Date, minutes: { lab: number; ops: number } = { lab: 60, ops: 45 }): Date {
+  return new Date(openedAt.getTime() + (waitingOnFor(kind) === "LAB" ? minutes.lab : minutes.ops) * MIN);
 }
 
 export type ThreadRow = { id: string; orderId: number; storeId: number; kind: string; waitingOn: string; openedAt: Date; snapshot: unknown; reminders: number };
@@ -76,7 +84,7 @@ export async function openThread(input: { orderId: number; storeId: number; grou
       orderId: input.orderId, storeId: input.storeId, groupId: input.groupId, kind: input.kind, waitingOn: waitingOnFor(input.kind),
       openedAt: input.at, messageId: input.messageId, waMsgId: input.waMsgId, text: input.text.slice(0, 500),
       snapshot: input.order ? { status: input.order.orderStatus, appointmentTime: input.order.appointmentTime?.toISOString() ?? null } : undefined,
-      nextRemindAt: firstRemindAt(input.kind, input.at),
+      nextRemindAt: firstRemindAt(input.kind, input.at, await remindMinutes(input.storeId)),
     },
     select: { id: true },
   }).catch(() => null);
@@ -175,7 +183,8 @@ export async function sweepThreads(now = new Date()): Promise<ThreadSweepResult>
       result.escalated += 1;
     }
     result.reminded += 1;
-    await prisma.agentThread.update({ where: { id: t.id }, data: { reminders: t.reminders + 1, lastRemindAt: now, nextRemindAt: new Date(now.getTime() + 60 * MIN) } });
+    const minutes = await remindMinutes(t.storeId);
+    await prisma.agentThread.update({ where: { id: t.id }, data: { reminders: t.reminders + 1, lastRemindAt: now, nextRemindAt: new Date(now.getTime() + (t.waitingOn === "LAB" ? minutes.lab : minutes.ops) * MIN) } });
   }
   return result;
 }

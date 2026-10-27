@@ -36,3 +36,20 @@ describe("SOP format", () => {
     assert.throws(() => parseSop(bad));
   });
 });
+
+describe("policy lives in the SOP, not the code (27 Oct 2026)", () => {
+  it("the console-quiet window, the report rung gap and the store's failure phrases are SOP parameters with defaults", () => {
+    const p = resolveParams(LAB_SOP_V1, { labTier: "A", labId: 4 });
+    assert.equal(p.consoleQuietMin, 90);
+    assert.equal(p.reportRungGapMin, 1440);
+    assert.ok(p.storeExceptionPhrases.length >= 5);
+    assert.equal(p.storeRemindLabMin, 60); assert.equal(p.storeRemindOpsMin, 45);
+  });
+  it("the Brain may move the numbers within bounds; outside them a proposal waits for approval", () => {
+    const body = JSON.parse(JSON.stringify(LAB_SOP_V1)) as SopBody;
+    body.params.consoleQuietMin = 120;
+    assert.equal(withinBounds(LAB_SOP_V1, body).inBounds, true);
+    body.params.consoleQuietMin = 20;
+    assert.equal(withinBounds(LAB_SOP_V1, body).inBounds, false);
+  });
+});

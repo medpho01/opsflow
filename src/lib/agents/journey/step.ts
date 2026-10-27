@@ -268,20 +268,25 @@ const RUNG_TO_ACTION: Record<Rung, ActionName> = {
  * answer to "phlebo on time? / collected?": updated within 2 h before the visit or any time after.
  * Manual labs (tier C) have no webhook — always ask them.
  */
-/** An API lab's console counts as answering only while it keeps updating: this long since the last update, it has gone quiet. */
+/** The SOP's default when no SOP is at hand (scripts): an API lab's console counts as answering only while it updated this recently. */
 export const CONSOLE_QUIET_MIN = 90;
 
-export function consoleIsLive(order: OrderSnapshot, labTier: LabTier | null | undefined, now: Date): boolean {
+export function consoleIsLive(order: OrderSnapshot, labTier: LabTier | null | undefined, now: Date, quietMin = CONSOLE_QUIET_MIN): boolean {
   if (!labTier || labTier === "C" || !order.statusUpdatedAt || !order.appointmentTime) return false;
   const from = order.appointmentTime.getTime() - 2 * 3_600_000;
   const updated = order.statusUpdatedAt.getTime();
   // Updated around the visit AND recently: a console that moved at 7:50 and said nothing since
-  // is not answering at 10:00 (Orange and Thyrocare got no status asks, 27 Oct 2026).
-  return updated >= from && updated <= now.getTime() && now.getTime() - updated <= CONSOLE_QUIET_MIN * MIN;
+  // is not answering at 10:00 (Orange and Thyrocare got no status asks, 27 Oct 2026). The window
+  // is the SOP's consoleQuietMin — the Brain may move it within its bounds.
+  return updated >= from && updated <= now.getTime() && now.getTime() - updated <= quietMin * MIN;
 }
 
-/** A store reporting that the visit failed: the phlebo did not come, cannot be reached, the customer waited. */
-const STORE_EXCEPTION_RE = /\b(no[- ]?show|not (come|came|turned? up|reached|arrived|visited)|nobody (came|turned up|visited)|no one (came|turned up|visited)|didn'?t (come|turn up|show|visit)|phlebo (is )?(not|un)(reachable|answering|picking)|waiting (since|for) \d|still waiting|not responding|rnr)\b/i;
+/** A store reporting that the visit failed, in the SOP's phrases (params.storeExceptionPhrases). */
+export function storeExceptionRe(sop: Pick<SopParams, "storeExceptionPhrases"> | null): RegExp | null {
+  const phrases = sop?.storeExceptionPhrases?.filter((p) => p.trim()) ?? [];
+  if (!phrases.length) return null;
+  try { return new RegExp(`\\b(${phrases.join("|")})\\b`, "i"); } catch { return null; }
+}
 
 /** What the store reads in a relay: RNR named as such, and the slots the lab offers (Orange, 26 Oct 2026). */
 export function relayDetail(f: { kind: string; value: string; fullText?: string }): string {
@@ -365,9 +370,6 @@ export function curateStoreAlerts(actions: ProposedAction[]): ProposedAction[] {
   }
   return out;
 }
-
-/** Minutes between rungs for a report chase: once a day. */
-export const REPORT_RUNG_GAP_MIN = 24 * 60;
 
 const startOfLocalDay = (d: Date, tz: string) => d.toLocaleDateString("en-CA", { timeZone: tz });
 const LABELS_TIME = (d: Date, tz: string) => d.toLocaleTimeString("en-IN", { timeZone: tz, hour: "numeric", minute: "2-digit" });
@@ -636,7 +638,7 @@ export function step(input: StepInput): StepOutput {
       // The store reports the visit failed ("94669 - phlebo no show", Plum, 27 Oct 2026). Whatever the
       // console shows, the lab is asked now with the store's words, and the store hears we are on
       // it — unless the console already says the lab could not reach the patient, which answers it.
-      if (STORE_EXCEPTION_RE.test(m.text) && order.labId != null && sop && order.orderStatus !== "PATIENT_MISSED" && collected?.status !== "MET" && !["reschedule", "cancel", "change_tests"].includes(m.intent)) {
+      if (sop && storeExceptionRe(sop)?.test(m.text) && order.labId != null && order.orderStatus !== "PATIENT_MISSED" && collected?.status !== "MET" && !["reschedule", "cancel", "change_tests"].includes(m.intent)) {
         const cp = next?.name ?? "sample_collected";
         const window = sendWindow(now, now, sop, { intent: "STATUS", leadMin: 0, graceMin: 240, urgentWithinMin: 0, nightBefore: false }, true, true, tz);
         actions.push({ desk: "LAB", action: "ask", params: { checkpoint: cp, orderId: order.id, labId: order.labId, attempt: (attempts[cp]?.n ?? 0) + 1, dueAt: now, rung: "ask", intent: "STATUS", counterparty: `LAB:${order.labId}`, windowFrom: window.from, windowTo: window.to, urgent: true, line: { orderId: order.id, patientName: order.patientName, appointment: order.appointmentTime, labRef: order.labRef ?? null, mobile: order.mobile ?? null, area: order.area ?? null, phlebo: order.phleboName || null, note: `store reports: "${m.text.replace(/\s+/g, " ").slice(0, 80)}" — what happened? ETA or a new slot?` }, forStore: true }, reason: `store reports the visit failed: "${m.text.slice(0, 60)}"`, idemKey: `${key}:exception` });
@@ -660,7 +662,7 @@ export function step(input: StepInput): StepOutput {
             actions.push({ desk: "STORE", action: "store_reply", params: { template: "STORE_STATUS_ANSWER", orderId: order.id, storeId: order.storeId, ...known, ...quote }, reason: `store asked for ${m.intent}; the console knows`, idemKey: `${key}:answer` });
           } else {
             actions.push({ desk: "STORE", action: "store_reply", params: { template: "STORE_CHECKING", orderId: order.id, storeId: order.storeId, ...quote }, reason: `store asked for ${m.intent}; the console does not know yet`, idemKey: `${key}:checking` });
-            if (next && sop && from === "LAB" && sop.asks[next.name] && !consoleIsLive(order, input.labTier, now)) {
+            if (next && sop && from === "LAB" && sop.asks[next.name] && !consoleIsLive(order, input.labTier, now, sop.consoleQuietMin)) {
               const ask = sop.asks[next.name];
               const urgent = slotPassed || (minutesToSlot != null && minutesToSlot <= ask.urgentWithinMin);
               const window = sendWindow(now, now, sop, { ...ask, leadMin: 0, graceMin: 240 }, true, urgent, tz);
@@ -740,7 +742,7 @@ export function step(input: StepInput): StepOutput {
     const lastAt = a.at ? Date.parse(a.at) : null;
     // A report chase climbs its ladder a day at a time — a 20-day backlog must not reach "stuck"
     // by lunch (27 Oct 2026). Everything else keeps the SOP's gap.
-    const gapMin = next.name === "report_delivered" ? Math.max(sop.rungGapMin, REPORT_RUNG_GAP_MIN) : sop.rungGapMin;
+    const gapMin = next.name === "report_delivered" ? Math.max(sop.rungGapMin, sop.reportRungGapMin) : sop.rungGapMin;
     const gapOk = lastAt == null || now.getTime() - lastAt >= gapMin * MIN;
     const answeredAt = a.answeredAt ? Date.parse(a.answeredAt) : null;
     const holding = answeredAt != null && now.getTime() - answeredAt < sop.answerHoldMin * MIN && next.dueSource !== "RESET";
@@ -753,7 +755,7 @@ export function step(input: StepInput): StepOutput {
     const preVisit = checkpointDefs(order.orderType).find((d) => d.name === next.name)?.preCollection === true;
     // An API lab whose webhook updated this order around the visit has told us where it is: no
     // WhatsApp ask for the visit checkpoints; ask only when the console has gone quiet (26 Oct 2026).
-    const consoleAnswers = preVisit && consoleIsLive(order, input.labTier, now);
+    const consoleAnswers = preVisit && consoleIsLive(order, input.labTier, now, sop?.consoleQuietMin);
     // An API lab asked "phlebo needed?" ten minutes before the visit answers "collection in
     // progress" (Orange, 25 Oct 2026): LabStack has not caught up. Inside the last quarter
     // hour it is not worth a message (Orange assigns at slot − 30 min, so −30…−15 is fair).
@@ -840,7 +842,7 @@ export function step(input: StepInput): StepOutput {
     if (atRisk > now.getTime()) candidates.push(atRisk);
     if (next.dueAt.getTime() > now.getTime()) candidates.push(next.dueAt.getTime());
     const a = attempts[next.name];
-    if (sop && a?.at && now.getTime() > next.dueAt.getTime()) candidates.push(Date.parse(a.at) + (next.name === "report_delivered" ? Math.max(sop.rungGapMin, REPORT_RUNG_GAP_MIN) : sop.rungGapMin) * MIN);
+    if (sop && a?.at && now.getTime() > next.dueAt.getTime()) candidates.push(Date.parse(a.at) + (next.name === "report_delivered" ? Math.max(sop.rungGapMin, sop.reportRungGapMin) : sop.rungGapMin) * MIN);
     if (sop && a?.answeredAt) candidates.push(Date.parse(a.answeredAt) + sop.answerHoldMin * MIN);
   }
   if (journey.pausedUntil && journey.pausedUntil.getTime() > now.getTime()) candidates.push(journey.pausedUntil.getTime());

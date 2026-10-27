@@ -50,6 +50,7 @@ export const LAB_SOP_V1: SopBody = parseSop({
     },
     riskThresholds: { medium: 3, high: 5 },
     warnStoreBeforeMin: 120,
+    consoleQuietMin: 90, reportRungGapMin: 1440,
   },
   overrides: [
     // API labs: the portal is the first rung when an order runs late (FR-17.2).
@@ -64,6 +65,8 @@ export const LAB_SOP_V1: SopBody = parseSop({
     "params.defaultPromiseMin": { min: 60, max: 240 },
     "params.promiseGraceMin": { min: 5, max: 30 },
     "params.warnStoreBeforeMin": { min: 60, max: 240 },
+    "params.consoleQuietMin": { min: 30, max: 240 },
+    "params.reportRungGapMin": { min: 240, max: 2880 },
   },
   provenance: {
     ladder: "Ops rules; FR-8.7; CHAT-REVIEW-OCT-2026 (hourly @mention asks are what gets answered)",
@@ -72,6 +75,9 @@ export const LAB_SOP_V1: SopBody = parseSop({
     "asks.report_delivered": "Standard message set: report chase every 3 h, 08:00–20:00",
     evidenceBar: "Decision 21 Oct: one bar per transition, 0.85; patient missed and no-show always suggest",
     handoffs: "FR-8.9, FR-11.1: patient unreachable → alert the store in its group",
+    consoleQuietMin: "27 Oct 2026: an Orange order updated at 7:50 was never asked about at 10:00 — live means updated in the last 90 min",
+    reportRungGapMin: "27 Oct 2026: a 20-day report backlog must climb its ladder a day at a time",
+    storeExceptionPhrases: "27 Oct 2026: '94669 - phlebo no show' (Plum) — the lab is asked at once, whatever the console shows",
   },
 });
 

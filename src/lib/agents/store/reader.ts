@@ -17,7 +17,7 @@ import { recordJourneyEvent, wakeJourney } from "../journey/run";
 import { readMessage } from "../reader/read";
 import { openThread, teamAnswered, threadForNudge, THREAD_KINDS } from "./threads";
 import { enqueueOutbox } from "../executors/dispatcher";
-import { storeTemplate } from "../executors/storeReply";
+import { liveStoreBody } from "../executors/storeReply";
 import { guard, loadGuardState } from "../guard/guard";
 import { fetchOrderSnapshot } from "../journey/window";
 
@@ -229,7 +229,7 @@ export async function runStoreReader(now = new Date()): Promise<StoreReaderResul
       // thread with a person: a reply to a message that is not ours is theirs to handle.
       const inHumanThread = !!m.replyToWaId && !(await prisma.waOutbound.findFirst({ where: { sentWaMsgId: m.replyToWaId }, select: { id: true } }));
       if (!inHumanThread && ["status", "report", "slot", "reschedule", "cancel", "change_tests"].includes(intent) && state.desks.get(`STORE:STORE:${g.storeId}`) === "LIVE") {
-        await enqueueOutbox({ counterparty: `STORE:${g.storeId}`, ask: "STORE_REPLY", orderId: 0, journeyId: null, actionId: null, windowFrom: now, windowTo: new Date(now.getTime() + 2 * 3_600_000), urgent: true, idemKey: `askid:${m.id}`, line: { orderId: 0, patientName: null, appointment: null }, text: await storeTemplate("STORE_ASK_ORDER_ID") }).catch(() => undefined);
+        await enqueueOutbox({ counterparty: `STORE:${g.storeId}`, ask: "STORE_REPLY", orderId: 0, journeyId: null, actionId: null, windowFrom: now, windowTo: new Date(now.getTime() + 2 * 3_600_000), urgent: true, idemKey: `askid:${m.id}`, line: { orderId: 0, patientName: null, appointment: null }, text: await liveStoreBody("STORE_ASK_ORDER_ID") }).catch(() => undefined);
       }
       continue;
     }

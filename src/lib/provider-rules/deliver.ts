@@ -18,6 +18,7 @@ import { Prisma, type NonApiLabConfig } from "@prisma/client";
 import prisma from "@/lib/db/client";
 import { resolveLabTarget } from "@/lib/non-api-labs/target";
 import { BATCH_FOLLOW_UP_FIRM_TEMPLATE, BATCH_FOLLOW_UP_TEMPLATE, BATCH_GENERIC_TEMPLATE, BATCH_TEMPLATE_BY_INTENT, ensureTemplate, renderLabTemplate, type TemplateVariables } from "@/lib/non-api-labs/templates";
+import { recordSend, styledBody, type Styled } from "@/lib/agents/style";
 import { confirmationUrl } from "@/lib/non-api-labs/confirmation-link";
 import { contactVariables, type OrderContactDetails } from "@/lib/non-api-labs/order-details";
 import { newConversationStatus } from "./evaluate";
@@ -182,6 +183,7 @@ export async function deliverOrderMessage(input: DeliverOrderInput): Promise<Del
 
   const template = await ensureTemplate(rule.templateKey);
   if (!template.isActive) return { sent: false, reason: `Message "${template.name}" is paused` };
+  const styled = await styledBody(rule.templateKey, `LAB:${config.labId}`, template);
 
   const toManager = rule.recipient === "MANAGER";
   const managerMissing = toManager && !config.managerWhatsapp;
@@ -190,11 +192,12 @@ export async function deliverOrderMessage(input: DeliverOrderInput): Promise<Del
 
   // A manager DM is a personal chat: nobody to @mention there.
   const mention = toManager ? { text: "Team", jids: [] as string[] } : await coordinatorMentions(config, now);
-  const { text, variables, tokens, tokenExpiry } = await renderSingle(template.body, input, mention.text);
+  const { text, variables, tokens, tokenExpiry } = await renderSingle(styled.body, input, mention.text);
   const type = rule.introduces ? "INITIAL_NOTIFICATION" : rule.action === "ESCALATE" ? "ESCALATION" : "REMINDER";
   const conversationId = workflow.id;
 
   let communicationId = "";
+  let singleOutboundId: string | null = null;
   await prisma.$transaction(async (tx) => {
     await tx.labProviderActionToken.createMany({
       data: tokens.map((entry) => ({ workflowId: conversationId, action: entry.action, tokenHash: entry.tokenHash, expiresAt: tokenExpiry })),
@@ -215,6 +218,7 @@ export async function deliverOrderMessage(input: DeliverOrderInput): Promise<Del
       },
     });
     await tx.labCommunication.update({ where: { id: communication.id }, data: { waOutboundId: outbound.id, status: "QUEUED" } });
+    singleOutboundId = outbound.id;
     // The ledger row commits with the message: both or neither, so a crash
     // between them can never cause a second send.
     await tx.providerMessageLedger.create({
@@ -257,6 +261,7 @@ export async function deliverOrderMessage(input: DeliverOrderInput): Promise<Del
   }
 
   transcript(`${destinationLabel(config, target.kind, toManager)}: ${template.name} — order ${order.id}${occurrence > 1 ? ` (#${occurrence})` : ""}`);
+  await recordSend({ key: rule.templateKey, variantId: styled.variantId, counterparty: `LAB:${config.labId}`, groupId: target.groupId, outboundId: singleOutboundId, orderIds: [order.id], sentAt: now });
   return { sent: true, communicationId };
 }
 
@@ -268,17 +273,22 @@ export type DeliverSummaryInput = {
   now: Date;
   /** Render only — write nothing. */
   previewOnly?: boolean;
+  /** The styled parts already rendered into the variables (the entries), for the send log. */
+  styles?: Array<{ key: string; variantId: string | null }>;
+  orderIds?: number[];
 };
 
 export async function deliverSummary(input: DeliverSummaryInput): Promise<DeliverOutcome & { text?: string }> {
   const { rule, config, variables, occurrence, now } = input;
   const template = await ensureTemplate(rule.templateKey);
   if (!template.isActive) return { sent: false, reason: `Message "${template.name}" is paused` };
-  const text = renderLabTemplate(template.body, variables);
+  const styled = await styledBody(rule.templateKey, `LAB:${config.labId}`, template);
+  const text = renderLabTemplate(styled.body, variables);
   if (input.previewOnly) return { sent: false, reason: "preview", text };
 
   const target = await resolveLabTarget(config, rule.recipient === "MANAGER" ? config.managerWhatsapp : null);
   let communicationId = "";
+  let summaryOutboundId: string | null = null;
   await prisma.$transaction(async (tx) => {
     const communication = await tx.labCommunication.create({
       data: {
@@ -289,6 +299,7 @@ export async function deliverSummary(input: DeliverSummaryInput): Promise<Delive
     });
     communicationId = communication.id;
     const outbound = await tx.waOutbound.create({ data: { targetJid: target.targetJid, text, groupId: target.groupId, createdAt: now } });
+    summaryOutboundId = outbound.id;
     await tx.labCommunication.update({ where: { id: communication.id }, data: { waOutboundId: outbound.id, status: "QUEUED" } });
     await tx.providerMessageLedger.create({
       data: {
@@ -298,6 +309,9 @@ export async function deliverSummary(input: DeliverSummaryInput): Promise<Delive
     });
   });
   transcript(`${destinationLabel(config, target.kind, false)}: ${template.name} — ${variables.order_count ?? "?"} order(s)`);
+  for (const s of [{ key: rule.templateKey, variantId: styled.variantId }, ...(input.styles ?? [])]) {
+    await recordSend({ key: s.key, variantId: s.variantId, counterparty: `LAB:${config.labId}`, groupId: target.groupId, outboundId: summaryOutboundId, orderIds: input.orderIds ?? [], sentAt: now });
+  }
   return { sent: true, communicationId, text };
 }
 
@@ -316,7 +330,7 @@ type StoredBatchItem = { n: number; orderId: number; ruleId: string; occurrence:
 
 const ordersWord = (count: number) => (count === 1 ? "order" : "orders");
 
-async function batchLine(intent: string, n: number, item: BatchItemInput, now: Date): Promise<string> {
+async function batchLine(intent: string, n: number, item: BatchItemInput, now: Date, body?: string): Promise<string> {
   const { order, contact, facts, rule, moment } = item;
   const phleboName = order.phleboName?.trim() || facts.phlebo_name;
   const phleboPhone = order.phleboNumber?.trim() || facts.phlebo_phone;
@@ -328,7 +342,7 @@ async function batchLine(intent: string, n: number, item: BatchItemInput, now: D
     confirmUrl: needsLink ? await confirmationUrl(order.id) : null,
     createdAt: order.createdAt, milestone: rule.milestoneLabel, dueAt: moment,
     mobile: contact?.patientMobile ?? null, address: contact?.address ?? null, mapUrl: contact?.mapUrl ?? null, tests: contact?.tests ?? null,
-  }, now, TIME_ZONE());
+  }, now, TIME_ZONE(), body);
 }
 
 /**
@@ -402,6 +416,10 @@ export async function deliverBatch(input: DeliverBatchInput): Promise<BatchOutco
   const templateKey = loneIntroduction ? items[0].rule.templateKey : BATCH_TEMPLATE_BY_INTENT[intent] ?? BATCH_GENERIC_TEMPLATE;
   const template = await ensureTemplate(templateKey);
   if (!template.isActive) return { sent: false, reason: `Message "${template.name}" is paused`, sendSingly: true };
+  const counterparty = `LAB:${config.labId}`;
+  const styled = await styledBody(templateKey, counterparty, template);
+  const itemStyle = await styledBody(introduction ? "BATCH_ITEM_NEW_ORDER" : "BATCH_ITEM", counterparty);
+  let used: Array<{ key: string; variantId: string | null }> = [];
 
   const toManager = intent === "ESCALATION";
   const managerMissing = toManager && !config.managerWhatsapp;
@@ -417,6 +435,7 @@ export async function deliverBatch(input: DeliverBatchInput): Promise<BatchOutco
   let text: string;
   let single: SingleRender | null = null;
   if (loneIntroduction) {
+    used = [{ key: templateKey, variantId: styled.variantId }];
     numbers = [1];
     lines = [await batchLine(intent, 1, items[0], now)];
     single = await renderSingle(template.body, { ...items[0], config, now }, mention.text);
@@ -425,7 +444,9 @@ export async function deliverBatch(input: DeliverBatchInput): Promise<BatchOutco
     const original = new Map(followUp.items.map((item) => [item.orderId, item]));
     numbers = items.map((item) => original.get(item.order.id)!.n);
     lines = items.map((item) => original.get(item.order.id)!.line);
-    const followTemplate = await ensureTemplate(followUp.attempt === 1 ? BATCH_FOLLOW_UP_TEMPLATE : BATCH_FOLLOW_UP_FIRM_TEMPLATE);
+    const followKey = followUp.attempt === 1 ? BATCH_FOLLOW_UP_TEMPLATE : BATCH_FOLLOW_UP_FIRM_TEMPLATE;
+    const followTemplate = await styledBody(followKey, counterparty, await ensureTemplate(followKey));
+    used = [{ key: followKey, variantId: followTemplate.variantId }];
     // Each number carries its order — "still open: 1" alone means nothing hours later (27 Oct 2026).
     const named = items.map((item) => ({ n: original.get(item.order.id)!.n, ref: item.contact?.labRef ?? null, id: item.order.id })).sort((x, y) => x.n - y.n).map((x) => `${x.n} (${x.ref ? `${x.ref} · ` : ""}#${x.id})`);
     text = renderLabTemplate(followTemplate.isActive ? followTemplate.body : "{{coordinator}} still open: {{numbers}}", {
@@ -434,13 +455,15 @@ export async function deliverBatch(input: DeliverBatchInput): Promise<BatchOutco
     });
   } else {
     numbers = items.map((_, index) => index + 1);
-    lines = await Promise.all(items.map((item, index) => batchLine(intent, index + 1, item, now)));
-    text = renderLabTemplate(template.body, batchVariables(config, lines, items[0].rule.name, mention.text));
+    lines = await Promise.all(items.map((item, index) => batchLine(intent, index + 1, item, now, itemStyle.body)));
+    text = renderLabTemplate(styled.body, batchVariables(config, lines, items[0].rule.name, mention.text));
+    used = [{ key: templateKey, variantId: styled.variantId }, { key: introduction ? "BATCH_ITEM_NEW_ORDER" : "BATCH_ITEM", variantId: itemStyle.variantId }];
   }
   const slotAt = currentSlot(now, TIME_ZONE());
 
   const stored: StoredBatchItem[] = [];
   let batchId = "";
+  let batchOutboundId: string | null = null;
   await prisma.$transaction(async (tx) => {
     const outbound = await tx.waOutbound.create({
       data: {
@@ -450,6 +473,7 @@ export async function deliverBatch(input: DeliverBatchInput): Promise<BatchOutco
         ...(!toManager && mention.jids.length ? { mentions: mention.jids } : {}),
       },
     });
+    batchOutboundId = outbound.id;
     if (single) {
       await tx.labProviderActionToken.createMany({
         data: single.tokens.map((entry) => ({ workflowId: conversations.get(items[0].order.id)!, action: entry.action, tokenHash: entry.tokenHash, expiresAt: single!.tokenExpiry })),
@@ -521,6 +545,7 @@ export async function deliverBatch(input: DeliverBatchInput): Promise<BatchOutco
     }).catch(() => undefined);
   }
   transcript(`${destinationLabel(config, target.kind, toManager)}: ${template.name} — ${items.length} ${ordersWord(items.length)} (${items.map((i) => i.order.id).join(", ")})`);
+  for (const s of used) await recordSend({ key: s.key, variantId: s.variantId, counterparty, groupId: target.groupId, outboundId: batchOutboundId, orderIds: items.map((i) => i.order.id), sentAt: now });
   return { sent: true, batchId, communicationIds: stored.map((s) => s.communicationId!) };
 }
 

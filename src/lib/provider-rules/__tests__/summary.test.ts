@@ -23,16 +23,18 @@ const tomorrow = { summaryScope: "APPOINTMENT_TOMORROW" } as Pick<MessageRule, "
 const now = new Date("2026-10-06T13:30:00Z");
 
 describe("summary list", () => {
-  it("one entry per order: time, patient, order, address, map, packages with tests, individual tests", () => {
+  it("one entry per order: time, patient, order, phone, address, map, package names — never the tests inside a package (27 Oct 2026)", () => {
     assert.equal(orderListBlock([entry()], tomorrow, now, IST), [
       "*1. 8:00 am* – Varun · #101",
       "   📍 Flat 2, 4th Cross, Solan – 173212",
       "   🗺️ https://maps.google.com/?q=30.900000,77.100000",
-      "   📦 *Packages*",
-      "   • Full Body Check",
-      "     CBC, HbA1c",
-      "   🧪 *Individual tests*",
-      "   • Vitamin D",
+      "   🧪 Full Body Check; Vitamin D",
+    ].join("\n"));
+    assert.equal(orderListBlock([entry({}, { patientMobile: "98xxxxxx01" })], tomorrow, now, IST).split("\n")[0], "*1. 8:00 am* – Varun · #101 · 📞 98xxxxxx01");
+    assert.equal(orderListBlock([entry({ orderType: "CENTER_VISIT" }, { storeName: "Plum Solan" })], tomorrow, now, IST), [
+      "*1. 8:00 am* – Varun · #101",
+      "   🏥 Centre visit – Plum Solan",
+      "   🧪 Full Body Check; Vitamin D",
     ].join("\n"));
   });
 
@@ -41,9 +43,9 @@ describe("summary list", () => {
     assert.match(block, /⚠️ _Not confirmed_ – https:\/\/console\.labstack\.in\/confirmation\/x$/);
   });
 
-  it("pending reports read with date and time since the appointment", () => {
-    const block = orderListBlock([entry({ orderStatus: "SAMPLE_PROCESSED", appointmentTime: new Date("2026-10-05T03:00:00Z") })], { summaryScope: "OPEN" }, now, IST);
-    assert.match(block, /^\*1\. 05 Oct 2026 8:30 am\* – Varun · #101\n {3}⏱️ 1 d 10 h since the appointment/);
+  it("a past-visit entry (reports pending) is one line: id, name, phone, the visit date — not the address or the tests", () => {
+    const block = orderListBlock([entry({ orderStatus: "SAMPLE_PROCESSED", appointmentTime: new Date("2026-10-05T03:00:00Z") }, { patientMobile: "98xxxxxx01" })], { summaryScope: "OPEN" }, now, IST);
+    assert.equal(block, "*1.* #101 · Varun · 📞 98xxxxxx01 · visit 05 Oct 2026 8:30 am (1 d 10 h ago)");
   });
 
   it("caps the list and counts the rest", () => {

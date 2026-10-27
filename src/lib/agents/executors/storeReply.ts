@@ -6,6 +6,7 @@
  */
 import prisma from "@/lib/db/client";
 import { renderLabTemplate } from "@/lib/non-api-labs/templates";
+import { styledBody } from "../style";
 import type { ProposedAction } from "../journey/step";
 import type { ExecuteContext, ExecuteResult } from "./index";
 import { enqueueOutbox } from "./dispatcher";
@@ -29,7 +30,7 @@ export const STORE_TEMPLATES: Record<string, { name: string; body: string }> = {
   STORE_ASK_ORDER_ID: { name: "Store: which order?", body: "Which order is this about? Please share the order id." },
 };
 
-export async function storeTemplate(key: string): Promise<string> {
+export async function liveStoreBody(key: string): Promise<string> {
   const def = STORE_TEMPLATES[key] ?? STORE_TEMPLATES.STORE_NOTED;
   const row = await prisma.labCommunicationTemplate.upsert({ where: { key }, update: {}, create: { key, name: def.name, body: def.body, isActive: true }, select: { body: true, isActive: true } });
   return row.isActive ? row.body : def.body;
@@ -41,6 +42,27 @@ const fmtSlot = (d: Date | null | undefined) => (d ? d.toLocaleString("en-IN", {
 
 /** Render the text for a store action from its template and params. */
 export async function renderStoreText(action: ProposedAction, ctx: Pick<ExecuteContext, "orderId" | "labName" | "appointmentTime" | "patientName">): Promise<string> {
+  return (await renderStoreStyled(action, ctx, null)).text;
+}
+
+export type StoredStyle = { key: string; variantId: string | null };
+
+/**
+ * The text, and which wording it used: the live template or the Brain's trial variant for this
+ * store (27 Oct 2026). Free text an action carries is sent as is and not styled.
+ */
+export async function renderStoreStyled(action: ProposedAction, ctx: Pick<ExecuteContext, "orderId" | "labName" | "appointmentTime" | "patientName">, storeId: number | null): Promise<{ text: string; style: StoredStyle | null }> {
+  let style: StoredStyle | null = null;
+  const storeTemplate = async (key: string): Promise<string> => {
+    const s = await styledBody(key, storeId != null ? `STORE:${storeId}` : null, { body: await liveStoreBody(key), isActive: true });
+    style = { key, variantId: s.variantId };
+    return s.body;
+  };
+  const text = await renderStoreTextWith(action, ctx, storeTemplate);
+  return { text, style };
+}
+
+async function renderStoreTextWith(action: ProposedAction, ctx: Pick<ExecuteContext, "orderId" | "labName" | "appointmentTime" | "patientName">, storeTemplate: (key: string) => Promise<string>): Promise<string> {
   const p = action.params;
   if (action.action !== "store_alert" && typeof p.text === "string" && p.text.trim()) return p.text;
   const slot = (p.slot instanceof Date ? p.slot : typeof p.slot === "string" ? new Date(p.slot) : ctx.appointmentTime) ?? null;
@@ -87,13 +109,14 @@ export function storeWindowTo(now: Date): Date {
 export async function storeText(action: ProposedAction, ctx: ExecuteContext): Promise<ExecuteResult> {
   const storeId = (action.params.storeId as number | null | undefined) ?? ctx.storeId;
   if (storeId == null) return { outcome: "FAILED", note: "no store for this order" };
-  const text = await renderStoreText(action, ctx);
+  const { text, style } = await renderStoreStyled(action, ctx, storeId);
   const now = new Date();
   const r = await enqueueOutbox({
     counterparty: `STORE:${storeId}`, ask: action.action.toUpperCase(), orderId: ctx.orderId, journeyId: ctx.journeyId, actionId: ctx.actionId,
     windowFrom: now, windowTo: storeWindowTo(now), urgent: action.action !== "store_warning", immediate: true,
     idemKey: `outbox:${action.idemKey}`, line: { orderId: ctx.orderId, patientName: ctx.patientName ?? null, appointment: ctx.appointmentTime ?? null }, text,
+    extra: style ? { style } : undefined,
   });
-  if (action.params.quotedWaId && r.queued) await prisma.agentOutboxItem.update({ where: { id: r.id }, data: { payload: { line: { orderId: ctx.orderId }, text, quotedWaId: action.params.quotedWaId } } });
+  if (action.params.quotedWaId && r.queued) await prisma.agentOutboxItem.update({ where: { id: r.id }, data: { payload: { line: { orderId: ctx.orderId }, text, quotedWaId: action.params.quotedWaId, ...(style ? { style } : {}) } } });
   return r.queued ? { outcome: "EXECUTED", note: text.slice(0, 120) } : { outcome: "RECORDED", note: "already queued" };
 }

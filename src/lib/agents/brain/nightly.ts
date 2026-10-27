@@ -15,6 +15,7 @@ import { isAutomated, loadTeam, makeTeamMatcher } from "@/lib/wa/team";
 import { scoreOutcomes } from "./outcomes";
 import { computeEfficiency, renderEfficiency } from "./efficiency";
 import { lessonsSince } from "./learn";
+import { styleBriefLine } from "./style";
 
 const H = 3_600_000;
 const tz = () => process.env.TIMEZONE || "Asia/Kolkata";
@@ -135,9 +136,11 @@ export async function runNightly(now = new Date()): Promise<Record<string, numbe
     const dayStart = new Date(now.getTime() - 6 * H); dayStart.setUTCHours(0, 0, 0, 0);
     const efficiency = await computeEfficiency(new Date(dayStart.getTime() - 5.5 * H), new Date(dayStart.getTime() + 18.5 * H)).catch((e) => { console.warn("[Brain] efficiency:", e instanceof Error ? e.message : e); return null; });
     const lessons = await lessonsSince(new Date(now.getTime() - 24 * H)).catch(() => null);
+    const styleLine = await styleBriefLine(new Date(now.getTime() - 24 * H)).catch(() => null);
     const brief = [
       renderBrief(metrics, new Date(now.getTime() + 12 * H)),
       ...(efficiency ? renderEfficiency(efficiency) : []),
+      ...(styleLine ? [styleLine] : []),
       ...(lessons && lessons.runs ? [`Learned today (${lessons.runs} passes): ${lessons.wrong.length} things to fix, ${lessons.unanswered} questions nobody answered${lessons.wrong.length ? ` · top: ${lessons.wrong.slice(0, 3).map((w) => `${w.kind}${w.order ? ` #${w.order}` : ""}: ${w.what.slice(0, 70)}`).join(" | ")}` : ""}`] : []),
     ].join("\n");
     const audit = await auditSample(now).catch((e) => ({ sampled: 0, disagreements: 0, cases: 0, error: e instanceof Error ? e.message : String(e) }));

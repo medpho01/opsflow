@@ -2418,6 +2418,44 @@ model AgentOutboxItem {
   @@map("agent_outbox_items")
 }
 
+/// A wording the Brain wrote for one message kind (27 Oct 2026): on TRIAL for a share of the
+/// counterparties, then PROMOTED into the live template or RETIRED on engagement; REJECTED when
+/// it broke the contract. `against` is the live body it was written to beat.
+model AgentMessageVariant {
+  id        String    @id @default(cuid())
+  key       String
+  version   Int
+  body      String
+  /// TRIAL | PROMOTED | RETIRED | REJECTED
+  status    String    @default("TRIAL")
+  share     Float     @default(0.5)
+  author    String    @default("BRAIN")
+  rationale String?
+  against   String?
+  stats     Json?
+  createdAt DateTime  @default(now())
+  decidedAt DateTime?
+
+  @@index([key, status])
+  @@map("agent_message_variants")
+}
+
+/// Every styled send, against the variant it used — what engagement is scored from.
+model AgentMessageSend {
+  id           String   @id @default(cuid())
+  key          String
+  variantId    String?
+  counterparty String
+  groupId      String?
+  outboundId   String?
+  orderIds     Int[]    @default([])
+  sentAt       DateTime
+
+  @@index([key, sentAt])
+  @@index([variantId])
+  @@map("agent_message_sends")
+}
+
 /// A store's request, tracked until it is closed (27 Oct 2026): what was asked, who it waits
 /// on, when to remind, and how it closed. One row per store message that asked for something.
 model AgentThread {

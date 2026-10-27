@@ -15,6 +15,7 @@ import { Prisma } from "@prisma/client";
 import prisma from "@/lib/db/client";
 import { resolveLabTarget, toDirectJid } from "@/lib/non-api-labs/target";
 import { BATCH_FOLLOW_UP_FIRM_TEMPLATE, BATCH_FOLLOW_UP_TEMPLATE, BATCH_GENERIC_TEMPLATE, BATCH_TEMPLATE_BY_INTENT, ensureTemplate, renderLabTemplate } from "@/lib/non-api-labs/templates";
+import { recordSend, styledBody } from "@/lib/agents/style";
 import { coordinatorsFor } from "@/lib/wa/coordinators";
 import { opsGroup } from "../ops/group";
 import { fetchOrderSnapshots } from "../journey/window";
@@ -310,6 +311,7 @@ async function flushGroup(key: string, queued: Item[], now: Date): Promise<{ mes
       for (const c of cps) if (!late.has(c.journey.orderId)) late.set(c.journey.orderId, { milestone: LABELS[c.name as keyof typeof LABELS] ?? c.name, dueAt: c.dueAt });
     }
     const createdAts = ask === "ESCALATION" ? new Map((await labstackWorkerQuery<{ id: number; createdAt: Date }>(`SELECT id, "createdAt" FROM public."Order" WHERE id = ANY($1::int[])`, [list.map((i) => i.orderId)]).catch(() => [])).map((r) => [r.id, r.createdAt])) : new Map<number, Date>();
+    const itemStyle = await styledBody("BATCH_ITEM", counterparty);
     const lines = await Promise.all(list.map(async (i, index) => {
       const p = (i.payload as { line: OutboxLine & { appointment: string | null } }).line;
       const d = details?.get(i.orderId);
@@ -319,7 +321,7 @@ async function flushGroup(key: string, queued: Item[], now: Date): Promise<{ mes
         n: index + 1, orderId: i.orderId, patientName: p.patientName, appointment: p.appointment ? new Date(p.appointment) : null,
         area: p.area ?? d?.area ?? null, phlebo: p.phlebo ?? null, labRef: p.labRef ?? d?.labRef ?? null, mobile: p.mobile ?? d?.patientMobile ?? null,
         note: p.note ?? null, milestone: p.milestone ?? late.get(i.orderId)?.milestone ?? null, dueAt: p.dueAt ? new Date(p.dueAt) : late.get(i.orderId)?.dueAt, createdAt: createdAts.get(i.orderId), confirmUrl: link ?? (needsLink ? await confirmationUrl(i.orderId).catch(() => null) : null),
-      }, now, tz);
+      }, now, tz, itemStyle.body);
     }));
     const followUp = toManager ? null : await findFollowUp(id, ask, list.map((i) => i.orderId), now);
     // A follow-up ("still open", "reminder") never within an hour of the last message on
@@ -330,11 +332,14 @@ async function flushGroup(key: string, queued: Item[], now: Date): Promise<{ mes
     let text: string;
     let numbers = list.map((_, i) => i + 1);
     let storedLines = lines;
+    const used: Array<{ key: string; variantId: string | null }> = [{ key: "BATCH_ITEM", variantId: itemStyle.variantId }];
     if (followUp) {
       const original = new Map(followUp.items.map((it) => [it.orderId, it]));
       numbers = list.map((i) => original.get(i.orderId)!.n);
       storedLines = list.map((i) => original.get(i.orderId)!.line);
-      const t = await ensureTemplate(followUp.attempt === 1 ? BATCH_FOLLOW_UP_TEMPLATE : BATCH_FOLLOW_UP_FIRM_TEMPLATE);
+      const followKey = followUp.attempt === 1 ? BATCH_FOLLOW_UP_TEMPLATE : BATCH_FOLLOW_UP_FIRM_TEMPLATE;
+      const t = await styledBody(followKey, counterparty, await ensureTemplate(followKey));
+      used[0] = { key: followKey, variantId: t.variantId };
       // Each number carries its order: "still open: 1" alone made Redcliffe ask "could you clarify
       // the exact issue?" (26 Oct 2026) — the quoted message is hours up the chat.
       const named = list
@@ -347,7 +352,9 @@ async function flushGroup(key: string, queued: Item[], now: Date): Promise<{ mes
     } else if (toOps) {
       text = `🔴 *${config.labName}: no answer on ${list.length} ${list.length === 1 ? "order" : "orders"}* — no manager number on file\n\n${lines.join("\n")}\n\nPlease call the lab, or reply *on it*.`;
     } else {
-      const t = await ensureTemplate(BATCH_TEMPLATE_BY_INTENT[ask] ?? BATCH_GENERIC_TEMPLATE);
+      const key = BATCH_TEMPLATE_BY_INTENT[ask] ?? BATCH_GENERIC_TEMPLATE;
+      const t = await styledBody(key, counterparty, await ensureTemplate(key));
+      used.push({ key, variantId: t.variantId });
       text = renderLabTemplate(t.body, {
         lab_name: config.labName, manager_name: config.managerName ?? "there", coordinator: mention.text,
         count: String(list.length), orders_word: list.length === 1 ? "order" : "orders", items: lines.join("\n"), batch_title: ask.toLowerCase().replace("_", " "),
@@ -363,6 +370,7 @@ async function flushGroup(key: string, queued: Item[], now: Date): Promise<{ mes
       select: { id: true },
     });
     await prisma.agentOutboxItem.updateMany({ where: { id: { in: list.map((i) => i.id) } }, data: { status: "SENT", batchId: batch.id, outboundId: outbound.id, sentAt: now } });
+    if (!toOps) for (const s of used) await recordSend({ key: s.key, variantId: s.variantId, counterparty, groupId: target.groupId, outboundId: outbound.id, orderIds: list.map((i) => i.orderId), sentAt: now });
     await prisma.agentAction.updateMany({ where: { id: { in: list.map((i) => i.actionId).filter((x): x is string => !!x) } }, data: { outcome: "EXECUTED" } });
     for (const i of list) {
       if (!i.journeyId) continue;
@@ -467,6 +475,8 @@ async function flushStore(storeId: number, group: Item[], now: Date) {
     const quoted = (i.payload as { quotedWaId?: string | null }).quotedWaId ?? null;
     const outbound = await sendWhatsApp({ targetJid: g.jid, groupId: g.id, text, quotedWaId: quoted, now });
     await prisma.agentOutboxItem.update({ where: { id: i.id }, data: { status: "SENT", outboundId: outbound.id, sentAt: now } });
+    const style = (i.payload as { style?: { key: string; variantId: string | null } }).style;
+    if (style?.key) await recordSend({ key: style.key, variantId: style.variantId, counterparty: `STORE:${storeId}`, groupId: g.id, outboundId: outbound.id, orderIds: i.orderId ? [i.orderId] : [], sentAt: now });
     if (i.actionId) await prisma.agentAction.update({ where: { id: i.actionId }, data: { outcome: "EXECUTED" } });
     if (i.journeyId) await prisma.agentJourneyEvent.create({ data: { journeyId: i.journeyId, at: now, kind: "store_message", actor: "AGENT", applied: true, payload: { ask: i.ask, text: text.slice(0, 500) } } });
     messages += 1;

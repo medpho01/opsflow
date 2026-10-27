@@ -13,8 +13,9 @@ import { runMonitor } from "./monitor";
 import { runNightly } from "./nightly";
 import { runReview } from "./review";
 import { runLearn } from "./learn";
+import { runStyle } from "./style";
 
-export type BrainKind = "monitor" | "nightly" | "review" | "learn";
+export type BrainKind = "monitor" | "nightly" | "review" | "learn" | "style";
 
 export async function runBrain(kind: BrainKind): Promise<Record<string, number>> {
   switch (kind) {
@@ -22,5 +23,6 @@ export async function runBrain(kind: BrainKind): Promise<Record<string, number>>
     case "nightly": return runNightly();
     case "review": return runReview();
     case "learn": return runLearn();
+    case "style": return runStyle();
   }
 }

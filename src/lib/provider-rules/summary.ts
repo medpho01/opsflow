@@ -9,10 +9,11 @@
  * link to confirm it.
  */
 import { confirmationUrl, ConfirmationLinkConfigError } from "@/lib/non-api-labs/confirmation-link";
-import { formatTestBreakdown, type OrderContactDetails } from "@/lib/non-api-labs/order-details";
+import type { OrderContactDetails } from "@/lib/non-api-labs/order-details";
 import { isAwaitingConfirmation } from "@/lib/non-api-labs/source-check";
 import type { TemplateVariables } from "@/lib/non-api-labs/templates";
 import { dayLabel, durationText, formatTime, formatDate } from "./format";
+import { renderLoose, STYLE_DEFAULTS } from "@/lib/agents/style";
 import type { MessageRule, RuleOrder } from "./types";
 
 /** A WhatsApp message has no second page, so the list is capped, not paged. */
@@ -26,33 +27,33 @@ export type SummaryEntry = {
   confirmedInChat?: boolean;
 };
 
-/** The numbered list. `scope` decides how "when" reads: a time for one day, else date and time since. */
-export function orderListBlock(entries: SummaryEntry[], rule: Pick<MessageRule, "summaryScope">, now: Date, timeZone: string): string {
+/** The bodies the entries render from: the live or trial wording of SUMMARY_ENTRY_TOMORROW / SUMMARY_ENTRY_PAST. */
+export type EntryBodies = { tomorrow?: string; past?: string };
+
+/**
+ * The numbered list. `scope` decides how "when" reads: a time for one day, else date and time since.
+ * What an entry carries is the entry template's choice (27 Oct 2026: the pending-reports list
+ * repeated every address and every test of a 13-test package — the lab needed the id, the name,
+ * the phone and the visit date). Package names, never their tests.
+ */
+export function orderListBlock(entries: SummaryEntry[], rule: Pick<MessageRule, "summaryScope">, now: Date, timeZone: string, bodies: EntryBodies = {}): string {
   if (entries.length === 0) return "No orders on this list.";
   const sameDay = rule.summaryScope === "APPOINTMENT_TOMORROW" || rule.summaryScope === "APPOINTMENT_TODAY";
+  const body = sameDay ? bodies.tomorrow ?? STYLE_DEFAULTS.SUMMARY_ENTRY_TOMORROW.body : bodies.past ?? STYLE_DEFAULTS.SUMMARY_ENTRY_PAST.body;
   const shown = entries.slice(0, SUMMARY_LIST_LIMIT).map(({ order, details, confirmLink, confirmedInChat }, index) => {
-    const when = !order.appointmentTime ? "no appointment"
-      : sameDay ? formatTime(order.appointmentTime)
-        : `${formatDate(order.appointmentTime)} ${formatTime(order.appointmentTime)}`;
-    const lines = [`*${index + 1}. ${when}* – ${order.patientName || "Name not on file"} · #${order.id}`];
-    if (!sameDay && order.appointmentTime && order.appointmentTime.getTime() < now.getTime()) {
-      lines.push(`   ⏱️ ${durationText((now.getTime() - order.appointmentTime.getTime()) / 60_000)} since the appointment`);
-    }
-    if (order.orderType === "CENTER_VISIT") {
-      lines.push(`   🏥 Centre visit${details?.storeName ? ` – ${details.storeName}` : ""}`);
-    } else {
-      const where = details?.address ?? details?.area;
-      if (where) lines.push(`   📍 ${where}`);
-      if (details?.mapUrl) lines.push(`   🗺️ ${details.mapUrl}`);
-    }
-    const tests = formatTestBreakdown(details?.packages ?? [], details?.directTests ?? []);
-    if (tests.length > 0) lines.push(...tests);
-    else if (details?.tests) lines.push(`   🧪 ${details.tests}`);
-    if (isAwaitingConfirmation(order.orderStatus)) {
-      const state = confirmedInChat ? "✅ _Confirmed in chat – not yet in LabStack_" : "⚠️ _Not confirmed_";
-      lines.push(confirmLink ? `   ${state} – ${confirmLink}` : `   ${state}`);
-    }
-    return lines.join("\n");
+    const time = order.appointmentTime ? formatTime(order.appointmentTime) : "no appointment";
+    const dateTime = order.appointmentTime ? `${formatDate(order.appointmentTime)} ${formatTime(order.appointmentTime)}` : "no appointment";
+    const since = order.appointmentTime && order.appointmentTime.getTime() < now.getTime() ? `${durationText((now.getTime() - order.appointmentTime.getTime()) / 60_000)} ago` : "";
+    const centre = order.orderType === "CENTER_VISIT" ? `Centre visit${details?.storeName ? ` – ${details.storeName}` : ""}` : "";
+    const packages = [...new Set((details?.packages ?? []).map((p) => p.name?.trim()).filter(Boolean))];
+    const direct = [...new Set((details?.directTests ?? []).map((t) => t.trim()).filter(Boolean))];
+    const what = [...packages, ...direct].join("; ") || details?.tests || "";
+    const state = !isAwaitingConfirmation(order.orderStatus) ? "" : confirmedInChat ? "✅ _Confirmed in chat – not yet in LabStack_" : "⚠️ _Not confirmed_";
+    return renderLoose(body, {
+      n: String(index + 1), time, date_time: dateTime, name: order.patientName || "Name not on file", order_id: String(order.id),
+      mobile: details?.patientMobile, address: centre ? "" : details?.address ?? details?.area, map_url: centre ? "" : details?.mapUrl, centre,
+      packages: what, tests: direct.join(", "), since, confirm_line: state ? (confirmLink ? `${state} – ${confirmLink}` : state) : "",
+    });
   });
   const remaining = entries.length - shown.length;
   if (remaining > 0) shown.push(`…and ${remaining} more — full list in LabStack.`);
@@ -87,10 +88,10 @@ export async function buildEntries(
  * The variables a summary template can use. The tomorrow_* / today_* /
  * digest_date names keep templates written for the earlier evening list working.
  */
-export function summaryVariables(labName: string, rule: MessageRule, entries: SummaryEntry[], now: Date, timeZone: string): TemplateVariables {
+export function summaryVariables(labName: string, rule: MessageRule, entries: SummaryEntry[], now: Date, timeZone: string, bodies: EntryBodies = {}): TemplateVariables {
   const listDay = rule.summaryScope === "APPOINTMENT_TOMORROW" ? new Date(now.getTime() + 86_400_000) : now;
   const pending = entries.filter((entry) => isAwaitingConfirmation(entry.order.orderStatus)).length;
-  const list = orderListBlock(entries, rule, now, timeZone);
+  const list = orderListBlock(entries, rule, now, timeZone, bodies);
   const count = String(entries.length);
   return {
     lab_name: labName,

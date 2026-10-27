@@ -26,6 +26,7 @@ import { NEW_ORDER_INTENT, batchIntentOf, currentSlot, intentRank, isSlotOpen, n
 import { newOrderReleaseAt } from "./new-order";
 import { buildEntries, summaryVariables } from "./summary";
 import { loadLiveSops, paramsFor, type LiveSop } from "@/lib/agents/sop/load";
+import { styledBody } from "@/lib/agents/style";
 import { ensureMigratedToRules } from "./migrate";
 import { TIME_ZONE } from "./format";
 import {
@@ -353,6 +354,8 @@ async function runSummaries(
   for (const rule of rules) {
     for (const { lab, config } of labs.values()) {
       if (inScope(rule, lab.labId, lab)) continue;
+      // The morning pending-reports list repeated the SOP's combined report chase (27 Oct 2026): the SOP owns it.
+      if (rule.builtInKey === "SUMMARY_PENDING_REPORTS") continue;
       let timed = rule;
       if (rule.builtInKey === "SUMMARY_TOMORROW") {
         const ev = paramsFor(sops.get("LAB"), { labTier: null, labId: lab.labId, storeId: null, orderType: "HOME_SAMPLE" })?.briefings?.eveningList;
@@ -386,15 +389,20 @@ async function summaryText(rule: MessageRule, config: NonApiLabConfig, labOrders
   const unavailable = matched.length > 0 && details === null;
   const confirmedInChat = new Set(matched.filter((o) => (facts.get(o.id) ?? NO_FACTS).kinds.has("confirmed")).map((o) => o.id));
   const entries = await buildEntries(matched, details, confirmedInChat);
-  return { matched, unavailable, variables: summaryVariables(config.labName, rule, entries, now, timeZone) };
+  // The entry wording is styled per lab (a trial variant for some labs), like the message around it.
+  const sameDay = rule.summaryScope === "APPOINTMENT_TOMORROW" || rule.summaryScope === "APPOINTMENT_TODAY";
+  const entryKey = sameDay ? "SUMMARY_ENTRY_TOMORROW" : "SUMMARY_ENTRY_PAST";
+  const entry = await styledBody(entryKey, `LAB:${config.labId}`).catch(() => null);
+  const bodies = entry ? (sameDay ? { tomorrow: entry.body } : { past: entry.body }) : {};
+  return { matched, unavailable, variables: summaryVariables(config.labName, rule, entries, now, timeZone, bodies), styles: entry ? [{ key: entryKey, variantId: entry.variantId }] : [] };
 }
 
 async function sendSummary(rule: MessageRule, config: NonApiLabConfig, labOrders: RuleOrder[], facts: Map<number, Facts>, now: Date, occurrence: number): Promise<"sent" | string> {
-  const { matched, unavailable, variables } = await summaryText(rule, config, labOrders, facts, now);
+  const { matched, unavailable, variables, styles } = await summaryText(rule, config, labOrders, facts, now);
   if (matched.length === 0 && rule.skipWhenEmpty) return "nothing to list";
   // Same as single messages: no list full of "not on file" — try again next pass.
   if (unavailable) return RETRY;
-  const outcome = await deliverSummary({ rule, config, variables, occurrence, now });
+  const outcome = await deliverSummary({ rule, config, variables, occurrence, now, styles, orderIds: matched.map((o) => o.id) });
   return outcome.sent ? "sent" : outcome.reason;
 }
 

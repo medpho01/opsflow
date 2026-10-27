@@ -21,6 +21,7 @@
  * Follow-ups quote the earlier message and name only what is still open.
  * Every message @mentions the lab's coordinators: people answer people.
  */
+import { renderLoose, STYLE_DEFAULTS } from "@/lib/agents/style";
 import { MS_PER_MIN } from "./evaluate";
 import type { MessageRule } from "./types";
 
@@ -356,31 +357,27 @@ function ago(from: Date | undefined | null, now: Date): string {
  * contact, address, map, tests and the confirm link — since this is the one
  * message that must carry everything the lab needs.
  */
-export function itemLine(intent: string, item: ItemLineData, now: Date, timeZone: string): string {
+export function itemLine(intent: string, item: ItemLineData, now: Date, timeZone: string, body?: string): string {
   const when = shortWhen(item.appointment, now, timeZone);
   if (intent === NEW_ORDER_INTENT) {
-    return [
-      `${item.n}. ${item.labRef ? `${item.labRef} · ` : ""}#${item.orderId} · ${(item.patientName || "Patient").trim()} · ${when}`,
-      item.mobile ? `    📞 ${item.mobile}` : "",
-      item.address ? `    📍 ${item.address}` : item.area ? `    📍 ${item.area}` : "",
-      item.mapUrl ? `    🗺️ ${item.mapUrl}` : "",
-      item.tests ? `    🧪 ${item.tests}` : "",
-      item.confirmUrl ? `    ${item.confirmUrl}` : "",
-    ].filter(Boolean).join("\n");
+    return renderLoose(body ?? STYLE_DEFAULTS.BATCH_ITEM_NEW_ORDER.body, {
+      n: String(item.n), ref: item.labRef ? `${item.labRef} · ` : "", order_id: String(item.orderId), name: (item.patientName || "Patient").trim(), when,
+      mobile: item.mobile, area: item.address ?? item.area, map_url: item.mapUrl, tests: item.tests, note: item.note, link: item.confirmUrl, extra: "",
+    });
   }
   // Labs find an order by their own reference or the patient's phone, not by our id (Orange, 24 Oct 2026).
-  const head = [`${item.n}. ${item.labRef ? `${item.labRef} · ` : ""}#${item.orderId} · ${firstName(item.patientName)}`, item.mobile, item.area].filter(Boolean).join(" · ");
-  const link = `${item.note ? ` · ${item.note}` : ""}${item.confirmUrl ? `\n    ${item.confirmUrl}` : ""}`;
-  switch (intent) {
-    case "PHLEBO": return `${head} · ${when}${link}`;
-    case "ETA": return `${head} · ${when}${item.phlebo ? ` · ${item.phlebo}` : ""}${link}`;
-    case "UNCONFIRMED": return `${head} · ${when}${link}`;
-    case "ESCALATION": return `${head} · ${when}${item.createdAt ? ` · waiting ${ago(item.createdAt, now)}` : ""}${link}`;
-    case "REPORT": return `${head} · visit ${when} (${ago(item.appointment, now)} ago)${link}`;
-    case "OVERDUE": return `${head} · ${item.milestone ?? "update"} ${ago(item.dueAt, now)} late${link}`;
-    case "STATUS": return `${head} · ${when}${link}`;
-    default: return `${head} · ${when}${link}`;
-  }
+  // `when` is the time phrase this ask needs; `extra` what else it carries (the phlebo, the wait).
+  const phrase: Record<string, { when: string; extra: string }> = {
+    ETA: { when, extra: item.phlebo ?? "" },
+    ESCALATION: { when, extra: item.createdAt ? `waiting ${ago(item.createdAt, now)}` : "" },
+    REPORT: { when: `visit ${when} (${ago(item.appointment, now)} ago)`, extra: "" },
+    OVERDUE: { when: `${item.milestone ?? "update"} ${ago(item.dueAt, now)} late`, extra: "" },
+  };
+  const p = phrase[intent] ?? { when, extra: "" };
+  return renderLoose(body ?? STYLE_DEFAULTS.BATCH_ITEM.body, {
+    n: String(item.n), ref: item.labRef ? `${item.labRef} · ` : "", order_id: String(item.orderId), name: firstName(item.patientName),
+    mobile: item.mobile, area: item.area, when: p.when, extra: p.extra, note: item.note, link: item.confirmUrl ? `\n    ${item.confirmUrl}` : "",
+  });
 }
 
 /**

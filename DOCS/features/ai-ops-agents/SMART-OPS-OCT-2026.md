@@ -76,6 +76,19 @@ store requests serviced and tracked until closed; and a system that learns.
   and linker against them and gates a change (`--gate`). Anonymised cases live
   in `reader/examples.ts` and run as unit tests.
 
+## The wording
+
+Every message kind has a contract (`agents/style`): what it must carry (the
+order id, the name, the phone, the visit date), what it may carry, how long it
+may be. The wording inside the contract is learned: nightly the Brain scores
+each kind's engagement over 14 days (a lab reply within 2 h; a store that
+stayed quiet after an answer), promotes or retires the variant on trial, and
+where nothing is on trial writes a challenger that goes to half the labs or
+stores. Every send is logged against the wording it used
+(`agent_message_sends`). `scripts/style.ts` shows the arms; the Templates
+page still edits the live body by hand, and a trial written against an older
+body is never promoted over an edit.
+
 ## The metric
 
 `OPS-EFFICIENCY.md` — one index, six components, stable definition.
@@ -90,6 +103,7 @@ store requests serviced and tracked until closed; and a system that learns.
 | Weekly | The index day by day | `scripts/efficiency.ts 7` |
 | Before LIVE | Is a store's desk ready? | `scripts/store-desk-readiness.ts <storeId> 1 --summary` |
 | Weekly | Proposals to approve | Agents › SOPs |
+| Weekly | Which wording is winning | `scripts/style.ts` |
 | Before a reader change | The eval gate | `scripts/eval-run.ts <cases> --gate` |
 
 Settings: `AGENT_OPS_GROUP_JID` (optional; else the INTERNAL group named like

@@ -51,14 +51,20 @@ async function main() {
   }
   for (const b of batches) { const s = slot(b.labId); if (b.intent.startsWith("RULE:") || b.intent === "NEW_ORDER") s.newOrders += b.itemCount; else s.msgs += 1; }
   const summaries = await prisma.providerMessageLedger.count({ where: { entityType: "LAB_SUMMARY", outcome: "SENT", createdAt: { gte: since } } });
+  const openByLab = new Map<number, { open: number; late: number }>();
+  for (const r of await prisma.agentJourney.groupBy({ by: ["labId", "health"], where: { closedAt: null, labId: { not: null } }, _count: { _all: true } })) {
+    const o = openByLab.get(r.labId!) ?? openByLab.set(r.labId!, { open: 0, late: 0 }).get(r.labId!)!;
+    o.open += r._count._all; if (r.health === "BREACHED") o.late += r._count._all;
+  }
 
-  console.log(`\n1. Per lab — messages sent (combined asks), items sent by intent, queued now, dropped/withdrawn\n   (${batches.length - ruleBatches.length} combined ask messages, ${ruleBatches.length} new-order messages, ${summaries} evening lists in the window)`);
+  console.log(`\n1. Per lab — open orders (late), messages sent (combined asks), items sent by intent, queued now, dropped/withdrawn\n   (${batches.length - ruleBatches.length} combined ask messages, ${ruleBatches.length} new-order messages, ${summaries} evening lists in the window)`);
   const labs = [...dir.labs.values()].filter((l) => l.groupJid).sort((a, b) => a.labName.localeCompare(b.labName));
   for (const l of labs) {
     const s = byLab.get(l.labId);
     const sent = s ? [...s.sent].map(([k, v]) => `${k} ${v}`).join(", ") : "";
     const flags = [s?.queuedOverdue ? `${s.queuedOverdue} past window` : "", s?.dropped ? `${s.dropped} dropped` : "", s?.withdrawn ? `${s.withdrawn} withdrawn` : ""].filter(Boolean).join(", ");
-    console.log(`   ${l.labName.padEnd(38).slice(0, 38)} ${tierOf(dir, l.labId)} ${desk(l.labId).padEnd(6)} msgs ${String(s?.msgs ?? 0).padStart(2)}  new ${String(s?.newOrders ?? 0).padStart(2)}  queued ${String(s?.queued ?? 0).padStart(2)}  ${sent}${flags ? `  [${flags}]` : ""}`);
+    const o = openByLab.get(l.labId);
+    console.log(`   ${l.labName.padEnd(38).slice(0, 38)} ${tierOf(dir, l.labId)} ${desk(l.labId).padEnd(6)} open ${String(o?.open ?? 0).padStart(3)} (${String(o?.late ?? 0).padStart(2)} late)  msgs ${String(s?.msgs ?? 0).padStart(2)}  new ${String(s?.newOrders ?? 0).padStart(2)}  queued ${String(s?.queued ?? 0).padStart(2)}  ${sent}${flags ? `  [${flags}]` : ""}`);
   }
 
   // ── 2. The guard's decisions ──
@@ -85,7 +91,7 @@ async function main() {
   if (silent.length) {
     const snaps = await fetchOrderSnapshots(silent.slice(0, 400).map((j) => j.orderId)).catch(() => new Map());
     const reasons = new Map<string, number>();
-    const examples: string[] = [];
+    const examples: Array<{ rank: number; line: string }> = [];
     for (const j of silent) {
       const o = snaps.get(j.orderId);
       const tier = tierOf(dir, j.labId);
@@ -93,10 +99,13 @@ async function main() {
       const cp = j.checkpoints[0];
       const attempts = (j.attempts as Record<string, { n?: number; at?: string }>)[cp?.name ?? ""];
       let why = "no reason found — run why-not-asked";
-      if (desk(j.labId!) !== "LIVE") why = `desk ${desk(j.labId!)}`;
+      const noGroup = !dir.labs.get(j.labId!)?.groupJid;
+      const stale = cp && cp.dueAt.getTime() < now.getTime() - 14 * 24 * H;
+      if (noGroup) why = `lab has no WhatsApp group (${labName(j.labId).slice(0, 20)})`;
+      else if (desk(j.labId!) !== "LIVE") why = `desk ${desk(j.labId!)}`;
       else if (state.settings.pausedLabIds.includes(j.labId!)) why = "lab paused";
       else if (j.ownerUserId && j.pausedUntil && j.pausedUntil > now) why = "a person owns it";
-      else if (!o) why = "not in the open-orders window (visit too old or already closed in LabStack)";
+      else if (!o) why = stale ? "stale: due over 14 d ago and out of the open-orders window — journey should close" : "not in the open-orders window (visit too old or already closed in LabStack)";
       else if (["CANCELED", "CANCELLED", "REPORT_DELIVERED"].includes(o.orderStatus)) why = `console shows ${o.orderStatus} — journey should close`;
       else if (sop && consoleIsLive(o, tier, now, sop.consoleQuietMin)) why = `console live (updated ${t(o.statusUpdatedAt)})`;
       else if (attempts?.n != null && attempts.n >= 99) why = `visit long past; task made; daily re-ask due ${attempts.at ? t(new Date(Date.parse(attempts.at) + (sop?.reaskEveryMin ?? 1440) * 60_000)) : "next slot"}`;
@@ -107,12 +116,13 @@ async function main() {
       else if (cp && attempts?.at) why = `asked ${t(new Date(attempts.at))} (${attempts.n} asks) — waiting for the next slot`;
       const key = why.replace(/\d+:\d+ (am|pm)|\d+ \w{3}/g, "…");
       reasons.set(key, (reasons.get(key) ?? 0) + 1);
-      if (examples.length < 15) examples.push(`   #${j.orderId}  ${labName(j.labId).slice(0, 24).padEnd(24)} ${(cp?.name ?? "?").padEnd(16)} due ${t(cp?.dueAt)}  console ${o?.orderStatus ?? j.stage}  → ${why}`);
+      const rank = why.startsWith("no reason") ? 0 : noGroup || why.startsWith("desk ") || why.startsWith("stale") ? 2 : 1;
+      examples.push({ rank, line: `   #${j.orderId}  ${labName(j.labId).slice(0, 24).padEnd(24)} ${(cp?.name ?? "?").padEnd(16)} due ${t(cp?.dueAt)}  console ${o?.orderStatus ?? j.stage}  → ${why}` });
     }
     console.log("   why, by count:");
     for (const [w, n] of [...reasons].sort((a, b) => b[1] - a[1])) console.log(`     ${String(n).padStart(4)}  ${w}`);
-    console.log("   examples:");
-    for (const e of examples) console.log(e);
+    console.log("   examples (unexplained first; labs without a group and stale journeys last):");
+    for (const e of examples.sort((a, b) => a.rank - b.rank).slice(0, 20)) console.log(e.line);
   }
   await prisma.$disconnect();
 }

@@ -7,6 +7,7 @@ import { NextResponse } from "next/server";
 import prisma from "@/lib/db/client";
 import { agentsRoute, bad } from "@/lib/agents/api";
 import { loadDirectory } from "@/lib/agents/directory";
+import { runReadiness, STORE_INTENTS } from "@/lib/agents/store/readiness";
 
 const DESKS_FOR = { LAB: ["LAB", "INTAKE"], STORE: ["STORE"] } as const;
 
@@ -26,15 +27,22 @@ export const GET = agentsRoute("desks", async (_request, { requestId }) => {
   }));
   const stores = [...dir.stores.values()].sort((a, b) => (a.storeName ?? "").localeCompare(b.storeName ?? "")).map((s) => ({
     scopeKind: "STORE", scopeId: s.storeId, name: s.storeName, tier: null, group: !!s.groupJid,
-    desks: DESKS_FOR.STORE.map((desk) => { const r = stateOf(desk, "STORE", s.storeId); return { desk, state: r?.state ?? "OFF", since: r?.updatedAt ?? null, liveSince: r?.liveSince ?? null, shadowActions7d: shadowByScope(desk, "STORE", s.storeId) }; }),
+    desks: DESKS_FOR.STORE.map((desk) => { const r = stateOf(desk, "STORE", s.storeId); return { desk, state: r?.state ?? "OFF", since: r?.updatedAt ?? null, liveSince: r?.liveSince ?? null, shadowActions7d: shadowByScope(desk, "STORE", s.storeId), liveIntents: r?.liveIntents ?? [], readiness: r?.readiness ?? null, readinessAt: r?.readinessAt ?? null }; }),
   }));
   return NextResponse.json({ labs, stores, executed7d: Object.fromEntries(executed.map((e) => [e.desk, e._count._all])), requestId });
 });
 
 export const PUT = agentsRoute("desks", async (request, { user, requestId }) => {
-  const body = await request.json().catch(() => ({})) as { desk?: string; scopeKind?: string; scopeId?: number; state?: string; force?: boolean };
-  if (!body.desk || !body.scopeKind || !Number.isInteger(body.scopeId) || !["OFF", "SHADOW", "LIVE"].includes(body.state ?? "")) return bad(requestId, "Expected { desk, scopeKind, scopeId, state }");
+  const body = await request.json().catch(() => ({})) as { desk?: string; scopeKind?: string; scopeId?: number; state?: string; force?: boolean; liveIntents?: string[] };
+  if (!body.desk || !body.scopeKind || !Number.isInteger(body.scopeId)) return bad(requestId, "Expected { desk, scopeKind, scopeId, state | liveIntents }");
   const where = { desk_scopeKind_scopeId: { desk: body.desk, scopeKind: body.scopeKind, scopeId: body.scopeId! } };
+  // The kinds of store question the desk answers itself; the rest are handed to a person in the group.
+  if (Array.isArray(body.liveIntents)) {
+    const liveIntents = body.liveIntents.filter((i): i is string => typeof i === "string" && (STORE_INTENTS as readonly string[]).includes(i));
+    const row = await prisma.agentDeskState.upsert({ where, update: { liveIntents, setBy: user.id }, create: { desk: body.desk, scopeKind: body.scopeKind, scopeId: body.scopeId!, state: "OFF", liveIntents, setBy: user.id } });
+    return NextResponse.json({ ok: true, row, requestId });
+  }
+  if (!["OFF", "SHADOW", "LIVE"].includes(body.state ?? "")) return bad(requestId, "Expected { desk, scopeKind, scopeId, state }");
   const current = await prisma.agentDeskState.findUnique({ where });
   if (body.state === "LIVE" && !body.force) {
     const shadowSince = current?.state === "SHADOW" ? current.updatedAt : null;
@@ -47,4 +55,12 @@ export const PUT = agentsRoute("desks", async (request, { user, requestId }) => 
     create: { desk: body.desk, scopeKind: body.scopeKind, scopeId: body.scopeId!, state: body.state!, setBy: user.id, liveSince: body.state === "LIVE" ? new Date() : null },
   });
   return NextResponse.json({ ok: true, row, requestId });
+}, { headOnly: true });
+
+/** POST { action: "evaluate", storeId } — grade a store's desk now (the last 3 days) instead of waiting for tonight. */
+export const POST = agentsRoute("desks", async (request, { requestId }) => {
+  const body = await request.json().catch(() => ({})) as { action?: string; storeId?: number };
+  if (body.action !== "evaluate" || !Number.isInteger(body.storeId)) return bad(requestId, "Expected { action: \"evaluate\", storeId }");
+  const r = await runReadiness(new Date(), { storeId: body.storeId, hours: 72 });
+  return NextResponse.json({ ok: true, ...r, requestId });
 }, { headOnly: true });

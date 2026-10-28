@@ -2255,10 +2255,39 @@ model AgentDeskState {
   state     String    @default("OFF")
   liveSince DateTime?
   setBy     Int?
+  /// STORE desk: the kinds of question it answers itself when LIVE (empty = all); the rest are handed to a person in the group (28 Oct 2026).
+  liveIntents String[] @default([])
+  /// STORE desk: the self-evaluation (store/readiness.ts) — per-kind scores from shadow drafts vs the team's replies.
+  readiness   Json?
+  readinessAt DateTime?
   updatedAt DateTime  @updatedAt
 
   @@unique([desk, scopeKind, scopeId])
   @@map("agent_desk_states")
+}
+
+/// One store question, graded (28 Oct 2026): what the desk drafted (live or in shadow), what the
+/// team replied, and whether they agree. The readiness score is computed from these rows.
+model AgentShadowEval {
+  id        String    @id @default(cuid())
+  storeId   Int
+  messageId String    @unique
+  intent    String
+  orderId   Int?
+  at        DateTime
+  question  String
+  botDraft  String?
+  botAt     DateTime?
+  teamReply String?
+  teamAt    DateTime?
+  /// SAME | COMPATIBLE | CONTRADICTS | BOT_ONLY | MISSED | NEITHER | WRONG_LINK | WOULD_FAIL | UNJUDGED
+  verdict   String
+  note      String?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@index([storeId, at])
+  @@map("agent_shadow_evals")
 }
 
 /// Kill switches and global knobs, one row.

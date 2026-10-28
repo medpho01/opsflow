@@ -16,7 +16,7 @@ export type Rung = (typeof RUNGS)[number];
 
 export const ACTIONS = [
   "ask", "reminder", "manager_whatsapp", "call", "create_task", "stuck", "portal_read", "status_write",
-  "store_reply", "store_alert", "store_warning", "ack", "wait", "ops_post",
+  "store_reply", "store_alert", "store_warning", "ack", "wait", "ops_post", "store_handoff",
 ] as const;
 export type ActionName = (typeof ACTIONS)[number];
 

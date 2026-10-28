@@ -465,7 +465,8 @@ async function flushStore(storeId: number, group: Item[], now: Date) {
     const text = (i.payload as { text?: string | null }).text;
     if (!text) { await prisma.agentOutboxItem.update({ where: { id: i.id }, data: { status: "DROPPED" } }); continue; }
     const quoted = (i.payload as { quotedWaId?: string | null }).quotedWaId ?? null;
-    const outbound = await sendWhatsApp({ targetJid: g.jid, groupId: g.id, text, quotedWaId: quoted, now });
+    const mentions = (i.payload as { mentions?: string[] }).mentions ?? [];
+    const outbound = await sendWhatsApp({ targetJid: g.jid, groupId: g.id, text, quotedWaId: quoted, mentions, now });
     await prisma.agentOutboxItem.update({ where: { id: i.id }, data: { status: "SENT", outboundId: outbound.id, sentAt: now } });
     const style = (i.payload as { style?: { key: string; variantId: string | null } }).style;
     if (style?.key) await recordSend({ key: style.key, variantId: style.variantId, counterparty: `STORE:${storeId}`, groupId: g.id, outboundId: outbound.id, orderIds: i.orderId ? [i.orderId] : [], sentAt: now });

@@ -627,7 +627,7 @@ export function step(input: StepInput): StepOutput {
       if (m.thread && m.thread.kind !== "status" && (m.intent === "status" || m.intent === "other")) {
         const who = m.thread.waitingOn === "LAB" ? (order.labName ?? "the lab") : "our team";
         const since = LABELS_TIME(new Date(m.thread.openedAt), tz);
-        actions.push({ desk: "STORE", action: "store_reply", params: { text: `#${order.id}: your ${m.thread.kind.replace("_", " ")} request (asked at ${since}) is with ${who} — we'll confirm here the moment it's done.`, orderId: order.id, storeId: order.storeId, ...quote }, reason: `store nudged an open ${m.thread.kind} request`, idemKey: `${key}:thread` });
+        actions.push({ desk: "STORE", action: "store_reply", params: { text: `#${order.id}: your ${m.thread.kind.replace("_", " ")} request (asked at ${since}) is with ${who} — we'll confirm here the moment it's done.`, orderId: order.id, storeId: order.storeId, intent: m.intent, ...quote }, reason: `store nudged an open ${m.thread.kind} request`, idemKey: `${key}:thread` });
         continue;
       }
       // A sample left behind ("urine samples not collected, slots please", Plum, 25 Oct 2026) wins
@@ -641,7 +641,7 @@ export function step(input: StepInput): StepOutput {
         actions.push({ desk: "LAB", action: "ask", params: { checkpoint: "sample_collected", orderId: order.id, labId: order.labId, attempt: 1, dueAt: now, rung: "ask", intent: "STATUS", counterparty: `LAB:${order.labId}`, windowFrom: window.from, windowTo: window.to, urgent: true, line: { orderId: order.id, patientName: order.patientName, appointment: order.appointmentTime, labRef: order.labRef ?? null, mobile: order.mobile ?? null, area: order.area ?? null, note }, forStore: true }, reason: `store says ${sampleWord ?? "a"} sample was not collected${/slot/i.test(m.text) ? " and asks for slots" : ""}`, idemKey: `${key}:recollect` });
         const collectedLine = collected?.status === "MET" ? `blood collected ${fmt(collected.metAt)}; ` : "";
         const hours = input.slotSummary ? ` ${input.slotSummary}.` : "";
-        actions.push({ desk: "STORE", action: "store_reply", params: { text: `#${order.id}: ${collectedLine}${sampleWord ? `${sampleWord} sample` : "a sample"} pending — asking the lab for a re-collection slot now.${hours} Share a preferred time and we'll book it.`, orderId: order.id, storeId: order.storeId, ...quote }, reason: `store says ${sampleWord ?? "a"} sample was not collected; the lab is being asked`, idemKey: `${key}:recollect-ack` });
+        actions.push({ desk: "STORE", action: "store_reply", params: { text: `#${order.id}: ${collectedLine}${sampleWord ? `${sampleWord} sample` : "a sample"} pending — asking the lab for a re-collection slot now.${hours} Share a preferred time and we'll book it.`, orderId: order.id, storeId: order.storeId, intent: m.intent, ...quote }, reason: `store says ${sampleWord ?? "a"} sample was not collected; the lab is being asked`, idemKey: `${key}:recollect-ack` });
         continue;
       }
       // The store reports the visit failed ("94669 - phlebo no show", Plum, 27 Oct 2026). Whatever the
@@ -651,13 +651,13 @@ export function step(input: StepInput): StepOutput {
         const cp = next?.name ?? "sample_collected";
         const window = sendWindow(now, now, sop, { intent: "STATUS", leadMin: 0, graceMin: 240, urgentWithinMin: 0, nightBefore: false }, true, true, tz);
         actions.push({ desk: "LAB", action: "ask", params: { checkpoint: cp, orderId: order.id, labId: order.labId, attempt: (attempts[cp]?.n ?? 0) + 1, dueAt: now, rung: "ask", intent: "STATUS", counterparty: `LAB:${order.labId}`, windowFrom: window.from, windowTo: window.to, urgent: true, line: { orderId: order.id, patientName: order.patientName, appointment: order.appointmentTime, labRef: order.labRef ?? null, mobile: order.mobile ?? null, area: order.area ?? null, phlebo: order.phleboName || null, note: `store reports: "${m.text.replace(/\s+/g, " ").slice(0, 80)}" — what happened? ETA or a new slot?` }, forStore: true }, reason: `store reports the visit failed: "${m.text.slice(0, 60)}"`, idemKey: `${key}:exception` });
-        actions.push({ desk: "STORE", action: "store_reply", params: { template: "STORE_CHECKING", orderId: order.id, storeId: order.storeId, ...quote }, reason: "store reports the visit failed; the lab is being asked now", idemKey: `${key}:exception-ack` });
+        actions.push({ desk: "STORE", action: "store_reply", params: { template: "STORE_CHECKING", orderId: order.id, storeId: order.storeId, intent: m.intent, ...quote }, reason: "store reports the visit failed; the lab is being asked now", idemKey: `${key}:exception-ack` });
         continue;
       }
       switch (m.intent) {
         case "slot": {
           if (input.slotSummary) {
-            actions.push({ desk: "STORE", action: "store_reply", params: { text: `#${order.id}: ${input.slotSummary}. Share a preferred time and we'll book it.`, orderId: order.id, storeId: order.storeId, ...quote }, reason: "store asked for slots; answered from the lab's usual hours", idemKey: `${key}:slots` });
+            actions.push({ desk: "STORE", action: "store_reply", params: { text: `#${order.id}: ${input.slotSummary}. Share a preferred time and we'll book it.`, orderId: order.id, storeId: order.storeId, intent: m.intent, ...quote }, reason: "store asked for slots; answered from the lab's usual hours", idemKey: `${key}:slots` });
             break;
           }
         }
@@ -668,9 +668,9 @@ export function step(input: StepInput): StepOutput {
           const consoleExplains = order.orderStatus === "PATIENT_MISSED" || order.orderStatus === "RESCHEDULED";
           const canAnswer = known && !(m.intent === "report" && collected?.status === "MET" && report && report.status !== "MET" && now.getTime() > report.dueAt.getTime()) && (consoleExplains || !(m.intent !== "report" && slotPassed && collected?.status !== "MET"));
           if (canAnswer) {
-            actions.push({ desk: "STORE", action: "store_reply", params: { template: "STORE_STATUS_ANSWER", orderId: order.id, storeId: order.storeId, ...known, ...quote }, reason: `store asked for ${m.intent}; the console knows`, idemKey: `${key}:answer` });
+            actions.push({ desk: "STORE", action: "store_reply", params: { template: "STORE_STATUS_ANSWER", orderId: order.id, storeId: order.storeId, intent: m.intent, ...known, ...quote }, reason: `store asked for ${m.intent}; the console knows`, idemKey: `${key}:answer` });
           } else {
-            actions.push({ desk: "STORE", action: "store_reply", params: { template: "STORE_CHECKING", orderId: order.id, storeId: order.storeId, ...quote }, reason: `store asked for ${m.intent}; the console does not know yet`, idemKey: `${key}:checking` });
+            actions.push({ desk: "STORE", action: "store_reply", params: { template: "STORE_CHECKING", orderId: order.id, storeId: order.storeId, intent: m.intent, ...quote }, reason: `store asked for ${m.intent}; the console does not know yet`, idemKey: `${key}:checking` });
             if (next && sop && from === "LAB" && sop.asks[next.name] && !consoleIsLive(order, input.labTier, now, sop.consoleQuietMin)) {
               const ask = sop.asks[next.name];
               const urgent = slotPassed || (minutesToSlot != null && minutesToSlot <= ask.urgentWithinMin);
@@ -684,7 +684,7 @@ export function step(input: StepInput): StepOutput {
           const taskType = m.intent === "reschedule" ? "AGENT_RESCHEDULE" : m.intent === "cancel" ? "AGENT_CANCEL" : "AGENT_ORDER_CHANGE";
           const requested = requestedTime(m.text, m.at, order.appointmentTime, tz);
           const tomorrowOnly = !requested && /\btomorrow\b|\bkal\b|\bnext day\b/i.test(m.text);
-          actions.push({ desk: "STORE", action: "ack", params: { template: "STORE_NOTED", orderId: order.id, storeId: order.storeId, ...quote }, reason: `store asked to ${m.intent.replace("_", " ")}`, idemKey: `${key}:noted` });
+          actions.push({ desk: "STORE", action: "ack", params: { template: "STORE_NOTED", orderId: order.id, storeId: order.storeId, intent: m.intent, ...quote }, reason: `store asked to ${m.intent.replace("_", " ")}`, idemKey: `${key}:noted` });
           // The lab hears it too, with the time, so it can confirm or push back before the
           // booking is changed ("94103 — urine collection at 10:45?", Plum, 25 Oct 2026).
           if (order.labId != null && sop && (m.intent !== "change_tests")) {

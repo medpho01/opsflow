@@ -58,6 +58,18 @@ store requests serviced and tracked until closed; and a system that learns.
 - A question a lab or store asks the bot that no fact answers is posted to the
   ops group for a person to answer in the group.
 
+## 3b. The store desk grades itself
+
+Every store question gets a draft from the desk, live or in shadow; the team's
+own reply is kept beside it; a judge says whether they agree
+(`store/readiness.ts`, `agent_shadow_evals`). Nightly, and on "Grade now" on
+Agents › Desks, that becomes a readiness score per kind of question —
+coverage (did the desk have a reply) and correctness (nothing wrong among its
+replies). A kind is marked ready at 85+, 15+ asked, nothing wrong in 3 days.
+A LIVE desk can be scoped to the kinds it is good at (`liveIntents`); a
+question of any other kind is handed to the team members who answer in that
+group, by name, quoting the store's message.
+
 ## 4. Learning
 
 - Every executed action is scored two hours later (`brain/outcomes.ts`,
@@ -101,7 +113,7 @@ body is never promoted over an edit.
 | Daily | The brief with the index and lessons | WhatsApp, 21:30; Agents › Brief |
 | Daily | What the ops group was asked | the "Internal <> ops" group |
 | Weekly | The index day by day | `scripts/efficiency.ts 7` |
-| Before LIVE | Is a store's desk ready? | `scripts/store-desk-readiness.ts <storeId> 1 --summary` |
+| Before LIVE | Is a store's desk ready? | Agents › Desks (readiness per kind; "Grade now"); detail: `scripts/store-desk-readiness.ts <storeId> 1` |
 | Weekly | Proposals to approve | Agents › SOPs |
 | Weekly | Which wording is winning | `scripts/style.ts` |
 | Before a reader change | The eval gate | `scripts/eval-run.ts <cases> --gate` |

@@ -3,7 +3,9 @@
 /** Agents › Desks and autonomy, with the kill switches (DESIGN.md §7.5, FR-13.1, 13.2, 13.5). */
 import { useCallback, useEffect, useState } from "react";
 
-type Cell = { desk: string; state: string; since: string | null; liveSince: string | null; shadowActions7d: number };
+type IntentScore = { intent: string; n: number; covered: number; bad: number; contradicts: number; wrongLinks: number; wouldFail: number; missed: number; score: number | null; ready: boolean };
+type Readiness = { days: number; at: string; n: number; score: number | null; intents: IntentScore[]; recommended: string[] };
+type Cell = { desk: string; state: string; since: string | null; liveSince: string | null; shadowActions7d: number; liveIntents?: string[]; readiness?: Readiness | null; readinessAt?: string | null };
 type Scope = { scopeKind: string; scopeId: number; name: string | null; tier: string | null; group: boolean; desks: Cell[] };
 type Auto = { action: string; desk: string; label: string; defaultLevel: string; scopes: Array<{ scopeKind: string; scopeKey: string; level: string; agreementRate: number | null; sampleSize: number; canPromote: boolean }>; overrides: Array<{ scopeKind: string; scopeKey: string; level: string; agreementRate: number | null; sampleSize: number; canPromote: boolean }> };
 type Settings = { pausedAll: boolean; pausedDesks: string[]; pausedLabIds: number[]; pausedStoreIds: number[] };
@@ -44,6 +46,18 @@ export function AgentDesksPanel() {
     setNote(r.ok ? `${a.label}: ${direction}d for ${scopeKind} ${scopeKey}` : b.error ?? "Failed");
     await load();
   };
+  const setIntents = async (scope: Scope, cell: Cell, liveIntents: string[]) => {
+    const r = await fetch("/api/agents/desks", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ desk: cell.desk, scopeKind: scope.scopeKind, scopeId: scope.scopeId, liveIntents }) });
+    setNote(r.ok ? `${scope.name}: answers ${liveIntents.length ? liveIntents.join(", ") : "every kind"} itself` : "Failed");
+    await load();
+  };
+  const evaluate = async (scope: Scope) => {
+    setNote(`${scope.name}: grading the last 3 days…`);
+    const r = await fetch("/api/agents/desks", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "evaluate", storeId: scope.scopeId }) });
+    const b = await r.json().catch(() => ({}));
+    setNote(r.ok ? `${scope.name}: ${b.questions} questions graded, ${b.judged} compared with the team's replies` : b.error ?? "Failed");
+    await load();
+  };
   const kill = async (patch: Partial<Settings>) => {
     const r = await fetch("/api/agents/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) });
     setNote(r.ok ? "Saved" : "Failed");
@@ -57,10 +71,48 @@ export function AgentDesksPanel() {
         <td key={c.desk} className="px-3 py-2">
           <button onClick={() => setDesk(s, c)} className={`rounded-full border px-3 py-1 text-xs font-semibold ${STATE_CLS[c.state]}`}>{c.state}</button>
           <div className="mt-0.5 text-[11px] text-zinc-500">{c.state === "SHADOW" ? `${c.shadowActions7d} would-do actions · 7 d` : c.state === "LIVE" && c.liveSince ? `live since ${new Date(c.liveSince).toLocaleDateString("en-IN")}` : ""}</div>
+          {c.desk === "STORE" && <ReadinessCell s={s} c={c} />}
         </td>
       ))}
     </tr>
   );
+
+  /** The store desk's self-grade: the score, each kind of question with its own score, and which kinds it answers itself. */
+  const ReadinessCell = ({ s, c }: { s: Scope; c: Cell }) => {
+    const r = c.readiness ?? null;
+    const live = c.liveIntents ?? [];
+    const tone = (score: number | null) => (score == null ? "text-zinc-500" : score >= 85 ? "text-emerald-300" : score >= 70 ? "text-amber-300" : "text-red-300");
+    const toggle = (intent: string) => {
+      const all = (r?.intents ?? []).map((i) => i.intent);
+      const current = live.length ? live : all;                     // empty = every kind
+      const next = current.includes(intent) ? current.filter((x) => x !== intent) : [...current, intent];
+      void setIntents(s, c, next.length === all.length ? [] : next);
+    };
+    return (
+      <div className="mt-1.5 max-w-xl">
+        <div className="flex flex-wrap items-center gap-2 text-[11px]">
+          <span className={`font-semibold ${tone(r?.score ?? null)}`}>{r?.score != null ? `readiness ${r.score}` : "not graded yet"}</span>
+          {r && <span className="text-zinc-500">{r.n} questions · {r.days} d{c.readinessAt ? ` · ${new Date(c.readinessAt).toLocaleString("en-IN", { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" })}` : ""}</span>}
+          <button onClick={() => evaluate(s)} className="rounded border border-zinc-700 px-1.5 py-0.5 text-[11px] text-zinc-300">Grade now</button>
+          {!!r?.recommended.length && <span className="text-emerald-300">ready: {r.recommended.join(", ")}</span>}
+        </div>
+        {r && (
+          <div className="mt-1 flex flex-wrap gap-1">
+            {r.intents.filter((i) => i.n > 0 || live.includes(i.intent)).map((i) => {
+              const on = !live.length || live.includes(i.intent);
+              return (
+                <button key={i.intent} onClick={() => toggle(i.intent)} title={`${i.n} asked · ${i.covered} answered by the bot · ${i.missed} missed · ${i.bad} wrong (${i.contradicts} contradict, ${i.wrongLinks} wrong order, ${i.wouldFail} would fail)${c.state === "LIVE" ? (on ? " · answered by the desk" : " · handed to the team") : ""}`}
+                  className={`rounded-full border px-2 py-0.5 text-[11px] ${on ? "border-blue-400 text-blue-100" : "border-zinc-700 text-zinc-500 line-through"}`}>
+                  {i.intent.replace("_", " ")} <span className={tone(i.score)}>{i.score ?? "–"}</span><span className="text-zinc-500">/{i.n}</span>{i.ready ? " ✓" : ""}
+                </button>
+              );
+            })}
+          </div>
+        )}
+        {c.state === "LIVE" && live.length > 0 && <div className="mt-0.5 text-[11px] text-zinc-500">Answers {live.join(", ")} itself; other kinds are handed to the team in the group.</div>}
+      </div>
+    );
+  };
 
   return (
     <div>
@@ -89,7 +141,7 @@ export function AgentDesksPanel() {
           <thead className="bg-zinc-900/60 text-left text-[11px] uppercase tracking-wide text-zinc-500"><tr><th className="px-3 py-2">Store</th><th className="px-3 py-2">Store desk</th></tr></thead>
           <tbody className="divide-y divide-zinc-800/80">{stores.map((s) => <Row key={`${s.scopeKind}-${s.scopeId}`} s={s} />)}</tbody>
         </table>
-        <div className="px-3 py-2 text-xs text-zinc-500">Going live needs 7 days in shadow. Live arms the 14-day rollback gate. A lab with a live Lab desk leaves the old message rules in the same pass.</div>
+        <div className="px-3 py-2 text-xs text-zinc-500">Going live needs 7 days in shadow. Live arms the 14-day rollback gate. A store desk grades itself nightly against the team&apos;s replies: a kind of question scores 100 when the desk answered every one and none was wrong; ✓ marks a kind ready to go live (85+, 15+ asked, nothing wrong in 3 days). Click a kind to keep it with the team.</div>
       </section>
 
       <section className="overflow-x-auto rounded-lg border border-zinc-800">

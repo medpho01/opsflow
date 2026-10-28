@@ -9,7 +9,7 @@ import type { ProposedAction } from "../journey/step";
 import { enqueueOutbox } from "./dispatcher";
 import { createAgentTask, type AgentTaskPayload } from "./tasks";
 import { writeStatus } from "./consoleWriter";
-import { storeText } from "./storeReply";
+import { storeText, storeHandoff } from "./storeReply";
 import { placeManagerCall } from "./calls";
 import { enqueuePortalRead } from "../queue";
 import { draftComplaintReply } from "../escalation/drafter";
@@ -65,6 +65,7 @@ export async function execute(action: ProposedAction, ctx: ExecuteContext): Prom
     }
     case "status_write": return writeStatus(action, ctx);
     case "store_alert": case "store_warning": case "store_reply": case "ack": return storeText(action, ctx);
+    case "store_handoff": return storeHandoff(action, ctx);
     case "call": return placeManagerCall(action, ctx);
     case "portal_read": {
       const queued = await enqueuePortalRead(ctx.labId ?? 0, ctx.orderId, (p.labRef as string | null) ?? null, ctx.journeyId);

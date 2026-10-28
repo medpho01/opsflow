@@ -94,6 +94,35 @@ async function renderStoreTextWith(action: ProposedAction, ctx: Pick<ExecuteCont
   }
 }
 
+const INTENT_WORDS: Record<string, string> = { status: "status question", report: "report request", slot: "slot question", reschedule: "reschedule request", cancel: "cancellation request", change_tests: "test change request", new_booking: "new booking request", serviceability: "serviceability question", complaint: "complaint", other: "question" };
+
+/**
+ * A store question outside the desk's live scope: tag the team members who answer in this group
+ * (the two most recent in 14 days), quoting the store's message, so a person takes it (28 Oct 2026).
+ */
+export async function storeHandoff(action: ProposedAction, ctx: ExecuteContext): Promise<ExecuteResult> {
+  const storeId = (action.params.storeId as number | null | undefined) ?? ctx.storeId;
+  if (storeId == null) return { outcome: "FAILED", note: "no store for this order" };
+  const g = await prisma.waGroup.findFirst({ where: { storeId, role: "SUPPORT", archivedAt: null, active: true }, select: { id: true } });
+  if (!g) return { outcome: "FAILED", note: "no store group" };
+  const { loadTeam, makeTeamMatcher } = await import("@/lib/wa/team");
+  const isTeam = makeTeamMatcher(await loadTeam());
+  const recent = await prisma.waMessage.findMany({ where: { groupId: g.id, direction: "IN", fromMe: false, ts: { gte: new Date(Date.now() - 14 * 86_400_000) } }, orderBy: { ts: "desc" }, select: { sender: true, senderJid: true }, take: 400 });
+  const jids: string[] = [];
+  for (const m of recent) { if (m.senderJid && isTeam(m.sender, m.senderJid) && !jids.includes(m.senderJid)) jids.push(m.senderJid); if (jids.length === 2) break; }
+  const who = jids.map((j) => `@${j.split("@")[0]}`).join(" ") || "Team";
+  const intent = String(action.params.intent ?? "other");
+  const text = `${who} — #${ctx.orderId}: ${INTENT_WORDS[intent] ?? "question"} from the store, please take this one.`;
+  const now = new Date();
+  const r = await enqueueOutbox({
+    counterparty: `STORE:${storeId}`, ask: "STORE_HANDOFF", orderId: ctx.orderId, journeyId: ctx.journeyId, actionId: ctx.actionId,
+    windowFrom: now, windowTo: storeWindowTo(now), urgent: true, immediate: true, idemKey: `outbox:${action.idemKey}`,
+    line: { orderId: ctx.orderId, patientName: ctx.patientName ?? null, appointment: ctx.appointmentTime ?? null }, text,
+    extra: { quotedWaId: action.params.quotedWaId ?? null, mentions: jids },
+  });
+  return r.queued ? { outcome: "EXECUTED", note: text.slice(0, 120) } : { outcome: "RECORDED", note: "already queued" };
+}
+
 /**
  * How long a store message may wait. Nothing goes out 21:00–07:00, and a six-hour window made an
  * alert raised at 23:00 expire before morning: it now lasts until 09:00 the next morning.

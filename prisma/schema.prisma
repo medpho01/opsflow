@@ -1258,6 +1258,9 @@ model WaContact {
   aliases   String[] @default([]) // pushName variants seen in groups
   team      String? // e.g. "Store ops", "Lab desk"
   active    Boolean  @default(true)
+  /// May coach the agent from WhatsApp: a reply to one of its messages, or "bot: …" in the
+  /// internal group, becomes a lesson it follows at once (28 Oct 2026). Set on Connections › Team.
+  coach     Boolean  @default(false)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -2310,6 +2313,8 @@ model AgentSettings {
   digestStoreIds Int[]
   /// The ops-group reader's watermark over wa_messages ("on it" / "done" replies, 27 Oct 2026).
   opsWatermark   DateTime?
+  /// The coaching reader's watermark over wa_messages.
+  coachWatermark DateTime?
 
   @@map("agent_settings")
 }
@@ -2704,3 +2709,31 @@ model AgentEvalRun {
   @@index([suite, ranAt])
   @@map("agent_eval_runs")
 }
+
+/// A lesson a coach gave the agent from WhatsApp (28 Oct 2026): the words, the message it was
+/// about, what the Brain made of it, and where it applies. ACTIVE lessons are read into every
+/// model prompt (reader, judge, wording) within seconds; the weekly review turns the recurring
+/// ones into SOP proposals.
+model AgentCoaching {
+  id          String    @id @default(cuid())
+  contactId   String
+  contactName String
+  groupId     String?
+  waMsgId     String?
+  /// The agent message the coach replied to, when there was one.
+  outboundId  String?
+  orderId     Int?
+  /// GLOBAL | STORE:<id> | LAB:<id>
+  scope       String    @default("GLOBAL")
+  text        String
+  /// { kind, rule, applies: string[], retireWording: boolean, command?: {...} }
+  lesson      Json?
+  /// ACTIVE | RETIRED | COMMAND
+  status      String    @default("ACTIVE")
+  createdAt   DateTime  @default(now())
+  retiredAt   DateTime?
+
+  @@index([status, scope, createdAt])
+  @@map("agent_coaching")
+}
+

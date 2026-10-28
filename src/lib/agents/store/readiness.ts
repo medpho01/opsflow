@@ -17,6 +17,7 @@ import { renderStoreText } from "../executors/storeReply";
 import { isAutomated, loadTeam, makeTeamMatcher } from "@/lib/wa/team";
 import { resolveMentionNames } from "@/lib/wa/mentionNames";
 import { addressedToPerson, STORE_ACK_RE } from "./scope";
+import { coachingBlock } from "../brain/coach";
 import { askModel } from "../llm";
 import type { ProposedAction } from "../journey/step";
 
@@ -58,6 +59,7 @@ export async function evaluateStore(storeId: number, since: Date, until = new Da
   const questions = msgs.filter((m) => !m.fromMe && !isTeam(m.sender, m.senderJid) && !isAutomated(m) && m.intent?.startsWith("STORE_") && m.intent !== "STORE_NOISE" && m.text?.trim());
   if (!questions.length) return { questions: 0, judged: 0 };
   const mentionNames = await resolveMentionNames(questions.map((q) => q.text), { team: teamRoster }).catch(() => ({} as Record<string, string>));
+  const coaching = await coachingBlock({ storeId }, "judge").catch(() => "");
   const botNumber = (await prisma.waGateway.findUnique({ where: { id: "default" }, select: { connectedNumber: true } }).catch(() => null))?.connectedNumber ?? null;
   const ourWaIds = new Set((await prisma.waOutbound.findMany({ where: { groupId: { in: groups.map((g) => g.id) }, createdAt: { gte: new Date(since.getTime() - 7 * DAY) }, sentWaMsgId: { not: null } }, select: { sentWaMsgId: true } })).map((o) => o.sentWaMsgId!));
 
@@ -106,7 +108,7 @@ export async function evaluateStore(storeId: number, since: Date, until = new Da
     let verdict: Verdict = wrongLink ? "WRONG_LINK" : wouldFail ? "WOULD_FAIL" : unwanted({ forPerson, draft, botAt: first?.createdAt ?? null, teamAt: reply?.ts ?? null }) ? "UNWANTED" : draft && reply ? "UNJUDGED" : draft ? "BOT_ONLY" : reply ? "MISSED" : "NEITHER";
     let note: string | null = null;
     if (verdict === "UNJUDGED" && opts.judge !== false && draft && reply && !draft.startsWith("[")) {
-      const j = await judge(q.text, draft, reply.text).catch(() => null);
+      const j = await judge(q.text, draft, reply.text, coaching).catch(() => null);
       if (j) { verdict = j.verdict; note = j.note; judged += 1; }
     }
     const data = {
@@ -118,10 +120,11 @@ export async function evaluateStore(storeId: number, since: Date, until = new Da
   return { questions: questions.length, judged };
 }
 
-async function judge(question: string, draft: string, teamReply: string): Promise<{ verdict: Verdict; note: string } | null> {
+async function judge(question: string, draft: string, teamReply: string, coaching = ""): Promise<{ verdict: Verdict; note: string } | null> {
   const r = await askModel({
     purpose: "audit", maxTokens: 200, redactUser: true,
     system: [
+      ...(coaching ? [coaching, "A draft that breaks one of these rules CONTRADICTS, whatever the team replied.", ""] : []),
       "You compare two replies to a pharmacy store's WhatsApp question about a lab order: the bot's draft and what the human team actually replied. Judge ONLY whether the bot stated a fact the team's reply shows to be false.",
       "Return JSON: {\"verdict\": \"SAME\" | \"COMPATIBLE\" | \"CONTRADICTS\" | \"UNRELATED\", \"note\": \"one short sentence\"}.",
       "SAME: the same answer. COMPATIBLE: no conflict — different words, more detail, a later step; the bot saying 'checking with the lab', 'noted, we'll confirm' or 'raising it with the team' while the team gives the answer is ALWAYS compatible; the bot stating the console's status while the team adds what happens next is compatible.",

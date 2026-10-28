@@ -16,6 +16,7 @@ import { extractWithPatterns } from "@/lib/provider-rules/reply-extract";
 import { labRefTokens } from "@/lib/provider-rules/replies";
 import { FACT_KINDS, type FactKind } from "@/lib/provider-rules/types";
 import { isAutomated, loadTeam, makeTeamMatcher } from "@/lib/wa/team";
+import { coachingBlock } from "../brain/coach";
 
 export type Sample = "blood" | "urine" | "stool" | "swab" | "sputum";
 export type SampleState = "collected" | "missed" | "pending";
@@ -115,7 +116,9 @@ export async function readMessage(input: ReadInput): Promise<Reading> {
   const { EXAMPLES } = await import("./examples");
   const shots = EXAMPLES.filter((e) => e.side === input.side).slice(0, 14).map((e) => `Message: ${JSON.stringify(e.text)}${e.quoted ? `\nReplying to: ${JSON.stringify(e.quoted)}` : ""}\nReading: ${JSON.stringify(e.expect)}`).join("\n\n");
   const team = await teamExamples(input.scope?.groupId);
+  const coaching = await coachingBlock({ storeId: input.scope?.storeId ?? null, labId: input.scope?.labId ?? null }, "reader").catch(() => "");
   const system = [
+    ...(coaching ? [coaching, ""] : []),
     input.side === "store"
       ? "You read one WhatsApp message from a client store (a company that books diagnostic tests for its users) to the diagnostics ops team, and fill in a form."
       : "You read one WhatsApp message from a diagnostic lab's coordinator to the ops team, usually answering an ask about home sample collection, and fill in a form.",

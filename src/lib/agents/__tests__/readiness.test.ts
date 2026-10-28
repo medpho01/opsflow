@@ -110,3 +110,23 @@ describe("the desk's scope (28 Oct 2026)", () => {
     assert.equal(storeReplyRedundant({ text: "#95078: sample collected 10:15 am.", orderId: 95078, createdAt: created, now: created, sameTextSent: false, teamAnswered: true }), null, "a fact goes at once");
   });
 });
+
+describe("coaching from WhatsApp (28 Oct 2026)", () => {
+  it("reads pause / resume commands, with or without the 'bot:' prefix", async () => {
+    const { parseCommand, COACH_PREFIX_RE } = await import("../brain/coach");
+    assert.deepEqual(parseCommand("bot: pause store plum"), { verb: "pause", target: "store", name: "plum" });
+    assert.deepEqual(parseCommand("Bot, stop lab Star Pathology"), { verb: "pause", target: "lab", name: "Star Pathology" });
+    assert.deepEqual(parseCommand("agent: resume all"), { verb: "resume", target: "all", name: "" });
+    assert.equal(parseCommand("bot: never say 'chasing' to Plum"), null);
+    assert.ok(COACH_PREFIX_RE.test("bot: hello")); assert.ok(COACH_PREFIX_RE.test("Agent — shorter please")); assert.ok(!COACH_PREFIX_RE.test("the bot said hello"));
+  });
+  it("a lesson without a model is the coach's own words, applied everywhere; wording feedback retires the trial", async () => {
+    const { readLesson } = await import("../brain/coach");
+    process.env.AGENT_LLM = "off";
+    const l = await readLesson({ words: "this was for Sushma, not you", about: "#94347: noted", ask: "ACK", scope: "STORE:6", groupSubject: "Labstack<>Plum Ops" });
+    assert.equal(l.rule, "this was for Sushma, not you"); assert.equal(l.retireWording, false);
+    const w = await readLesson({ words: "too long — just the id and the time", about: "…", ask: "STORE_REPLY", scope: "STORE:6", groupSubject: "Plum" });
+    assert.equal(w.retireWording, true);
+    delete process.env.AGENT_LLM;
+  });
+});

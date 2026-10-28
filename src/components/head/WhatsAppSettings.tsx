@@ -7,7 +7,7 @@ type Gateway = { status: string; online: boolean; connectedNumber: string | null
 export function WhatsAppSettings() {
   const [gw, setGw] = useState<Gateway | null>(null);
   const [toast, setToast] = useState<string | null>(null);
-  const [contacts, setContacts] = useState<{ id: string; name: string; phone: string | null; team: string | null }[]>([]);
+  const [contacts, setContacts] = useState<{ id: string; name: string; phone: string | null; team: string | null; coach?: boolean }[]>([]);
   const [contactText, setContactText] = useState("");
   const [pairPhone, setPairPhone] = useState("");
   const flash = (m: string) => { setToast(m); setTimeout(() => setToast(null), 2200); };
@@ -29,6 +29,9 @@ export function WhatsAppSettings() {
   }
   async function deleteContact(id: string) {
     await fetch(`/api/whatsapp/contacts/${id}`, { method: "DELETE" }); loadContacts();
+  }
+  async function setCoach(id: string, coach: boolean) {
+    await fetch(`/api/whatsapp/contacts/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ coach }) }); loadContacts();
   }
 
   useEffect(() => { loadGw(); loadContacts(); }, [loadGw, loadContacts]);
@@ -148,7 +151,10 @@ export function WhatsAppSettings() {
                 <span className="text-zinc-200 font-medium">{c.name}</span>
                 {c.phone && <span className="text-xs font-mono text-zinc-500">{c.phone}</span>}
                 {c.team && <span className="text-[10px] text-zinc-400 bg-zinc-800 px-1.5 rounded">{c.team}</span>}
-                <button onClick={() => deleteContact(c.id)} className="ml-auto text-xs text-zinc-500 hover:text-rose-400">remove</button>
+                <label className="ml-auto flex items-center gap-1 text-[11px] text-zinc-400 cursor-pointer" title="May coach the agent from WhatsApp: reply to one of its messages, or write 'bot: …' in the internal group, and it follows the lesson at once.">
+                  <input type="checkbox" checked={!!c.coach} onChange={(e) => setCoach(c.id, e.target.checked)} className="accent-blue-500" /> coach
+                </label>
+                <button onClick={() => deleteContact(c.id)} className="text-xs text-zinc-500 hover:text-rose-400">remove</button>
               </div>
             ))}
           </div>

@@ -135,3 +135,14 @@ The desk's facts were right on its first live day; its sense of when to speak wa
 - **A move the store asked for** is confirmed as "done — moved to … as requested", not announced as the lab's reschedule with the patient's name and "please let the customer know".
 - **The grader sees it.** A new verdict, UNWANTED (answered a message meant for a person, or an "on it" within two minutes of the team's answer), counts as wrong in the readiness score; staying quiet on such a message is not graded at all.
 
+## Coaching from WhatsApp (28 Oct 2026)
+
+A team member ticked **coach** on Connections › Team (a flag on the roster, never a number in code) can correct the agent where the work happens, and it follows the lesson at once:
+
+- **Reply to one of the agent's messages**, in any connected group: "this was for Sushma, not you", "too long — just the id and the time".
+- **Or write in the internal ops group** with a prefix: "bot: never say 'chasing' to Plum unless the lab group is live", "bot: pause store plum", "bot: resume lab star", "bot: pause all".
+
+Within the next store pass (seconds): the words become a lesson (`agent_coaching`: kind, one-line rule, scope — this store, this lab or all); the rule is read into every model prompt ahead of everything else (the reader that classifies messages, the judge that grades the desk, the Brain that rewrites wording); a trial wording the coach disliked is retired; pause/resume flips the kill switches; and the coach hears "📝 Noted — from now, …" in the internal group. Replying **undo** to that post drops the lesson. The weekly review counts coaching as causes (weighted ×3) so recurring lessons become SOP proposals. `scripts/coaching.ts` lists and retires lessons.
+
+Limits, stated plainly: lessons steer the model-driven parts at once; a rule that only code enforces (a cap, a template) is proposed by the review, not changed live.
+

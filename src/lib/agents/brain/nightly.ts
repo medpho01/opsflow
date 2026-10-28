@@ -137,10 +137,13 @@ export async function runNightly(now = new Date()): Promise<Record<string, numbe
     const efficiency = await computeEfficiency(new Date(dayStart.getTime() - 5.5 * H), new Date(dayStart.getTime() + 18.5 * H)).catch((e) => { console.warn("[Brain] efficiency:", e instanceof Error ? e.message : e); return null; });
     const lessons = await lessonsSince(new Date(now.getTime() - 24 * H)).catch(() => null);
     const styleLine = await styleBriefLine(new Date(now.getTime() - 24 * H)).catch(() => null);
+    const coached = await prisma.agentCoaching.findMany({ where: { createdAt: { gte: new Date(now.getTime() - 24 * H) } }, select: { status: true, lesson: true, text: true } }).catch(() => []);
+    const coachLine = coached.length ? `Coached today: ${coached.length} — ${coached.slice(0, 3).map((c) => String((c.lesson as { rule?: string } | null)?.rule ?? c.text).slice(0, 60)).join(" | ")}` : null;
     const brief = [
       renderBrief(metrics, new Date(now.getTime() + 12 * H)),
       ...(efficiency ? renderEfficiency(efficiency) : []),
       ...(styleLine ? [styleLine] : []),
+      ...(coachLine ? [coachLine] : []),
       ...(lessons && lessons.runs ? [`Learned today (${lessons.runs} passes): ${lessons.wrong.length} things to fix, ${lessons.unanswered} questions nobody answered${lessons.wrong.length ? ` · top: ${lessons.wrong.slice(0, 3).map((w) => `${w.kind}${w.order ? ` #${w.order}` : ""}: ${w.what.slice(0, 70)}`).join(" | ")}` : ""}`] : []),
     ].join("\n");
     const audit = await auditSample(now).catch((e) => ({ sampled: 0, disagreements: 0, cases: 0, error: e instanceof Error ? e.message : String(e) }));

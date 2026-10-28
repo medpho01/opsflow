@@ -18,6 +18,7 @@
  * guesses which wording a reply was to.
  */
 import { Prisma } from "@prisma/client";
+import { coachingLines } from "./coach";
 import prisma from "@/lib/db/client";
 import { STYLE_CONTRACTS, STYLE_KEYS, checkVariant, liveBody, invalidateStyleCache, type StyleContract } from "../style";
 import { askModel } from "../llm";
@@ -80,7 +81,7 @@ export async function styleStats(key: string, now: Date): Promise<{ live: ArmSta
 
 const pct = (r: number) => `${Math.round(r * 100)}%`;
 
-async function writeChallenger(key: string, live: string, stats: ArmStats, retired: Array<{ body: string; rationale: string | null; stats: Prisma.JsonValue | null }>, lessons: string[]): Promise<{ body: string; rationale: string } | null> {
+async function writeChallenger(key: string, live: string, stats: ArmStats, retired: Array<{ body: string; rationale: string | null; stats: Prisma.JsonValue | null }>, lessons: string[], _audience?: string): Promise<{ body: string; rationale: string } | null> {
   const c = STYLE_CONTRACTS[key];
   const system = [
     "You write WhatsApp messages for LabStack's operations team to diagnostic labs' coordinators and to pharmacy stores in India. Short, warm, plain Indian English; one idea per message; no 'Dear', no sign-off, no exclamation marks, no corporate phrasing.",
@@ -147,7 +148,9 @@ export async function runStyle(now = new Date()): Promise<StyleResult> {
       if (stillOpen || stats.live.sends < MIN_SENDS || result.started >= MAX_NEW_TRIALS) { if (!stillOpen && stats.live.sends < MIN_SENDS) result.skipped += 1; continue; }
       const live = await liveBody(key);
       const retired = await prisma.agentMessageVariant.findMany({ where: { key, status: "RETIRED" }, orderBy: { createdAt: "desc" }, take: 3, select: { body: true, rationale: true, stats: true } });
-      const draft = await writeChallenger(key, live.body, stats.live, retired, lessons);
+      const c = STYLE_CONTRACTS[key];
+      const coached = await coachingLines({}, "wording").catch(() => [] as string[]);
+      const draft = await writeChallenger(key, live.body, stats.live, retired, [...coached.map((l) => `(from the head of ops, follow this) ${l}`), ...lessons], c?.audience);
       if (!draft) { findings.push({ key, challenger: "none (no model or unparsable)" }); continue; }
       const problem = checkVariant(key, draft.body, live.body);
       if (problem || draft.body === live.body) { findings.push({ key, challenger: "rejected", problem: problem ?? "same as live" }); await prisma.agentMessageVariant.create({ data: { key, version: (await nextVersion(key)), body: draft.body, status: "REJECTED", share: 0, author: "BRAIN", rationale: `${draft.rationale} — rejected: ${problem ?? "same as live"}`, against: live.body } }); continue; }

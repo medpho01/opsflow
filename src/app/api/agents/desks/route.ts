@@ -57,10 +57,11 @@ export const PUT = agentsRoute("desks", async (request, { user, requestId }) => 
   return NextResponse.json({ ok: true, row, requestId });
 }, { headOnly: true });
 
-/** POST { action: "evaluate", storeId } — grade a store's desk now (the last 3 days) instead of waiting for tonight. */
+/** POST { action: "evaluate", storeId, days? } — grade a store's desk now over the last `days` (default 7, up to 30; history, not just new traffic). */
 export const POST = agentsRoute("desks", async (request, { requestId }) => {
-  const body = await request.json().catch(() => ({})) as { action?: string; storeId?: number };
-  if (body.action !== "evaluate" || !Number.isInteger(body.storeId)) return bad(requestId, "Expected { action: \"evaluate\", storeId }");
-  const r = await runReadiness(new Date(), { storeId: body.storeId, hours: 72 });
+  const body = await request.json().catch(() => ({})) as { action?: string; storeId?: number; days?: number };
+  if (body.action !== "evaluate" || !Number.isInteger(body.storeId)) return bad(requestId, "Expected { action: \"evaluate\", storeId, days? }");
+  const days = Math.min(30, Math.max(1, Number(body.days ?? 7)));
+  const r = await runReadiness(new Date(), { storeId: body.storeId, hours: days * 24, scoreDays: days });
   return NextResponse.json({ ok: true, ...r, requestId });
 }, { headOnly: true });

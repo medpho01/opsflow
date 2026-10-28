@@ -145,14 +145,14 @@ export async function scoreStore(storeId: number, days = 7, now = new Date()): P
 }
 
 /** Nightly: every store with a group — evaluate the last day (judging what both answered), then score the last week. */
-export async function runReadiness(now = new Date(), opts: { storeId?: number; hours?: number } = {}): Promise<Record<string, number>> {
+export async function runReadiness(now = new Date(), opts: { storeId?: number; hours?: number; scoreDays?: number } = {}): Promise<Record<string, number>> {
   const result = { stores: 0, questions: 0, judged: 0 };
   const groups = await prisma.waGroup.findMany({ where: { role: "SUPPORT", storeId: opts.storeId ?? { not: null }, archivedAt: null }, select: { storeId: true }, distinct: ["storeId"] });
   for (const g of groups) {
     if (g.storeId == null) continue;
     const r = await evaluateStore(g.storeId, new Date(now.getTime() - (opts.hours ?? 26) * 3_600_000), now).catch((e) => { console.warn(`[Readiness] store ${g.storeId}:`, e instanceof Error ? e.message : e); return null; });
     if (!r) continue;
-    await scoreStore(g.storeId, 7, now);
+    await scoreStore(g.storeId, opts.scoreDays ?? 7, now);
     result.stores += 1; result.questions += r.questions; result.judged += r.judged;
   }
   return result;

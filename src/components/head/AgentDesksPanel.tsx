@@ -51,9 +51,9 @@ export function AgentDesksPanel() {
     setNote(r.ok ? `${scope.name}: answers ${liveIntents.length ? liveIntents.join(", ") : "every kind"} itself` : "Failed");
     await load();
   };
-  const evaluate = async (scope: Scope) => {
-    setNote(`${scope.name}: grading the last 3 days…`);
-    const r = await fetch("/api/agents/desks", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "evaluate", storeId: scope.scopeId }) });
+  const evaluate = async (scope: Scope, days = 7) => {
+    setNote(`${scope.name}: grading the last ${days} days…`);
+    const r = await fetch("/api/agents/desks", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "evaluate", storeId: scope.scopeId, days }) });
     const b = await r.json().catch(() => ({}));
     setNote(r.ok ? `${scope.name}: ${b.questions} questions graded, ${b.judged} compared with the team's replies` : b.error ?? "Failed");
     await load();
@@ -93,7 +93,8 @@ export function AgentDesksPanel() {
         <div className="flex flex-wrap items-center gap-2 text-[11px]">
           <span className={`font-semibold ${tone(r?.score ?? null)}`}>{r?.score != null ? `readiness ${r.score}` : "not graded yet"}</span>
           {r && <span className="text-zinc-500">{r.n} questions · {r.days} d{c.readinessAt ? ` · ${new Date(c.readinessAt).toLocaleString("en-IN", { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" })}` : ""}</span>}
-          <button onClick={() => evaluate(s)} className="rounded border border-zinc-700 px-1.5 py-0.5 text-[11px] text-zinc-300">Grade now</button>
+          <button onClick={() => evaluate(s, 7)} className="rounded border border-zinc-700 px-1.5 py-0.5 text-[11px] text-zinc-300">Grade 7 d</button>
+          <button onClick={() => evaluate(s, 30)} className="rounded border border-zinc-700 px-1.5 py-0.5 text-[11px] text-zinc-300">30 d</button>
           {!!r?.recommended.length && <span className="text-emerald-300">ready: {r.recommended.join(", ")}</span>}
         </div>
         {r && (

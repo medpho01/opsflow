@@ -18,7 +18,9 @@ async function why() {
   console.log(`agent name: ${settings?.agentName ?? "(not set)"} · coach reader last read up to: ${settings?.coachWatermark?.toISOString() ?? "never (first run reads the last 30 min)"}`);
   const isCoach = await coachMatcher();
   const prefix = coachPrefixRe(settings?.agentName ?? null);
-  const groups = await prisma.waGroup.findMany({ where: { active: true, archivedAt: null, role: { in: ["SUPPORT", "PROVIDER", "INTERNAL"] } }, select: { id: true, role: true, subject: true } });
+  const groups = await prisma.waGroup.findMany({ where: { active: true, archivedAt: null, OR: [{ role: { in: ["SUPPORT", "PROVIDER", "INTERNAL"] } }, { role: "IGNORE", subject: { startsWith: "Coaching · " } }] }, select: { id: true, jid: true, role: true, subject: true } });
+  const direct = groups.filter((g) => !g.jid.endsWith("@g.us"));
+  console.log(`direct coaching chats the gateway has opened: ${direct.length ? direct.map((g) => g.subject).join(", ") : "none yet — a coach's first direct message to the ops number opens one"}`);
   const msgs = await prisma.waMessage.findMany({ where: { groupId: { in: groups.map((g) => g.id) }, direction: "IN", ts: { gte: new Date(Date.now() - 3_600_000) } }, orderBy: { ts: "desc" }, take: 300, select: { ts: true, sender: true, senderJid: true, text: true, replyToWaId: true, groupId: true } });
   const byGroup = new Map(groups.map((g) => [g.id, g]));
   const phones = new Set(coaches.map((c) => (c.phone ?? "").slice(-10)).filter(Boolean));
@@ -29,9 +31,9 @@ async function why() {
     const g = byGroup.get(m.groupId)!;
     const matched = !!isCoach(m.sender, m.senderJid);
     const ours = m.replyToWaId ? await prisma.waOutbound.findFirst({ where: { sentWaMsgId: m.replyToWaId }, select: { id: true } }) : null;
-    const prefixed = g.role === "INTERNAL" && prefix.test(m.text ?? "");
+    const prefixed = (g.role === "INTERNAL" && prefix.test(m.text ?? "")) || !g.jid.endsWith("@g.us");
     const verdict = !matched ? `NOT MATCHED as a coach — sender jid ${m.senderJid ?? "?"} (a LID the identity table cannot map to the roster phone; add the LID digits as an alias, or write from the phone number)`
-      : ours ? "taken: reply to an agent message" : prefixed ? "taken: prefixed, in the internal group"
+      : ours ? "taken: reply to an agent message" : prefixed ? (g.jid.endsWith("@g.us") ? "taken: prefixed, in the internal group" : "taken: direct message to the ops number")
       : g.role === "INTERNAL" ? `ignored: in the internal group but no "bot:" / "${settings?.agentName ?? "name"}:" prefix and not a reply to an agent message`
       : "ignored: not a reply to one of the agent's messages (replying to a person's message or writing fresh in a store/lab group is not coaching)";
     console.log(`  ${m.ts.toLocaleTimeString("en-IN", { timeZone: process.env.TIMEZONE || "Asia/Kolkata", hour: "2-digit", minute: "2-digit" })} ${g.subject.slice(0, 24).padEnd(24)} ${m.sender.slice(0, 18).padEnd(18)} | ${(m.text ?? "").replace(/\s+/g, " ").slice(0, 60)}\n      → ${verdict}`);

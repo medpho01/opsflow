@@ -30,6 +30,46 @@ export async function refreshGroups() {
   return m;
 }
 export const getGroup = (jid) => groupCache.get(jid);
+
+// ── coaching by direct message (28 Oct 2026) ───────────────────────────────
+// A team member flagged "coach" on the roster can write to the ops number
+// directly. Only their 1:1 chat is kept (as a wa_groups row of role IGNORE,
+// subject "Coaching · <name>", so nothing else treats it as a lab or store);
+// every other direct message is dropped as before.
+let coachCache = { at: 0, rows: [] };
+async function coaches() {
+  if (Date.now() - coachCache.at < 60_000) return coachCache.rows;
+  try { coachCache = { at: Date.now(), rows: (await taskosQuery(`SELECT name, phone FROM wa_contacts WHERE active = true AND coach = true`)).rows }; }
+  catch { coachCache = { at: Date.now(), rows: [] }; }
+  return coachCache.rows;
+}
+const last10d = (s) => (s || "").replace(/\D/g, "").slice(-10);
+/** The coach a direct-chat jid belongs to (phone jid, or a LID the identity table maps to a phone), else null. */
+export async function coachForJid(jid, pushName = null) {
+  const list = await coaches();
+  if (!list.length) return null;
+  const lp = (jid || "").split("@")[0].split(":")[0];
+  let phone = /@(s\.whatsapp\.net|c\.us)$/.test(jid) ? lp : null;
+  if (!phone && jid.endsWith("@lid")) {
+    try { phone = (await taskosQuery(`SELECT counterpart FROM wa_identities WHERE localpart = $1`, [lp])).rows[0]?.counterpart || null; } catch { phone = null; }
+  }
+  const byPhone = phone ? list.find((c) => last10d(c.phone) === last10d(phone)) : null;
+  if (byPhone) return byPhone;
+  const n = (pushName || "").toLowerCase().trim();
+  return n ? list.find((c) => c.name.toLowerCase().trim() === n) || null : null;
+}
+/** The chat row for a coach's direct messages, created on first contact. */
+export async function ensureCoachChat(jid, coach) {
+  if (getGroup(jid)) return getGroup(jid);
+  await taskosQuery(
+    `INSERT INTO wa_groups (id, jid, subject, role, active, "isMember", "updatedAt")
+       VALUES (gen_random_uuid()::text, $1, $2, 'IGNORE', true, true, now())
+     ON CONFLICT (jid) DO UPDATE SET active = true, "updatedAt" = now()`,
+    [jid, `Coaching · ${coach.name}`]
+  );
+  await refreshGroups();
+  return getGroup(jid);
+}
 export const knownGroupCount = () => groupCache.size;
 
 // Auto-register groups the gateway discovers on connect. Inserts new jids

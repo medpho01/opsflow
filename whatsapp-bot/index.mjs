@@ -717,7 +717,13 @@ async function handlePollVote(m) {
 
 async function handle(m) {
   const jid = m.key.remoteJid || "";
-  if (!jid.endsWith("@g.us")) return; // groups only
+  if (!jid.endsWith("@g.us")) {
+    // Direct messages are dropped — except a coach's, which is coaching for the agent (28 Oct 2026).
+    if (!CT_ENABLED || m.key.fromMe) return;
+    const coach = await CT.coachForJid(jid, m.pushName).catch(() => null);
+    if (!coach) return;
+    try { await CT.ensureCoachChat(jid, coach); } catch (e) { console.error("coach chat:", e.message); return; }
+  }
   // Listen only to groups the admin picked (active). Discovery registers EVERY
   // group so they can be chosen in Settings; until a group is activated we don't
   // process it (no media pulled, nothing stored). Falls back to the env hint
@@ -772,7 +778,7 @@ async function handle(m) {
     }
     try {
       await CT.ingestMessage({
-        jid, waMsgId: m.key.id, fromMe, sender, senderJid: m.key.participant || null, text,
+        jid, waMsgId: m.key.id, fromMe, sender, senderJid: m.key.participant || (jid.endsWith("@g.us") ? null : jid), text,
         // ISO (UTC) rather than a Date: wa_messages.ts is a naive column and
         // node-postgres would serialize a Date in local time, storing IST.
         ts: new Date(tsSec * 1000).toISOString(), replyToWaId: rc?.replyToId || null,

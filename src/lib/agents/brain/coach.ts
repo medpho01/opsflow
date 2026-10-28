@@ -28,6 +28,7 @@ import { askModel } from "../llm";
 import { loadTeam, makeTeamMatcher, type TeamContact } from "@/lib/wa/team";
 import { opsGroup } from "../ops/group";
 import { postToOps } from "../ops/post";
+import { sendWhatsApp } from "../executors/dispatcher";
 
 const FIRST_RUN_LOOKBACK_MS = 30 * 60_000;
 const last10 = (s: string | null | undefined) => (s || "").replace(/\D/g, "").slice(-10);
@@ -97,9 +98,24 @@ export async function runCoachReader(now = new Date()): Promise<CoachReaderResul
   const isCoach = await coachMatcher();
   const settings = await prisma.agentSettings.upsert({ where: { id: "default" }, update: {}, create: { id: "default" } });
   const since = settings.coachWatermark ?? new Date(now.getTime() - FIRST_RUN_LOOKBACK_MS);
-  const groups = await prisma.waGroup.findMany({ where: { active: true, archivedAt: null, role: { in: ["SUPPORT", "PROVIDER", "INTERNAL"] } }, select: { id: true, role: true, subject: true, storeId: true, labId: true } });
+  // Connected groups, plus each coach's direct chat with the ops number (a row the gateway
+  // creates on first contact: role IGNORE, subject "Coaching · <name>", jid not a group).
+  const groups = await prisma.waGroup.findMany({ where: { active: true, archivedAt: null, OR: [{ role: { in: ["SUPPORT", "PROVIDER", "INTERNAL"] } }, { role: "IGNORE", subject: { startsWith: "Coaching · " } }] }, select: { id: true, jid: true, role: true, subject: true, storeId: true, labId: true } });
   if (!groups.length) return result;
   const byGroup = new Map(groups.map((g) => [g.id, g]));
+  const isDirect = (g: { jid: string }) => !g.jid.endsWith("@g.us");
+  // Words that name a connected store or lab ("plum", "star pathology"), for lessons given in a direct chat.
+  const named = groups.filter((g) => !isDirect(g) && (g.storeId != null || g.labId != null)).map((g) => ({ g, words: g.subject.toLowerCase().replace(/labstack|<>|ops|lab\b|group|\(.*?\)/g, " ").split(/[^a-z0-9]+/).filter((w) => w.length >= 4) }));
+  const scopeFromWords = (text: string): string | null => {
+    const t = text.toLowerCase();
+    const hit = named.find((n) => n.words.some((w) => t.includes(w)));
+    return hit ? (hit.g.storeId != null ? `STORE:${hit.g.storeId}` : `LAB:${hit.g.labId}`) : null;
+  };
+  // Where the coach hears back: the internal group, or the direct chat the lesson came from.
+  const reply = async (g: { id: string; jid: string }, m: { id: string; waMsgId: string }, text: string) => {
+    if (isDirect(g)) { await sendWhatsApp({ targetJid: g.jid, groupId: g.id, text, quotedWaId: m.waMsgId, now }).catch(() => undefined); return; }
+    if (ops) await postToOps({ kind: "OPS_QUESTION", orderId: 0, idemKey: `coach:${m.id}`, now, quotedWaId: g.id === ops.id ? m.waMsgId : null, text }).catch(() => undefined);
+  };
   const messages = await prisma.waMessage.findMany({
     where: { groupId: { in: groups.map((g) => g.id) }, direction: "IN", ts: { gt: since, lte: now } },
     orderBy: { ts: "asc" }, take: 300,
@@ -120,16 +136,17 @@ export async function runCoachReader(now = new Date()): Promise<CoachReaderResul
     const g = byGroup.get(m.groupId)!;
     // What it replies to: one of ours, with the outbox item that produced it (scope, order, wording).
     const ours = m.replyToWaId ? await prisma.waOutbound.findFirst({ where: { sentWaMsgId: m.replyToWaId }, select: { id: true, text: true } }).catch(() => null) : null;
-    const addressed = g.role === "INTERNAL" && prefixRe.test(text);
+    // In a direct chat every message is coaching; in the internal group only a prefixed one.
+    const addressed = isDirect(g) || (g.role === "INTERNAL" && prefixRe.test(text));
     if (!ours && !addressed) continue;
     try {
       const item = ours ? await prisma.agentOutboxItem.findFirst({ where: { outboundId: ours.id }, select: { counterparty: true, orderId: true, ask: true } }).catch(() => null) : null;
-      const scope = item?.counterparty?.startsWith("STORE:") || item?.counterparty?.startsWith("LAB:") ? item.counterparty : g.storeId != null ? `STORE:${g.storeId}` : g.labId != null ? `LAB:${g.labId}` : "GLOBAL";
+      const scope = item?.counterparty?.startsWith("STORE:") || item?.counterparty?.startsWith("LAB:") ? item.counterparty : g.storeId != null ? `STORE:${g.storeId}` : g.labId != null ? `LAB:${g.labId}` : scopeFromWords(text) ?? "GLOBAL";
       const words = text.replace(prefixRe, "").trim();
       // "undo" in reply to a Noted post drops that lesson.
       if (ours && /^undo\b/i.test(words) && /📝 Noted/.test(ours.text)) {
         const dropped = await undoByNoted(ours.text);
-        if (ops) await postToOps({ kind: "OPS_QUESTION", orderId: 0, idemKey: `coach:${m.id}`, now, quotedWaId: g.id === ops.id ? m.waMsgId : null, text: dropped ? "↩️ Dropped." : "That lesson was already gone." }).catch(() => undefined);
+        await reply(g, m, dropped ? "↩️ Dropped." : "That lesson was already gone.");
         continue;
       }
       const command = parseCommand(text, agentName);
@@ -138,7 +155,7 @@ export async function runCoachReader(now = new Date()): Promise<CoachReaderResul
         if (command.verb === "rename" && done.ok) { agentName = command.name; prefixRe = coachPrefixRe(agentName); }
         await prisma.agentCoaching.create({ data: { contactId: coach.id, contactName: coach.name, groupId: m.groupId, waMsgId: m.waMsgId, outboundId: ours?.id ?? null, orderId: item?.orderId || null, scope: "GLOBAL", text: words, lesson: { command, done } , status: "COMMAND" } });
         result.commands += 1;
-        if (ops) await postToOps({ kind: "OPS_QUESTION", orderId: 0, idemKey: `coach:${m.id}`, now, quotedWaId: g.id === ops.id ? m.waMsgId : null, text: (done.ok ? `✅ ${done.note}` : `⚠️ ${done.note}`) + signed() }).catch(() => undefined);
+        await reply(g, m, (done.ok ? `✅ ${done.note}` : `⚠️ ${done.note}`) + signed());
         continue;
       }
       const lesson = await readLesson({ words, about: ours?.text ?? null, ask: item?.ask ?? null, scope, groupSubject: g.subject });
@@ -153,10 +170,8 @@ export async function runCoachReader(now = new Date()): Promise<CoachReaderResul
           retired = send.key;
         }
       }
-      if (ops) {
-        const where = scope === "GLOBAL" ? "everywhere" : scope.startsWith("STORE:") ? `this store` : `this lab`;
-        await postToOps({ kind: "OPS_QUESTION", orderId: item?.orderId ?? 0, idemKey: `coach:${m.id}`, now, quotedWaId: g.id === ops.id ? m.waMsgId : null, text: `📝 Noted, ${coach.name.split(/\s+/)[0]} — from now, ${where}: ${lesson.rule}${retired ? `\n(the "${retired}" wording that message used is retired)` : ""}\nReply *undo* to this message to drop it. #${row.id.slice(-6)}${signed()}` }).catch(() => undefined);
-      }
+      const where = scope === "GLOBAL" ? "everywhere" : scope.startsWith("STORE:") ? (isDirect(g) ? `for ${named.find((n) => `STORE:${n.g.storeId}` === scope)?.g.subject ?? "that store"}` : "this store") : (isDirect(g) ? `for ${named.find((n) => `LAB:${n.g.labId}` === scope)?.g.subject ?? "that lab"}` : "this lab");
+      await reply(g, m, `📝 Noted, ${coach.name.split(/\s+/)[0]} — from now, ${where}: ${lesson.rule}${retired ? `\n(the "${retired}" wording that message used is retired)` : ""}\nReply *undo* to this message to drop it. #${row.id.slice(-6)}${signed()}`);
     } catch (error) {
       console.error(`[Coach] message ${m.id} failed:`, error instanceof Error ? error.message : error);
     }

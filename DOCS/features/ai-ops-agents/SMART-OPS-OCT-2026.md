@@ -148,3 +148,5 @@ Limits, stated plainly: lessons steer the model-driven parts at once; a rule tha
 
 **The agent's name.** Set on Agents › Controls, or from the internal group with "bot: your name is Asha". Every message the engine sends is then signed "_Asha, Labstack Operations_" (the gateway reads `agent_settings.agentName` on each drain; a person's console message keeps their own name), and a coach can address it as "Asha: …", "@Asha …" or "hey Asha, …". Nothing is renamed in code: the name is a setting.
 
+**Coaching by direct message.** A coach can also write to the ops number directly. The gateway keeps only coaches' 1:1 chats (as a `wa_groups` row of role IGNORE named "Coaching · <name>"; every other direct message is still dropped). There, every message is coaching — no prefix — and the agent answers in the same chat. A lesson that names a store or lab ("…to Plum…") is scoped to it; otherwise it applies everywhere. The internal group is not needed for this.
+

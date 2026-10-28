@@ -5,11 +5,42 @@
  *   npx tsx scripts/coaching.ts            the ACTIVE lessons and today's commands
  *   npx tsx scripts/coaching.ts all        including retired
  *   npx tsx scripts/coaching.ts retire <id-suffix>
+ *   npx tsx scripts/coaching.ts why        who may coach, and why the last hour's messages were or were not taken
  */
 import prisma from "@/lib/db/client";
 
+/** `why`: who may coach, and what happened to the last hour's messages from them. */
+async function why() {
+  const { coachMatcher, coachPrefixRe } = await import("@/lib/agents/brain/coach");
+  const coaches = await prisma.waContact.findMany({ where: { coach: true }, select: { name: true, phone: true, active: true } });
+  console.log(`coaches on the roster: ${coaches.length ? coaches.map((c) => `${c.name} (${c.phone ? "…" + c.phone.slice(-4) : "no phone"}${c.active ? "" : ", inactive"})`).join(", ") : "NONE — tick 'coach' on Connections › Team"}`);
+  const settings = await prisma.agentSettings.findUnique({ where: { id: "default" }, select: { agentName: true, coachWatermark: true } });
+  console.log(`agent name: ${settings?.agentName ?? "(not set)"} · coach reader last read up to: ${settings?.coachWatermark?.toISOString() ?? "never (first run reads the last 30 min)"}`);
+  const isCoach = await coachMatcher();
+  const prefix = coachPrefixRe(settings?.agentName ?? null);
+  const groups = await prisma.waGroup.findMany({ where: { active: true, archivedAt: null, role: { in: ["SUPPORT", "PROVIDER", "INTERNAL"] } }, select: { id: true, role: true, subject: true } });
+  const msgs = await prisma.waMessage.findMany({ where: { groupId: { in: groups.map((g) => g.id) }, direction: "IN", ts: { gte: new Date(Date.now() - 3_600_000) } }, orderBy: { ts: "desc" }, take: 300, select: { ts: true, sender: true, senderJid: true, text: true, replyToWaId: true, groupId: true } });
+  const byGroup = new Map(groups.map((g) => [g.id, g]));
+  const phones = new Set(coaches.map((c) => (c.phone ?? "").slice(-10)).filter(Boolean));
+  const mine = msgs.filter((m) => isCoach(m.sender, m.senderJid) || phones.has((m.senderJid ?? "").split("@")[0].split(":")[0].slice(-10)) || coaches.some((c) => m.sender.toLowerCase().includes(c.name.toLowerCase().split(" ")[0])));
+  if (!mine.length) { console.log("no messages in the last hour from anyone who looks like a coach (by phone, LID or name)"); return; }
+  console.log(`\nlast hour, messages from coaches (newest first):`);
+  for (const m of mine.slice(0, 15)) {
+    const g = byGroup.get(m.groupId)!;
+    const matched = !!isCoach(m.sender, m.senderJid);
+    const ours = m.replyToWaId ? await prisma.waOutbound.findFirst({ where: { sentWaMsgId: m.replyToWaId }, select: { id: true } }) : null;
+    const prefixed = g.role === "INTERNAL" && prefix.test(m.text ?? "");
+    const verdict = !matched ? `NOT MATCHED as a coach — sender jid ${m.senderJid ?? "?"} (a LID the identity table cannot map to the roster phone; add the LID digits as an alias, or write from the phone number)`
+      : ours ? "taken: reply to an agent message" : prefixed ? "taken: prefixed, in the internal group"
+      : g.role === "INTERNAL" ? `ignored: in the internal group but no "bot:" / "${settings?.agentName ?? "name"}:" prefix and not a reply to an agent message`
+      : "ignored: not a reply to one of the agent's messages (replying to a person's message or writing fresh in a store/lab group is not coaching)";
+    console.log(`  ${m.ts.toLocaleTimeString("en-IN", { timeZone: process.env.TIMEZONE || "Asia/Kolkata", hour: "2-digit", minute: "2-digit" })} ${g.subject.slice(0, 24).padEnd(24)} ${m.sender.slice(0, 18).padEnd(18)} | ${(m.text ?? "").replace(/\s+/g, " ").slice(0, 60)}\n      → ${verdict}`);
+  }
+}
+
 async function main() {
   const [mode, arg] = process.argv.slice(2);
+  if (mode === "why") return why();
   if (mode === "retire" && arg) {
     const row = await prisma.agentCoaching.findFirst({ where: { status: "ACTIVE", id: { endsWith: arg } }, select: { id: true, text: true } });
     if (!row) { console.log("no active lesson ending in", arg); return; }

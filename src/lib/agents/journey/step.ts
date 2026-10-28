@@ -672,17 +672,32 @@ export function step(input: StepInput): StepOutput {
           const slotPassed = slot != null && now.getTime() > slot.getTime() + 30 * MIN;
           // A console that says the patient was missed or the visit was moved explains a passed slot itself.
           const consoleExplains = order.orderStatus === "PATIENT_MISSED" || order.orderStatus === "RESCHEDULED";
-          const canAnswer = known && !(m.intent === "report" && collected?.status === "MET" && report && report.status !== "MET" && now.getTime() > report.dueAt.getTime()) && (consoleExplains || !(m.intent !== "report" && slotPassed && collected?.status !== "MET"));
+          // The report's due time has passed with no report: never "expected by <a time gone by>",
+          // whatever the question was called (28 Oct 2026, 4:12 pm: "sample collected 7:38 am.
+          // Report expected by Tue, 27 Oct" — the store had just written "the TAT is breached").
+          const reportOverdue = collected?.status === "MET" && !!report && report.status !== "MET" && now.getTime() > report.dueAt.getTime();
+          // The lab is asked about the next milestone — or, when the report is overdue, about the
+          // report itself, whatever sits between (the console may still show "sample at lab").
+          const chase = (reason: string, overdue = false) => {
+            const cp = overdue ? report! : next;
+            if (cp && sop && (overdue || from === "LAB") && sop.asks[cp.name] && (overdue || !consoleIsLive(order, input.labTier, now, sop.consoleQuietMin))) {
+              const ask = sop.asks[cp.name];
+              const urgent = overdue || slotPassed || (minutesToSlot != null && minutesToSlot <= ask.urgentWithinMin);
+              const window = sendWindow(now, now, sop, { ...ask, leadMin: 0, graceMin: 240 }, true, urgent, tz);
+              actions.push({ desk: "LAB", action: "ask", params: { checkpoint: cp.name, orderId: order.id, labId: order.labId, attempt: (attempts[cp.name]?.n ?? 0) + 1, dueAt: cp.dueAt, rung: "ask", intent: ask.intent, counterparty: `LAB:${order.labId}`, windowFrom: window.from, windowTo: window.to, urgent, line: { orderId: order.id, patientName: order.patientName, appointment: order.appointmentTime, labRef: order.labRef ?? null, mobile: order.mobile ?? null, area: order.area ?? null, milestone: LABELS[cp.name], dueAt: cp.dueAt, phlebo: order.phleboName || null, ...(overdue ? { note: `report was due ${fmtDay(cp.dueAt)} — the store is waiting` } : {}) }, forStore: true }, reason, idemKey: `${key}:chase` });
+            }
+          };
+          if (reportOverdue) {
+            actions.push({ desk: "STORE", action: "store_reply", params: { text: `#${order.id}: sample collected ${fmt(collected!.metAt)}; the report was due ${fmtDay(report!.dueAt)} and is overdue — chasing ${order.labName ?? "the lab"} now, will update here.`, orderId: order.id, storeId: order.storeId, intent: m.intent, ...quote }, reason: `store asked for ${m.intent}; the report is overdue since ${fmtDay(report!.dueAt)}`, idemKey: `${key}:overdue` });
+            chase(`store asked about #${order.id}; the report is overdue`, true);
+            break;
+          }
+          const canAnswer = known && (consoleExplains || !(m.intent !== "report" && slotPassed && collected?.status !== "MET"));
           if (canAnswer) {
             actions.push({ desk: "STORE", action: "store_reply", params: { template: "STORE_STATUS_ANSWER", orderId: order.id, storeId: order.storeId, intent: m.intent, ...known, ...quote }, reason: `store asked for ${m.intent}; the console knows`, idemKey: `${key}:answer` });
           } else {
             actions.push({ desk: "STORE", action: "store_reply", params: { template: "STORE_CHECKING", orderId: order.id, storeId: order.storeId, intent: m.intent, ...quote }, reason: `store asked for ${m.intent}; the console does not know yet`, idemKey: `${key}:checking` });
-            if (next && sop && from === "LAB" && sop.asks[next.name] && !consoleIsLive(order, input.labTier, now, sop.consoleQuietMin)) {
-              const ask = sop.asks[next.name];
-              const urgent = slotPassed || (minutesToSlot != null && minutesToSlot <= ask.urgentWithinMin);
-              const window = sendWindow(now, now, sop, { ...ask, leadMin: 0, graceMin: 240 }, true, urgent, tz);
-              actions.push({ desk: "LAB", action: "ask", params: { checkpoint: next.name, orderId: order.id, labId: order.labId, attempt: (attempts[next.name]?.n ?? 0) + 1, dueAt: next.dueAt, rung: "ask", intent: ask.intent, counterparty: `LAB:${order.labId}`, windowFrom: window.from, windowTo: window.to, urgent, line: { orderId: order.id, patientName: order.patientName, appointment: order.appointmentTime, labRef: order.labRef ?? null, mobile: order.mobile ?? null, area: order.area ?? null, milestone: LABELS[next.name], dueAt: next.dueAt, phlebo: order.phleboName || null }, forStore: true }, reason: `store asked about #${order.id} and the console does not know`, idemKey: `${key}:chase` });
-            }
+            chase(`store asked about #${order.id} and the console does not know`);
           }
           break;
         }

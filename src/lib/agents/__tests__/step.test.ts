@@ -121,6 +121,18 @@ describe("the ladder", () => {
     assert.equal(ask?.params.intent, "STATUS");
     assert.ok(r.actions.some((a) => a.action === "store_reply"));
   });
+  it("a report past its due time is answered as overdue and the lab is chased, whatever the question was called (28 Oct 2026)", () => {
+    const o = order({ orderStatus: "SAMPLE_COLLECTED", appointmentTime: at("2026-10-26T02:00:00Z"), statusUpdatedAt: at("2026-10-26T02:08:00Z"), labName: "Redcliffe" });
+    const msg = { kind: "store_message", at: at("2026-10-28T10:42:00Z"), actor: "STORE", payload: { intent: "status", text: "exactly!! The TAT is breached already", messageId: "m-od", waMsgId: "w-od" } };
+    const r = wake(o, at("2026-10-28T10:42:30Z"), undefined, { events: [msg] as never });
+    const reply = r.actions.find((a) => a.action === "store_reply");
+    assert.ok(reply?.idemKey.endsWith(":overdue"), reply?.idemKey);
+    assert.match(String(reply?.params.text), /report was due .* and is overdue — chasing Redcliffe now/);
+    assert.doesNotMatch(String(reply?.params.text), /expected by/);
+    const ask = r.actions.find((a) => a.action === "ask" && a.idemKey.endsWith(":chase"));
+    assert.equal(ask?.params.checkpoint, "report_delivered");
+    assert.equal(ask?.params.urgent, true);
+  });
   it("a store's reschedule with a time is noted, becomes a task, and the lab is told the time", () => {
     const o = order({ labRef: "BLR6365554", appointmentTime: at("2026-10-25T05:15:00Z") }); // 10:45 am IST today
     const msg = { kind: "store_message", at: at("2026-10-25T04:01:00Z"), actor: "STORE", payload: { intent: "reschedule", text: "94103 - Please schedule urine sample collection at 10:45 am", messageId: "m-rs", waMsgId: "w7" } };

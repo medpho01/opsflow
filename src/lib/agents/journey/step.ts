@@ -104,6 +104,8 @@ export type StepInput = {
   slotSummary?: string | null;
   /** Hours since the lab's group last wrote, for risk; null when unknown. */
   labSilentHours?: number | null;
+  /** Can the desk chase this lab itself (a connected group with a LIVE lab desk)? Default yes. */
+  labChaseable?: boolean;
   timeZone?: string;
 };
 
@@ -688,8 +690,19 @@ export function step(input: StepInput): StepOutput {
             }
           };
           if (reportOverdue) {
-            actions.push({ desk: "STORE", action: "store_reply", params: { text: `#${order.id}: sample collected ${fmt(collected!.metAt)}; the report was due ${fmtDay(report!.dueAt)} and is overdue — chasing ${order.labName ?? "the lab"} now, will update here.`, orderId: order.id, storeId: order.storeId, intent: m.intent, ...quote }, reason: `store asked for ${m.intent}; the report is overdue since ${fmtDay(report!.dueAt)}`, idemKey: `${key}:overdue` });
-            chase(`store asked about #${order.id}; the report is overdue`, true);
+            // Once a day per order, not once per message: the store heard it, and a second
+            // "overdue — chasing" on the same order reads as a bot going round in circles
+            // (28 Oct 2026, #94284 twice). The lab is chased when the desk can; otherwise a person
+            // is tagged, because "chasing Thyrocare now" with no Thyrocare desk is a claim nobody acts on.
+            const day = now.toLocaleDateString("en-CA", { timeZone: tz });
+            const due = fmtDay(report!.dueAt);
+            if (input.labChaseable !== false) {
+              actions.push({ desk: "STORE", action: "store_reply", params: { text: `#${order.id}: sample collected ${fmt(collected!.metAt)}; the report was due ${due} and is overdue — chasing ${order.labName ?? "the lab"} now, will update here.`, orderId: order.id, storeId: order.storeId, intent: m.intent, ...quote }, reason: `store asked for ${m.intent}; the report is overdue since ${due}`, idemKey: `store:${order.id}:overdue:${day}` });
+              chase(`store asked about #${order.id}; the report is overdue`, true);
+            } else {
+              actions.push({ desk: "STORE", action: "store_handoff", params: { orderId: order.id, storeId: order.storeId, intent: "report", note: `report overdue (was due ${due}) — please chase ${order.labName ?? "the lab"} and update the store`, ...quote }, reason: `store asked for ${m.intent}; the report is overdue since ${due} and ${order.labName ?? "the lab"} has no desk to chase it through`, idemKey: `store:${order.id}:overdue-handoff:${day}` });
+              actions.push({ desk: "STORE", action: "create_task", params: { taskType: "AGENT_REPORT_UPLOAD", orderId: order.id, cause: "REPORT_OVERDUE", evidence: [{ kind: "store_msg", at: m.at.toISOString(), text: m.text.slice(0, 300) }], action: `#${order.id}: report overdue since ${due} — chase ${order.labName ?? "the lab"}, upload the report, tell the store`, dueInMinutes: 60 }, reason: `report overdue since ${due}; the store is asking`, idemKey: `store:${order.id}:overdue-task:${day}` });
+            }
             break;
           }
           const canAnswer = known && (consoleExplains || !(m.intent !== "report" && slotPassed && collected?.status !== "MET"));
@@ -722,6 +735,8 @@ export function step(input: StepInput): StepOutput {
           break;
         }
         case "complaint":
+          // A person answers a complaint, and is tagged now — not a task nobody in the group sees.
+          actions.push({ desk: "STORE", action: "store_handoff", params: { orderId: order.id, storeId: order.storeId, intent: "complaint", ...quote }, reason: "store complained; a person answers", idemKey: `${key}:complaint-handoff` });
           actions.push({ desk: "STORE", action: "create_task", params: { taskType: "AGENT_COMPLAINT", orderId: order.id, cause: "STORE_COMPLAINT", evidence: [{ kind: "store_msg", at: m.at.toISOString(), text: m.text.slice(0, 300) }], action: `Reply to the store's complaint about #${order.id}; the timeline and a draft are on the task`, draft: true, dueInMinutes: 120 }, reason: "store complained", idemKey: `${key}:complaint` });
           break;
         case "serviceability":

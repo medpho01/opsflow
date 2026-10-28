@@ -117,7 +117,8 @@ export async function storeHandoff(action: ProposedAction, ctx: ExecuteContext):
   const who = jids.map((j) => `@${j.split("@")[0]}`).join(" ") || "Team";
   const intent = String(action.params.intent ?? "other");
   const why = action.params.labNotOnBot ? ` (${ctx.labName ?? "the lab"} is not on WhatsApp with us)` : "";
-  const text = `${who} — #${ctx.orderId}: ${INTENT_WORDS[intent] ?? "question"} from the store${why}, please take this one.`;
+  const note = typeof action.params.note === "string" && action.params.note.trim() ? action.params.note.trim() : null;
+  const text = note ? `${who} — #${ctx.orderId}: ${note}.` : `${who} — #${ctx.orderId}: ${INTENT_WORDS[intent] ?? "question"} from the store${why}, please take this one.`;
   const now = new Date();
   const r = await enqueueOutbox({
     counterparty: `STORE:${storeId}`, ask: "STORE_HANDOFF", orderId: ctx.orderId, journeyId: ctx.journeyId, actionId: ctx.actionId,

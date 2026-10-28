@@ -18,6 +18,7 @@ import { loadLiveSops, paramsFor, type LiveSop } from "../sop/load";
 import { loadDirectory, tierOf, type Directory } from "../directory";
 import { withdrawOutbox } from "../executors/dispatcher";
 import { caseWorker } from "../caseworker";
+import { labChaseable } from "../store/scope";
 
 export type WakeReason = "sweep" | "timer" | "console_change" | "opened" | "person" | "inbound" | "block_start" | "risk_batch";
 
@@ -90,7 +91,8 @@ export async function wakeJourney(orderId: number, reason: WakeReason, opts: Wak
   const pending = row ? await prisma.agentJourneyEvent.findMany({ where: { journeyId: row.id, applied: false }, orderBy: { at: "asc" } }) : [];
   const events: JourneyEvent[] = pending.map((e) => ({ kind: e.kind, at: e.at, actor: e.actor, payload: (e.payload as Record<string, unknown>) ?? {} }));
 
-  const [sops, directory] = await Promise.all([opts.sops ?? loadLiveSops(), opts.directory ?? loadDirectory()]);
+  const [sops, directory, guardState] = await Promise.all([opts.sops ?? loadLiveSops(), opts.directory ?? loadDirectory(), opts.guardState ?? loadGuardState()]);
+  const labChaseableNow = await labChaseable(order.labId, guardState.desks).catch(() => false);
   const labTier = tierOf(directory, order.labId);
   // A portal rung only makes sense with a logged-in session; otherwise the ask goes to the group.
   const portalReady = order.labId != null && labTier !== "C"
@@ -104,7 +106,7 @@ export async function wakeJourney(orderId: number, reason: WakeReason, opts: Wak
     ? await typicalSlotsFor(order.labId, order.labName).catch(() => null) : null;
   const out = step({
     now, order, journey: row ? toJourneyState(row) : null, checkpoints: row ? row.checkpoints.map(toCheckpointState) : [], events,
-    sop: sopParams, sopVersionId: labSop?.versionId ?? null, labTier, portalReady, slotSummary, labSilentHours: opts.labSilentHours ?? null, timeZone: process.env.TIMEZONE || "Asia/Kolkata",
+    sop: sopParams, sopVersionId: labSop?.versionId ?? null, labTier, portalReady, slotSummary, labSilentHours: opts.labSilentHours ?? null, timeZone: process.env.TIMEZONE || "Asia/Kolkata", labChaseable: labChaseableNow,
   });
   const j = out.journey;
   const snapshot = j.consoleSnapshot ? { ...j.consoleSnapshot, __journey: { rescheduleCount: j.rescheduleCount } } : null;
@@ -166,7 +168,7 @@ export async function wakeJourney(orderId: number, reason: WakeReason, opts: Wak
   const attempts: Record<string, Attempt> = { ...j.attempts };
   let attemptsChanged = false;
   if (out.actions.length) {
-    const state = opts.guardState ?? await loadGuardState();
+    const state = guardState;
     for (const action of out.actions) {
       if (await repeatsRecentAlert(orderId, action, now)) continue;
       const r = await guard(action, {
@@ -194,7 +196,7 @@ export async function wakeJourney(orderId: number, reason: WakeReason, opts: Wak
       const allowed = [...new Set([...(sopParams?.menu ?? []), ...(paramsFor(sops.get("STORE"), { labTier, labId: order.labId, storeId: order.storeId, orderType: order.orderType })?.menu ?? [])])];
       const proposed = await caseWorker({ ...out.caseworker, orderId }, journeyId, allowed);
       if (proposed) {
-        const state = opts.guardState ?? await loadGuardState();
+        const state = guardState;
         const r = await guard({ ...proposed, params: { ...proposed.params, alwaysSuggest: true } }, {
           journeyId, orderId, labId: j.labId, storeId: j.storeId, labTier, sopVersionId: labSop?.versionId ?? null,
           orderType: order.orderType, appointmentTime: order.appointmentTime, patientName: order.patientName, labName: order.labName, storeName: order.storeName,

@@ -70,8 +70,11 @@ describe("when the desk should have stayed quiet (28 Oct 2026, Plum's first live
 describe("the desk's scope (28 Oct 2026)", () => {
   it("a grievance is a complaint whatever else it looks like", async () => {
     const { complaintSignal } = await import("../store/scope");
-    for (const t of ["90130 - doctor consultation is not done for this centre visit please check", "92410 - samples collected but cancelled", "94547 - was created as a dummy order was informed reports will be uploaded", "94721 - samples not collected and no one is assigned last time also they collected the samples and cancelled the order"]) assert.equal(complaintSignal(t), true, t);
-    for (const t of ["94165 - please upload reports", "any update on this?", "94872 - please give urine sample slots for today", "why was it cancelled?"]) assert.equal(complaintSignal(t), false, t);
+    for (const t of ["90130 - doctor consultation is not done for this centre visit please check", "92410 - samples collected but cancelled", "94547 - was created as a dummy order was informed reports will be uploaded", "94721 - samples not collected and no one is assigned last time also they collected the samples and cancelled the order", "exactly!! The TAT is breached already", "94284 - report is overdue", "still waiting for the report"]) assert.equal(complaintSignal(t), true, t);
+    for (const t of ["94165 - please upload reports", "any update on this?", "94872 - please give urine sample slots for today", "why was it cancelled?", "report tat for this test?"]) assert.equal(complaintSignal(t), false, t);
+    const { ABOUT_THE_BOT_RE } = await import("../store/scope");
+    assert.ok(ABOUT_THE_BOT_RE.test("Is this message through Bot or what ??"));
+    assert.ok(!ABOUT_THE_BOT_RE.test("94165 - please upload reports"));
   });
   it("a message for a named team member, or 'as discussed', is theirs", async () => {
     const { addressedToPerson } = await import("../store/scope");

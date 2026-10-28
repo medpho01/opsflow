@@ -21,7 +21,7 @@ import { makeTeamMatcher, type TeamContact } from "@/lib/wa/team";
  * A grievance about what happened, not a question about where things stand: the store already
  * knows the status and is unhappy with it. Answered with a status line it reads as a brush-off.
  */
-export const COMPLAINT_SIGNAL_RE = /\b(not done|wasn'?t done|was not done|dummy order|collected but|but (got |was |were |it was |they )?cancell?ed|last time also|again and again|no ?one (is |was |has been )?(assigned|attended|came)|never (came|turned up|collected|happened)|still not (collected|done|uploaded|shared|received)|not (shared|uploaded|collected|done) on time|same (user|issue|problem) (again|as)|what is happening|this is not acceptable)\b/i;
+export const COMPLAINT_SIGNAL_RE = /\btat\b[^.\n]{0,12}\b(breach|over|exceed|cross)|\b(overdue|not done|wasn'?t done|was not done|dummy order|collected but|but (got |was |were |it was |they )?cancell?ed|last time also|again and again|no ?one (is |was |has been )?(assigned|attended|came)|never (came|turned up|collected|happened)|still not (collected|done|uploaded|shared|received)|not (shared|uploaded|collected|done) on time|same (user|issue|problem) (again|as)|what is happening|this is not acceptable|still (waiting|pending)|no (report|update) (yet|till now|so far))\b/i;
 
 /** A reply that only says we are on it: worth nothing if a person already said so, or if we said it before. */
 export const STORE_ACK_RE = /checking with .+will update here|noted, we'll confirm|is with .+we'll confirm here/i;
@@ -99,3 +99,18 @@ export function makeLabScope(desks: Map<string, string>): LabScope {
     return p;
   };
 }
+
+/**
+ * Can the desk chase this lab itself — a connected lab group with a LIVE lab desk? An API lab
+ * without one (Thyrocare, 28 Oct 2026) is "on the bot" for status, but "chasing Thyrocare now"
+ * would be a claim nobody acts on: that order's chase is a person's.
+ */
+export async function labChaseable(labId: number | null, desks: Map<string, string>): Promise<boolean> {
+  if (labId == null || desks.get(`LAB:LAB:${labId}`) !== "LIVE") return false;
+  const g = await prisma.waGroup.findFirst({ where: { labId, role: "PROVIDER", active: true, archivedAt: null }, select: { id: true } }).catch(() => null);
+  return !!g;
+}
+
+/** "Is this a bot?" and the like: a question about the desk, for a person — never answered with an order's status. */
+export const ABOUT_THE_BOT_RE = /\b(bot|automated|auto(matic)? (message|reply))\b/i;
+

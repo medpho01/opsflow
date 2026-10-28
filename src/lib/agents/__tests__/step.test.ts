@@ -126,12 +126,24 @@ describe("the ladder", () => {
     const msg = { kind: "store_message", at: at("2026-10-28T10:42:00Z"), actor: "STORE", payload: { intent: "status", text: "exactly!! The TAT is breached already", messageId: "m-od", waMsgId: "w-od" } };
     const r = wake(o, at("2026-10-28T10:42:30Z"), undefined, { events: [msg] as never });
     const reply = r.actions.find((a) => a.action === "store_reply");
-    assert.ok(reply?.idemKey.endsWith(":overdue"), reply?.idemKey);
+    assert.equal(reply?.idemKey, "store:92288:overdue:2026-10-28", "once per order per day, not per message");
     assert.match(String(reply?.params.text), /report was due .* and is overdue — chasing Redcliffe now/);
     assert.doesNotMatch(String(reply?.params.text), /expected by/);
     const ask = r.actions.find((a) => a.action === "ask" && a.idemKey.endsWith(":chase"));
     assert.equal(ask?.params.checkpoint, "report_delivered");
     assert.equal(ask?.params.urgent, true);
+    // A lab the desk cannot chase (an API lab with no WhatsApp desk, Thyrocare): no "chasing now";
+    // a person is tagged with the overdue and a task is opened (28 Oct 2026, #94284).
+    const t = wake(order({ ...o, labName: "Thyrocare India" }), at("2026-10-28T10:42:30Z"), undefined, { events: [msg] as never, labChaseable: false } as never);
+    assert.ok(!t.actions.some((a) => a.action === "store_reply" || (a.action === "ask" && a.idemKey.endsWith(":chase"))), acts(t).join(","));
+    const handoff = t.actions.find((a) => a.action === "store_handoff");
+    assert.match(String(handoff?.params.note), /^report overdue \(was due .*\) — please chase Thyrocare India and update the store$/);
+    assert.equal(t.actions.find((a) => a.action === "create_task")?.params.taskType, "AGENT_REPORT_UPLOAD");
+  });
+  it("a complaint tags a person in the group as well as opening the task", () => {
+    const msg = { kind: "store_message", at: at("2026-10-28T09:45:00Z"), actor: "STORE", payload: { intent: "complaint", text: "90130 - doctor consultation was not done", messageId: "m-cp", waMsgId: "w-cp" } };
+    const r = wake(order(), at("2026-10-28T09:45:30Z"), undefined, { events: [msg] as never });
+    assert.deepEqual(acts(r).filter((a) => a === "store_handoff" || a === "create_task"), ["store_handoff", "create_task"]);
   });
   it("a store's reschedule with a time is noted, becomes a task, and the lab is told the time", () => {
     const o = order({ labRef: "BLR6365554", appointmentTime: at("2026-10-25T05:15:00Z") }); // 10:45 am IST today

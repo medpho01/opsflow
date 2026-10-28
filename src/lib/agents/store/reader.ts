@@ -20,7 +20,7 @@ import { enqueueOutbox } from "../executors/dispatcher";
 import { liveStoreBody } from "../executors/storeReply";
 import { guard, loadGuardState } from "../guard/guard";
 import { fetchOrderSnapshot } from "../journey/window";
-import { addressedTeamMember, complaintSignal, makeLabScope } from "./scope";
+import { ABOUT_THE_BOT_RE, addressedTeamMember, complaintSignal, makeLabScope } from "./scope";
 
 export type StoreIntent = "status" | "report" | "slot" | "reschedule" | "cancel" | "change_tests" | "new_booking" | "serviceability" | "complaint" | "noise" | "other";
 
@@ -186,6 +186,15 @@ async function answerClosedOrder(orderId: number, storeId: number, intent: Store
   return { executed, review };
 }
 
+const ENGAGED_WINDOW_MS = 2 * 3_600_000;
+
+/** Did a team member write about this order in the group recently? Then the order is theirs for now. */
+async function teamEngaged(groupId: string, orderId: number, at: Date, isTeam: (sender: string, jid: string | null) => unknown): Promise<boolean> {
+  const recent = await prisma.waMessage.findMany({ where: { groupId, direction: "IN", fromMe: false, ts: { gte: new Date(at.getTime() - ENGAGED_WINDOW_MS), lte: at } }, select: { sender: true, senderJid: true, text: true }, take: 200 }).catch(() => []);
+  const idRe = new RegExp(`(?<![\\d])#?${orderId}(?![\\d])`);
+  return recent.some((x) => isTeam(x.sender, x.senderJid) && idRe.test(x.text ?? ""));
+}
+
 export async function runStoreReader(now = new Date()): Promise<StoreReaderResult> {
   const result: StoreReaderResult = { read: 0, linked: 0, answered: 0, tasks: 0, review: 0 };
   const groups = await prisma.waGroup.findMany({ where: { role: "SUPPORT", active: true, archivedAt: null, storeId: { not: null } }, select: { id: true, storeId: true, jid: true } });
@@ -236,7 +245,9 @@ export async function runStoreReader(now = new Date()): Promise<StoreReaderResul
     // agent). A store quoting its own earlier question is only a nudge, and that is ours.
     const quotedOurs = !!m.replyToWaId && !!(await prisma.waOutbound.findFirst({ where: { sentWaMsgId: m.replyToWaId }, select: { id: true } }));
     const inHumanThread = !!quoted && !quotedOurs && (quoted.fromMe || !!isTeam(quoted.sender, quoted.senderJid));
-    const forPerson = !!addressed || inHumanThread;
+    // "Is this message through Bot or what??" is about the desk, for a person (28 Oct 2026).
+    const aboutTheBot = ABOUT_THE_BOT_RE.test(text) && /\?/.test(text);
+    const forPerson = !!addressed || inHumanThread || aboutTheBot;
     // The model's ids count only when the store wrote them, here or in the message it quoted: the
     // model learns from the group's recent messages and has returned an order from those instead
     // (26 Oct 2026: "94301 - RNR" linked to 94188, "93807 93811 …" to 93412).
@@ -274,6 +285,9 @@ export async function runStoreReader(now = new Date()): Promise<StoreReaderResul
     const snapshot = await fetchOrderSnapshot(link.orderId).catch(() => null);
     if (!thread && THREAD_KINDS.has(intent)) await openThread({ orderId: link.orderId, storeId: g.storeId!, groupId: m.groupId, kind: intent, messageId: m.id, waMsgId: m.waMsgId, text, at: m.ts, order: snapshot });
     if (forPerson) continue;
+    // A person on our side wrote about this order in the group in the last two hours ("I'll take
+    // care of this"): the order is theirs for now; the desk neither answers nor chases on it.
+    if (await teamEngaged(m.groupId, link.orderId, m.ts, isTeam)) continue;
     // An order with a lab the bot cannot work with (no API, no connected group with a live desk)
     // is the team's: handed over, never "checking with <lab>" (28 Oct 2026: Suburban Diagnostics).
     if (snapshot?.labId != null && !(await labOnBot(snapshot.labId))) {

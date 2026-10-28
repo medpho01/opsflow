@@ -405,13 +405,14 @@ export function step(input: StepInput): StepOutput {
   const changes = changed ? classifyChange(before, order) : [];
   // The store asked for a change that is still pending: a move the console now shows is theirs.
   const storeAskedToMove = journey.subStates.includes("change_pending");
+  const requestedMove = journey.subStates.find((s) => s.startsWith("requested:"))?.slice(10) ?? null;
   if (changed) {
     const resets = changes.includes("RESCHEDULED") || changes.includes("REROUTED");
     const rebuild = changes.includes("TYPE_CHANGED");
     const oldDue = Object.fromEntries(checkpoints.map((c) => [c.name, c.dueAt.toISOString()]));
     checkpoints = waiveImplied(buildCheckpoints(order, checkpoints, now, { recomputePreCollection: resets, rebuildAll: rebuild, labTier: input.labTier, sop: input.sop }));
     if (resets || rebuild) {
-      journey = { ...journey, attempts: {}, subStates: journey.subStates.filter((s) => s !== "change_pending"), rescheduleCount: journey.rescheduleCount + (changes.includes("RESCHEDULED") ? 1 : 0) };
+      journey = { ...journey, attempts: {}, subStates: journey.subStates.filter((s) => s !== "change_pending" && !s.startsWith("requested:")), rescheduleCount: journey.rescheduleCount + (changes.includes("RESCHEDULED") ? 1 : 0) };
       withdraw.push({ reason: changes.includes("REROUTED") ? "re-routed to another lab" : "rescheduled" });
     }
     newEvents.push({
@@ -456,7 +457,11 @@ export function step(input: StepInput): StepOutput {
       // A move the store itself asked for is confirmed as done — no patient name, no "patient
       // unavailable", no "please let the customer know" (28 Oct 2026: Plum asked for 9 am and read
       // "The lab has rescheduled… Patient unavailable"; Sushma then confirmed it again by hand).
-      if (storeAskedToMove) actions.push({ desk: "STORE", action: "ack", params: { template: "STORE_CONFIRMED_CHANGE", orderId: order.id, storeId: order.storeId, change: `moved to ${when} as requested`, intent: "status" }, reason: `LabStack: visit moved to ${when} as the store asked`, idemKey: `console-moved:${order.id}:${order.appointmentTime.getTime()}` });
+      // "As requested" only when the console landed on the time the store asked for (within 15 min);
+      // a move to another time is the lab's news, and the store must hear the difference (28 Oct
+      // 2026: asked 9:45, moved to 8:30, told "done — moved to 8:30 as requested").
+      const matchesRequest = !requestedMove || Math.abs(order.appointmentTime.getTime() - new Date(requestedMove).getTime()) <= 15 * MIN;
+      if (storeAskedToMove && matchesRequest) actions.push({ desk: "STORE", action: "ack", params: { template: "STORE_CONFIRMED_CHANGE", orderId: order.id, storeId: order.storeId, change: `moved to ${when} as requested`, intent: "status" }, reason: `LabStack: visit moved to ${when} as the store asked`, idemKey: `console-moved:${order.id}:${order.appointmentTime.getTime()}` });
       else actions.push({ desk: "STORE", action: "store_alert", params: { template: "STORE_LAB_RESCHEDULED", orderId: order.id, storeId: order.storeId, fact: "console_rescheduled", detail: `now ${when}${note}`, at: now.toISOString() }, reason: `LabStack: visit moved to ${when}${note}`, idemKey: `console-moved:${order.id}:${order.appointmentTime.getTime()}` });
     }
   } else {
@@ -732,6 +737,8 @@ export function step(input: StepInput): StepOutput {
           }
           actions.push({ desk: "STORE", action: "create_task", params: { taskType, orderId: order.id, cause: `STORE_${m.intent.toUpperCase()}`, evidence: [{ kind: "store_msg", at: m.at.toISOString(), text: m.text.slice(0, 300) }], action: m.intent === "reschedule" ? `Reschedule #${order.id}${requested ? ` to ${fmtDay(requested)}` : " as the store asked"} in the console` : m.intent === "cancel" ? `Cancel #${order.id} in the console` : `Change #${order.id}'s tests as the store asked, then tell the lab`, verify: m.intent === "reschedule" ? (requested ? { kind: "slot_equals", value: requested.toISOString() } : { kind: "none" }) : m.intent === "cancel" ? { kind: "status_at_least", value: "CANCELED" } : { kind: "none" }, dueInMinutes: 30 }, reason: `store asked to ${m.intent.replace("_", " ")}: "${m.text.slice(0, 80)}"`, idemKey: `${key}:task` });
           if (!journey.subStates.includes("change_pending")) journey = { ...journey, subStates: [...journey.subStates, "change_pending"] };
+          // The time asked for, so the console's move can be checked against it.
+          journey = { ...journey, subStates: [...journey.subStates.filter((s) => !s.startsWith("requested:")), ...(requested && m.intent === "reschedule" ? [`requested:${requested.toISOString()}`] : [])] };
           break;
         }
         case "complaint":

@@ -306,6 +306,10 @@ describe("the console moving", () => {
     assert.equal(confirm?.params.template, "STORE_CONFIRMED_CHANGE");
     assert.match(String(confirm?.params.change), /^moved to Thu, 29 Oct, 9:00 am as requested$/);
     assert.ok(!out.journey.subStates.includes("change_pending"));
+    // Moved to a different time than asked: the lab's news, not "as requested" (28 Oct 2026: asked 9:45, moved to 8:30).
+    const elsewhere = order({ orderStatus: "RESCHEDULED", appointmentTime: at("2026-10-29T02:30:00Z"), statusUpdatedAt: at("2026-10-28T09:50:00Z") });
+    const other = wake(elsewhere, at("2026-10-28T09:51:00Z"), asked);
+    assert.equal(other.actions.find((a) => a.idemKey.startsWith("console-moved:"))?.params.template, "STORE_LAB_RESCHEDULED");
     // Unasked, the same move is the lab's news for the store.
     const lab = wake(moved, at("2026-10-28T09:51:00Z"), wake(o, at("2026-10-28T09:46:00Z")));
     assert.equal(lab.actions.find((a) => a.idemKey.startsWith("console-moved:"))?.params.template, "STORE_LAB_RESCHEDULED");

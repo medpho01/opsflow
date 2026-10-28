@@ -260,11 +260,19 @@ export async function runStoreReader(now = new Date()): Promise<StoreReaderResul
     // a nudge: it never falls through to "the open thread" (27 Oct 2026: "#122009" linked to #94389).
     const wroteAnId = explicitOrderIds(text).length > 0;
     let candidates: number[] = [];
+    if (!links.length && !wroteAnId && !m.replyToWaId) {
+      // "TAT breached by 2 days." a minute after the same person's "94284 - please share the report":
+      // one message in two lines, not a new question to ask "which order?" about (28 Oct 2026).
+      const prev = messages.slice(0, messages.indexOf(m)).reverse().find((x) => x.senderJid === m.senderJid && m.ts.getTime() - x.ts.getTime() <= 3 * 60_000 && explicitOrderIds(x.text ?? "").length);
+      if (prev) links = (await writtenOrders(prev.text ?? "", g.storeId!)).slice(0, 5).map((orderId) => ({ orderId, via: "CONTINUATION" }));
+    }
     if (!links.length && !wroteAnId) {
       const t = await threadForNudge({ storeId: g.storeId!, replyToWaId: m.replyToWaId, at: m.ts }).catch(() => null);
       if (t) { links = [{ orderId: t.orderId, via: "THREAD" }]; thread = t; }
       else if (!m.replyToWaId) candidates = await openThreadOrders(g.storeId!, m.ts).catch(() => []);
     }
+    // "2251875 - @Gokul to follow up": the store tagging its own colleague is not asking us.
+    if (!links.length && /@\d{5,}/.test(text) && !addressed) continue;
     const link = links[0] ?? null;
     await prisma.waMessage.update({ where: { id: m.id }, data: { intent: `STORE_${intent.toUpperCase()}` } }).catch(() => undefined);
     if (!link) {

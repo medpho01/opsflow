@@ -21,7 +21,7 @@ import { coordinatorsFor } from "@/lib/wa/coordinators";
 import { opsGroup } from "../ops/group";
 import { fetchOrderSnapshots } from "../journey/window";
 import { reached, type OrderSnapshot } from "../journey/policy";
-import { currentSlot, isSlotOpen, itemLine, localParts } from "@/lib/provider-rules/batching";
+import { atLocal, currentSlot, isSlotOpen, itemLine, localParts } from "@/lib/provider-rules/batching";
 import { formatTime, TIME_ZONE } from "@/lib/provider-rules/format";
 import { confirmationUrl } from "@/lib/non-api-labs/confirmation-link";
 import { fetchOrderContactDetails } from "@/lib/non-api-labs/order-details";
@@ -459,6 +459,8 @@ async function flushOps(group: Item[], now: Date) {
 }
 
 const ACK_HOLD_MS = 3 * 60_000;
+/** Replies the desk may send on one order in a day before a person is tagged instead. */
+export const STORE_REPLIES_PER_ORDER_PER_DAY = 2;
 
 /**
  * Why a store reply should not go after all (28 Oct 2026, Plum): the same words went to the
@@ -492,8 +494,31 @@ async function flushStore(storeId: number, group: Item[], now: Date) {
       const recent = await prisma.waMessage.findMany({ where: { groupId: g.id, direction: "IN", fromMe: false, ts: { gte: new Date(i.createdAt.getTime() - 5 * 60_000) } }, select: { sender: true, senderJid: true, text: true, replyToWaId: true }, take: 50 }).catch(() => []);
       teamAnswered = recent.some((m) => isTeam!(m.sender, m.senderJid) && ((quoted && m.replyToWaId === quoted) || (i.orderId > 0 && idRe.test(m.text ?? ""))));
     }
-    const redundant = storeReplyRedundant({ text, orderId: i.orderId, createdAt: i.createdAt, now, sameTextSent, teamAnswered });
+    let redundant: string | null = storeReplyRedundant({ text, orderId: i.orderId, createdAt: i.createdAt, now, sameTextSent, teamAnswered });
     if (redundant === "hold") { held += 1; continue; }
+    // A console alert right after a team member told the store the same thing is noise (28 Oct 2026:
+    // Deepali confirmed two bookings at 17:11; "the lab has rescheduled" followed at 17:16).
+    if (!redundant && i.ask === "STORE_ALERT" && i.orderId > 0) {
+      if (!isTeam) { const { loadTeam, makeTeamMatcher } = await import("@/lib/wa/team"); isTeam = makeTeamMatcher(await loadTeam()); }
+      const idRe = new RegExp(`(?<![\\d])#?${i.orderId}(?![\\d])`);
+      const recent = await prisma.waMessage.findMany({ where: { groupId: g.id, direction: "IN", fromMe: false, ts: { gte: new Date(i.createdAt.getTime() - 30 * 60_000), lte: i.createdAt } }, select: { sender: true, senderJid: true, text: true }, take: 100 }).catch(() => []);
+      if (recent.some((m) => isTeam!(m.sender, m.senderJid) && idRe.test(m.text ?? ""))) redundant = "team answered";
+    }
+    // Two replies on one order in a day is the desk's limit; the third means the order needs a
+    // person, who is tagged instead (28 Oct 2026: #94284 heard "checking", "expected by", "overdue").
+    if (!redundant && ["STORE_REPLY", "ACK"].includes(i.ask) && i.orderId > 0) {
+      const dayStart = atLocal(now, TIME_ZONE(), 0, 0);
+      const today = await prisma.agentOutboxItem.count({ where: { counterparty: i.counterparty, orderId: i.orderId, ask: { in: ["STORE_REPLY", "ACK"] }, status: "SENT", sentAt: { gte: dayStart } } }).catch(() => 0);
+      if (today >= STORE_REPLIES_PER_ORDER_PER_DAY) {
+        redundant = "third reply today — handed to the team";
+        const { handoffTargets } = await import("./storeReply");
+        const { addressedTeamMember, mentionJid } = await import("../store/scope");
+        const team = await (await import("@/lib/wa/team")).loadTeam();
+        const jids = await handoffTargets({ groupId: g.id, orderId: i.orderId, quotedWaId: quoted, isTeam: isTeam ?? (await import("@/lib/wa/team")).makeTeamMatcher(team), mentioned: async (t) => (await addressedTeamMember(t, team).catch(() => null))?.ids.map(mentionJid) ?? [] }).catch(() => [] as string[]);
+        const who = jids.map((j) => `@${j.split("@")[0]}`).join(" ") || "Team";
+        await enqueueOutbox({ counterparty: i.counterparty, ask: "STORE_HANDOFF", orderId: i.orderId, journeyId: i.journeyId, actionId: null, windowFrom: now, windowTo: new Date(now.getTime() + 6 * 3_600_000), urgent: true, immediate: true, idemKey: `handoff-cap:${i.counterparty}:${i.orderId}:${dayStart.toISOString().slice(0, 10)}`, line: { orderId: i.orderId, patientName: null, appointment: null }, text: `${who} — #${i.orderId}: the store is still asking and the desk has answered twice today, please take this one.`, extra: { quotedWaId: quoted, mentions: jids } }).catch(() => undefined);
+      }
+    }
     if (redundant) {
       await prisma.agentOutboxItem.update({ where: { id: i.id }, data: { status: "DROPPED" } });
       if (i.actionId) await prisma.agentAction.update({ where: { id: i.actionId }, data: { outcome: "BLOCKED", blockedBy: `not sent: ${redundant}` } }).catch(() => undefined);

@@ -8,7 +8,13 @@
 # builds app + gateway, restarts, and prints the health check.
 set -euo pipefail
 PKG="${1:-}"
-[ -f "$PKG" ] || { echo "usage: bash scripts/deploy.sh ~/prebuilt-next-<sha>.tar.gz"; exit 2; }
+[ -n "$PKG" ] || { echo "usage: bash scripts/deploy.sh ~/prebuilt-next-<sha>.tar.gz"; exit 2; }
+[ -f "$PKG" ] || {
+  echo "✗ $PKG is not on this VM."
+  echo "  Upload it first: UPLOAD FILE (top right of SSH-in-browser) → pick $(basename "$PKG") from your Mac's Downloads → wait for 'File transfer complete' → run this command again."
+  echo "  Packages on this VM now:"; ls -1t ~/prebuilt-next-*.tar.gz 2>/dev/null | head -5 | sed 's/^/    /'
+  exit 2
+}
 SHA=$(basename "$PKG" | sed -E 's/^prebuilt-next-([0-9a-f]+)\.tar\.gz$/\1/')
 cd "$(dirname "$0")/.."
 git pull -q --ff-only

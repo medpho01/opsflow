@@ -786,7 +786,7 @@ const SIGNATURE = (process.env.WA_SIGNATURE ?? "Sent by Labstack Operations").tr
 function signText(text, senderName = null) {
   const body = (text || "").trimEnd();
   if (!SIGNATURE) return body;
-  if (body.includes(SIGNATURE)) return body; // already signed — don't double-sign
+  if (body.includes(SIGNATURE) || new RegExp(`_[^_\\n]{1,40}, ${SIGNATURE.replace(/^Sent by\\s+/i, "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}_\\s*$`).test(body)) return body; // already signed — don't double-sign
   const first = (senderName || "").trim().split(/\s+/)[0];
   const signature = first ? `${first}, ${SIGNATURE.replace(/^Sent by\s+/i, "")}` : SIGNATURE;
   return body ? `${body}\n\n_${signature}_` : `_${signature}_`;
@@ -1076,6 +1076,10 @@ export async function drainOutbound(send, { limit = 5, sendPoll = null } = {}) {
        FROM claimed c LEFT JOIN wa_groups g ON g.id = c."groupId" LEFT JOIN users u ON u.id = c."createdById"
       ORDER BY c."createdAt" ASC`, [limit]
   )).rows;
+  // The engine's own messages are signed with the agent's name when one is set on Agents ›
+  // Controls ("Asha, Labstack Operations"), so partners talk to a colleague, not "the bot".
+  let agentName = null;
+  try { agentName = (await taskosQuery(`SELECT "agentName" FROM agent_settings WHERE id = 'default'`)).rows[0]?.agentName || null; } catch { agentName = null; }
   let sent = 0;
   for (const row of rows) {
     // a group target must be send-enabled; non-group (raw number) sends are allowed
@@ -1102,7 +1106,7 @@ export async function drainOutbound(send, { limit = 5, sendPoll = null } = {}) {
       // @-mentions: jids to notify (the text already carries "@<localpart>").
       let mentions = null;
       try { mentions = Array.isArray(row.mentions) ? row.mentions : (row.mentions ? JSON.parse(row.mentions) : null); } catch { mentions = null; }
-      const signed = signText(row.text, row.createdById != null ? row.senderName : null);
+      const signed = signText(row.text, row.createdById != null ? row.senderName : agentName);
       const waId = await send(row.targetJid, signed, { quoted, media, mentions: mentions?.length ? mentions : null });
       await taskosQuery(`UPDATE wa_outbound SET status='SENT', "sentWaMsgId"=$2, "sentAt"=now() WHERE id=$1`, [row.id, waId || null]);
       await recordSentMessage(row, waId, signed);

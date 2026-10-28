@@ -2315,6 +2315,9 @@ model AgentSettings {
   opsWatermark   DateTime?
   /// The coaching reader's watermark over wa_messages.
   coachWatermark DateTime?
+  /// What the agent is called (28 Oct 2026): the name it signs with ("Asha, Labstack Operations")
+  /// and answers to when coached ("Asha: …"). Set on Agents › Controls or by "bot: your name is Asha".
+  agentName      String?
 
   @@map("agent_settings")
 }

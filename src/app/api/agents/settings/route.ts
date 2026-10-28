@@ -23,12 +23,14 @@ export const GET = agentsRoute("settings", async (_request, { requestId }) => {
 });
 
 export const PUT = agentsRoute("settings", async (request, { requestId }) => {
-  const body = await request.json().catch(() => ({})) as { pausedAll?: boolean; pausedDesks?: string[]; pausedLabIds?: number[]; pausedStoreIds?: number[] };
+  const body = await request.json().catch(() => ({})) as { pausedAll?: boolean; pausedDesks?: string[]; pausedLabIds?: number[]; pausedStoreIds?: number[]; agentName?: string | null };
   if (body.pausedAll !== undefined && typeof body.pausedAll !== "boolean") return bad(requestId, "pausedAll must be a boolean");
+  if (body.agentName !== undefined && body.agentName !== null && !/^[A-Za-z][A-Za-z .'-]{0,23}$/.test(body.agentName)) return bad(requestId, "agentName: letters only, up to 24 characters");
+  const agentName = body.agentName === undefined ? undefined : (body.agentName?.trim() || null);
   const settings = await prisma.agentSettings.upsert({
     where: { id: "default" },
-    update: { ...(body.pausedAll !== undefined ? { pausedAll: body.pausedAll } : {}), ...(body.pausedDesks ? { pausedDesks: body.pausedDesks } : {}), ...(body.pausedLabIds ? { pausedLabIds: body.pausedLabIds.map(Number) } : {}), ...(body.pausedStoreIds ? { pausedStoreIds: body.pausedStoreIds.map(Number) } : {}) },
-    create: { id: "default", pausedAll: body.pausedAll ?? false, pausedDesks: body.pausedDesks ?? [], pausedLabIds: body.pausedLabIds ?? [], pausedStoreIds: body.pausedStoreIds ?? [] },
+    update: { ...(body.pausedAll !== undefined ? { pausedAll: body.pausedAll } : {}), ...(body.pausedDesks ? { pausedDesks: body.pausedDesks } : {}), ...(body.pausedLabIds ? { pausedLabIds: body.pausedLabIds.map(Number) } : {}), ...(body.pausedStoreIds ? { pausedStoreIds: body.pausedStoreIds.map(Number) } : {}), ...(agentName !== undefined ? { agentName } : {}) },
+    create: { id: "default", pausedAll: body.pausedAll ?? false, pausedDesks: body.pausedDesks ?? [], pausedLabIds: body.pausedLabIds ?? [], pausedStoreIds: body.pausedStoreIds ?? [], agentName: agentName ?? null },
   });
   return NextResponse.json({ ok: true, settings, requestId });
 }, { headOnly: true });

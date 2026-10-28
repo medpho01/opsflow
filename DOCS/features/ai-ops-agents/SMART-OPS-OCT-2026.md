@@ -146,3 +146,5 @@ Within the next store pass (seconds): the words become a lesson (`agent_coaching
 
 Limits, stated plainly: lessons steer the model-driven parts at once; a rule that only code enforces (a cap, a template) is proposed by the review, not changed live.
 
+**The agent's name.** Set on Agents › Controls, or from the internal group with "bot: your name is Asha". Every message the engine sends is then signed "_Asha, Labstack Operations_" (the gateway reads `agent_settings.agentName` on each drain; a person's console message keeps their own name), and a coach can address it as "Asha: …", "@Asha …" or "hey Asha, …". Nothing is renamed in code: the name is a setting.
+

@@ -32,8 +32,17 @@ import { postToOps } from "../ops/post";
 const FIRST_RUN_LOOKBACK_MS = 30 * 60_000;
 const last10 = (s: string | null | undefined) => (s || "").replace(/\D/g, "").slice(-10);
 
-export const COACH_PREFIX_RE = /^\s*(bot|agent|coach)\s*[:,\-–—]\s*/i;
+export const COACH_PREFIX_RE = /^\s*@?(bot|agent|coach)\s*[:,\-–—]\s*/i;
 export const COMMAND_RE = /^\s*(pause|stop|resume|start|unpause)\s+(all|everything|store|lab)\s*(.*?)\s*$/i;
+export const RENAME_RE = /^\s*(?:your name is|call yourself|you are called|name\s*[:=])\s*([A-Za-z][A-Za-z .'-]{0,23})\s*[.!]?\s*$/i;
+
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** "Asha: …", "@Asha …", "hey Asha, …" — the agent answers to its name as well as to "bot:". */
+export function coachPrefixRe(agentName: string | null): RegExp {
+  const names = ["bot", "agent", "coach", ...(agentName?.trim() ? [escapeRe(agentName.trim())] : [])].join("|");
+  return new RegExp(`^\\s*(?:(?:hey|hi|hello)\\s+)?@?(?:${names})\\s*[:,\\-–—]?\\s+`, "i");
+}
 
 export type CoachLesson = {
   kind: "wording" | "timing" | "linking" | "rule" | "handover" | "repeat" | "missed" | "scope" | "praise";
@@ -42,11 +51,14 @@ export type CoachLesson = {
   retireWording: boolean;
 };
 
-export type CoachCommand = { verb: "pause" | "resume"; target: "all" | "store" | "lab"; name: string };
+export type CoachCommand = { verb: "pause" | "resume"; target: "all" | "store" | "lab"; name: string } | { verb: "rename"; target: "self"; name: string };
 
-/** "pause store plum" → { pause, store, "plum" }; null when the text is not a command. */
-export function parseCommand(text: string): CoachCommand | null {
-  const m = COMMAND_RE.exec(text.replace(COACH_PREFIX_RE, ""));
+/** "pause store plum" → { pause, store, "plum" }; "your name is Asha" → rename; null when the text is not a command. */
+export function parseCommand(text: string, agentName: string | null = null): CoachCommand | null {
+  const words = text.replace(coachPrefixRe(agentName), "");
+  const r = RENAME_RE.exec(words);
+  if (r) return { verb: "rename", target: "self", name: r[1].trim().replace(/\s+/g, " ") };
+  const m = COMMAND_RE.exec(words);
   if (!m) return null;
   const verb = /^(pause|stop)$/i.test(m[1]) ? "pause" : "resume";
   const target = /^(all|everything)$/i.test(m[2]) ? "all" : (m[2].toLowerCase() as "store" | "lab");
@@ -95,6 +107,9 @@ export async function runCoachReader(now = new Date()): Promise<CoachReaderResul
   });
   if (!messages.length) return result;
   const ops = await opsGroup();
+  let agentName = settings.agentName ?? null;
+  let prefixRe = coachPrefixRe(agentName);
+  const signed = () => (agentName ? `\n— ${agentName}` : "");
   for (const m of messages) {
     result.read += 1;
     const text = (m.text ?? "").trim();
@@ -105,24 +120,25 @@ export async function runCoachReader(now = new Date()): Promise<CoachReaderResul
     const g = byGroup.get(m.groupId)!;
     // What it replies to: one of ours, with the outbox item that produced it (scope, order, wording).
     const ours = m.replyToWaId ? await prisma.waOutbound.findFirst({ where: { sentWaMsgId: m.replyToWaId }, select: { id: true, text: true } }).catch(() => null) : null;
-    const addressed = g.role === "INTERNAL" && COACH_PREFIX_RE.test(text);
+    const addressed = g.role === "INTERNAL" && prefixRe.test(text);
     if (!ours && !addressed) continue;
     try {
       const item = ours ? await prisma.agentOutboxItem.findFirst({ where: { outboundId: ours.id }, select: { counterparty: true, orderId: true, ask: true } }).catch(() => null) : null;
       const scope = item?.counterparty?.startsWith("STORE:") || item?.counterparty?.startsWith("LAB:") ? item.counterparty : g.storeId != null ? `STORE:${g.storeId}` : g.labId != null ? `LAB:${g.labId}` : "GLOBAL";
-      const words = text.replace(COACH_PREFIX_RE, "").trim();
+      const words = text.replace(prefixRe, "").trim();
       // "undo" in reply to a Noted post drops that lesson.
       if (ours && /^undo\b/i.test(words) && /📝 Noted/.test(ours.text)) {
         const dropped = await undoByNoted(ours.text);
         if (ops) await postToOps({ kind: "OPS_QUESTION", orderId: 0, idemKey: `coach:${m.id}`, now, quotedWaId: g.id === ops.id ? m.waMsgId : null, text: dropped ? "↩️ Dropped." : "That lesson was already gone." }).catch(() => undefined);
         continue;
       }
-      const command = parseCommand(text);
+      const command = parseCommand(text, agentName);
       if (command) {
         const done = await applyCommand(command, now);
+        if (command.verb === "rename" && done.ok) { agentName = command.name; prefixRe = coachPrefixRe(agentName); }
         await prisma.agentCoaching.create({ data: { contactId: coach.id, contactName: coach.name, groupId: m.groupId, waMsgId: m.waMsgId, outboundId: ours?.id ?? null, orderId: item?.orderId || null, scope: "GLOBAL", text: words, lesson: { command, done } , status: "COMMAND" } });
         result.commands += 1;
-        if (ops) await postToOps({ kind: "OPS_QUESTION", orderId: 0, idemKey: `coach:${m.id}`, now, quotedWaId: g.id === ops.id ? m.waMsgId : null, text: done.ok ? `✅ ${done.note}` : `⚠️ ${done.note}` }).catch(() => undefined);
+        if (ops) await postToOps({ kind: "OPS_QUESTION", orderId: 0, idemKey: `coach:${m.id}`, now, quotedWaId: g.id === ops.id ? m.waMsgId : null, text: (done.ok ? `✅ ${done.note}` : `⚠️ ${done.note}`) + signed() }).catch(() => undefined);
         continue;
       }
       const lesson = await readLesson({ words, about: ours?.text ?? null, ask: item?.ask ?? null, scope, groupSubject: g.subject });
@@ -139,7 +155,7 @@ export async function runCoachReader(now = new Date()): Promise<CoachReaderResul
       }
       if (ops) {
         const where = scope === "GLOBAL" ? "everywhere" : scope.startsWith("STORE:") ? `this store` : `this lab`;
-        await postToOps({ kind: "OPS_QUESTION", orderId: item?.orderId ?? 0, idemKey: `coach:${m.id}`, now, quotedWaId: g.id === ops.id ? m.waMsgId : null, text: `📝 Noted, ${coach.name.split(/\s+/)[0]} — from now, ${where}: ${lesson.rule}${retired ? `\n(the "${retired}" wording that message used is retired)` : ""}\nReply *undo* to this message to drop it. #${row.id.slice(-6)}` }).catch(() => undefined);
+        await postToOps({ kind: "OPS_QUESTION", orderId: item?.orderId ?? 0, idemKey: `coach:${m.id}`, now, quotedWaId: g.id === ops.id ? m.waMsgId : null, text: `📝 Noted, ${coach.name.split(/\s+/)[0]} — from now, ${where}: ${lesson.rule}${retired ? `\n(the "${retired}" wording that message used is retired)` : ""}\nReply *undo* to this message to drop it. #${row.id.slice(-6)}${signed()}` }).catch(() => undefined);
       }
     } catch (error) {
       console.error(`[Coach] message ${m.id} failed:`, error instanceof Error ? error.message : error);
@@ -179,6 +195,10 @@ export async function readLesson(input: { words: string; about: string | null; a
 /** pause / resume a store, a lab or everything, by the name on its connected group. */
 export async function applyCommand(cmd: CoachCommand, now = new Date()): Promise<{ ok: boolean; note: string }> {
   const settings = await prisma.agentSettings.upsert({ where: { id: "default" }, update: {}, create: { id: "default" } });
+  if (cmd.verb === "rename") {
+    await prisma.agentSettings.update({ where: { id: "default" }, data: { agentName: cmd.name } });
+    return { ok: true, note: `From now I sign as ${cmd.name} and answer to "${cmd.name}:" here.` };
+  }
   if (cmd.target === "all") {
     await prisma.agentSettings.update({ where: { id: "default" }, data: { pausedAll: cmd.verb === "pause" } });
     return { ok: true, note: cmd.verb === "pause" ? "Everything paused: no desk sends anything until 'bot: resume all'." : "Everything resumed." };

@@ -119,6 +119,12 @@ describe("coaching from WhatsApp (28 Oct 2026)", () => {
     assert.deepEqual(parseCommand("agent: resume all"), { verb: "resume", target: "all", name: "" });
     assert.equal(parseCommand("bot: never say 'chasing' to Plum"), null);
     assert.ok(COACH_PREFIX_RE.test("bot: hello")); assert.ok(COACH_PREFIX_RE.test("Agent — shorter please")); assert.ok(!COACH_PREFIX_RE.test("the bot said hello"));
+    // Given a name, it answers to that too, and can be named from the group.
+    const { coachPrefixRe } = await import("../brain/coach");
+    assert.ok(coachPrefixRe("Asha").test("Asha: pause store plum")); assert.ok(coachPrefixRe("Asha").test("hey Asha, too long")); assert.ok(coachPrefixRe("Asha").test("@Asha shorter"));
+    assert.ok(!coachPrefixRe("Asha").test("Ashamed of this one")); assert.ok(!coachPrefixRe(null).test("Asha: pause"));
+    assert.deepEqual(parseCommand("bot: your name is Asha"), { verb: "rename", target: "self", name: "Asha" });
+    assert.deepEqual(parseCommand("Asha: pause store plum", "Asha"), { verb: "pause", target: "store", name: "plum" });
   });
   it("a lesson without a model is the coach's own words, applied everywhere; wording feedback retires the trial", async () => {
     const { readLesson } = await import("../brain/coach");

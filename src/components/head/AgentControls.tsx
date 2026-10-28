@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 
-type Settings = { settings: { pausedAll: boolean; pausedDesks: string[]; pausedLabIds: number[]; pausedStoreIds: number[] }; worker: { lastActivityAt: string | null; alive: boolean }; outbox: { queued: number; failed24h: number }; gateway: { status: string; connectedNumber: string | null; lastSeenAt: string | null; dryRun: boolean | null } | null; cost24h: { paise: number; modelCalls: number } };
+type Settings = { settings: { pausedAll: boolean; pausedDesks: string[]; pausedLabIds: number[]; pausedStoreIds: number[]; agentName?: string | null }; worker: { lastActivityAt: string | null; alive: boolean }; outbox: { queued: number; failed24h: number }; gateway: { status: string; connectedNumber: string | null; lastSeenAt: string | null; dryRun: boolean | null } | null; cost24h: { paise: number; modelCalls: number } };
 type PortalLab = { labId: number; labName: string; tier: string; status: string; lastOkAt: string | null; lastError: string | null; readsToday: number; reads24h: number; loginSetAt: string | null; adapter: string | null };
 
 export function AgentControls() {
@@ -28,10 +28,11 @@ export function AgentControls() {
       <div className="mb-4 mt-2"><div className="text-xs text-zinc-500">OpsFlow Agents · SOP owners</div><h1 className="text-2xl font-semibold tracking-tight text-zinc-100">Controls</h1></div>
       {note && <div className="mb-3 rounded-md border border-zinc-700 bg-zinc-900/60 px-3 py-2 text-sm text-zinc-200">{note}</div>}
       {s && (
-        <section className="mb-4 grid gap-3 md:grid-cols-4">
+        <section className="mb-4 grid gap-3 md:grid-cols-5">
           <Card title="Kill switch" value={s.settings.pausedAll ? "PAUSED" : "running"} tone={s.settings.pausedAll ? "red" : "green"}><button onClick={() => put({ pausedAll: !s.settings.pausedAll })} className={`mt-2 rounded-md px-3 py-1.5 text-xs font-semibold ${s.settings.pausedAll ? "border border-zinc-600 text-zinc-100" : "bg-red-600 text-white"}`}>{s.settings.pausedAll ? "Resume everything" : "Pause everything"}</button><div className="mt-1 text-[11px] text-zinc-500">Paused desks: {s.settings.pausedDesks.join(", ") || "none"} · <Link href="/head/agents/desks" className="underline">per desk</Link></div></Card>
           <Card title="Worker" value={s.worker.alive ? "alive" : "not seen"} tone={s.worker.alive ? "green" : "amber"}><div className="mt-1 text-[11px] text-zinc-500">last activity {when(s.worker.lastActivityAt)} · outbox {s.outbox.queued} queued · {s.outbox.failed24h} failed 24 h</div></Card>
           <Card title="WhatsApp number" value={s.gateway?.connectedNumber ?? "—"} tone={s.gateway?.status === "CONNECTED" ? "green" : "amber"}><div className="mt-1 text-[11px] text-zinc-500">{s.gateway?.status ?? "not configured"} · seen {when(s.gateway?.lastSeenAt ?? null)}{s.gateway?.dryRun ? " · DRY RUN" : ""}</div></Card>
+          <Card title="Agent name" value={s.settings.agentName || "—"} tone="zinc"><form onSubmit={(e) => { e.preventDefault(); const v = (new FormData(e.currentTarget).get("name") as string).trim(); put({ agentName: v || null }); }} className="mt-2 flex gap-1"><input name="name" defaultValue={s.settings.agentName ?? ""} placeholder="e.g. Asha" maxLength={24} className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-100" /><button className="rounded-md border border-zinc-600 px-2 py-1 text-xs text-zinc-100">Save</button></form><div className="mt-1 text-[11px] text-zinc-500">Signs every message (&ldquo;Asha, Labstack Operations&rdquo;) and answers to &ldquo;Asha: …&rdquo; from a coach.</div></Card>
           <Card title="Model cost · 24 h" value={`₹${(s.cost24h.paise / 100).toFixed(0)}`} tone="zinc"><div className="mt-1 text-[11px] text-zinc-500">{s.cost24h.modelCalls} calls · tracked, not capped</div></Card>
         </section>
       )}

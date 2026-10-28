@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { closedByConsole, firstRemindAt, waitingOnFor } from "../store/threads";
+import { closedByConsole, firstRemindAt, waitingOnFor, whichOrderQuestion } from "../store/threads";
 
 const at = (iso: string) => new Date(iso);
 
@@ -26,5 +26,15 @@ describe("store requests tracked until closed (27 Oct 2026)", () => {
   });
   it("a complaint stays open after delivery — it is not about the order's progress", () => {
     assert.equal(closedByConsole({ kind: "complaint", snapshot: null }, { orderStatus: "REPORT_DELIVERED", appointmentTime: null }), null);
+  });
+});
+
+describe("a nudge that could mean several open threads is asked which (28 Oct 2026)", () => {
+  it("two or three candidates get the question; one or none, or more than three, do not", () => {
+    assert.equal(whichOrderQuestion([94301, 94188]), "Which order do you mean — #94301 or #94188?");
+    assert.equal(whichOrderQuestion([1, 2, 3]), "Which order do you mean — #1, #2 or #3?");
+    assert.equal(whichOrderQuestion([1]), null);
+    assert.equal(whichOrderQuestion([]), null);
+    assert.equal(whichOrderQuestion([1, 2, 3, 4]), null);
   });
 });

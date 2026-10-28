@@ -15,7 +15,7 @@ import { labstackWorkerQuery } from "@/lib/db/labstack";
 import { isAutomated, loadTeam, makeTeamMatcher } from "@/lib/wa/team";
 import { recordJourneyEvent, wakeJourney } from "../journey/run";
 import { readMessage } from "../reader/read";
-import { openThread, teamAnswered, threadForNudge, THREAD_KINDS } from "./threads";
+import { openThread, openThreadOrders, teamAnswered, threadForNudge, whichOrderQuestion, THREAD_KINDS } from "./threads";
 import { enqueueOutbox } from "../executors/dispatcher";
 import { liveStoreBody } from "../executors/storeReply";
 import { guard, loadGuardState } from "../guard/guard";
@@ -218,18 +218,27 @@ export async function runStoreReader(now = new Date()): Promise<StoreReaderResul
     // A nudge with no order id ("is this done?", "any update?") is about the thread it quotes, or
     // the only open one in this group (27 Oct 2026: half of Plum's messages are such nudges).
     let thread: { id: string; kind: string; waitingOn: string; openedAt: Date } | null = null;
-    if (!links.length) {
+    // A number written like an order id that is not one of this store's orders is a wrong id, not
+    // a nudge: it never falls through to "the open thread" (27 Oct 2026: "#122009" linked to #94389).
+    const wroteAnId = explicitOrderIds(text).length > 0;
+    let candidates: number[] = [];
+    if (!links.length && !wroteAnId) {
       const t = await threadForNudge({ storeId: g.storeId!, replyToWaId: m.replyToWaId, at: m.ts }).catch(() => null);
       if (t) { links = [{ orderId: t.orderId, via: "THREAD" }]; thread = t; }
+      else if (!m.replyToWaId) candidates = await openThreadOrders(g.storeId!, m.ts).catch(() => []);
     }
     const link = links[0] ?? null;
     await prisma.waMessage.update({ where: { id: m.id }, data: { intent: `STORE_${intent.toUpperCase()}` } }).catch(() => undefined);
     if (!link) {
       // Ask once for the order id (FR-9.2), only for questions that need one — and never inside a
-      // thread with a person: a reply to a message that is not ours is theirs to handle.
+      // thread with a person: a reply to a message that is not ours is theirs to handle. A nudge
+      // that could mean two or three open threads is asked which ("#a or #b?").
       const inHumanThread = !!m.replyToWaId && !(await prisma.waOutbound.findFirst({ where: { sentWaMsgId: m.replyToWaId }, select: { id: true } }));
       if (!inHumanThread && ["status", "report", "slot", "reschedule", "cancel", "change_tests"].includes(intent) && state.desks.get(`STORE:STORE:${g.storeId}`) === "LIVE") {
-        await enqueueOutbox({ counterparty: `STORE:${g.storeId}`, ask: "STORE_REPLY", orderId: 0, journeyId: null, actionId: null, windowFrom: now, windowTo: new Date(now.getTime() + 2 * 3_600_000), urgent: true, idemKey: `askid:${m.id}`, line: { orderId: 0, patientName: null, appointment: null }, text: await liveStoreBody("STORE_ASK_ORDER_ID") }).catch(() => undefined);
+        const which = whichOrderQuestion(candidates);
+        const body = which ?? (wroteAnId ? await liveStoreBody("STORE_UNKNOWN_ORDER_ID") : await liveStoreBody("STORE_ASK_ORDER_ID"));
+        const unknown = wroteAnId ? explicitOrderIds(text).map((id) => `#${id}`).join(", ") : "";
+        await enqueueOutbox({ counterparty: `STORE:${g.storeId}`, ask: "STORE_REPLY", orderId: 0, journeyId: null, actionId: null, windowFrom: now, windowTo: new Date(now.getTime() + 2 * 3_600_000), urgent: true, idemKey: `askid:${m.id}`, line: { orderId: 0, patientName: null, appointment: null }, text: body.replace("{{ids}}", unknown), extra: { quotedWaId: m.waMsgId } }).catch(() => undefined);
       }
       continue;
     }

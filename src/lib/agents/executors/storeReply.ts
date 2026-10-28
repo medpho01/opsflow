@@ -28,6 +28,7 @@ export const STORE_TEMPLATES: Record<string, { name: string; body: string }> = {
   STORE_AT_RISK: { name: "Store: order at risk", body: "#{{order_id}}: {{slot}} collection is at risk — {{reason}}. We expect to collect by {{expected}}, or can you offer {{alternative}}?" },
   STORE_CANNOT_TODAY: { name: "Store: cannot be done today", body: "#{{order_id}}: {{slot}} collection cannot happen today — {{reason}}. Can you offer {{alternative}}?" },
   STORE_ASK_ORDER_ID: { name: "Store: which order?", body: "Which order is this about? Please share the order id." },
+  STORE_UNKNOWN_ORDER_ID: { name: "Store: id not found", body: "{{ids}} is not an order of this store — could you check the order id?" },
 };
 
 export async function liveStoreBody(key: string): Promise<string> {

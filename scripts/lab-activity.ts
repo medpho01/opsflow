@@ -107,6 +107,8 @@ async function main() {
       else if (j.ownerUserId && j.pausedUntil && j.pausedUntil > now) why = "a person owns it";
       else if (!o) why = stale ? "stale: due over 14 d ago and out of the open-orders window — journey should close" : "not in the open-orders window (visit too old or already closed in LabStack)";
       else if (["CANCELED", "CANCELLED", "REPORT_DELIVERED"].includes(o.orderStatus)) why = `console shows ${o.orderStatus} — journey should close`;
+      else if (o.orderStatus === "PATIENT_MISSED") why = "patient missed: the order waits on ops for a new slot, the lab is not asked";
+      else if (o.orderStatus === "RESCHEDULED" && cp && cp.dueAt < now && o.appointmentTime && o.appointmentTime < now) why = "rescheduled in the console but the slot shown is in the past — waiting for the new time";
       else if (sop && consoleIsLive(o, tier, now, sop.consoleQuietMin)) why = `console live (updated ${t(o.statusUpdatedAt)})`;
       else if (attempts?.n != null && attempts.n >= 99) why = `visit long past; task made; daily re-ask due ${attempts.at ? t(new Date(Date.parse(attempts.at) + (sop?.reaskEveryMin ?? 1440) * 60_000)) : "next slot"}`;
       else if (attempts?.n != null && sop && attempts.n >= sop.ladder.length) why = `ladder exhausted (${attempts.n}); daily re-ask due ${attempts.at ? t(new Date(Date.parse(attempts.at) + sop.reaskEveryMin * 60_000)) : "next slot"}`;

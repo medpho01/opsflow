@@ -130,6 +130,19 @@ export async function threadForNudge(input: { storeId: number; replyToWaId: stri
   return orders.size === 1 ? open[0] : null;
 }
 
+/** The distinct orders with an open thread in this store's group in the last 4 h — what an unaddressed nudge could mean. */
+export async function openThreadOrders(storeId: number, at: Date): Promise<number[]> {
+  const open = await prisma.agentThread.findMany({ where: { storeId, status: "OPEN", openedAt: { gte: new Date(at.getTime() - 4 * 3_600_000) } }, orderBy: { openedAt: "desc" }, select: { orderId: true } });
+  return [...new Set(open.map((t) => t.orderId))];
+}
+
+/** "Which order do you mean — #a or #b?" for a nudge that could be about two or three open threads; null when it is clear or hopeless. */
+export function whichOrderQuestion(orderIds: number[]): string | null {
+  if (orderIds.length < 2 || orderIds.length > 3) return null;
+  const ids = orderIds.map((id) => `#${id}`);
+  return `Which order do you mean — ${ids.slice(0, -1).join(", ")} or ${ids[ids.length - 1]}?`;
+}
+
 export type ThreadSweepResult = { open: number; closed: number; reminded: number; escalated: number };
 
 /** Every few minutes: close what the console, a reply or a task settled; remind whoever the rest waits on. */

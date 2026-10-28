@@ -25,7 +25,7 @@ export const STORE_INTENTS = ["status", "report", "slot", "reschedule", "cancel"
 export type StoreIntent = (typeof STORE_INTENTS)[number];
 export const INTENT_LABEL: Record<string, string> = { status: "status", report: "report", slot: "slots", reschedule: "reschedule", cancel: "cancel", change_tests: "change tests", new_booking: "new booking", serviceability: "serviceability", complaint: "complaint", other: "other" };
 
-export type Verdict = "SAME" | "COMPATIBLE" | "CONTRADICTS" | "BOT_ONLY" | "MISSED" | "NEITHER" | "WRONG_LINK" | "WOULD_FAIL" | "UNJUDGED";
+export type Verdict = "SAME" | "COMPATIBLE" | "CONTRADICTS" | "UNRELATED" | "BOT_ONLY" | "MISSED" | "NEITHER" | "WRONG_LINK" | "WOULD_FAIL" | "UNJUDGED";
 
 const one = (s: string, n = 300) => s.replace(/\s+/g, " ").trim().slice(0, n);
 const written = (text: string) => [...new Set((text.match(/(?<![\d@+])\d{5,6}(?!\d)/g) ?? []).map(Number))];
@@ -61,7 +61,10 @@ export async function evaluateStore(storeId: number, since: Date, until = new Da
     const ids = written(q.text);
     const bot = mine.filter((a) => !used.has(a.id) && ((a.idemKey ?? "").includes(q.id) || (a.idemKey ?? "").includes(q.waMsgId) || (a.params as { quotedWaId?: string })?.quotedWaId === q.waMsgId));
     bot.forEach((a) => used.add(a.id));
-    const reply = team.find((m) => m.ts > q.ts && m.ts.getTime() - q.ts.getTime() <= 60 * MIN && (m.replyToWaId === q.waMsgId || written(m.text).some((x) => ids.includes(x)) || m.ts.getTime() - q.ts.getTime() <= 15 * MIN));
+    // The team's reply to THIS question: quoting it, naming its order, or — naming no other order —
+    // within 15 minutes (28 Oct 2026: one "ignore the appointment" message was paired with three questions).
+    const reply = team.find((m) => m.ts > q.ts && m.ts.getTime() - q.ts.getTime() <= 60 * MIN && (
+      m.replyToWaId === q.waMsgId || written(m.text).some((x) => ids.includes(x)) || (m.ts.getTime() - q.ts.getTime() <= 15 * MIN && !written(m.text).some((x) => !ids.includes(x)))));
     const links = linked.get(q.id) ?? [];
     const wrongLink = ids.length > 0 && links.some((l) => !ids.includes(l));
     let draft: string | null = null; let wouldFail = false;
@@ -74,6 +77,8 @@ export async function evaluateStore(storeId: number, since: Date, until = new Da
         catch (e) { wouldFail = true; draft = `(would fail: ${e instanceof Error ? e.message : e})`; }
       }
     } else if (asked.has(q.id)) draft = "[asks which order]";
+    const mentionOnly = !q.text.replace(/@\d{6,}/g, "").replace(/[\s⁨⁩]/g, "").length;
+    if (mentionOnly) continue;   // a bare @mention asks nothing; not a question to grade
     let verdict: Verdict = wrongLink ? "WRONG_LINK" : wouldFail ? "WOULD_FAIL" : draft && reply ? "UNJUDGED" : draft ? "BOT_ONLY" : reply ? "MISSED" : "NEITHER";
     let note: string | null = null;
     if (verdict === "UNJUDGED" && opts.judge !== false && draft && reply && !draft.startsWith("[")) {
@@ -92,7 +97,13 @@ export async function evaluateStore(storeId: number, since: Date, until = new Da
 async function judge(question: string, draft: string, teamReply: string): Promise<{ verdict: Verdict; note: string } | null> {
   const r = await askModel({
     purpose: "audit", maxTokens: 200, redactUser: true,
-    system: "You compare two replies to a pharmacy store's WhatsApp question about a lab order: the bot's draft and what the human team actually replied. Judge only whether they agree on the facts and the next step. Return JSON: {\"verdict\": \"SAME\" | \"COMPATIBLE\" | \"CONTRADICTS\", \"note\": \"one short sentence\"}. SAME: the same answer. COMPATIBLE: different words or detail, no conflict (e.g. bot says 'checking with the lab', team gives the answer). CONTRADICTS: they disagree on a fact (status, time, whether done) or the bot promises something the team denied.",
+    system: [
+      "You compare two replies to a pharmacy store's WhatsApp question about a lab order: the bot's draft and what the human team actually replied. Judge ONLY whether the bot stated a fact the team's reply shows to be false.",
+      "Return JSON: {\"verdict\": \"SAME\" | \"COMPATIBLE\" | \"CONTRADICTS\" | \"UNRELATED\", \"note\": \"one short sentence\"}.",
+      "SAME: the same answer. COMPATIBLE: no conflict — different words, more detail, a later step; the bot saying 'checking with the lab', 'noted, we'll confirm' or 'raising it with the team' while the team gives the answer is ALWAYS compatible; the bot stating the console's status while the team adds what happens next is compatible.",
+      "CONTRADICTS: only when the bot asserted a fact — collected / not collected, delivered / not delivered, a time, a phlebo name — that the team's reply shows was wrong at that moment.",
+      "UNRELATED: the team's reply is about a different order or a different matter (a different order id, a consult, a new booking), or is itself a question or an instruction to someone else — it does not answer this question.",
+    ].join("\n"),
     user: `STORE ASKED: ${question}\n\nBOT DRAFT: ${draft}\n\nTEAM REPLIED: ${teamReply}`,
   });
   if (!r) return null;
@@ -100,7 +111,7 @@ async function judge(question: string, draft: string, teamReply: string): Promis
   if (!m) return null;
   try {
     const p = JSON.parse(m[0]) as { verdict?: string; note?: string };
-    const v = p.verdict === "SAME" || p.verdict === "COMPATIBLE" || p.verdict === "CONTRADICTS" ? p.verdict : null;
+    const v = p.verdict === "SAME" || p.verdict === "COMPATIBLE" || p.verdict === "CONTRADICTS" || p.verdict === "UNRELATED" ? p.verdict : null;
     return v ? { verdict: v, note: String(p.note ?? "").slice(0, 200) } : null;
   } catch { return null; }
 }
@@ -117,7 +128,7 @@ export function scoreRows(rows: Array<{ intent: string; verdict: string; botAt: 
   for (const intent of [...new Set([...STORE_INTENTS, ...byIntent.keys()])]) {
     const rs = byIntent.get(intent) ?? [];
     const n = rs.length;
-    const covered = rs.filter((r) => !["MISSED", "NEITHER"].includes(r.verdict)).length;
+    const covered = rs.filter((r) => !["MISSED", "NEITHER"].includes(r.verdict)).length;   // UNRELATED: the bot answered; the team's message was about something else
     const contradicts = rs.filter((r) => r.verdict === "CONTRADICTS").length;
     const wrongLinks = rs.filter((r) => r.verdict === "WRONG_LINK").length;
     const wouldFail = rs.filter((r) => r.verdict === "WOULD_FAIL").length;

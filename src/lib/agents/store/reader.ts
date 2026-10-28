@@ -205,6 +205,8 @@ export async function runStoreReader(now = new Date()): Promise<StoreReaderResul
       continue;
     }
     if (!text) continue;
+    // A bare @mention asks nothing (28 Oct 2026: "@2482…" was answered with a report status).
+    if (!text.replace(/@\d{6,}/g, "").replace(/[\s⁨⁩]/g, "").length) continue;
     // The reader (model first, patterns as fallback) fills in the form: orders, samples, request, ack.
     const quoted = m.replyToWaId ? await prisma.waMessage.findUnique({ where: { waMsgId: m.replyToWaId }, select: { text: true } }).catch(() => null) : null;
     const reading = await readMessage({ side: "store", text, quotedText: quoted?.text ?? null, scope: { storeId: g.storeId, groupId: m.groupId } });

@@ -50,3 +50,6 @@ docker/labstack-dummy/02-seed.sql
 
 # A Next build made elsewhere, unpacked here for the Docker build (scripts/prebuilt-next.sh)
 prebuilt-next/
+
+# Analysis exports (aggregates for presentations) — never committed
+exports/

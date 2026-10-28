@@ -40,11 +40,15 @@ const MENTION_RE = /@(\d{5,})/g;
  * someone on the roster (names come from the identity table the gateway keeps), or "as discussed"
  * with no name. Null when the message is for whoever answers — which may be us.
  */
-export function addressedToPerson(text: string, mentionNames: Record<string, string>, isTeam: (sender: string, jid: string | null) => unknown): { ids: string[]; names: string[] } | null {
+export function addressedToPerson(text: string, mentionNames: Record<string, string>, isTeam: (sender: string, jid: string | null) => unknown, botNumber: string | null = null): { ids: string[]; names: string[] } | null {
   const ids: string[] = []; const names: string[] = [];
+  const bot = (botNumber ?? "").replace(/\D/g, "").slice(-10);
   for (const m of text.matchAll(MENTION_RE)) {
+    // Tagging our own number ("@Labstack Operations") is asking us, not a person.
+    if (bot && m[1].slice(-10) === bot) continue;
     const name = mentionNames[m[1]] ?? mentionNames[m[1].slice(-10)];
-    if (name && isTeam(name, null) && !ids.includes(m[1])) { ids.push(m[1]); names.push(name); }
+    if (!name || /labstack operations/i.test(name)) continue;
+    if (isTeam(name, null) && !ids.includes(m[1])) { ids.push(m[1]); names.push(name); }
   }
   if (ids.length) return { ids, names };
   if (ADDRESSED_RE.test(text)) return { ids: [], names: [] };
@@ -54,8 +58,11 @@ export function addressedToPerson(text: string, mentionNames: Record<string, str
 /** The same, resolving the mentions through the database. */
 export async function addressedTeamMember(text: string, team: TeamContact[]): Promise<{ ids: string[]; names: string[] } | null> {
   if (!/@\d{5,}/.test(text) && !ADDRESSED_RE.test(text)) return null;
-  const names = await resolveMentionNames([text], { team }).catch(() => ({} as Record<string, string>));
-  return addressedToPerson(text, names, makeTeamMatcher(team));
+  const [names, gateway] = await Promise.all([
+    resolveMentionNames([text], { team }).catch(() => ({} as Record<string, string>)),
+    prisma.waGateway.findUnique({ where: { id: "default" }, select: { connectedNumber: true } }).catch(() => null),
+  ]);
+  return addressedToPerson(text, names, makeTeamMatcher(team), gateway?.connectedNumber ?? null);
 }
 
 /** The WhatsApp jid to @mention for an id a store wrote: a phone number or a LID. */

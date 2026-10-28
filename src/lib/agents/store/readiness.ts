@@ -58,6 +58,7 @@ export async function evaluateStore(storeId: number, since: Date, until = new Da
   const questions = msgs.filter((m) => !m.fromMe && !isTeam(m.sender, m.senderJid) && !isAutomated(m) && m.intent?.startsWith("STORE_") && m.intent !== "STORE_NOISE" && m.text?.trim());
   if (!questions.length) return { questions: 0, judged: 0 };
   const mentionNames = await resolveMentionNames(questions.map((q) => q.text), { team: teamRoster }).catch(() => ({} as Record<string, string>));
+  const botNumber = (await prisma.waGateway.findUnique({ where: { id: "default" }, select: { connectedNumber: true } }).catch(() => null))?.connectedNumber ?? null;
   const ourWaIds = new Set((await prisma.waOutbound.findMany({ where: { groupId: { in: groups.map((g) => g.id) }, createdAt: { gte: new Date(since.getTime() - 7 * DAY) }, sentWaMsgId: { not: null } }, select: { sentWaMsgId: true } })).map((o) => o.sentWaMsgId!));
 
   const events = await prisma.agentJourneyEvent.findMany({ where: { kind: "store_message", at: { gte: since } }, select: { payload: true, journey: { select: { orderId: true } } } });
@@ -100,7 +101,7 @@ export async function evaluateStore(storeId: number, since: Date, until = new Da
     // For a named person, or a reply to a person's message: not ours to answer. Silence is right
     // and is not graded; an answer is UNWANTED.
     const quotedMsg = q.replyToWaId ? byWaId.get(q.replyToWaId) : undefined;
-    const forPerson = !!addressedToPerson(q.text, mentionNames, isTeam) || (!!quotedMsg && !ourWaIds.has(q.replyToWaId!) && (quotedMsg.fromMe || !!isTeam(quotedMsg.sender, quotedMsg.senderJid)));
+    const forPerson = !!addressedToPerson(q.text, mentionNames, isTeam, botNumber) || (!!quotedMsg && !ourWaIds.has(q.replyToWaId!) && (quotedMsg.fromMe || !!isTeam(quotedMsg.sender, quotedMsg.senderJid)));
     if (forPerson && !draft) continue;
     let verdict: Verdict = wrongLink ? "WRONG_LINK" : wouldFail ? "WOULD_FAIL" : unwanted({ forPerson, draft, botAt: first?.createdAt ?? null, teamAt: reply?.ts ?? null }) ? "UNWANTED" : draft && reply ? "UNJUDGED" : draft ? "BOT_ONLY" : reply ? "MISSED" : "NEITHER";
     let note: string | null = null;

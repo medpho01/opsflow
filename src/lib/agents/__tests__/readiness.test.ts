@@ -82,6 +82,10 @@ describe("the desk's scope (28 Oct 2026)", () => {
     assert.deepEqual(addressedToPerson("as discussed, please check 92410", names, isTeam), { ids: [], names: [] });
     assert.equal(addressedToPerson("@918888877777 please check", names, isTeam), null, "the store tagging its own colleague");
     assert.equal(addressedToPerson("94165 - please upload reports", names, isTeam), null);
+    // Tagging our own number is asking us (Gokul, 28 Oct: "@Sushma @Labstack Operations" is for Sushma; "@Labstack Operations" alone is for the desk).
+    const withBot = { ...names, "919900011122": "Labstack Operations" };
+    assert.equal(addressedToPerson("94301 - Kindly reschedule for tomorrow 9am @919900011122", withBot, (n) => (/labstack/i.test(n) ? { n } : null), "+91 99000 11122"), null);
+    assert.deepEqual(addressedToPerson("94301 - Kindly reschedule for tomorrow 9am @919731145171 @919900011122", withBot, isTeam, "919900011122")?.names, ["Labstack Sushma"]);
   });
   it("a lab is on the bot through an API, or a connected group with a live desk", async () => {
     const { labOnBot, mentionJid } = await import("../store/scope");

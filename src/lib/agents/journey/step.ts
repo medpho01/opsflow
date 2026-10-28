@@ -773,16 +773,19 @@ export function step(input: StepInput): StepOutput {
     // An API lab's console names the phlebo and starts the visit by itself: before the visit the
     // group gets an ask and one reminder, never a manager escalation (27 Oct 2026: ten Orange
     // orders reached the ops group at 7:00 with their phlebos already on the way). Once the visit
-    // is two hours past with no update, visitLongPast hands it to a person.
+    // is two hours past with no update, the lab is asked in its group — an ask and a reminder —
+    // and only then is a person told (28 Oct 2026: "Collection stuck" tasks reached the ops group
+    // at two hours with the lab never asked; such things are chased with the lab).
     const apiLadderCapped = input.labTier != null && input.labTier !== "C" && preVisit && minutesToSlot != null && minutesToSlot >= -120 && a.n > Math.max(0, ladder.indexOf("reminder"));
-    if (visitLongPast && from === "LAB" && a.n < 99) {
+    const askedSinceVisit = a.n >= Math.max(1, ladder.indexOf("reminder") + 1);
+    if (visitLongPast && from === "LAB" && a.n < 99 && askedSinceVisit) {
       rungLabel = "task";
       actions.push({ desk: "LAB", action: "create_task", params: {
         checkpoint: next.name, orderId: order.id, labId: order.labId, attempt: 1, dueAt: due, rung: "task",
         taskType: STUCK_TASK[next.name] ?? "AGENT_COLLECTION_STUCK", cause: "VISIT_PASSED_NO_UPDATE",
-        evidence: [{ kind: "console", at: now.toISOString(), text: `visit ${Math.round(-minutesToSlot / 60)} h ago; the console still shows ${order.orderStatus}` }],
-        action: `Check #${order.id} with ${order.labName ?? "the lab"}: the visit was ${Math.round(-minutesToSlot / 60)} h ago and LabStack still shows ${order.orderStatus.toLowerCase().replace(/_/g, " ")}`,
-      }, reason: `${LABELS[next.name]} still open ${Math.round(-minutesToSlot / 60)} h after the visit; the console shows ${order.orderStatus}`, idemKey: `visit-passed:${order.id}:${next.name}` });
+        evidence: [{ kind: "console", at: now.toISOString(), text: `visit ${Math.round(-minutesToSlot / 60)} h ago; the console still shows ${order.orderStatus}; the lab was asked ${a.n} time(s) with no answer` }],
+        action: `Call ${order.labName ?? "the lab"} about #${order.id}: the visit was ${Math.round(-minutesToSlot / 60)} h ago, LabStack still shows ${order.orderStatus.toLowerCase().replace(/_/g, " ")}, and the group has not answered ${a.n} ask(s)`,
+      }, reason: `${LABELS[next.name]} still open ${Math.round(-minutesToSlot / 60)} h after the visit; the console shows ${order.orderStatus}; ${a.n} ask(s) unanswered`, idemKey: `visit-passed:${order.id}:${next.name}` });
       attempts[next.name] = { ...a, n: 99, at: now.toISOString() };
       journey = { ...journey, attempts };
     } else if (sop && from === "LAB" && ask && (a.n >= 99 || a.n >= ladder.length) && (!a.at || now.getTime() - Date.parse(a.at) >= sop.reaskEveryMin * MIN) && !consoleIsLive(order, input.labTier, now, sop.consoleQuietMin)) {

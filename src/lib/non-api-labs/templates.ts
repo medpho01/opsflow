@@ -357,6 +357,10 @@ Please update in LabStack, or reply with the status.` },
 {{items}}
 
 Please confirm today — each link opens the order.` },
+  // The same escalation when the lab has no manager number: firmer, in the group, to the coordinators.
+  BATCH_ESCALATION_GROUP: { name: "Combined: escalation in the group", body: `{{coordinator}} ⚠️ still pending after our reminders ({{count}}) — please confirm today, or tell us if you cannot take these:
+
+{{items}}` },
   BATCH_GENERIC: { name: "Combined: other rules", body: `{{coordinator}} {{batch_title}} ({{count}})
 
 {{items}}
@@ -581,6 +585,7 @@ const CONFIRMATION_RULES: TemplateRules = {
 const TEMPLATE_RULES: Record<string, TemplateRules> = {
   ...Object.fromEntries(Object.values(BATCH_TEMPLATE_BY_INTENT).concat(BATCH_GENERIC_TEMPLATE)
     .map((key) => [key, { allowed: BATCH_VARIABLES, required: ["items"] } satisfies TemplateRules])),
+  BATCH_ESCALATION_GROUP: { allowed: BATCH_VARIABLES, required: ["items"] },
   BATCH_FOLLOW_UP: { allowed: BATCH_FOLLOW_UP_VARIABLES, required: ["numbers"] },
   BATCH_FOLLOW_UP_FIRM: { allowed: BATCH_FOLLOW_UP_VARIABLES, required: ["numbers"] },
   [NON_API_NEW_ORDER_TEMPLATE]: CONFIRMATION_RULES,

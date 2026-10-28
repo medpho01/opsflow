@@ -173,13 +173,18 @@ describe("the ladder", () => {
     const alert = r2.actions.find((a) => a.action === "store_alert");
     assert.match(String(alert?.params.detail), /patient missed — RNR - customer did not respond/);
   });
-  it("a pre-visit checkpoint still open long after the visit becomes one task, never a chase", () => {
+  it("a pre-visit checkpoint still open long after the visit: the lab is asked and reminded in its group, then a person is told (28 Oct 2026)", () => {
     const o = order({ appointmentTime: at("2026-10-19T02:30:00Z"), orderStatus: "ORDER_SCHEDULED" });
     const r1 = wake(o, at("2026-10-24T13:45:00Z"));
-    assert.deepEqual(acts(r1), ["create_task"]);
-    assert.equal(r1.actions[0].params.cause, "VISIT_PASSED_NO_UPDATE");
-    const r2 = wake(o, at("2026-10-24T15:45:00Z"), r1);
-    assert.deepEqual(acts(r2), []);
+    assert.deepEqual(acts(r1), ["ask"]);
+    const r2 = wake(o, at("2026-10-24T14:20:00Z"), r1);
+    assert.deepEqual(acts(r2), ["reminder"]);
+    const r3 = wake(o, at("2026-10-24T14:55:00Z"), r2);
+    assert.deepEqual(acts(r3), ["create_task"]);
+    assert.equal(r3.actions[0].params.cause, "VISIT_PASSED_NO_UPDATE");
+    assert.match(String(r3.actions[0].params.action), /^Call .* about #/);
+    const r4 = wake(o, at("2026-10-24T15:45:00Z"), r3);
+    assert.deepEqual(acts(r4), []);
   });
   it("a visit within 90 min makes the ask urgent", () => {
     const o = order();
@@ -510,14 +515,19 @@ describe("a visit that passed with the console quiet is asked about now (27 Oct 
 describe("a manual lab is asked again every day until the console moves (27 Oct 2026)", () => {
   it("after the visit-passed task, a daily STATUS re-ask; not twice in a day", () => {
     const o = order({ orderStatus: "ORDER_SCHEDULED", appointmentTime: at("2026-10-24T02:30:00Z") }); // visit Sat 24 Oct 8:00
-    const r1 = wake(o, at("2026-10-24T05:00:00Z"), undefined, { labTier: "C" } as never); // 10:30, visit 2.5 h past → task
+    const r0 = wake(o, at("2026-10-24T05:00:00Z"), undefined, { labTier: "C" } as never); // 10:30, visit 2.5 h past → asked (urgent)
+    assert.deepEqual(acts(r0), ["ask"]);
+    assert.equal(r0.actions[0].params.urgent, true);
+    const r0b = wake(o, at("2026-10-24T05:35:00Z"), r0, { labTier: "C" } as never);
+    assert.deepEqual(acts(r0b), ["reminder"]);
+    const r1 = wake(o, at("2026-10-24T06:10:00Z"), r0b, { labTier: "C" } as never); // still nothing → a person
     assert.ok(r1.actions.some((a) => a.action === "create_task"));
-    const r2 = wake(o, at("2026-10-25T05:00:00Z"), r1, { labTier: "C" } as never); // next day
+    const r2 = wake(o, at("2026-10-25T06:30:00Z"), r1, { labTier: "C" } as never); // next day, a day after the task
     const reask = r2.actions.find((a) => a.action === "ask" && String(a.idemKey).startsWith("reask:"));
     assert.ok(reask, "a daily re-ask");
     assert.equal(reask?.params.intent, "STATUS");
     assert.equal(reask?.params.urgent, false);
-    const r3 = wake(o, at("2026-10-25T08:00:00Z"), r2, { labTier: "C" } as never); // same day, later
+    const r3 = wake(o, at("2026-10-25T09:00:00Z"), r2, { labTier: "C" } as never); // same day, later
     assert.ok(!r3.actions.some((a) => a.action === "ask"), "not twice in a day");
   });
 });

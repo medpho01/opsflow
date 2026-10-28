@@ -263,7 +263,10 @@ async function flushGroup(key: string, queued: Item[], now: Date): Promise<{ mes
     console.warn(`[Agents] lab ${id} is not connected (no group); ${group.length} item(s) dropped`);
     return { messages: 0, items: 0, held: 0 };
   }
-  const toManager = kind === "MANAGER";
+  // No manager number on file: the escalation is a firmer ask in the lab's own group (28 Oct 2026:
+  // "no answer on 6 orders" went to the ops group while the lab was never told it was escalated).
+  const groupEscalation = kind === "MANAGER" && !config.managerWhatsapp;
+  const toManager = kind === "MANAGER" && !groupEscalation;
   if (!toManager && config.waGroupJid) {
     const answered = await alreadyInHand(config.waGroupJid, group, now);
     if (answered.size) {
@@ -273,19 +276,8 @@ async function flushGroup(key: string, queued: Item[], now: Date): Promise<{ mes
       if (!group.length) return { messages: 0, items: 0, held: 0 };
     }
   }
-  // No manager number on file: the escalation goes to LabStack's own ops group instead of being
-  // dropped (24 escalations a day vanished that way, 26 Oct 2026). A person there calls the lab.
-  let toOps = false;
-  let opsTarget: { targetJid: string; groupId: string | null } | null = null;
-  if (toManager && !config.managerWhatsapp) {
-    const ops = await opsGroup();
-    if (!ops) {
-      await prisma.agentOutboxItem.updateMany({ where: { id: { in: group.map((i) => i.id) } }, data: { status: "DROPPED" } });
-      return { messages: 0, items: 0, held: 0 };
-    }
-    toOps = true; opsTarget = { targetJid: ops.jid, groupId: ops.id };
-  }
-  const target = toOps ? opsTarget! : toManager ? { targetJid: toDirectJid(config.managerWhatsapp!), groupId: null } : await resolveLabTarget(config, null);
+  const toOps = false;
+  const target = toManager ? { targetJid: toDirectJid(config.managerWhatsapp!), groupId: null } : await resolveLabTarget(config, null);
 
   // Caps: per day per lab (urgent exempt) and per slot (urgent alone).
   const dayStart = new Date(now); dayStart.setUTCHours(0, 0, 0, 0);
@@ -352,7 +344,7 @@ async function flushGroup(key: string, queued: Item[], now: Date): Promise<{ mes
     } else if (toOps) {
       text = `🔴 *${config.labName}: no answer on ${list.length} ${list.length === 1 ? "order" : "orders"}* — no manager number on file\n\n${lines.join("\n")}\n\nPlease call the lab, or reply *on it*.`;
     } else {
-      const key = BATCH_TEMPLATE_BY_INTENT[ask] ?? BATCH_GENERIC_TEMPLATE;
+      const key = groupEscalation ? "BATCH_ESCALATION_GROUP" : BATCH_TEMPLATE_BY_INTENT[ask] ?? BATCH_GENERIC_TEMPLATE;
       const t = await styledBody(key, counterparty, await ensureTemplate(key));
       used.push({ key, variantId: t.variantId });
       text = renderLabTemplate(t.body, {

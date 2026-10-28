@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { newOrderReleaseAt, NEW_ORDER_GATHER_MINUTES } from "../new-order";
 import { itemLine, intentRank, NEW_ORDER_INTENT } from "../batching";
+import { testsForLab } from "@/lib/non-api-labs/order-details";
 
 const IST = "Asia/Kolkata";
 const ist = (x: string) => new Date(`${x}+05:30`);
@@ -62,6 +63,16 @@ describe("new-order message timing", () => {
       "    🧪 Full Body Check",
       "    https://x/c2",
     ].join("\n"));
+    // A non-API lab does not know what a package contains: the block carries each package's tests,
+    // under the 🧪 line (28 Oct 2026: "EN Complete Full Body Check with Vitamin Screening with CBC").
+    const tests = testsForLab({ tests: "EN Complete Full Body Check, Vitamin Screening", packages: [{ name: "EN Complete Full Body Check", tests: ["CBC", "HbA1c", "Lipid Profile", "CBC"] }, { name: "Vitamin Screening", tests: [] }], directTests: ["Vitamin D"] });
+    assert.equal(tests, "EN Complete Full Body Check (3 tests):\n       CBC, HbA1c, Lipid Profile\n       Vitamin Screening\n       Also: Vitamin D");
+    const full = itemLine(NEW_ORDER_INTENT, { n: 1, orderId: 90001, patientName: "P", appointment: ist("2026-10-21T07:30:00"), tests, confirmUrl: "https://x/c1" }, now, IST);
+    assert.equal(full, "1. #90001 · P · tomorrow 7:30 am\n    🧪 EN Complete Full Body Check (3 tests):\n       CBC, HbA1c, Lipid Profile\n       Vitamin Screening\n       Also: Vitamin D\n    https://x/c1");
+    // 30 tests in a package: the first 25 and "+5 more"; no breakdown at all → the package names as before.
+    const many = testsForLab({ tests: "Big", packages: [{ name: "Big", tests: [...Array(30)].map((_, i) => `T${i + 1}`) }], directTests: [] })!;
+    assert.match(many, /^Big \(30 tests\):\n       T1, T2, .* T25 \+5 more$/);
+    assert.equal(testsForLab({ tests: "Full Body Check", packages: [], directTests: [] }), "Full Body Check");
     // A detail LabStack does not have is left out, never "not on file".
     const sparse = itemLine(NEW_ORDER_INTENT, { n: 1, orderId: 90001, patientName: "P", appointment: null, confirmUrl: "https://x/c1" }, now, IST);
     assert.equal(sparse, "1. #90001 · P · no appointment time\n    https://x/c1");

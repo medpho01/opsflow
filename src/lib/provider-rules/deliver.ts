@@ -20,7 +20,7 @@ import { resolveLabTarget } from "@/lib/non-api-labs/target";
 import { BATCH_FOLLOW_UP_FIRM_TEMPLATE, BATCH_FOLLOW_UP_TEMPLATE, BATCH_GENERIC_TEMPLATE, BATCH_TEMPLATE_BY_INTENT, ensureTemplate, renderLabTemplate, type TemplateVariables } from "@/lib/non-api-labs/templates";
 import { recordSend, styledBody, type Styled } from "@/lib/agents/style";
 import { confirmationUrl } from "@/lib/non-api-labs/confirmation-link";
-import { contactVariables, type OrderContactDetails } from "@/lib/non-api-labs/order-details";
+import { contactVariables, testsForLab, type OrderContactDetails } from "@/lib/non-api-labs/order-details";
 import { newConversationStatus } from "./evaluate";
 import { TIME_ZONE, durationText, formatDate, formatDateTime, formatTime } from "./format";
 import { NEW_ORDER_INTENT, currentSlot, itemLine, releaseAt } from "./batching";
@@ -79,7 +79,8 @@ export function orderVariables(
     appointment_date: appointment ? formatDate(appointment) : "Scheduled appointment",
     appointment_time: appointment ? formatTime(appointment) : "scheduled time",
     location: contact?.area || contact?.storeName || "Location shared in LabStack",
-    tests: contact?.tests || "Order details available in LabStack",
+    // The introduction carries every test inside each package; later messages name the packages.
+    tests: (rule.introduces ? testsForLab(contact, "   ") : null) || contact?.tests || "Order details available in LabStack",
     sla_deadline: formatDateTime(moment),
     phlebo_name: order.phleboName?.trim() || facts.phlebo_name || "not assigned yet",
     phlebo_phone: order.phleboNumber?.trim() || facts.phlebo_phone || "number not shared",
@@ -341,7 +342,7 @@ async function batchLine(intent: string, n: number, item: BatchItemInput, now: D
     phlebo: [phleboName, phleboPhone].filter(Boolean).join(" ") || null,
     confirmUrl: needsLink ? await confirmationUrl(order.id) : null,
     createdAt: order.createdAt, milestone: rule.milestoneLabel, dueAt: moment,
-    mobile: contact?.patientMobile ?? null, address: contact?.address ?? null, mapUrl: contact?.mapUrl ?? null, tests: contact?.tests ?? null,
+    mobile: contact?.patientMobile ?? null, address: contact?.address ?? null, mapUrl: contact?.mapUrl ?? null, tests: intent === NEW_ORDER_INTENT ? testsForLab(contact) : contact?.tests ?? null,
   }, now, TIME_ZONE(), body);
 }
 

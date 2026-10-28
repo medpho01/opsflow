@@ -133,6 +133,34 @@ export function formatTestBreakdown(packages: OrderPackage[], directTests: strin
   return lines;
 }
 
+/**
+ * What the lab must collect, for the one message that introduces the order (28 Oct 2026). A
+ * non-API lab does not know what "EN Complete Full Body Check with Vitamin Screening with CBC"
+ * contains, so each package is followed by its tests; tests booked on their own come after.
+ * Continuation lines are indented to sit under the 🧪 line of the new-order block.
+ *
+ *   EN Complete Full Body Check (34 tests):
+ *          CBC, HbA1c, Lipid Profile, …
+ *   Also: Vitamin D
+ */
+export function testsForLab(details: Pick<OrderContactDetails, "packages" | "directTests" | "tests"> | null, indent = "       "): string | null {
+  if (!details) return null;
+  const unique = (tests: string[]) => [...new Set((tests ?? []).map((t) => t.trim()).filter(Boolean))];
+  const capped = (tests: string[]) => (tests.length > MAX_TESTS_PER_PACKAGE ? `${tests.slice(0, MAX_TESTS_PER_PACKAGE).join(", ")} +${tests.length - MAX_TESTS_PER_PACKAGE} more` : tests.join(", "));
+  const lines: string[] = [];
+  for (const pkg of details.packages ?? []) {
+    const name = pkg.name?.trim();
+    if (!name) continue;
+    const tests = unique(pkg.tests);
+    if (!tests.length) { lines.push(name); continue; }
+    lines.push(`${name} (${tests.length} tests):`, `${indent}${capped(tests)}`);
+  }
+  const direct = unique(details.directTests ?? []);
+  if (direct.length) lines.push(`${lines.length ? "Also: " : ""}${capped(direct)}`);
+  if (!lines.length) return details.tests?.trim() || null;
+  return lines.map((l, i) => (i === 0 || l.startsWith(indent) ? l : `${indent}${l}`)).join("\n");
+}
+
 type DetailsRow = {
   id: number;
   packages: OrderPackage[] | null;

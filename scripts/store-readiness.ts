@@ -19,7 +19,7 @@ async function main() {
   for (const i of s.intents.filter((x) => x.n)) console.log(`  ${i.intent.padEnd(14)} ${String(i.score ?? "–").padStart(3)}  asked ${String(i.n).padStart(3)}  bot answered ${String(i.covered).padStart(3)}  missed ${String(i.missed).padStart(3)}  wrong ${i.bad} (${i.contradicts} contradict, ${i.wrongLinks} wrong order, ${i.wouldFail} would fail)${i.ready ? "  ✓ ready" : ""}`);
   if (s.recommended.length) console.log(`  ready to go live for: ${s.recommended.join(", ")}`);
   if (process.argv.includes("--wrong")) {
-    const rows = await prisma.agentShadowEval.findMany({ where: { storeId, at: { gte: new Date(Date.now() - days * 86_400_000) }, verdict: { in: ["CONTRADICTS", "WRONG_LINK", "WOULD_FAIL"] } }, orderBy: { at: "asc" } });
+    const rows = await prisma.agentShadowEval.findMany({ where: { storeId, at: { gte: new Date(Date.now() - days * 86_400_000) }, verdict: { in: ["CONTRADICTS", "WRONG_LINK", "WOULD_FAIL", "UNWANTED"] } }, orderBy: { at: "asc" } });
     const t = (d: Date | null) => (d ? d.toLocaleString("en-IN", { timeZone: process.env.TIMEZONE || "Asia/Kolkata", day: "numeric", month: "short", hour: "numeric", minute: "2-digit" }) : "—");
     console.log(`\n${rows.length} disagreement(s):`);
     for (const r of rows) {

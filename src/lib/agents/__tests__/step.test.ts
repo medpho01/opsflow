@@ -271,6 +271,21 @@ describe("the store desk", () => {
 });
 
 describe("the console moving", () => {
+  it("a move the store asked for is confirmed as done, not announced as the lab's reschedule (28 Oct 2026)", () => {
+    const o = order({ appointmentTime: at("2026-10-28T04:30:00Z") });
+    const asked = wake(o, at("2026-10-28T09:46:00Z"), undefined, { events: [{ kind: "store_message", at: at("2026-10-28T09:46:00Z"), actor: "STORE", payload: { intent: "reschedule", text: "94301 - Kindly reschedule for tomorrow 9am", messageId: "m-mv", waMsgId: "w-mv" } }] as never });
+    assert.ok(asked.journey.subStates.includes("change_pending"));
+    const moved = order({ orderStatus: "RESCHEDULED", appointmentTime: at("2026-10-29T03:30:00Z"), statusUpdatedAt: at("2026-10-28T09:50:00Z"), statusNote: "Patient unavailable" });
+    const out = wake(moved, at("2026-10-28T09:51:00Z"), asked);
+    const confirm = out.actions.find((a) => a.idemKey.startsWith("console-moved:"));
+    assert.equal(confirm?.action, "ack");
+    assert.equal(confirm?.params.template, "STORE_CONFIRMED_CHANGE");
+    assert.match(String(confirm?.params.change), /^moved to Thu, 29 Oct, 9:00 am as requested$/);
+    assert.ok(!out.journey.subStates.includes("change_pending"));
+    // Unasked, the same move is the lab's news for the store.
+    const lab = wake(moved, at("2026-10-28T09:51:00Z"), wake(o, at("2026-10-28T09:46:00Z")));
+    assert.equal(lab.actions.find((a) => a.idemKey.startsWith("console-moved:"))?.params.template, "STORE_LAB_RESCHEDULED");
+  });
   it("a reschedule recomputes pre-collection checkpoints, resets attempts, withdraws asks and logs due times", () => {
     const o = order();
     const breached = wake(o, at("2026-10-21T00:10:00Z"));

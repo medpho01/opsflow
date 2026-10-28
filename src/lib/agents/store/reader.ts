@@ -20,6 +20,7 @@ import { enqueueOutbox } from "../executors/dispatcher";
 import { liveStoreBody } from "../executors/storeReply";
 import { guard, loadGuardState } from "../guard/guard";
 import { fetchOrderSnapshot } from "../journey/window";
+import { addressedTeamMember, complaintSignal, makeLabScope } from "./scope";
 
 export type StoreIntent = "status" | "report" | "slot" | "reschedule" | "cancel" | "change_tests" | "new_booking" | "serviceability" | "complaint" | "noise" | "other";
 
@@ -97,6 +98,13 @@ async function writtenOrders(text: string, storeId: number): Promise<number[]> {
 async function linkOrders(message: Parameters<typeof linkOrder>[0], storeId: number, now: Date): Promise<Array<{ orderId: number; via: string }>> {
   const written = await writtenOrders(message.text, storeId);
   if (written.length) return written.slice(0, 5).map((orderId) => ({ orderId, via: "ORDER_ID" }));
+  // "Any update on this?" quoting a message that named two orders is about both (28 Oct 2026:
+  // #87647 was answered, #87648 in the same quoted message was not). Every id or none.
+  if (message.replyToWaId) {
+    const quoted = await prisma.waMessage.findUnique({ where: { waMsgId: message.replyToWaId }, select: { text: true } }).catch(() => null);
+    const quotedIds = quoted ? await writtenOrders(quoted.text, storeId) : [];
+    if (quotedIds.length) return quotedIds.slice(0, 5).map((orderId) => ({ orderId, via: "QUOTED" }));
+  }
   const one = await linkOrder(message, storeId, now);
   return one ? [one] : [];
 }
@@ -166,7 +174,10 @@ async function answerClosedOrder(orderId: number, storeId: number, intent: Store
     : o.orderStatus === "PATIENT_MISSED" ? `marked patient missed on ${when}` : `shows ${o.orderStatus.toLowerCase().replace(/_/g, " ")} since ${when}`;
   const taskType = CLOSED_TASK[intent];
   const ctx = { journeyId: null, orderId, labId: o.labId, storeId, orderType: o.orderType, appointmentTime: o.appointmentTime, patientName: o.patientName, labName: o.labName, storeName: o.storeName };
-  const reply = await guard({ desk: "STORE", action: "store_reply", params: { text: `#${orderId}: LabStack ${line}.${taskType ? " Raising it with the team now." : ""}`, orderId, storeId, quotedWaId: waMsgId }, reason: `store asked about a closed order (${intent}); LabStack ${line}`, idemKey: `closed:${orderId}:${waMsgId}` }, ctx, state);
+  // The reply carries its intent so the desk's live scope applies: a complaint or a reschedule on a
+  // closed order is handed to a person, not answered with the status line (28 Oct 2026: "doctor
+  // consultation was not done" was answered "report delivered on 16 Oct").
+  const reply = await guard({ desk: "STORE", action: "store_reply", params: { text: `#${orderId}: LabStack ${line}.${taskType ? " Raising it with the team now." : ""}`, orderId, storeId, intent, quotedWaId: waMsgId }, reason: `store asked about a closed order (${intent}); LabStack ${line}`, idemKey: `closed:${orderId}:${waMsgId}` }, ctx, state);
   let executed = reply.outcome === "EXECUTED" ? 1 : 0; let review = reply.outcome === "REVIEW" ? 1 : 0;
   if (taskType) {
     const t = await guard({ desk: "STORE", action: "create_task", params: { taskType, orderId, cause: `STORE_${intent.toUpperCase()}_CLOSED_ORDER`, evidence: [{ kind: "store_msg", at: at.toISOString(), text: text.slice(0, 300) }, { kind: "console", at: at.toISOString(), text: `LabStack ${line}` }], action: `#${orderId}: ${intent.replace("_", " ")} asked by the store; LabStack ${line}` }, reason: `store asked to ${intent.replace("_", " ")} on a closed order`, idemKey: `closed-task:${orderId}:${waMsgId}` }, ctx, state);
@@ -191,7 +202,9 @@ export async function runStoreReader(now = new Date()): Promise<StoreReaderResul
     orderBy: { ts: "asc" }, take: 200,
   });
   if (!messages.length) return result;
-  const isTeam = makeTeamMatcher(await loadTeam());
+  const team = await loadTeam();
+  const isTeam = makeTeamMatcher(team);
+  const labOnBot = makeLabScope(state.desks);
 
   for (const m of messages) {
     result.read += 1;
@@ -208,10 +221,22 @@ export async function runStoreReader(now = new Date()): Promise<StoreReaderResul
     // A bare @mention asks nothing (28 Oct 2026: "@2482…" was answered with a report status).
     if (!text.replace(/@\d{6,}/g, "").replace(/[\s⁨⁩]/g, "").length) continue;
     // The reader (model first, patterns as fallback) fills in the form: orders, samples, request, ack.
-    const quoted = m.replyToWaId ? await prisma.waMessage.findUnique({ where: { waMsgId: m.replyToWaId }, select: { text: true } }).catch(() => null) : null;
+    const quoted = m.replyToWaId ? await prisma.waMessage.findUnique({ where: { waMsgId: m.replyToWaId }, select: { text: true, sender: true, senderJid: true, fromMe: true } }).catch(() => null) : null;
     const reading = await readMessage({ side: "store", text, quotedText: quoted?.text ?? null, scope: { storeId: g.storeId, groupId: m.groupId } });
-    const intent: StoreIntent = reading.ack || reading.request.kind === "none" ? "noise" : reading.request.kind === "details" ? "other" : reading.request.kind;
+    let intent: StoreIntent = reading.ack || reading.request.kind === "none" ? "noise" : reading.request.kind === "details" ? "other" : reading.request.kind;
     if (intent === "noise") continue;
+    // A grievance ("samples collected but cancelled", "consultation was not done") is a complaint
+    // whatever else it looks like: the store knows the status and is unhappy with it (28 Oct 2026).
+    if (["status", "report", "slot", "other"].includes(intent) && complaintSignal(text)) intent = "complaint";
+    // A message for a named person — "@Veena please check", "@Abhishek as discussed", a reply to a
+    // person's message — is theirs. The request is tracked (the team is reminded if it goes
+    // unanswered) but the desk neither answers nor chases on it (28 Oct 2026: it answered three).
+    const addressed = await addressedTeamMember(text, team).catch(() => null);
+    // A reply to a team member's message (typed by hand, not one of ours from the console or the
+    // agent). A store quoting its own earlier question is only a nudge, and that is ours.
+    const quotedOurs = !!m.replyToWaId && !!(await prisma.waOutbound.findFirst({ where: { sentWaMsgId: m.replyToWaId }, select: { id: true } }));
+    const inHumanThread = !!quoted && !quotedOurs && (quoted.fromMe || !!isTeam(quoted.sender, quoted.senderJid));
+    const forPerson = !!addressed || inHumanThread;
     // The model's ids count only when the store wrote them, here or in the message it quoted: the
     // model learns from the group's recent messages and has returned an order from those instead
     // (26 Oct 2026: "94301 - RNR" linked to 94188, "93807 93811 …" to 93412).
@@ -235,8 +260,7 @@ export async function runStoreReader(now = new Date()): Promise<StoreReaderResul
       // Ask once for the order id (FR-9.2), only for questions that need one — and never inside a
       // thread with a person: a reply to a message that is not ours is theirs to handle. A nudge
       // that could mean two or three open threads is asked which ("#a or #b?").
-      const inHumanThread = !!m.replyToWaId && !(await prisma.waOutbound.findFirst({ where: { sentWaMsgId: m.replyToWaId }, select: { id: true } }));
-      if (!inHumanThread && ["status", "report", "slot", "reschedule", "cancel", "change_tests"].includes(intent) && state.desks.get(`STORE:STORE:${g.storeId}`) === "LIVE") {
+      if (!forPerson && ["status", "report", "slot", "reschedule", "cancel", "change_tests"].includes(intent) && state.desks.get(`STORE:STORE:${g.storeId}`) === "LIVE") {
         const which = whichOrderQuestion(candidates);
         const body = which ?? (wroteAnId ? await liveStoreBody("STORE_UNKNOWN_ORDER_ID") : await liveStoreBody("STORE_ASK_ORDER_ID"));
         const unknown = wroteAnId ? explicitOrderIds(text).map((id) => `#${id}`).join(", ") : "";
@@ -249,6 +273,15 @@ export async function runStoreReader(now = new Date()): Promise<StoreReaderResul
     // The request is tracked until it is closed (threads.ts); a nudge joins the thread it is about.
     const snapshot = await fetchOrderSnapshot(link.orderId).catch(() => null);
     if (!thread && THREAD_KINDS.has(intent)) await openThread({ orderId: link.orderId, storeId: g.storeId!, groupId: m.groupId, kind: intent, messageId: m.id, waMsgId: m.waMsgId, text, at: m.ts, order: snapshot });
+    if (forPerson) continue;
+    // An order with a lab the bot cannot work with (no API, no connected group with a live desk)
+    // is the team's: handed over, never "checking with <lab>" (28 Oct 2026: Suburban Diagnostics).
+    if (snapshot?.labId != null && !(await labOnBot(snapshot.labId))) {
+      const ctx = { journeyId: null, orderId: link.orderId, labId: snapshot.labId, storeId: g.storeId!, orderType: snapshot.orderType, appointmentTime: snapshot.appointmentTime, patientName: snapshot.patientName, labName: snapshot.labName, storeName: snapshot.storeName };
+      const r = await guard({ desk: "STORE", action: "store_handoff", params: { orderId: link.orderId, storeId: g.storeId, intent, quotedWaId: m.waMsgId, labNotOnBot: true }, reason: `${snapshot.labName ?? "the lab"} is not on the bot (no API, no live WhatsApp desk): the team takes this one`, idemKey: `store:${link.orderId}:${m.id}:lab-handoff` }, ctx, state).catch(() => null);
+      if (r?.outcome === "EXECUTED") result.answered += 1;
+      continue;
+    }
     const recorded = await recordJourneyEvent(link.orderId, {
       kind: "store_message", at: m.ts, actor: "STORE",
       payload: { intent, text: text.slice(0, 500), messageId: m.id, waMsgId: m.waMsgId, via: link.via, storeId: g.storeId, sender: m.sender, samples: reading.samples, requestTime: reading.request.time ?? null, readVia: reading.via, ...(thread ? { thread: { kind: thread.kind, waitingOn: thread.waitingOn, openedAt: thread.openedAt.toISOString() } } : {}) },

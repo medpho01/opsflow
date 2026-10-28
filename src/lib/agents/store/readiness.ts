@@ -15,17 +15,30 @@ import prisma from "@/lib/db/client";
 import { fetchOrderSnapshots } from "../journey/window";
 import { renderStoreText } from "../executors/storeReply";
 import { isAutomated, loadTeam, makeTeamMatcher } from "@/lib/wa/team";
+import { resolveMentionNames } from "@/lib/wa/mentionNames";
+import { addressedToPerson, STORE_ACK_RE } from "./scope";
 import { askModel } from "../llm";
 import type { ProposedAction } from "../journey/step";
 
 const MIN = 60_000;
 const DAY = 86_400_000;
-const STORE_ACTIONS = ["store_reply", "store_alert", "store_warning", "ack", "create_task"];
+const STORE_ACTIONS = ["store_reply", "store_alert", "store_warning", "ack", "create_task", "store_handoff"];
 export const STORE_INTENTS = ["status", "report", "slot", "reschedule", "cancel", "change_tests", "new_booking", "serviceability", "complaint", "other"] as const;
 export type StoreIntent = (typeof STORE_INTENTS)[number];
 export const INTENT_LABEL: Record<string, string> = { status: "status", report: "report", slot: "slots", reschedule: "reschedule", cancel: "cancel", change_tests: "change tests", new_booking: "new booking", serviceability: "serviceability", complaint: "complaint", other: "other" };
 
-export type Verdict = "SAME" | "COMPATIBLE" | "CONTRADICTS" | "UNRELATED" | "BOT_ONLY" | "MISSED" | "NEITHER" | "WRONG_LINK" | "WOULD_FAIL" | "UNJUDGED";
+export type Verdict = "SAME" | "COMPATIBLE" | "CONTRADICTS" | "UNRELATED" | "BOT_ONLY" | "MISSED" | "NEITHER" | "WRONG_LINK" | "WOULD_FAIL" | "UNWANTED" | "UNJUDGED";
+
+/**
+ * The bot should have stayed quiet (28 Oct 2026): the question was for a named person, or the bot
+ * only said "on it" while a team member answered within two minutes either side. Counts as wrong —
+ * the first live afternoon's facts were right and its timing was the whole problem.
+ */
+export function unwanted(input: { forPerson: boolean; draft: string | null; botAt: Date | null; teamAt: Date | null }): boolean {
+  if (!input.draft || input.draft.startsWith("[")) return false;
+  if (input.forPerson) return true;
+  return !!(input.botAt && input.teamAt && Math.abs(input.botAt.getTime() - input.teamAt.getTime()) <= 2 * MIN && STORE_ACK_RE.test(input.draft));
+}
 
 const one = (s: string, n = 300) => s.replace(/\s+/g, " ").trim().slice(0, n);
 const written = (text: string) => [...new Set((text.match(/(?<![\d@+])\d{5,6}(?!\d)/g) ?? []).map(Number))];
@@ -34,14 +47,18 @@ const written = (text: string) => [...new Set((text.match(/(?<![\d@+])\d{5,6}(?!
 export async function evaluateStore(storeId: number, since: Date, until = new Date(), opts: { judge?: boolean } = { judge: true }): Promise<{ questions: number; judged: number }> {
   const groups = await prisma.waGroup.findMany({ where: { role: "SUPPORT", storeId }, select: { id: true } });
   if (!groups.length) return { questions: 0, judged: 0 };
-  const isTeam = makeTeamMatcher(await loadTeam());
+  const teamRoster = await loadTeam();
+  const isTeam = makeTeamMatcher(teamRoster);
   const msgs = await prisma.waMessage.findMany({
     where: { groupId: { in: groups.map((g) => g.id) }, ts: { gte: since, lte: until } }, orderBy: { ts: "asc" },
     select: { id: true, waMsgId: true, ts: true, fromMe: true, sender: true, senderJid: true, text: true, intent: true, replyToWaId: true },
   });
+  const byWaId = new Map(msgs.map((m) => [m.waMsgId, m]));
   const team = msgs.filter((m) => !isAutomated(m) && (m.fromMe || !!isTeam(m.sender, m.senderJid)) && m.text?.trim());
   const questions = msgs.filter((m) => !m.fromMe && !isTeam(m.sender, m.senderJid) && !isAutomated(m) && m.intent?.startsWith("STORE_") && m.intent !== "STORE_NOISE" && m.text?.trim());
   if (!questions.length) return { questions: 0, judged: 0 };
+  const mentionNames = await resolveMentionNames(questions.map((q) => q.text), { team: teamRoster }).catch(() => ({} as Record<string, string>));
+  const ourWaIds = new Set((await prisma.waOutbound.findMany({ where: { groupId: { in: groups.map((g) => g.id) }, createdAt: { gte: new Date(since.getTime() - 7 * DAY) }, sentWaMsgId: { not: null } }, select: { sentWaMsgId: true } })).map((o) => o.sentWaMsgId!));
 
   const events = await prisma.agentJourneyEvent.findMany({ where: { kind: "store_message", at: { gte: since } }, select: { payload: true, journey: { select: { orderId: true } } } });
   const linked = new Map<string, number[]>();
@@ -72,6 +89,7 @@ export async function evaluateStore(storeId: number, since: Date, until = new Da
     if (first) {
       const o = first.orderId != null ? snaps.get(first.orderId) : undefined;
       if (first.action === "create_task") draft = `[task] ${one(String((first.params as { action?: string }).action ?? first.reason))}`;
+      else if (first.action === "store_handoff") draft = `[handoff] ${one(first.reason)}`;
       else {
         try { draft = one(await renderStoreText({ desk: "STORE", action: first.action, params: first.params as Record<string, unknown>, reason: first.reason, idemKey: first.idemKey ?? "" } as unknown as ProposedAction, { orderId: first.orderId ?? 0, labName: o?.labName ?? null, appointmentTime: o?.appointmentTime ?? null, patientName: o?.patientName ?? null })); }
         catch (e) { wouldFail = true; draft = `(would fail: ${e instanceof Error ? e.message : e})`; }
@@ -79,7 +97,12 @@ export async function evaluateStore(storeId: number, since: Date, until = new Da
     } else if (asked.has(q.id)) draft = "[asks which order]";
     const mentionOnly = !q.text.replace(/@\d{6,}/g, "").replace(/[\s⁨⁩]/g, "").length;
     if (mentionOnly) continue;   // a bare @mention asks nothing; not a question to grade
-    let verdict: Verdict = wrongLink ? "WRONG_LINK" : wouldFail ? "WOULD_FAIL" : draft && reply ? "UNJUDGED" : draft ? "BOT_ONLY" : reply ? "MISSED" : "NEITHER";
+    // For a named person, or a reply to a person's message: not ours to answer. Silence is right
+    // and is not graded; an answer is UNWANTED.
+    const quotedMsg = q.replyToWaId ? byWaId.get(q.replyToWaId) : undefined;
+    const forPerson = !!addressedToPerson(q.text, mentionNames, isTeam) || (!!quotedMsg && !ourWaIds.has(q.replyToWaId!) && (quotedMsg.fromMe || !!isTeam(quotedMsg.sender, quotedMsg.senderJid)));
+    if (forPerson && !draft) continue;
+    let verdict: Verdict = wrongLink ? "WRONG_LINK" : wouldFail ? "WOULD_FAIL" : unwanted({ forPerson, draft, botAt: first?.createdAt ?? null, teamAt: reply?.ts ?? null }) ? "UNWANTED" : draft && reply ? "UNJUDGED" : draft ? "BOT_ONLY" : reply ? "MISSED" : "NEITHER";
     let note: string | null = null;
     if (verdict === "UNJUDGED" && opts.judge !== false && draft && reply && !draft.startsWith("[")) {
       const j = await judge(q.text, draft, reply.text).catch(() => null);
@@ -116,7 +139,7 @@ async function judge(question: string, draft: string, teamReply: string): Promis
   } catch { return null; }
 }
 
-export type IntentScore = { intent: string; n: number; covered: number; bad: number; contradicts: number; wrongLinks: number; wouldFail: number; missed: number; botFirst: number; both: number; score: number | null; ready: boolean };
+export type IntentScore = { intent: string; n: number; covered: number; bad: number; contradicts: number; wrongLinks: number; wouldFail: number; unwanted: number; missed: number; botFirst: number; both: number; score: number | null; ready: boolean };
 export type Readiness = { days: number; at: string; n: number; score: number | null; intents: IntentScore[]; recommended: string[] };
 
 /** The score from the rows: coverage (did the bot have a reply) and correctness (nothing wrong among its replies). */
@@ -132,13 +155,14 @@ export function scoreRows(rows: Array<{ intent: string; verdict: string; botAt: 
     const contradicts = rs.filter((r) => r.verdict === "CONTRADICTS").length;
     const wrongLinks = rs.filter((r) => r.verdict === "WRONG_LINK").length;
     const wouldFail = rs.filter((r) => r.verdict === "WOULD_FAIL").length;
-    const bad = contradicts + wrongLinks + wouldFail;
+    const unwantedN = rs.filter((r) => r.verdict === "UNWANTED").length;
+    const bad = contradicts + wrongLinks + wouldFail + unwantedN;
     const missed = rs.filter((r) => r.verdict === "MISSED").length;
     const both = rs.filter((r) => r.botAt && r.teamAt).length;
     const botFirst = rs.filter((r) => r.botAt && r.teamAt && r.botAt <= r.teamAt).length;
     const score = n >= 5 ? Math.round(100 * (0.4 * (covered / n) + 0.6 * (1 - bad / Math.max(covered, 1)))) : null;
-    const recentBad = rs.filter((r) => r.at >= recent && ["CONTRADICTS", "WRONG_LINK", "WOULD_FAIL"].includes(r.verdict)).length;
-    intents.push({ intent, n, covered, bad, contradicts, wrongLinks, wouldFail, missed, botFirst, both, score, ready: score != null && score >= 85 && n >= 15 && recentBad === 0 });
+    const recentBad = rs.filter((r) => r.at >= recent && ["CONTRADICTS", "WRONG_LINK", "WOULD_FAIL", "UNWANTED"].includes(r.verdict)).length;
+    intents.push({ intent, n, covered, bad, contradicts, wrongLinks, wouldFail, unwanted: unwantedN, missed, botFirst, both, score, ready: score != null && score >= 85 && n >= 15 && recentBad === 0 });
   }
   const scored = intents.filter((i) => i.score != null);
   const total = scored.reduce((s, i) => s + i.n, 0);

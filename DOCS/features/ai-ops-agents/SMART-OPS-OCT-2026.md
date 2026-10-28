@@ -121,3 +121,17 @@ body is never promoted over an edit.
 Settings: `AGENT_OPS_GROUP_JID` (optional; else the INTERNAL group named like
 "Internal <> ops"), `AGENT_LEARN_CRON` (default hourly at :07), `AGENT_BRIEF_JIDS`,
 `AGENT_ALERT_WEBHOOK_URL`.
+
+## When the store desk stays quiet (28 Oct 2026, Plum's first live afternoon)
+
+The desk's facts were right on its first live day; its sense of when to speak was not. Rules added, all in `src/lib/agents/store/scope.ts` and the reader:
+
+- **For a named person, not for us.** A store message that @mentions a team member, says "as discussed", or replies to a team member's message is theirs. The request is still tracked (the team is reminded if it goes unanswered) but the desk neither answers nor chases on it.
+- **A grievance is a complaint.** "Not done", "collected but cancelled", "dummy order", "no one is assigned", "last time also" make the message a complaint whatever else it looks like, so it goes to a person instead of getting a status line. Closed-order answers now carry their intent too, so the same scope applies there.
+- **Labs the bot cannot work with.** An order whose lab has no API and no connected WhatsApp group with a live desk is handed to the team, order by order, never "checking with <lab>". For Plum that keeps Thyrocare, Redcliffe and Orange with the desk and sends Suburban, Apollo and the like to a person. The store summary counts such visits instead of listing them as "on it with the lab".
+- **Who is tagged on a handoff:** the team member the store mentioned → whoever last wrote about that order in the group → the two most recent team writers.
+- **No duplicates.** The same reply to the same order is never sent twice in a day. An "on it" (checking / noted) waits three minutes and is dropped if a team member answered in the group a few minutes before or after.
+- **Every id or none.** "Any update?" quoting a message that named two orders is about both.
+- **A move the store asked for** is confirmed as "done — moved to … as requested", not announced as the lab's reschedule with the patient's name and "please let the customer know".
+- **The grader sees it.** A new verdict, UNWANTED (answered a message meant for a person, or an "on it" within two minutes of the team's answer), counts as wrong in the readiness score; staying quiet on such a message is not graded at all.
+

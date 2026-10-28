@@ -97,8 +97,11 @@ async function renderStoreTextWith(action: ProposedAction, ctx: Pick<ExecuteCont
 const INTENT_WORDS: Record<string, string> = { status: "status question", report: "report request", slot: "slot question", reschedule: "reschedule request", cancel: "cancellation request", change_tests: "test change request", new_booking: "new booking request", serviceability: "serviceability question", complaint: "complaint", other: "question" };
 
 /**
- * A store question outside the desk's live scope: tag the team members who answer in this group
- * (the two most recent in 14 days), quoting the store's message, so a person takes it (28 Oct 2026).
+ * A store question outside the desk's scope goes to a person in the group, quoting the store's
+ * message (28 Oct 2026). Who is tagged, in order: the team member the store itself @mentioned;
+ * else the one who last wrote about this order in the group; else the two most recent team
+ * writers. (The first live day tagged the most recent writer — the founder — on a request the
+ * store had addressed to Sushma.)
  */
 export async function storeHandoff(action: ProposedAction, ctx: ExecuteContext): Promise<ExecuteResult> {
   const storeId = (action.params.storeId as number | null | undefined) ?? ctx.storeId;
@@ -106,21 +109,39 @@ export async function storeHandoff(action: ProposedAction, ctx: ExecuteContext):
   const g = await prisma.waGroup.findFirst({ where: { storeId, role: "SUPPORT", archivedAt: null, active: true }, select: { id: true } });
   if (!g) return { outcome: "FAILED", note: "no store group" };
   const { loadTeam, makeTeamMatcher } = await import("@/lib/wa/team");
-  const isTeam = makeTeamMatcher(await loadTeam());
-  const recent = await prisma.waMessage.findMany({ where: { groupId: g.id, direction: "IN", fromMe: false, ts: { gte: new Date(Date.now() - 14 * 86_400_000) } }, orderBy: { ts: "desc" }, select: { sender: true, senderJid: true }, take: 400 });
-  const jids: string[] = [];
-  for (const m of recent) { if (m.senderJid && isTeam(m.sender, m.senderJid) && !jids.includes(m.senderJid)) jids.push(m.senderJid); if (jids.length === 2) break; }
+  const { addressedTeamMember, mentionJid } = await import("../store/scope");
+  const team = await loadTeam();
+  const isTeam = makeTeamMatcher(team);
+  const quotedWaId = typeof action.params.quotedWaId === "string" ? action.params.quotedWaId : null;
+  const jids = await handoffTargets({ groupId: g.id, orderId: ctx.orderId, quotedWaId, isTeam, mentioned: async (text) => (await addressedTeamMember(text, team).catch(() => null))?.ids.map(mentionJid) ?? [] });
   const who = jids.map((j) => `@${j.split("@")[0]}`).join(" ") || "Team";
   const intent = String(action.params.intent ?? "other");
-  const text = `${who} — #${ctx.orderId}: ${INTENT_WORDS[intent] ?? "question"} from the store, please take this one.`;
+  const why = action.params.labNotOnBot ? ` (${ctx.labName ?? "the lab"} is not on WhatsApp with us)` : "";
+  const text = `${who} — #${ctx.orderId}: ${INTENT_WORDS[intent] ?? "question"} from the store${why}, please take this one.`;
   const now = new Date();
   const r = await enqueueOutbox({
     counterparty: `STORE:${storeId}`, ask: "STORE_HANDOFF", orderId: ctx.orderId, journeyId: ctx.journeyId, actionId: ctx.actionId,
     windowFrom: now, windowTo: storeWindowTo(now), urgent: true, immediate: true, idemKey: `outbox:${action.idemKey}`,
     line: { orderId: ctx.orderId, patientName: ctx.patientName ?? null, appointment: ctx.appointmentTime ?? null }, text,
-    extra: { quotedWaId: action.params.quotedWaId ?? null, mentions: jids },
+    extra: { quotedWaId, mentions: jids },
   });
   return r.queued ? { outcome: "EXECUTED", note: text.slice(0, 120) } : { outcome: "RECORDED", note: "already queued" };
+}
+
+/** The jids to tag on a handoff: mentioned by the store → last handled this order → most recent writers. */
+export async function handoffTargets(input: { groupId: string; orderId: number; quotedWaId: string | null; isTeam: (sender: string, jid: string | null) => unknown; mentioned: (text: string) => Promise<string[]> }): Promise<string[]> {
+  if (input.quotedWaId) {
+    const q = await prisma.waMessage.findUnique({ where: { waMsgId: input.quotedWaId }, select: { text: true } }).catch(() => null);
+    const ids = q?.text ? await input.mentioned(q.text) : [];
+    if (ids.length) return ids.slice(0, 2);
+  }
+  const recent = await prisma.waMessage.findMany({ where: { groupId: input.groupId, direction: "IN", fromMe: false, ts: { gte: new Date(Date.now() - 14 * 86_400_000) } }, orderBy: { ts: "desc" }, select: { sender: true, senderJid: true, text: true }, take: 400 });
+  const idRe = new RegExp(`(?<![\\d])#?${input.orderId}(?![\\d])`);
+  const handled = recent.find((m) => m.senderJid && input.isTeam(m.sender, m.senderJid) && idRe.test(m.text ?? ""));
+  if (handled?.senderJid) return [handled.senderJid];
+  const jids: string[] = [];
+  for (const m of recent) { if (m.senderJid && input.isTeam(m.sender, m.senderJid) && !jids.includes(m.senderJid)) jids.push(m.senderJid); if (jids.length === 2) break; }
+  return jids;
 }
 
 /**

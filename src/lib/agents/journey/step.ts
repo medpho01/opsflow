@@ -401,6 +401,8 @@ export function step(input: StepInput): StepOutput {
   // 1. Reconcile with the console (FR-2.7 to 2.15).
   const changed = fp !== journey.consoleFingerprint;
   const changes = changed ? classifyChange(before, order) : [];
+  // The store asked for a change that is still pending: a move the console now shows is theirs.
+  const storeAskedToMove = journey.subStates.includes("change_pending");
   if (changed) {
     const resets = changes.includes("RESCHEDULED") || changes.includes("REROUTED");
     const rebuild = changes.includes("TYPE_CHANGED");
@@ -449,7 +451,11 @@ export function step(input: StepInput): StepOutput {
     const movedByLab = before && (changes.includes("RESCHEDULED") || (order.orderStatus === "RESCHEDULED" && before.orderStatus !== "RESCHEDULED"));
     if (movedByLab && order.storeId != null && order.appointmentTime) {
       const when = order.appointmentTime.toLocaleString("en-IN", { timeZone: tzc, weekday: "short", day: "numeric", month: "short", hour: "numeric", minute: "2-digit" });
-      actions.push({ desk: "STORE", action: "store_alert", params: { template: "STORE_LAB_RESCHEDULED", orderId: order.id, storeId: order.storeId, fact: "console_rescheduled", detail: `now ${when}${note}`, at: now.toISOString() }, reason: `LabStack: visit moved to ${when}${note}`, idemKey: `console-moved:${order.id}:${order.appointmentTime.getTime()}` });
+      // A move the store itself asked for is confirmed as done — no patient name, no "patient
+      // unavailable", no "please let the customer know" (28 Oct 2026: Plum asked for 9 am and read
+      // "The lab has rescheduled… Patient unavailable"; Sushma then confirmed it again by hand).
+      if (storeAskedToMove) actions.push({ desk: "STORE", action: "ack", params: { template: "STORE_CONFIRMED_CHANGE", orderId: order.id, storeId: order.storeId, change: `moved to ${when} as requested`, intent: "status" }, reason: `LabStack: visit moved to ${when} as the store asked`, idemKey: `console-moved:${order.id}:${order.appointmentTime.getTime()}` });
+      else actions.push({ desk: "STORE", action: "store_alert", params: { template: "STORE_LAB_RESCHEDULED", orderId: order.id, storeId: order.storeId, fact: "console_rescheduled", detail: `now ${when}${note}`, at: now.toISOString() }, reason: `LabStack: visit moved to ${when}${note}`, idemKey: `console-moved:${order.id}:${order.appointmentTime.getTime()}` });
     }
   } else {
     checkpoints = waiveImplied(buildCheckpoints(order, checkpoints, now, { recomputePreCollection: false, rebuildAll: false, labTier: input.labTier, sop: input.sop }));

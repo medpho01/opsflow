@@ -28,3 +28,11 @@ describe("store summary", () => {
     assert.equal(digestText({ ...day, total: 0, collected: 0, upcoming: 0, rnr: [], owed: [], missed: [], centreMissed: [] }, "x"), null);
   });
 });
+
+describe("store summary — labs the bot cannot chase (28 Oct 2026)", () => {
+  it("counts visits past time with such labs instead of listing them as 'on it with the lab'", () => {
+    const text = digestText({ ...day, missed: [], otherLabs: 2 }, "Labstack<>Plum Ops", new Date("2026-10-26T04:30:00Z"))!;
+    assert.doesNotMatch(text, /Visit time passed, not collected yet/);
+    assert.match(text, /☎️ 2 visits past time with labs we chase by phone — our team will update here\./);
+  });
+});

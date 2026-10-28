@@ -16,6 +16,7 @@ import prisma from "@/lib/db/client";
 import { resolveLabTarget, toDirectJid } from "@/lib/non-api-labs/target";
 import { BATCH_FOLLOW_UP_FIRM_TEMPLATE, BATCH_FOLLOW_UP_TEMPLATE, BATCH_GENERIC_TEMPLATE, BATCH_TEMPLATE_BY_INTENT, ensureTemplate, renderLabTemplate } from "@/lib/non-api-labs/templates";
 import { recordSend, styledBody } from "@/lib/agents/style";
+import { STORE_ACK_RE } from "../store/scope";
 import { coordinatorsFor } from "@/lib/wa/coordinators";
 import { opsGroup } from "../ops/group";
 import { fetchOrderSnapshots } from "../journey/window";
@@ -92,7 +93,7 @@ export async function sendWhatsApp(input: { targetJid: string; groupId: string |
 
 export type FlushResult = { messages: number; items: number; held: number; dropped: number; errors: number };
 
-type Item = Prisma.AgentOutboxItemGetPayload<{ select: { id: true; counterparty: true; ask: true; orderId: true; journeyId: true; actionId: true; windowFrom: true; windowTo: true; urgent: true; payload: true; idemKey: true } }>;
+type Item = Prisma.AgentOutboxItemGetPayload<{ select: { id: true; counterparty: true; ask: true; orderId: true; journeyId: true; actionId: true; windowFrom: true; windowTo: true; urgent: true; payload: true; idemKey: true; createdAt: true } }>;
 
 /**
  * Send what is due. `urgentOnly` runs every minute for items that cannot wait;
@@ -104,7 +105,7 @@ export async function flushOutbox(now = new Date(), opts: { urgentOnly?: boolean
   await prisma.agentOutboxItem.updateMany({ where: { status: "SENDING", OR: [{ claimedAt: null }, { claimedAt: { lt: new Date(now.getTime() - 5 * 60_000) } }] }, data: { status: "QUEUED", claimedAt: null } }).catch(() => undefined);
   const items = await prisma.agentOutboxItem.findMany({
     where: { status: "QUEUED", ...(opts.urgentOnly ? { urgent: true } : {}) },
-    select: { id: true, counterparty: true, ask: true, orderId: true, journeyId: true, actionId: true, windowFrom: true, windowTo: true, urgent: true, payload: true, idemKey: true },
+    select: { id: true, counterparty: true, ask: true, orderId: true, journeyId: true, actionId: true, windowFrom: true, windowTo: true, urgent: true, payload: true, idemKey: true, createdAt: true },
     orderBy: { createdAt: "asc" },
   });
   if (!items.length) return result;
@@ -143,7 +144,7 @@ export async function flushOutbox(now = new Date(), opts: { urgentOnly?: boolean
     if (claimed.count === 0) continue;
     const group: Item[] = claimed.count === queued.length ? queued : await prisma.agentOutboxItem.findMany({
       where: { id: { in: queued.map((i) => i.id) }, status: "SENDING" },
-      select: { id: true, counterparty: true, ask: true, orderId: true, journeyId: true, actionId: true, windowFrom: true, windowTo: true, urgent: true, payload: true, idemKey: true },
+      select: { id: true, counterparty: true, ask: true, orderId: true, journeyId: true, actionId: true, windowFrom: true, windowTo: true, urgent: true, payload: true, idemKey: true, createdAt: true },
     });
     try {
       const sent = await flushGroup(key, group, now);
@@ -457,15 +458,47 @@ async function flushOps(group: Item[], now: Date) {
   return { messages: 1, items: list.length, held: ready.length - list.length };
 }
 
+const ACK_HOLD_MS = 3 * 60_000;
+
+/**
+ * Why a store reply should not go after all (28 Oct 2026, Plum): the same words went to the
+ * same order within a day ("checking with Suburban…" twice, 29 minutes apart); or it only says
+ * we are on it while a team member answered in the group within minutes before or after it
+ * ("Working on it" at 15:07, the bot's "checking with…" at 15:07). An "on it" waits three
+ * minutes for that person before it goes.
+ */
+export function storeReplyRedundant(input: { text: string; orderId: number; createdAt: Date; now: Date; sameTextSent: boolean; teamAnswered: boolean }): "duplicate" | "team answered" | "hold" | null {
+  if (input.orderId > 0 && input.sameTextSent) return "duplicate";
+  if (!STORE_ACK_RE.test(input.text)) return null;
+  if (input.now.getTime() - input.createdAt.getTime() < ACK_HOLD_MS) return "hold";
+  return input.teamAnswered ? "team answered" : null;
+}
+
 async function flushStore(storeId: number, group: Item[], now: Date) {
   const g = await prisma.waGroup.findFirst({ where: { storeId, role: "SUPPORT", archivedAt: null, active: true }, select: { id: true, jid: true } });
   if (!g) { await prisma.agentOutboxItem.updateMany({ where: { id: { in: group.map((i) => i.id) } }, data: { status: "DROPPED" } }); return { messages: 0, items: 0, held: 0 }; }
-  let messages = 0;
+  let messages = 0; let held = 0;
+  let isTeam: ((sender: string, jid: string | null) => unknown) | null = null;
   for (const i of group) {
     const text = (i.payload as { text?: string | null }).text;
     if (!text) { await prisma.agentOutboxItem.update({ where: { id: i.id }, data: { status: "DROPPED" } }); continue; }
     const quoted = (i.payload as { quotedWaId?: string | null }).quotedWaId ?? null;
     const mentions = (i.payload as { mentions?: string[] }).mentions ?? [];
+    const sameTextSent = i.orderId > 0 && !!(await prisma.agentOutboxItem.findFirst({ where: { counterparty: i.counterparty, orderId: i.orderId, status: "SENT", sentAt: { gte: new Date(now.getTime() - 24 * 3_600_000) }, payload: { path: ["text"], equals: text } }, select: { id: true } }).catch(() => null));
+    let teamAnswered = false;
+    if (STORE_ACK_RE.test(text) && now.getTime() - i.createdAt.getTime() >= ACK_HOLD_MS) {
+      if (!isTeam) { const { loadTeam, makeTeamMatcher } = await import("@/lib/wa/team"); isTeam = makeTeamMatcher(await loadTeam()); }
+      const idRe = new RegExp(`(?<![\\d])#?${i.orderId}(?![\\d])`);
+      const recent = await prisma.waMessage.findMany({ where: { groupId: g.id, direction: "IN", fromMe: false, ts: { gte: new Date(i.createdAt.getTime() - 5 * 60_000) } }, select: { sender: true, senderJid: true, text: true, replyToWaId: true }, take: 50 }).catch(() => []);
+      teamAnswered = recent.some((m) => isTeam!(m.sender, m.senderJid) && ((quoted && m.replyToWaId === quoted) || (i.orderId > 0 && idRe.test(m.text ?? ""))));
+    }
+    const redundant = storeReplyRedundant({ text, orderId: i.orderId, createdAt: i.createdAt, now, sameTextSent, teamAnswered });
+    if (redundant === "hold") { held += 1; continue; }
+    if (redundant) {
+      await prisma.agentOutboxItem.update({ where: { id: i.id }, data: { status: "DROPPED" } });
+      if (i.actionId) await prisma.agentAction.update({ where: { id: i.actionId }, data: { outcome: "BLOCKED", blockedBy: `not sent: ${redundant}` } }).catch(() => undefined);
+      continue;
+    }
     const outbound = await sendWhatsApp({ targetJid: g.jid, groupId: g.id, text, quotedWaId: quoted, mentions, now });
     await prisma.agentOutboxItem.update({ where: { id: i.id }, data: { status: "SENT", outboundId: outbound.id, sentAt: now } });
     const style = (i.payload as { style?: { key: string; variantId: string | null } }).style;
@@ -474,7 +507,7 @@ async function flushStore(storeId: number, group: Item[], now: Date) {
     if (i.journeyId) await prisma.agentJourneyEvent.create({ data: { journeyId: i.journeyId, at: now, kind: "store_message", actor: "AGENT", applied: true, payload: { ask: i.ask, text: text.slice(0, 500) } } });
     messages += 1;
   }
-  return { messages, items: messages, held: 0 };
+  return { messages, items: messages, held };
 }
 
 type FollowUp = { rootId: string; quotedWaId: string; attempt: number; since: Date; lastAt: Date; items: Array<{ n: number; orderId: number; line: string }> };

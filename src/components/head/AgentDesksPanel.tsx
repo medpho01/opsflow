@@ -3,7 +3,7 @@
 /** Agents › Desks and autonomy, with the kill switches (DESIGN.md §7.5, FR-13.1, 13.2, 13.5). */
 import { useCallback, useEffect, useState } from "react";
 
-type IntentScore = { intent: string; n: number; covered: number; bad: number; contradicts: number; wrongLinks: number; wouldFail: number; missed: number; score: number | null; ready: boolean };
+type IntentScore = { intent: string; n: number; covered: number; bad: number; contradicts: number; wrongLinks: number; wouldFail: number; unwanted?: number; missed: number; score: number | null; ready: boolean };
 type Readiness = { days: number; at: string; n: number; score: number | null; intents: IntentScore[]; recommended: string[] };
 type Cell = { desk: string; state: string; since: string | null; liveSince: string | null; shadowActions7d: number; liveIntents?: string[]; readiness?: Readiness | null; readinessAt?: string | null };
 type Scope = { scopeKind: string; scopeId: number; name: string | null; tier: string | null; group: boolean; desks: Cell[] };
@@ -102,7 +102,7 @@ export function AgentDesksPanel() {
             {r.intents.filter((i) => i.n > 0 || live.includes(i.intent)).map((i) => {
               const on = !live.length || live.includes(i.intent);
               return (
-                <button key={i.intent} onClick={() => toggle(i.intent)} title={`${i.n} asked · ${i.covered} answered by the bot · ${i.missed} missed · ${i.bad} wrong (${i.contradicts} contradict, ${i.wrongLinks} wrong order, ${i.wouldFail} would fail)${c.state === "LIVE" ? (on ? " · answered by the desk" : " · handed to the team") : ""}`}
+                <button key={i.intent} onClick={() => toggle(i.intent)} title={`${i.n} asked · ${i.covered} answered by the bot · ${i.missed} missed · ${i.bad} wrong (${i.contradicts} contradict, ${i.wrongLinks} wrong order, ${i.wouldFail} would fail, ${i.unwanted ?? 0} should have stayed quiet)${c.state === "LIVE" ? (on ? " · answered by the desk" : " · handed to the team") : ""}`}
                   className={`rounded-full border px-2 py-0.5 text-[11px] ${on ? "border-blue-400 text-blue-100" : "border-zinc-700 text-zinc-500 line-through"}`}>
                   {i.intent.replace("_", " ")} <span className={tone(i.score)}>{i.score ?? "–"}</span><span className="text-zinc-500">/{i.n}</span>{i.ready ? " ✓" : ""}
                 </button>

@@ -15,8 +15,9 @@ import { relayDetail } from "../journey/step";
 import { guard, loadGuardState } from "../guard/guard";
 import { enqueueOutbox } from "../executors/dispatcher";
 import { atLocal } from "@/lib/provider-rules/batching";
+import { makeLabScope, type LabScope } from "./scope";
 
-type Row = { id: number; storeId: number; orderType: string; orderStatus: string; appointmentTime: Date | null; patientName: string | null; labName: string | null; labRef: string | null };
+type Row = { id: number; storeId: number; orderType: string; orderStatus: string; appointmentTime: Date | null; patientName: string | null; labId: number | null; labName: string | null; labRef: string | null };
 export type StoreDay = {
   storeId: number; total: number; collected: number; upcoming: number;
   rnr: Array<{ orderId: number; name: string; time: string; lab: string; detail: string }>;
@@ -24,18 +25,23 @@ export type StoreDay = {
   missed: Array<{ orderId: number; name: string; time: string; lab: string }>;
   /** Centre / clinic visits past their time: the customer has not gone yet — nothing for the lab to do. */
   centreMissed: Array<{ orderId: number; name: string; time: string; lab: string }>;
+  /** Visits past their time with labs the bot cannot chase (no API, no live WhatsApp desk): the team's, counted only. */
+  otherLabs?: number;
 };
 
 const TZ = () => process.env.TIMEZONE || "Asia/Kolkata";
 const hhmm = (d: Date | null) => (d ? d.toLocaleTimeString("en-IN", { timeZone: TZ(), hour: "numeric", minute: "2-digit" }) : "—");
 const first = (n: string | null) => (n ?? "Patient").trim().split(/\s+/)[0] || "Patient";
 
+/** A visit this long past its slot with no collection on record is listed; less is the lab's usual status lag (28 Oct 2026: 45 min listed 16 API-lab visits at 4 pm). */
+export const MISSED_AFTER_MS = 90 * 60_000;
+
 /** Today's visits per store, sorted into what needs the store and what is fine. */
-export async function storeDays(storeIds: number[], now = new Date()): Promise<StoreDay[]> {
+export async function storeDays(storeIds: number[], now = new Date(), labOnBot: LabScope = async () => true): Promise<StoreDay[]> {
   if (!storeIds.length) return [];
   const from = atLocal(now, TZ(), 0, 0); const to = new Date(from.getTime() + 86_400_000);
   const rows = await labstackWorkerQuery<Row>(
-    `SELECT o.id, o."storeId", o."orderType"::text AS "orderType", o."orderStatus"::text AS "orderStatus", o."appointmentTime", u.name AS "patientName", l."labName", NULLIF(o."labOrderId", '') AS "labRef"
+    `SELECT o.id, o."storeId", o."orderType"::text AS "orderType", o."orderStatus"::text AS "orderStatus", o."appointmentTime", u.name AS "patientName", l.id AS "labId", l."labName", NULLIF(o."labOrderId", '') AS "labRef"
        FROM public."Order" o LEFT JOIN public."User" u ON u.id = o."userId" LEFT JOIN public."Lab" l ON l.id = o."labId"
       WHERE o."storeId" = ANY($1::int[]) AND o."appointmentTime" >= $2 AND o."appointmentTime" < $3 AND o."orderStatus"::text NOT IN ('CANCELED','CANCELLED')`,
     [storeIds, from, to],
@@ -43,9 +49,12 @@ export async function storeDays(storeIds: number[], now = new Date()): Promise<S
   const ids = rows.map((r) => r.id);
   const facts = ids.length ? await prisma.providerOrderFact.findMany({ where: { orderId: { in: ids }, createdAt: { gte: new Date(now.getTime() - 20 * 3_600_000) }, kind: { in: ["patient_unavailable", "sample_missed", "sample_collected", "new_appointment_time"] } }, orderBy: { createdAt: "desc" } }) : [];
   const latest = (orderId: number, kind: string) => facts.find((f) => f.orderId === orderId && f.kind === kind);
-  return storeIds.map((storeId) => {
+  const onBot = new Map<number, boolean>();
+  for (const id of new Set(rows.map((r) => r.labId).filter((x): x is number => x != null))) onBot.set(id, await labOnBot(id).catch(() => true));
+  const days: StoreDay[] = [];
+  for (const storeId of storeIds) {
     const mine = rows.filter((r) => r.storeId === storeId);
-    const day: StoreDay = { storeId, total: mine.length, collected: 0, upcoming: 0, rnr: [], owed: [], missed: [], centreMissed: [] };
+    const day: StoreDay = { storeId, total: mine.length, collected: 0, upcoming: 0, rnr: [], owed: [], missed: [], centreMissed: [], otherLabs: 0 };
     for (const r of mine) {
       const collected = reached(r.orderStatus, "SAMPLE_COLLECTED");
       const unreachable = latest(r.id, "patient_unavailable");
@@ -60,11 +69,17 @@ export async function storeDays(storeIds: number[], now = new Date()): Promise<S
       }
       // A centre visit past its time means the customer has not walked in — not a lab delay (26 Oct 2026:
       // Apollo Clinic and hospital visits were listed as "we're on it with the lab").
-      if (r.appointmentTime && r.appointmentTime.getTime() < now.getTime() - 45 * 60_000) (r.orderType === "CENTER_VISIT" ? day.centreMissed : day.missed).push({ orderId: r.id, name: first(r.patientName), time: hhmm(r.appointmentTime), lab });
+      if (r.appointmentTime && r.appointmentTime.getTime() < now.getTime() - MISSED_AFTER_MS) {
+        if (r.orderType === "CENTER_VISIT") day.centreMissed.push({ orderId: r.id, name: first(r.patientName), time: hhmm(r.appointmentTime), lab });
+        // "We're on it with the lab" is only true for a lab the bot can reach; the rest are the team's.
+        else if (r.labId == null || onBot.get(r.labId) !== false) day.missed.push({ orderId: r.id, name: first(r.patientName), time: hhmm(r.appointmentTime), lab });
+        else day.otherLabs = (day.otherLabs ?? 0) + 1;
+      }
       else day.upcoming += 1;
     }
-    return day;
-  });
+    days.push(day);
+  }
+  return days;
 }
 
 /** The message a store reads. Needs-you first, then the counts. */
@@ -91,6 +106,7 @@ export function digestText(day: StoreDay, storeName: string | null, now = new Da
     day.centreMissed.forEach((o, i) => lines.push(`${i + 1}. #${o.orderId} · ${o.name} · ${o.time} · ${o.lab}`));
     lines.push("");
   }
+  if (day.otherLabs) lines.push(`☎️ ${day.otherLabs} visit${day.otherLabs === 1 ? "" : "s"} past time with labs we chase by phone — our team will update here.`, "");
   lines.push(`✅ Collected: ${day.collected}   🕐 Still to come: ${day.upcoming}   Total: ${day.total}`);
   return lines.join("\n");
 }
@@ -105,7 +121,7 @@ export async function runStoreDigests(now = new Date()): Promise<{ stores: numbe
   const summariesOn = new Set(settings.digestStoreIds);
   const groups = await prisma.waGroup.findMany({ where: { role: "SUPPORT", storeId: { not: null }, archivedAt: null, active: true }, select: { storeId: true, subject: true } });
   const storeIds = [...new Set(groups.map((g) => g.storeId!))].filter((id) => summariesOn.has(id) || (state.desks.get(`STORE:STORE:${id}`) ?? "OFF") !== "OFF");
-  const days = await storeDays(storeIds, now);
+  const days = await storeDays(storeIds, now, makeLabScope(state.desks));
   const result = { stores: storeIds.length, sent: 0, recorded: 0, rnr: 0 };
   const slot = `${atLocal(now, TZ(), 0, 0).toISOString().slice(0, 10)}:${now.toLocaleTimeString("en-GB", { timeZone: TZ(), hour: "2-digit" })}`;
   for (const day of days) {

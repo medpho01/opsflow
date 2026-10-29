@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { settledByConsole } from "../executors/dispatcher";
+import { partitionQueued, settledByConsole } from "../executors/dispatcher";
 
 describe("what the console has settled is not sent (27 Oct 2026)", () => {
   it("a phlebo on the way settles 'phlebo needed', 'please confirm' and the escalation", () => {
@@ -16,5 +16,12 @@ describe("what the console has settled is not sent (27 Oct 2026)", () => {
   it("an order still only scheduled settles nothing", () => {
     const o = { orderStatus: "ORDER_SCHEDULED", phleboName: "" };
     for (const ask of ["PHLEBO", "ETA", "STATUS", "ESCALATION", "REPORT"]) assert.equal(settledByConsole(ask, o), null, ask);
+  });
+
+  it("an ETA ask queued for a visit more than 3 h away is dropped at send time (29 Oct 2026, #95010)", () => {
+    const now = new Date("2026-10-29T07:00:00Z");
+    const item = (appointment: string) => ({ orderId: 95010, payload: { line: { appointment } } });
+    assert.equal(partitionQueued([item("2026-10-30T03:00:00Z")], "ETA", now, "A").stale.length, 1);
+    assert.equal(partitionQueued([item("2026-10-29T08:00:00Z")], "ETA", now, "A").fresh.length, 1);
   });
 });

@@ -244,10 +244,12 @@ export function partitionQueued<T extends { orderId: number; payload: unknown }>
     const appt = line.appointment ? new Date(line.appointment).getTime() : null;
     // "phlebo on time?" for a 6:00 visit at 7:11 is noise (26 Oct 2026): ETA and phlebo asks end at the visit.
     const pastVisit = appt != null && appt < now.getTime() - (ask === "ETA" || ask === "PHLEBO" ? 0 : 2 * 3_600_000);
+    // …and "phlebo on time?" starts near the visit, never a day ahead (29 Oct 2026, #95010: "tomorrow 8:30 am").
+    const etaEarly = ask === "ETA" && appt != null && appt > now.getTime() + 3 * 3_600_000;
     // A report overdue for days is a person's job — the lab group is for today's work (SOP batching.reportMaxAgeDays).
     const oldReport = ask === "REPORT" && appt != null && appt < now.getTime() - reportMaxAgeDays * 86_400_000;
     const apiOverdue = ask === "OVERDUE" && tier != null && tier !== "C";
-    if ((PRE_VISIT.has(ask) && pastVisit) || oldReport || apiOverdue || seen.has(i.orderId)) { stale.push(i); continue; }
+    if ((PRE_VISIT.has(ask) && pastVisit) || etaEarly || oldReport || apiOverdue || seen.has(i.orderId)) { stale.push(i); continue; }
     seen.add(i.orderId); fresh.push(i);
   }
   return { fresh, stale };

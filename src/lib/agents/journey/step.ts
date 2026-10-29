@@ -400,6 +400,9 @@ const STUCK_TASK: Partial<Record<CheckpointName, string>> = {
   patient_visited: "AGENT_COLLECTION_STUCK", samples_received: "AGENT_REPORT_STUCK", kit_dispatched: "AGENT_COLLECTION_STUCK", kit_delivered: "AGENT_COLLECTION_STUCK", kit_picked_up: "AGENT_COLLECTION_STUCK",
 };
 
+/** The earliest an ETA ask goes before the visit. */
+export const ETA_EARLIEST_MIN = 90;
+
 export function step(input: StepInput): StepOutput {
   const { now, order, events, sop } = input;
   const tz = input.timeZone ?? "Asia/Kolkata";
@@ -880,6 +883,11 @@ export function step(input: StepInput): StepOutput {
     // An API lab asked "phlebo needed?" ten minutes before the visit answers "collection in
     // progress" (Orange, 25 Oct 2026): LabStack has not caught up. Inside the last quarter
     // hour it is not worth a message (Orange assigns at slot − 30 min, so −30…−15 is fair).
+    // "Phlebo on time?" is a question for the visit's own hour, never for a visit hours or a day away
+    // (29 Oct 2026, 12:30 pm: #95010 asked about "tomorrow 8:30 am" — its due time was a lab's
+    // time from before the reschedule). Asked again once the visit is near.
+    const etaTooEarly = ask?.intent === "ETA" && minutesToSlot != null && minutesToSlot > ETA_EARLIEST_MIN;
+    if (etaTooEarly && slot) wakeAt.push(slot.getTime() - ETA_EARLIEST_MIN * MIN);
     const apiPhleboTooLate = input.labTier != null && input.labTier !== "C" && next.name === "phlebo_assigned" && minutesToSlot != null && minutesToSlot < 15;
     const visitLongPast = preVisit && minutesToSlot != null && minutesToSlot < -120;
     // An API lab's console names the phlebo and starts the visit by itself: before the visit the
@@ -917,7 +925,7 @@ export function step(input: StepInput): StepOutput {
       }, reason: `${LABELS[next.name]} still open after every ask; asked again (every ${Math.round(sop.reaskEveryMin / 60)} h until the console moves)`, idemKey: `reask:${order.id}:${next.name}:${startOfLocalDay(now, tz)}` });
       attempts[next.name] = { ...a, at: now.toISOString() };
       journey = { ...journey, attempts };
-    } else if (from === "LAB" && ask && started && gapOk && !holding && !reportPaused && !apiPhleboTooLate && !consoleAnswers && !apiLadderCapped) {
+    } else if (from === "LAB" && ask && started && gapOk && !holding && !reportPaused && !etaTooEarly && !apiPhleboTooLate && !consoleAnswers && !apiLadderCapped) {
       let rungIndex = a.n;
       if (brokenPromises >= sop.brokenPromisesSkip && rungIndex > 0 && rungIndex < ladder.length - 1) rungIndex += 1;
       const rung = ladder[Math.min(rungIndex, ladder.length - 1)];

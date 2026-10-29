@@ -635,4 +635,15 @@ describe("a manual lab is asked again every day until the console moves (27 Oct 
     const r2 = wake(today, at("2026-10-29T04:01:00Z"), undefined, { events: [eta] as never });
     assert.ok(r2.actions.some((a) => a.params.template === "STORE_LAB_PROMISE"));
   });
+
+  it("'phlebo on time?' is never asked for a visit hours or a day away, whatever the checkpoint's due time (29 Oct 2026, #95010)", () => {
+    const today = order({ phleboName: "B T S", orderStatus: "PHLEBO_ASSIGNED", appointmentTime: at("2026-10-29T03:00:00Z") });
+    const r1 = wake(today, at("2026-10-29T03:20:00Z"));
+    assert.ok(r1.actions.some((a) => a.action === "ask" && a.params.intent === "STATUS"), "after the visit the question is 'collected?'");
+    // The visit is now tomorrow, but the checkpoint kept today's due time (a lab's time from before the move).
+    const tomorrow = { ...today, appointmentTime: at("2026-10-30T03:00:00Z") };
+    const prev = { ...r1, journey: { ...r1.journey, consoleFingerprint: fingerprint(tomorrow), consoleSnapshot: tomorrow, attempts: {} } };
+    const r2 = wake(tomorrow, at("2026-10-29T07:00:00Z"), prev);
+    assert.ok(!r2.actions.some((a) => a.action === "ask"), r2.actions.map((a) => `${a.action}:${a.params.intent}`).join(","));
+  });
 });

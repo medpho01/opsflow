@@ -140,6 +140,19 @@ describe("the ladder", () => {
     assert.match(String(handoff?.params.note), /^report overdue \(was due .*\) — please chase Thyrocare India and update the store$/);
     assert.equal(t.actions.find((a) => a.action === "create_task")?.params.taskType, "AGENT_REPORT_UPLOAD");
   });
+  it("a sample left behind at a lab the desk cannot chase goes to a person — never 'asking the lab now' (Orange Mumbai, 29 Oct 2026)", () => {
+    const o = order({ orderStatus: "SAMPLE_COLLECTED", labName: "Orange Health - Mumbai", appointmentTime: at("2026-10-29T01:30:00Z"), statusUpdatedAt: at("2026-10-29T02:46:00Z") });
+    const msg = { kind: "store_message", at: at("2026-10-29T03:05:00Z"), actor: "STORE", payload: { intent: "slot", text: "95226 - Urine samples are not collected\nPlease xheck for slots", messageId: "m-ur", waMsgId: "w-ur", samples: { blood: "collected", urine: "missed" } } };
+    const r = wake(o, at("2026-10-29T03:05:30Z"), undefined, { events: [msg] as never, labChaseable: false } as never);
+    assert.ok(!r.actions.some((a) => a.action === "store_reply" || (a.action === "ask" && a.idemKey.endsWith(":recollect"))), acts(r).join(","));
+    const h = r.actions.find((a) => a.action === "store_handoff");
+    assert.match(String(h?.params.note), /^urine sample not collected — get re-collection slots from Orange Health - Mumbai, share them here, then book/);
+    assert.equal(r.actions.find((a) => a.action === "create_task")?.params.cause, "SAMPLE_RECOLLECTION");
+    // Chaseable: the lab is asked and the store hears it.
+    const c = wake(o, at("2026-10-29T03:05:30Z"), undefined, { events: [msg] as never, labChaseable: true } as never);
+    assert.ok(c.actions.some((a) => a.action === "ask" && a.idemKey.endsWith(":recollect")));
+    assert.match(String(c.actions.find((a) => a.action === "store_reply")?.params.text), /urine sample pending — asking the lab/);
+  });
   it("a complaint tags a person in the group as well as opening the task", () => {
     const msg = { kind: "store_message", at: at("2026-10-28T09:45:00Z"), actor: "STORE", payload: { intent: "complaint", text: "90130 - doctor consultation was not done", messageId: "m-cp", waMsgId: "w-cp" } };
     const r = wake(order(), at("2026-10-28T09:45:30Z"), undefined, { events: [msg] as never });

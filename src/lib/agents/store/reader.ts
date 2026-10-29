@@ -214,13 +214,14 @@ export async function runStoreReader(now = new Date()): Promise<StoreReaderResul
   const team = await loadTeam();
   const isTeam = makeTeamMatcher(team);
   const labOnBot = makeLabScope(state.desks);
+  const consumed = new Set<string>();
 
   for (const m of messages) {
     result.read += 1;
     const g = storeByGroup.get(m.groupId)!;
     if (!liveOrShadow.has(g.storeId!)) continue;
     if (isAutomated(m)) continue;
-    const text = (m.text ?? "").trim();
+    let text = (m.text ?? "").trim();
     if (isTeam(m.sender, m.senderJid)) {
       // A team member answering in the store group closes the threads the answer is about.
       if (text) await teamAnswered({ storeId: g.storeId!, groupId: m.groupId, orderIds: explicitOrderIds(text), replyToWaId: m.replyToWaId, at: m.ts, sender: m.sender }).catch(() => 0);
@@ -229,6 +230,20 @@ export async function runStoreReader(now = new Date()): Promise<StoreReaderResul
     if (!text) continue;
     // A bare @mention asks nothing (28 Oct 2026: "@2482…" was answered with a report status).
     if (!text.replace(/@\d{6,}/g, "").replace(/[\s⁨⁩]/g, "").length) continue;
+    // One message in two lines — "95226 - urine samples are not collected" then "please check
+    // for slots" a moment later — is read as one: the second line carries the first's context
+    // (29 Oct 2026: read alone, "please check for slots" was answered "sample collected").
+    // Looking ahead, a continuation still to come joins this message and is then skipped.
+    const idx = messages.indexOf(m);
+    const continuationOf = !explicitOrderIds(text).length && !m.replyToWaId
+      ? messages.slice(0, idx).reverse().find((x) => x.senderJid === m.senderJid && m.ts.getTime() - x.ts.getTime() <= 3 * 60_000 && explicitOrderIds(x.text ?? "").length) ?? null : null;
+    if (continuationOf) {
+      if (consumed.has(m.id)) continue;
+      text = `${(continuationOf.text ?? "").trim()}\n${text}`;
+    } else {
+      const follow = messages.slice(idx + 1).filter((x) => x.senderJid === m.senderJid && x.ts.getTime() - m.ts.getTime() <= 3 * 60_000 && !x.replyToWaId && !explicitOrderIds(x.text ?? "").length && (x.text ?? "").trim() && !isTeam(x.sender, x.senderJid));
+      for (const x of follow) { consumed.add(x.id); text = `${text}\n${(x.text ?? "").trim()}`; }
+    }
     // The reader (model first, patterns as fallback) fills in the form: orders, samples, request, ack.
     const quoted = m.replyToWaId ? await prisma.waMessage.findUnique({ where: { waMsgId: m.replyToWaId }, select: { text: true, sender: true, senderJid: true, fromMe: true } }).catch(() => null) : null;
     const reading = await readMessage({ side: "store", text, quotedText: quoted?.text ?? null, scope: { storeId: g.storeId, groupId: m.groupId } });
@@ -260,12 +275,6 @@ export async function runStoreReader(now = new Date()): Promise<StoreReaderResul
     // a nudge: it never falls through to "the open thread" (27 Oct 2026: "#122009" linked to #94389).
     const wroteAnId = explicitOrderIds(text).length > 0;
     let candidates: number[] = [];
-    if (!links.length && !wroteAnId && !m.replyToWaId) {
-      // "TAT breached by 2 days." a minute after the same person's "94284 - please share the report":
-      // one message in two lines, not a new question to ask "which order?" about (28 Oct 2026).
-      const prev = messages.slice(0, messages.indexOf(m)).reverse().find((x) => x.senderJid === m.senderJid && m.ts.getTime() - x.ts.getTime() <= 3 * 60_000 && explicitOrderIds(x.text ?? "").length);
-      if (prev) links = (await writtenOrders(prev.text ?? "", g.storeId!)).slice(0, 5).map((orderId) => ({ orderId, via: "CONTINUATION" }));
-    }
     if (!links.length && !wroteAnId) {
       const t = await threadForNudge({ storeId: g.storeId!, replyToWaId: m.replyToWaId, at: m.ts }).catch(() => null);
       if (t) { links = [{ orderId: t.orderId, via: "THREAD" }]; thread = t; }

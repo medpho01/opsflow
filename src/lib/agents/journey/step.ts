@@ -649,6 +649,14 @@ export function step(input: StepInput): StepOutput {
       const left = missedSample ? [missedSample] : m.text.match(/\b(urine|stool|sputum|swab|second|remaining|balance)\b[^.\n]{0,40}\b(not|pending|missed|left|skipped)\b|\bnot collected\b/i);
       if (left && order.labId != null && sop && !["reschedule", "cancel", "change_tests", "complaint"].includes(m.intent)) {
         const sampleWord = missedSample ?? /\b(urine|stool|sputum|swab)\b/i.exec(m.text)?.[1]?.toLowerCase();
+        // A lab the desk cannot chase (an API lab with no live WhatsApp desk, Orange Mumbai on 29 Oct
+        // 2026): the store must not hear "asking the lab now" — a person gets the slots and books.
+        if (input.labChaseable === false) {
+          const note = `${sampleWord ? `${sampleWord} sample` : "a sample"} not collected — get re-collection slots from ${order.labName ?? "the lab"}, share them here, then book the customer's pick`;
+          actions.push({ desk: "STORE", action: "store_handoff", params: { orderId: order.id, storeId: order.storeId, intent: "slot", note, ...quote }, reason: `store says ${sampleWord ?? "a"} sample was not collected; ${order.labName ?? "the lab"} has no desk to chase through`, idemKey: `${key}:recollect-handoff` });
+          actions.push({ desk: "STORE", action: "create_task", params: { taskType: "AGENT_RESCHEDULE", orderId: order.id, cause: "SAMPLE_RECOLLECTION", evidence: [{ kind: "store_msg", at: m.at.toISOString(), text: m.text.slice(0, 300) }], action: `#${order.id}: ${note}`, dueInMinutes: 30 }, reason: `${sampleWord ?? "a"} re-collection needs a person at ${order.labName ?? "the lab"}`, idemKey: `${key}:recollect-task` });
+          continue;
+        }
         const note = `${sampleWord ? `${sampleWord} sample` : "a sample"} pending — slot for re-collection?`;
         const window = sendWindow(now, now, sop, { intent: "STATUS", leadMin: 0, graceMin: 480, urgentWithinMin: 0, nightBefore: false }, true, false, tz);
         actions.push({ desk: "LAB", action: "ask", params: { checkpoint: "sample_collected", orderId: order.id, labId: order.labId, attempt: 1, dueAt: now, rung: "ask", intent: "STATUS", counterparty: `LAB:${order.labId}`, windowFrom: window.from, windowTo: window.to, urgent: true, line: { orderId: order.id, patientName: order.patientName, appointment: order.appointmentTime, labRef: order.labRef ?? null, mobile: order.mobile ?? null, area: order.area ?? null, note }, forStore: true }, reason: `store says ${sampleWord ?? "a"} sample was not collected${/slot/i.test(m.text) ? " and asks for slots" : ""}`, idemKey: `${key}:recollect` });
@@ -661,6 +669,10 @@ export function step(input: StepInput): StepOutput {
       // console shows, the lab is asked now with the store's words, and the store hears we are on
       // it — unless the console already says the lab could not reach the patient, which answers it.
       if (sop && storeExceptionRe(sop)?.test(m.text) && order.labId != null && order.orderStatus !== "PATIENT_MISSED" && collected?.status !== "MET" && !["reschedule", "cancel", "change_tests"].includes(m.intent)) {
+        if (input.labChaseable === false) {
+          actions.push({ desk: "STORE", action: "store_handoff", params: { orderId: order.id, storeId: order.storeId, intent: "status", note: `the store reports "${m.text.replace(/\s+/g, " ").slice(0, 80)}" — please check with ${order.labName ?? "the lab"} and update here`, ...quote }, reason: `store reports the visit failed; ${order.labName ?? "the lab"} has no desk to chase through`, idemKey: `${key}:exception-handoff` });
+          continue;
+        }
         const cp = next?.name ?? "sample_collected";
         const window = sendWindow(now, now, sop, { intent: "STATUS", leadMin: 0, graceMin: 240, urgentWithinMin: 0, nightBefore: false }, true, true, tz);
         actions.push({ desk: "LAB", action: "ask", params: { checkpoint: cp, orderId: order.id, labId: order.labId, attempt: (attempts[cp]?.n ?? 0) + 1, dueAt: now, rung: "ask", intent: "STATUS", counterparty: `LAB:${order.labId}`, windowFrom: window.from, windowTo: window.to, urgent: true, line: { orderId: order.id, patientName: order.patientName, appointment: order.appointmentTime, labRef: order.labRef ?? null, mobile: order.mobile ?? null, area: order.area ?? null, phlebo: order.phleboName || null, note: `store reports: "${m.text.replace(/\s+/g, " ").slice(0, 80)}" — what happened? ETA or a new slot?` }, forStore: true }, reason: `store reports the visit failed: "${m.text.slice(0, 60)}"`, idemKey: `${key}:exception` });

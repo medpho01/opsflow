@@ -64,7 +64,7 @@ export function PickGroupDialog({ target, suggestedJid: suggestedJidProp, sugges
                 <input type="radio" name="pick-group" checked={picked === g.id} onChange={() => setPicked(g.id)} className="accent-blue-500" />
                 <span className="truncate">{g.subject}</span>
                 {g.jid === suggestedJid && <span className="text-[10px] text-emerald-400">best match</span>}
-                {isConnected(g) && <span className="ml-auto text-[10px] text-amber-400">{g.role === "PROVIDER" ? `lab #${g.labId}` : g.role === "SUPPORT" ? `store #${g.storeId}` : "internal"} — will move</span>}
+                {isConnected(g) && <span className="ml-auto text-[10px] text-amber-400">{g.role === "PROVIDER" ? `lab #${g.labId}` : g.role === "SUPPORT" ? `store #${g.storeId}` : "internal"} — {g.role === "PROVIDER" ? "will be shared" : "will move"}</span>}
               </label>
             ))}
         </div>

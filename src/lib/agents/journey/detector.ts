@@ -25,11 +25,14 @@ export type Wake = (orderId: number, reason: WakeReason, order?: OrderSnapshot, 
 export async function labSilence(labIds: number[], now: Date): Promise<Map<number, number | null>> {
   const out = new Map<number, number | null>();
   if (!labIds.length) return out;
-  const groups = await prisma.waGroup.findMany({ where: { role: "PROVIDER", labId: { in: labIds }, archivedAt: null }, select: { id: true, labId: true } });
+  const configs = await prisma.nonApiLabConfig.findMany({ where: { labId: { in: labIds }, waGroupJid: { not: null } }, select: { labId: true, waGroupJid: true } });
+  const groups = await prisma.waGroup.findMany({ where: { jid: { in: configs.map((c) => c.waGroupJid!) }, archivedAt: null }, select: { id: true, jid: true } });
+  const lastByJid = new Map<string, number | null>();
   for (const g of groups) {
     const last = await prisma.waMessage.findFirst({ where: { groupId: g.id, direction: "IN", fromMe: false }, orderBy: { ts: "desc" }, select: { ts: true } });
-    out.set(g.labId!, last ? (now.getTime() - last.ts.getTime()) / 3_600_000 : null);
+    lastByJid.set(g.jid, last ? (now.getTime() - last.ts.getTime()) / 3_600_000 : null);
   }
+  for (const c of configs) if (lastByJid.has(c.waGroupJid!)) out.set(c.labId, lastByJid.get(c.waGroupJid!)!);
   return out;
 }
 

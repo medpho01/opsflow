@@ -38,11 +38,12 @@ export async function connectGroup(groupId: string, target: ConnectTarget, userI
   }
 
   return prisma.$transaction(async (tx) => {
-    // Whatever this group was linked to before lets go of it.
-    await tx.nonApiLabConfig.updateMany({
-      where: { waGroupJid: group.jid, ...(target.kind === "LAB" ? { labId: { not: target.labId } } : {}) },
-      data: { waGroupJid: null, updatedById: userId },
-    });
+    // A group turned into a store or internal group, or disconnected, lets go of every lab it served.
+    // A group connected to a lab keeps the labs it already serves: one WhatsApp group can be the
+    // desk for several LabStack labs (Orange's four city labs share "Labstack <> Orange Ops", 29 Oct 2026).
+    if (target.kind !== "LAB") {
+      await tx.nonApiLabConfig.updateMany({ where: { waGroupJid: group.jid }, data: { waGroupJid: null, updatedById: userId } });
+    }
 
     if (target.kind === "LAB") {
       const existing = await tx.nonApiLabConfig.findUnique({ where: { labId: target.labId } });
@@ -63,9 +64,10 @@ export async function connectGroup(groupId: string, target: ConnectTarget, userI
               createdById: userId, updatedById: userId,
             } as Prisma.NonApiLabConfigUncheckedCreateInput,
           });
+      // The group row names one lab (the first connected); the others are found through their configs.
       const updated = await tx.waGroup.update({
         where: { id: group.id },
-        data: { role: "PROVIDER", labId: target.labId, storeId: null, active: true },
+        data: { role: "PROVIDER", labId: group.role === "PROVIDER" && group.labId != null ? group.labId : target.labId, storeId: null, active: true },
       });
       return { group: updated, labConfig: config };
     }
@@ -100,12 +102,13 @@ export async function syncLabGroup(labId: number, waGroupJid: string | null, isA
     await prisma.waGroup.updateMany({ where: { labId }, data: { labId: null } });
     return;
   }
+  // Other labs already on this group keep it (a shared lab group); the group row names the first.
+  const current = await prisma.waGroup.findUnique({ where: { jid: waGroupJid }, select: { labId: true, role: true } });
   await prisma.$transaction([
-    prisma.nonApiLabConfig.updateMany({ where: { waGroupJid, labId: { not: labId } }, data: { waGroupJid: null } }),
     prisma.waGroup.updateMany({ where: { labId, jid: { not: waGroupJid } }, data: { labId: null } }),
     prisma.waGroup.updateMany({
       where: { jid: waGroupJid },
-      data: { role: "PROVIDER", labId, storeId: null, ...(isActive ? { active: true } : {}) },
+      data: { role: "PROVIDER", labId: current?.role === "PROVIDER" && current.labId != null ? current.labId : labId, storeId: null, ...(isActive ? { active: true } : {}) },
     }),
   ]);
 }

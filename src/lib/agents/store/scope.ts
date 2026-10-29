@@ -90,7 +90,7 @@ export function makeLabScope(desks: Map<string, string>): LabScope {
       p = (async () => {
         const [rows, group] = await Promise.all([
           labstackWorkerQuery<{ api: boolean }>(`SELECT (COALESCE("isApiHomeSample", false) OR COALESCE("isApiCenterVisit", false) OR COALESCE("isApiPpmc", false)) AS api FROM public."Lab" WHERE id = $1`, [labId]).catch(() => []),
-          prisma.waGroup.findFirst({ where: { labId, role: "PROVIDER", active: true, archivedAt: null }, select: { id: true } }).catch(() => null),
+          labGroup(labId),
         ]);
         return labOnBot({ api: rows[0]?.api === true, group: !!group, live: desks.get(`LAB:LAB:${labId}`) === "LIVE" });
       })();
@@ -107,8 +107,14 @@ export function makeLabScope(desks: Map<string, string>): LabScope {
  */
 export async function labChaseable(labId: number | null, desks: Map<string, string>): Promise<boolean> {
   if (labId == null || desks.get(`LAB:LAB:${labId}`) !== "LIVE") return false;
-  const g = await prisma.waGroup.findFirst({ where: { labId, role: "PROVIDER", active: true, archivedAt: null }, select: { id: true } }).catch(() => null);
-  return !!g;
+  return !!(await labGroup(labId));
+}
+
+/** The connected, listening WhatsApp group a lab is chased in: its config's group, which other labs may share. */
+export async function labGroup(labId: number): Promise<{ id: string; jid: string } | null> {
+  const cfg = await prisma.nonApiLabConfig.findUnique({ where: { labId }, select: { waGroupJid: true } }).catch(() => null);
+  if (!cfg?.waGroupJid) return null;
+  return prisma.waGroup.findFirst({ where: { jid: cfg.waGroupJid, role: "PROVIDER", active: true, archivedAt: null }, select: { id: true, jid: true } }).catch(() => null);
 }
 
 /** "Is this a bot?" and the like: a question about the desk, for a person — never answered with an order's status. */

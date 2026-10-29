@@ -97,6 +97,25 @@ export function labRefTokens(text: string): Array<{ ref: string; said: string }>
 }
 
 /** Each lab reference in the text that is one of this lab's orders → what the lab said about it. */
+/** In a group shared by several labs: the lab of the batch this reply quotes, else of an order it names, else the first. */
+async function labForMessage(message: { replyToWaId: string | null; orderIds: number[] }, text: string, labs: number[]): Promise<number> {
+  if (message.replyToWaId) {
+    const ours = await prisma.waOutbound.findFirst({ where: { sentWaMsgId: message.replyToWaId }, select: { id: true } });
+    const batch = ours ? await prisma.providerBatch.findFirst({ where: { outboundId: ours.id }, select: { labId: true } }) : null;
+    if (batch && labs.includes(batch.labId)) return batch.labId;
+  }
+  const ids = [...new Set([...message.orderIds, ...(text.match(/(?<![\d@+])\d{5,6}(?!\d)/g) ?? []).map(Number)])];
+  const refs = labRefTokens(text).map((t) => t.ref);
+  if (ids.length || refs.length) {
+    const rows = await labstackWorkerQuery<{ labId: number }>(
+      `SELECT "labId" FROM public."Order" WHERE "labId" = ANY($1::int[]) AND (id = ANY($2::int[]) OR upper("labOrderId") = ANY($3::text[])) ORDER BY "createdAt" DESC LIMIT 1`,
+      [labs, ids, refs],
+    ).catch(() => []);
+    if (rows[0]) return rows[0].labId;
+  }
+  return labs[0];
+}
+
 async function splitByLabRef(text: string, labId: number): Promise<Map<number, string>> {
   const tokens = labRefTokens(text);
   const result = new Map<number, string>();
@@ -127,7 +146,10 @@ export async function runReplyPass(now = new Date()): Promise<ReplyPassResult> {
     where: { jid: { in: configs.map((c) => c.waGroupJid!) }, archivedAt: null },
     select: { id: true, jid: true },
   });
-  const labByGroup = new Map(groups.map((g) => [g.id, configs.find((c) => c.waGroupJid === g.jid)!.labId]));
+  // One group may be the desk for several labs (Orange's city labs, 29 Oct 2026): a reply there is
+  // attributed to the lab its order belongs to, by what it quotes or the ids it names.
+  const labsByGroup = new Map(groups.map((g) => [g.id, configs.filter((c) => c.waGroupJid === g.jid).map((c) => c.labId)]));
+  const labByGroup = new Map([...labsByGroup].map(([id, labs]) => [id, labs[0]]));
   if (labByGroup.size === 0) return result;
 
   const settings = await prisma.providerCommsSettings.upsert({ where: { id: "default" }, update: {}, create: { id: "default" } });
@@ -145,7 +167,8 @@ export async function runReplyPass(now = new Date()): Promise<ReplyPassResult> {
   for (const message of messages) {
     result.read += 1;
     let text = (message.text ?? "").trim();
-    const labId = labByGroup.get(message.groupId)!;
+    const labs = labsByGroup.get(message.groupId) ?? [];
+    const labId = labs.length > 1 ? await labForMessage(message, text, labs) : labByGroup.get(message.groupId)!;
     // Our own team writing in the lab's group is not the lab answering (a relay once echoed
     // Vijayraj's "urine sample not collected" back to the store, 25 Oct 2026).
     if (isTeam(message.sender, message.senderJid)) continue;

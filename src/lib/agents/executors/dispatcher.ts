@@ -107,7 +107,7 @@ export async function flushOutbox(now = new Date(), opts: { urgentOnly?: boolean
   await prisma.agentOutboxItem.updateMany({ where: { status: "SENDING", OR: [{ claimedAt: null }, { claimedAt: { lt: new Date(now.getTime() - 5 * 60_000) } }] }, data: { status: "QUEUED", claimedAt: null } }).catch(() => undefined);
   // Every flush looks at everything queued: a routine ask goes as soon as it has gathered, not at
   // the next :00/:30 (29 Oct 2026). The SOP says how long to gather and how much a lab may hear.
-  const batching = paramsFor((await loadLiveSops().catch(() => new Map())).get("LAB") ?? null, { labTier: null, labId: null, storeId: null, orderType: "HOME_SAMPLE" })?.batching ?? { gatherMin: 15, perHourCap: 3, perDayCap: 10 };
+  const batching = paramsFor((await loadLiveSops().catch(() => new Map())).get("LAB") ?? null, { labTier: null, labId: null, storeId: null, orderType: "HOME_SAMPLE" })?.batching ?? { gatherMin: 15, perHourCap: 3, perDayCap: 10, minGapMin: 20, reportMaxAgeDays: 5 };
   const items = await prisma.agentOutboxItem.findMany({
     where: { status: "QUEUED" },
     select: { id: true, counterparty: true, ask: true, orderId: true, journeyId: true, actionId: true, windowFrom: true, windowTo: true, urgent: true, payload: true, idemKey: true, createdAt: true },
@@ -184,13 +184,19 @@ async function alreadyInHand(groupJid: string, items: Array<{ orderId: number; p
   // For a re-collection, "sample missed" and the morning's "collected" are why it is asked, not an answer.
   const answering = ask === "RECOLLECT" ? ["eta", "new_appointment_time", "cannot_fulfil"] : ["patient_unavailable", "sample_collected", "eta", "phlebo_name", "new_appointment_time", "cannot_fulfil", "sample_missed"];
   const [msgs, facts] = await Promise.all([
-    g ? prisma.waMessage.findMany({ where: { groupId: g.id, ts: { gte: new Date(now.getTime() - (ask === "RECOLLECT" ? 30 * 60_000 : 2 * 3_600_000)) }, NOT: { intent: "AUTOMATED" } }, select: { text: true, orderIds: true } }) : Promise.resolve([]),
+    g ? prisma.waMessage.findMany({ where: { groupId: g.id, ts: { gte: new Date(now.getTime() - (ask === "RECOLLECT" ? 30 * 60_000 : 2 * 3_600_000)) }, NOT: { intent: "AUTOMATED" } }, select: { text: true, orderIds: true, replyToWaId: true } }) : Promise.resolve([]),
     prisma.providerOrderFact.findMany({ where: { orderId: { in: ids }, createdAt: { gte: new Date(now.getTime() - (ask === "RECOLLECT" ? 30 * 60_000 : 3 * 3_600_000)) }, kind: { in: answering } }, select: { orderId: true } }),
   ]);
   for (const f of facts) out.add(f.orderId);
+  // A lab answering in its own words by quoting a list that named the order ("Client booked slot of
+  // 10am" under the team's list, 29 Oct 2026) has answered it, though it names no id.
+  const quotedIds = [...new Set(msgs.map((m) => m.replyToWaId).filter((x): x is string => !!x))];
+  const quoted = quotedIds.length ? await prisma.waMessage.findMany({ where: { waMsgId: { in: quotedIds } }, select: { waMsgId: true, text: true } }) : [];
+  const quotedText = new Map(quoted.map((q) => [q.waMsgId, (q.text ?? "").toUpperCase()]));
   for (const i of items) {
     const ref = (i.payload as { line?: { labRef?: string | null } }).line?.labRef?.toUpperCase();
-    if (msgs.some((m) => m.orderIds.includes(i.orderId) || m.text.includes(String(i.orderId)) || (ref && m.text.toUpperCase().includes(ref)))) out.add(i.orderId);
+    const names = (t: string) => t.includes(String(i.orderId)) || (!!ref && t.toUpperCase().includes(ref));
+    if (msgs.some((m) => m.orderIds.includes(i.orderId) || names(m.text) || (!!m.replyToWaId && names(quotedText.get(m.replyToWaId) ?? "")))) out.add(i.orderId);
   }
   return out;
 }
@@ -220,7 +226,7 @@ export function settledByConsole(ask: string, o: Pick<OrderSnapshot, "orderStatu
   }
 }
 
-export function partitionQueued<T extends { orderId: number; payload: unknown }>(group: T[], ask: string, now: Date, tier: string | null): { fresh: T[]; stale: T[] } {
+export function partitionQueued<T extends { orderId: number; payload: unknown }>(group: T[], ask: string, now: Date, tier: string | null, reportMaxAgeDays = 30): { fresh: T[]; stale: T[] } {
   const PRE_VISIT = new Set(["UNCONFIRMED", "PHLEBO", "ETA", "ESCALATION"]);
   const stale: T[] = []; const seen = new Set<number>(); const fresh: T[] = [];
   for (const i of group) {
@@ -228,7 +234,8 @@ export function partitionQueued<T extends { orderId: number; payload: unknown }>
     const appt = line.appointment ? new Date(line.appointment).getTime() : null;
     // "phlebo on time?" for a 6:00 visit at 7:11 is noise (26 Oct 2026): ETA and phlebo asks end at the visit.
     const pastVisit = appt != null && appt < now.getTime() - (ask === "ETA" || ask === "PHLEBO" ? 0 : 2 * 3_600_000);
-    const oldReport = ask === "REPORT" && appt != null && appt < now.getTime() - 30 * 86_400_000;
+    // A report overdue for days is a person's job — the lab group is for today's work (SOP batching.reportMaxAgeDays).
+    const oldReport = ask === "REPORT" && appt != null && appt < now.getTime() - reportMaxAgeDays * 86_400_000;
     const apiOverdue = ask === "OVERDUE" && tier != null && tier !== "C";
     if ((PRE_VISIT.has(ask) && pastVisit) || oldReport || apiOverdue || seen.has(i.orderId)) { stale.push(i); continue; }
     seen.add(i.orderId); fresh.push(i);
@@ -236,7 +243,8 @@ export function partitionQueued<T extends { orderId: number; payload: unknown }>
   return { fresh, stale };
 }
 
-async function flushGroup(key: string, queued: Item[], now: Date, batching: { gatherMin: number; perHourCap: number; perDayCap: number } = { gatherMin: 15, perHourCap: 3, perDayCap: 10 }): Promise<{ messages: number; items: number; held: number }> {
+type Batching = { gatherMin: number; perHourCap: number; perDayCap: number; minGapMin?: number; reportMaxAgeDays?: number };
+async function flushGroup(key: string, queued: Item[], now: Date, batching: Batching = { gatherMin: 15, perHourCap: 3, perDayCap: 10, minGapMin: 20, reportMaxAgeDays: 5 }): Promise<{ messages: number; items: number; held: number }> {
   let group = queued;
   const [counterparty, ask] = key.split("|");
   const [kind, idText] = counterparty.split(":");
@@ -251,7 +259,7 @@ async function flushGroup(key: string, queued: Item[], now: Date, batching: { ga
   // on time?" for a visit a week ago, "please confirm" for a past visit, report
   // chases 14 days old): a pre-visit ask after the visit, a report chase older
   // than a month, and a second rung for an order already in this message.
-  const { fresh, stale } = partitionQueued(group, ask, now, kind === "LAB" ? tierOf(await loadDirectory(), id) : null);
+  const { fresh, stale } = partitionQueued(group, ask, now, kind === "LAB" ? tierOf(await loadDirectory(), id) : null, batching.reportMaxAgeDays ?? 5);
   if (stale.length) {
     await prisma.agentOutboxItem.updateMany({ where: { id: { in: stale.map((i) => i.id) } }, data: { status: "DROPPED" } });
     console.log(`[Agents] ${counterparty} ${ask}: dropped ${stale.length} stale or duplicate item(s)`);
@@ -385,7 +393,9 @@ async function flushGroup(key: string, queued: Item[], now: Date, batching: { ga
   // Ten per message for urgent asks too (07:00 can release a night's worth at once); the rest next minute.
   if (urgent.length) { await sendItems(urgent.slice(0, 10), true); held += Math.max(0, urgent.length - 10); }
   if (routine.length) {
-    if (!toManager && (sentToday >= batching.perDayCap || sentLastHour >= batching.perHourCap)) { held += routine.length; }
+    const lastToLab = await prisma.providerBatch.findFirst({ where: { labId: id, shadow: false, recipient: "LAB" }, orderBy: { createdAt: "desc" }, select: { createdAt: true } });
+    const tooSoon = !!lastToLab && now.getTime() - lastToLab.createdAt.getTime() < (batching.minGapMin ?? 20) * 60_000;
+    if (!toManager && (sentToday >= batching.perDayCap || sentLastHour >= batching.perHourCap || tooSoon)) { held += routine.length; }
     else {
       // Short lists get answered (CHAT-REVIEW-OCT-2026): ten per message, the rest next slot.
       const take = routine.slice(0, 10);

@@ -23,7 +23,7 @@ export type StoreDay = {
   storeId: number; total: number; collected: number; upcoming: number;
   rnr: Array<{ orderId: number; name: string; time: string; lab: string; detail: string }>;
   owed: Array<{ orderId: number; name: string; sample: string; lab: string }>;
-  missed: Array<{ orderId: number; name: string; time: string; lab: string }>;
+  missed: Array<{ orderId: number; name: string; time: string; lab: string; asked?: string | null }>;
   /** Centre / clinic visits past their time: the customer has not gone yet — nothing for the lab to do. */
   centreMissed: Array<{ orderId: number; name: string; time: string; lab: string }>;
   /** Visits past their time with labs the bot cannot chase (no API, no live WhatsApp desk): the team's, counted only. */
@@ -101,8 +101,9 @@ export function digestText(day: StoreDay, storeName: string | null, now = new Da
     lines.push("");
   }
   if (day.missed.length) {
-    lines.push(`⏳ *Visit time passed, not collected yet (${day.missed.length})* — we're on it with the lab:`);
-    day.missed.forEach((o, i) => lines.push(`${i + 1}. #${o.orderId} · ${o.name} · ${o.time} · ${o.lab}`));
+    // "We're on it" only where the lab was actually asked (29 Oct 2026: claimed for orders whose ask never went).
+    lines.push(`⏳ *Visit time passed, not collected yet (${day.missed.length})*:`);
+    day.missed.forEach((o, i) => lines.push(`${i + 1}. #${o.orderId} · ${o.name} · ${o.time} · ${o.lab}${o.asked ? ` · lab asked ${o.asked}` : ""}`));
     lines.push("");
   }
   if (day.centreMissed.length) {
@@ -137,6 +138,12 @@ export async function runStoreDigests(now = new Date()): Promise<{ stores: numbe
   const storeIds = [...new Set(groups.map((g) => g.storeId!))].filter((id) => summariesOn.has(id) || (state.desks.get(`STORE:STORE:${id}`) ?? "OFF") !== "OFF");
   const days = await storeDays(storeIds, now, makeLabScope(state.desks));
   for (const day of days) Object.assign(day, await consoleChangesSince(day.storeId, now).catch(() => ({})));
+  const lateIds = days.flatMap((d) => d.missed.map((o) => o.orderId));
+  if (lateIds.length) {
+    const sent = await prisma.agentOutboxItem.findMany({ where: { orderId: { in: lateIds }, counterparty: { startsWith: "LAB:" }, status: "SENT", sentAt: { gte: new Date(now.getTime() - 6 * 3_600_000) } }, orderBy: { sentAt: "desc" }, select: { orderId: true, sentAt: true } });
+    const asked = new Map<number, Date>(); for (const x of sent) if (!asked.has(x.orderId) && x.sentAt) asked.set(x.orderId, x.sentAt);
+    for (const d of days) for (const o of d.missed) { const at = asked.get(o.orderId); o.asked = at ? hhmm(at) : null; }
+  }
   const result = { stores: storeIds.length, sent: 0, recorded: 0, rnr: 0 };
   const slot = `${atLocal(now, TZ(), 0, 0).toISOString().slice(0, 10)}:${now.toLocaleTimeString("en-GB", { timeZone: TZ(), hour: "2-digit" })}`;
   for (const day of days) {

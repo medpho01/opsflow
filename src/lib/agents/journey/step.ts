@@ -303,6 +303,9 @@ export function relayDetail(f: { kind: string; value: string; fullText?: string 
 const STORE_RELAY: Record<string, string> = {
   patient_unavailable: "STORE_PATIENT_UNREACHABLE", sample_collected: "STORE_COLLECTED", new_appointment_time: "STORE_LAB_RESCHEDULED",
   cannot_fulfil: "STORE_LAB_CANNOT", report_shared: "STORE_REPORT_SHARED",
+  // "Blood collected, urine not — customer will give later" (Orange #94932, 29 Oct 2026): the store
+  // must know at once; Veena relayed it by hand an hour later.
+  sample_missed: "STORE_SAMPLE_OWED",
 };
 
 /**
@@ -334,7 +337,7 @@ export function requestedTime(text: string, at: Date, appointment: Date | null, 
  *    + "rescheduled to 28th" → the reschedule), and the same template never twice.
  */
 const ALERT_RANK: Record<string, number> = {
-  STORE_PATIENT_UNREACHABLE: 5, STORE_SAMPLE_OWED: 5, STORE_LAB_CANNOT: 5, STORE_LAB_DATA_CHECK: 5, STORE_LAB_CANCELLED: 6,
+  STORE_PATIENT_UNREACHABLE: 5, STORE_SAMPLE_OWED: 5, STORE_SAMPLE_OWED_TEAM: 5, STORE_LAB_CANNOT: 5, STORE_LAB_DATA_CHECK: 5, STORE_LAB_CANCELLED: 6,
   STORE_LAB_RESCHEDULED: 4, STORE_REPORT_SHARED: 3, STORE_COLLECTED: 2, STORE_LAB_PROMISE: 1,
 };
 const SAMPLE_LEFT = /\b(urine|stool|sputum|swab)\b[^.\n]{0,40}\b(not|pending|missed|left|skipped)\b|\b(not|pending)\b[^.\n]{0,20}\b(urine|stool|sputum|swab)\b/i;
@@ -627,7 +630,15 @@ export function step(input: StepInput): StepOutput {
     for (const f of factsSeen) {
       // What the lab said reaches the store that placed the order, at once (25 Oct 2026: ops
       // relayed "customer not available" by hand). Fixed behaviour; the SOP adds, never removes.
-      const relay = STORE_RELAY[f.kind];
+      let relay = STORE_RELAY[f.kind];
+      if (relay && f.kind === "sample_missed" && order.storeId != null && f.source !== "store_msg") {
+        const sample = /\b(urine|stool|sputum|swab)\b/i.exec(`${f.value} ${f.fullText ?? ""}`)?.[1]?.toLowerCase() ?? "a";
+        if (input.labChaseable !== false && order.labId != null) {
+          // The store hears "we're asking the lab for a slot" — so the lab is asked.
+          const window = sendWindow(now, now, sop, { intent: "STATUS", leadMin: 0, graceMin: 480, urgentWithinMin: 0, nightBefore: false }, true, false, tz);
+          actions.push({ desk: "LAB", action: "ask", params: { checkpoint: "sample_collected", orderId: order.id, labId: order.labId, attempt: 1, dueAt: now, rung: "ask", intent: "RECOLLECT", counterparty: `LAB:${order.labId}`, windowFrom: window.from, windowTo: window.to, urgent: true, line: { orderId: order.id, patientName: order.patientName, appointment: order.appointmentTime, labRef: order.labRef ?? null, mobile: order.mobile ?? null, area: order.area ?? null, note: `${sample} sample pending — slot for re-collection?` }, forStore: true }, reason: `lab says the ${sample} sample was not collected; asking for a re-collection slot`, idemKey: `owed-recollect:${order.id}:${f.id ?? f.at.getTime()}` });
+        } else relay = "STORE_SAMPLE_OWED_TEAM";
+      }
       if (relay && order.storeId != null && f.source !== "store_msg" && !sop.handoffs.some((x) => x.onFact === f.kind && x.do === "store_alert")) {
         actions.push({ desk: "STORE", action: "store_alert", params: { template: relay, orderId: order.id, storeId: order.storeId, fact: f.kind, detail: relayDetail(f), at: f.at.toISOString() }, reason: `lab says ${f.kind.replace(/_/g, " ")}: "${f.value.slice(0, 60)}"`, idemKey: `relay:${order.id}:${f.kind}:${f.id ?? f.at.getTime()}` });
       }

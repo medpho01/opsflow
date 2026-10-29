@@ -71,6 +71,7 @@ export const STYLE_CONTRACTS: Record<string, StyleContract> = {
   STORE_PATIENT_UNREACHABLE: store("Tell the store the lab could not reach the customer; ask them to help reach them or share a slot.", ["order_id", "patient_name"], 320),
   STORE_COLLECTED: store("Tell the store the sample was collected.", ["order_id", "patient_name"], 200),
   STORE_LAB_RESCHEDULED: store("Tell the store the lab rescheduled, so they can tell the customer.", ["order_id", "patient_name", "detail"], 280),
+  STORE_SAMPLE_OWED_TEAM: store("Tell the store a sample is still to be collected and our team will share slots (the lab is not reachable by the agent).", ["order_id", "patient_name", "detail"], 280),
   STORE_SAMPLE_OWED: store("Tell the store a sample is still to be collected and we are getting a slot.", ["order_id", "patient_name", "detail"], 280),
   STORE_LAB_CANCELLED: store("Tell the store the lab cancelled, with the reason, and that we are arranging an alternative.", ["order_id", "patient_name", "detail"], 320),
   STORE_LAB_CANNOT: store("Tell the store the lab cannot do this order and we are arranging an alternative.", ["order_id", "patient_name", "detail"], 280),

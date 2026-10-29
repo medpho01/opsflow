@@ -116,6 +116,10 @@ export const sopParamsSchema = z.object({
     gatherMin: z.number().int().min(2).default(15),
     perHourCap: z.number().int().min(1).default(3),
     perDayCap: z.number().int().min(2).default(10),
+    /** Minutes between two routine messages to the same lab (29 Oct 2026: "still open: 10" one minute after a 10-item list). */
+    minGapMin: z.number().int().min(0).default(20),
+    /** A report overdue longer than this is a person's job, not a lab-group chase (29 Oct 2026: 12–26-day backlogs posted to Orange). */
+    reportMaxAgeDays: z.number().int().min(1).default(5),
   }).prefault({}),
   /**
    * How LabStack's own changes reach a store (29 Oct 2026: 12 of the bot's 22 Plum messages one

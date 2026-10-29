@@ -19,7 +19,8 @@ describe("store summary", () => {
     assert.match(lines[2], /Customer not reachable \(1\)/);
     assert.match(lines[3], /#90001 · Harshit · 6:00 am · lab offers 9:00 am - 10:00 am, 11:30 am — reply with the customer's preferred slot/);
     assert.match(text, /Sample still to collect \(1\)[\s\S]*#90002 · Gururaj · urine/);
-    assert.match(text, /Visit time passed, not collected yet \(1\)[\s\S]*#90003/);
+    assert.match(text, /Visit time passed, not collected yet \(1\)\*:[\s\S]*#90003/);
+    assert.doesNotMatch(text, /we're on it with the lab/);
     assert.match(text, /Centre visit time passed \(1\)\* — the customer hasn't visited yet[\s\S]*#90004 · Meera/);
     assert.doesNotMatch(text.split("Centre visit")[0], /#90004/);
     assert.match(text, /Collected: 15 .* Still to come: 4 .* Total: 24/);

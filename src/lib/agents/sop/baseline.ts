@@ -53,7 +53,7 @@ export const LAB_SOP_V1: SopBody = parseSop({
     warnStoreBeforeMin: 120,
     consoleQuietMin: 90, reportRungGapMin: 1440, urgentAfterVisitMin: 240, reaskEveryMin: 1440,
     briefings: { newOrder: { enabled: true }, eveningList: { enabled: true, at: "19:00" } },
-    batching: { gatherMin: 15, perHourCap: 3, perDayCap: 10 },
+    batching: { gatherMin: 15, perHourCap: 3, perDayCap: 10, minGapMin: 20, reportMaxAgeDays: 5 },
     storeRelay: { consoleChanges: "digest" },
   },
   overrides: [
@@ -86,6 +86,8 @@ export const LAB_SOP_V1: SopBody = parseSop({
     "params.batching.gatherMin": { min: 5, max: 45 },
     "params.batching.perHourCap": { min: 1, max: 6 },
     "params.batching.perDayCap": { min: 4, max: 20 },
+    "params.batching.minGapMin": { min: 0, max: 60 },
+    "params.batching.reportMaxAgeDays": { min: 2, max: 30 },
     "params.asks.phlebo_assigned.dueOffsetMin": { min: -180, max: -30 },
     "params.asks.sample_collected.dueOffsetMin": { min: 15, max: 120 },
     "params.asks.report_delivered.dueOffsetMin": { min: 720, max: 4320 },

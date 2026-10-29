@@ -19,6 +19,7 @@ export const STORE_TEMPLATES: Record<string, { name: string; body: string }> = {
   STORE_PATIENT_UNREACHABLE: { name: "Store: lab could not reach the patient", body: "#{{order_id}}\n{{patient_name}}\n\nUser is not available, pickup not done ({{detail}}, {{time}}). Please help reach them or share a new slot." },
   STORE_COLLECTED: { name: "Store: sample collected", body: "#{{order_id}}\n{{patient_name}}\n\nSample collected ({{time}}). Report will follow." },
   STORE_LAB_RESCHEDULED: { name: "Store: lab rescheduled", body: "#{{order_id}}\n{{patient_name}}\n\nThe lab has rescheduled: {{detail}}. Please let the customer know." },
+  STORE_SAMPLE_OWED_TEAM: { name: "Store: a sample still to collect (team gets the slot)", body: "#{{order_id}}\n{{patient_name}}\n\nLab update: {{detail}}. Our team will share re-collection slots here." },
   STORE_SAMPLE_OWED: { name: "Store: a sample still to collect", body: "#{{order_id}}\n{{patient_name}}\n\nLab update: {{detail}}. We're asking the lab for a re-collection slot and will confirm here." },
   STORE_LAB_DATA_CHECK: { name: "Store: the lab flagged a detail", body: "#{{order_id}}\n{{patient_name}}\n\nThe lab flagged a detail to check: {{detail}}. Please confirm the correct details here." },
   STORE_LAB_CANCELLED: { name: "Store: the lab cancelled", body: "#{{order_id}}\n{{patient_name}}\n\nThe lab has cancelled this order ({{detail}}). We're on it — another lab, a centre visit or a new slot — and will confirm here. Please let the customer know." },

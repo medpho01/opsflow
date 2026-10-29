@@ -61,7 +61,7 @@ describe("what every lab is told unasked lives in the SOP (27 Oct 2026)", () => 
     assert.equal(p.briefings.eveningList.enabled, true);
     assert.equal(p.briefings.eveningList.at, "19:00");
     assert.equal(p.briefings.newOrder.enabled, true);
-    assert.deepEqual(p.batching, { gatherMin: 15, perHourCap: 3, perDayCap: 10 });
+    assert.deepEqual(p.batching, { gatherMin: 15, perHourCap: 3, perDayCap: 10, minGapMin: 20, reportMaxAgeDays: 5 });
     assert.equal(p.asks.sample_collected.dueOffsetMin, 30);
     const body = JSON.parse(JSON.stringify(LAB_SOP_V1)) as SopBody;
     body.params.reaskEveryMin = 720;

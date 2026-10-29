@@ -20,7 +20,7 @@ import { enqueueOutbox } from "../executors/dispatcher";
 import { liveStoreBody } from "../executors/storeReply";
 import { guard, loadGuardState } from "../guard/guard";
 import { fetchOrderSnapshot } from "../journey/window";
-import { ABOUT_THE_BOT_RE, addressedTeamMember, complaintSignal, makeLabScope } from "./scope";
+import { ABOUT_THE_BOT_RE, addressedTeamMember, complaintSignal, labChaseable, makeLabScope } from "./scope";
 
 export type StoreIntent = "status" | "report" | "slot" | "reschedule" | "cancel" | "change_tests" | "new_booking" | "serviceability" | "complaint" | "noise" | "other";
 
@@ -170,6 +170,23 @@ async function answerClosedOrder(orderId: number, storeId: number, intent: Store
     return { executed, review };
   }
   const when = o.statusUpdatedAt ? o.statusUpdatedAt.toLocaleString("en-IN", { timeZone: tz, day: "numeric", month: "short", hour: "numeric", minute: "2-digit" }) : "earlier";
+  // Not closed at all — "rescheduled since 27 Oct", "sample collected" with no journey: the store is
+  // asking what is happening now, and the console's last line is not that (29 Oct 2026, #93413:
+  // "please check if samples are collected" → "LabStack shows rescheduled since 27 Oct"). The lab is
+  // asked when the desk can reach it; otherwise a person is tagged with the question.
+  const terminal = ["REPORT_DELIVERED", "CANCELED", "CANCELLED", "PATIENT_MISSED"].includes(o.orderStatus);
+  if (!terminal && ["status", "report", "slot", "other"].includes(intent)) {
+    const ctx = { journeyId: null, orderId, labId: o.labId, storeId, orderType: o.orderType, appointmentTime: o.appointmentTime, patientName: o.patientName, labName: o.labName, storeName: o.storeName };
+    const shows = `the console shows ${o.orderStatus.toLowerCase().replace(/_/g, " ")} since ${when}`;
+    if (o.labId != null && (await labChaseable(o.labId, state.desks))) {
+      const now = new Date();
+      const ask = await guard({ desk: "LAB", action: "ask", params: { checkpoint: "sample_collected", orderId, labId: o.labId, attempt: 1, dueAt: now, rung: "ask", intent: "STATUS", counterparty: `LAB:${o.labId}`, windowFrom: now, windowTo: new Date(now.getTime() + 8 * 3_600_000), urgent: true, forStore: true, line: { orderId, patientName: o.patientName, appointment: o.appointmentTime, labRef: o.labRef ?? null, mobile: o.mobile ?? null, area: o.area ?? null, note: `the store asks: collected? — ${shows}` } }, reason: `store asked for ${intent} on an untracked order; ${shows}`, idemKey: `untracked-ask:${orderId}:${waMsgId}` }, ctx, state);
+      const reply = await guard({ desk: "STORE", action: "store_reply", params: { template: "STORE_CHECKING", orderId, storeId, intent, quotedWaId: waMsgId }, reason: `store asked for ${intent}; the lab is being asked`, idemKey: `untracked-ack:${orderId}:${waMsgId}` }, ctx, state);
+      return { executed: [ask, reply].filter((r) => r.outcome === "EXECUTED").length, review: [ask, reply].filter((r) => r.outcome === "REVIEW").length };
+    }
+    const h = await guard({ desk: "STORE", action: "store_handoff", params: { orderId, storeId, intent, quotedWaId: waMsgId, note: `the store asks for the latest on collection; ${shows} — please check with ${o.labName ?? "the lab"} and update here` }, reason: `store asked for ${intent} on an untracked order at a lab with no desk to chase; ${shows}`, idemKey: `untracked-handoff:${orderId}:${waMsgId}` }, ctx, state);
+    return { executed: h.outcome === "EXECUTED" ? 1 : 0, review: h.outcome === "REVIEW" ? 1 : 0 };
+  }
   const line = o.orderStatus === "REPORT_DELIVERED" ? `report delivered on ${when}` : o.orderStatus === "CANCELED" || o.orderStatus === "CANCELLED" ? `cancelled on ${when}`
     : o.orderStatus === "PATIENT_MISSED" ? `marked patient missed on ${when}` : `shows ${o.orderStatus.toLowerCase().replace(/_/g, " ")} since ${when}`;
   const taskType = CLOSED_TASK[intent];

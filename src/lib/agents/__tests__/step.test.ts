@@ -663,4 +663,12 @@ describe("a manual lab is asked again every day until the console moves (27 Oct 
     const again = wake(o, at("2026-10-29T02:20:00Z"), r);
     assert.ok(!again.actions.some((a) => a.action === "ask"), "once");
   });
+
+  it("no ask counted means no gap to wait out (29 Oct 2026, #92602: n 0 with a 9:39 time held a report chase for a day)", () => {
+    const o = order({ orderStatus: "SAMPLE_DELIVERED", appointmentTime: at("2026-10-28T02:30:00Z"), statusUpdatedAt: at("2026-10-28T05:15:00Z"), phleboName: "x" });
+    const r0 = wake(o, at("2026-10-29T04:09:00Z"));
+    const prev = { ...r0, journey: { ...r0.journey, attempts: { report_delivered: { n: 0, at: "2026-10-29T04:09:00.451Z" } } } };
+    const r = wake(o, at("2026-10-29T08:40:00Z"), prev);
+    assert.ok(r.actions.some((a) => a.action === "ask" && a.params.checkpoint === "report_delivered"));
+  });
 });

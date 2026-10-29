@@ -867,7 +867,9 @@ export function step(input: StepInput): StepOutput {
     // A report chase climbs its ladder a day at a time — a 20-day backlog must not reach "stuck"
     // by lunch (27 Oct 2026). Everything else keeps the SOP's gap.
     const gapMin = next.name === "report_delivered" ? Math.max(sop.rungGapMin, sop.reportRungGapMin) : sop.rungGapMin;
-    const gapOk = lastAt == null || now.getTime() - lastAt >= gapMin * MIN;
+    // No ask counted means nothing went out: the gap runs from a message the lab saw, never from one
+    // that was blocked or withdrawn (29 Oct 2026, #92602: n 0, at 9:39 — held a day for nothing).
+    const gapOk = lastAt == null || a.n === 0 || now.getTime() - lastAt >= gapMin * MIN;
     const answeredAt = a.answeredAt ? Date.parse(a.answeredAt) : null;
     const holding = answeredAt != null && now.getTime() - answeredAt < sop.answerHoldMin * MIN && next.dueSource !== "RESET";
     // No portal session: there is nothing to read, so the ask goes straight to the group.

@@ -197,7 +197,8 @@ export async function wakeJourney(orderId: number, reason: WakeReason, opts: Wak
       if (r.outcome === "EXECUTED") executed += 1; else if (r.outcome === "REVIEW") review += 1;
       const checkpoint = typeof action.params.checkpoint === "string" ? action.params.checkpoint : null;
       if (r.outcome !== "EXECUTED" && action.desk === "LAB" && LADDER.has(action.action) && checkpoint && attempts[checkpoint]) {
-        attempts[checkpoint] = { ...attempts[checkpoint], n: before[checkpoint]?.n ?? 0 };
+        const n = before[checkpoint]?.n ?? 0;
+        attempts[checkpoint] = { ...attempts[checkpoint], n, ...(n === 0 ? { at: null } : {}) };
         attemptsChanged = true;
       }
     }

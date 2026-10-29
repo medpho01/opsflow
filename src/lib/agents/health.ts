@@ -24,6 +24,7 @@ import { flushOutbox, sendWhatsApp } from "./executors/dispatcher";
 import { runNightly } from "./brain/nightly";
 import { loadGuardState } from "./guard/guard";
 import { opsGroup } from "./ops/group";
+import { humanSpokeAbout } from "./store/scope";
 import { loadDirectory } from "./directory";
 
 export type Check = { key: string; ok: boolean; detail: string; healed?: string };
@@ -109,7 +110,9 @@ async function brain(now: Date): Promise<Check> {
 
 async function opsGroupConnected(): Promise<Check> {
   const g = await opsGroup();
-  return g ? { key: "ops_group", ok: true, detail: `ops group connected: ${g.subject}` } : { key: "ops_group", ok: false, detail: "no internal ops group connected — tasks, escalations and questions have nowhere to go. Connect \"Internal <> ops\" as INTERNAL on Connections › Groups" };
+  // Switched off by choice since 29 Oct 2026: handoffs are silent and tracked in the console, so
+  // nothing depends on it. Shown, not counted as a problem.
+  return g ? { key: "ops_group", ok: true, detail: `ops group connected: ${g.subject}` } : { key: "ops_group", ok: true, detail: "not connected (by choice) — posts for people are skipped; handoffs are silent and tracked in the console" };
 }
 
 async function storeSilence(now: Date): Promise<Check> {
@@ -119,13 +122,22 @@ async function storeSilence(now: Date): Promise<Check> {
   const groups = await prisma.waGroup.findMany({ where: { role: "SUPPORT", storeId: { in: live } }, select: { id: true } });
   const msgs = await prisma.waMessage.findMany({
     where: { groupId: { in: groups.map((g) => g.id) }, direction: "IN", fromMe: false, ts: { gte: new Date(now.getTime() - 2 * 60 * MIN), lte: new Date(now.getTime() - 15 * MIN) }, intent: { startsWith: "STORE_" }, NOT: { intent: "STORE_NOISE" } },
-    select: { id: true, waMsgId: true, text: true }, take: 100,
+    select: { id: true, waMsgId: true, text: true, groupId: true, ts: true }, take: 100,
   });
   const silent: string[] = [];
+  const { loadTeam, makeTeamMatcher } = await import("@/lib/wa/team");
+  const isTeam = makeTeamMatcher(await loadTeam());
   for (const m of msgs) {
     if (!/\b\d{5,6}\b/.test(m.text)) continue;
+    const orderId = Number(m.text.match(/\b\d{5,6}\b/)![0]);
     const acted = await prisma.agentAction.findFirst({ where: { OR: [{ idemKey: { contains: m.id } }, { idemKey: { contains: m.waMsgId } }] }, select: { id: true } });
-    if (!acted) silent.push(m.text.match(/\b\d{5,6}\b/)![0]);
+    if (acted) continue;
+    // A person on our side answered it — the agent stays out of messages addressed to people, so the
+    // question is handled (29 Oct 2026: #93413, addressed to two team members, answered a minute later).
+    if (await humanSpokeAbout({ groupId: m.groupId, orderId, quotedWaId: m.waMsgId, from: m.ts, to: now, isTeam })) continue;
+    const reply = await prisma.waMessage.findFirst({ where: { groupId: m.groupId, ts: { gt: m.ts, lte: new Date(m.ts.getTime() + 15 * MIN) }, OR: [{ fromMe: true, intent: { notIn: ["AUTOMATED", "CONSOLE"] } }, { direction: "IN", fromMe: false }] }, orderBy: { ts: "asc" }, select: { sender: true, senderJid: true, fromMe: true, text: true } }).catch(() => null);
+    if (reply && (reply.fromMe || isTeam(reply.sender, reply.senderJid)) && !/\b\d{5,6}\b/.test(reply.text ?? "")) continue;
+    silent.push(String(orderId));
   }
   return { key: "store_silence", ok: silent.length === 0, detail: silent.length ? `${silent.length} store question(s) with an order id got no response: ${[...new Set(silent)].slice(0, 8).join(", ")}` : "every store question was handled" };
 }

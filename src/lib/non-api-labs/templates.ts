@@ -32,6 +32,7 @@ export const PROVIDER_PENDING_REPORTS_TEMPLATE = "PROVIDER_PENDING_REPORTS";
 export const BATCH_TEMPLATE_BY_INTENT: Record<string, string> = {
   NEW_ORDER: "BATCH_NEW_ORDER",
   STATUS: "BATCH_STATUS_CHECK",
+  RECOLLECT: "BATCH_RECOLLECT",
   PHLEBO: "BATCH_ASSIGN_PHLEBO",
   ETA: "BATCH_PHLEBO_ETA",
   UNCONFIRMED: "BATCH_UNCONFIRMED",
@@ -322,6 +323,11 @@ const BATCH_DEFAULT_BODIES: Record<string, { name: string; body: string }> = {
 {{items}}
 
 Tap each link to confirm, or reply *1 can't do*` },
+  BATCH_RECOLLECT: { name: "Combined: sample to re-collect", body: `{{coordinator}} sample to re-collect ({{count}}) — please share slots:
+
+{{items}}
+
+Reply with the slots, e.g. *1 10:15 am, 12:30 pm*` },
   BATCH_STATUS_CHECK: { name: "Combined: status check", body: `{{coordinator}} quick check — collected? ({{count}})
 
 {{items}}

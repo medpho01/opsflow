@@ -118,7 +118,7 @@ describe("the ladder", () => {
     const r = wake(o, at("2026-10-20T10:01:00Z"), undefined, { events: [msg] as never, slotSummary: "Lab usually collects between 6 am and 11 am" } as never);
     const ask = r.actions.find((a) => a.action === "ask");
     assert.equal((ask?.params.line as { note: string }).note, "urine sample pending — slot for re-collection?");
-    assert.equal(ask?.params.intent, "STATUS");
+    assert.equal(ask?.params.intent, "RECOLLECT"); // a STATUS ask was dropped as settled once the blood was collected (29 Oct 2026)
     assert.ok(r.actions.some((a) => a.action === "store_reply"));
   });
   it("a report past its due time is answered as overdue and the lab is chased, whatever the question was called (28 Oct 2026)", () => {
@@ -148,9 +148,9 @@ describe("the ladder", () => {
     const h = r.actions.find((a) => a.action === "store_handoff");
     assert.match(String(h?.params.note), /^urine sample not collected — get re-collection slots from Orange Health - Mumbai, share them here, then book/);
     assert.equal(r.actions.find((a) => a.action === "create_task")?.params.cause, "SAMPLE_RECOLLECTION");
-    // Chaseable: the lab is asked and the store hears it.
+    // Chaseable: the lab is asked — as a re-collection, which the console's "collected" cannot settle — and the store hears it.
     const c = wake(o, at("2026-10-29T03:05:30Z"), undefined, { events: [msg] as never, labChaseable: true } as never);
-    assert.ok(c.actions.some((a) => a.action === "ask" && a.idemKey.endsWith(":recollect")));
+    assert.equal(c.actions.find((a) => a.action === "ask" && a.idemKey.endsWith(":recollect"))?.params.intent, "RECOLLECT");
     assert.match(String(c.actions.find((a) => a.action === "store_reply")?.params.text), /urine sample pending — asking the lab/);
   });
   it("a complaint tags a person in the group as well as opening the task", () => {

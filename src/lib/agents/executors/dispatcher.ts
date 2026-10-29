@@ -177,13 +177,15 @@ export async function flushOutbox(now = new Date(), opts: { urgentOnly?: boolean
  * 2026 our team asked about BLR6366990 at 07:00, the lab answered RNR at 07:07, and the bot
  * asked "phlebo on time?" about the same order at 07:11.
  */
-async function alreadyInHand(groupJid: string, items: Array<{ orderId: number; payload: unknown }>, now: Date): Promise<Set<number>> {
+async function alreadyInHand(groupJid: string, items: Array<{ orderId: number; payload: unknown }>, now: Date, ask = ""): Promise<Set<number>> {
   const out = new Set<number>();
   const g = await prisma.waGroup.findUnique({ where: { jid: groupJid }, select: { id: true } });
   const ids = items.map((i) => i.orderId);
+  // For a re-collection, "sample missed" and the morning's "collected" are why it is asked, not an answer.
+  const answering = ask === "RECOLLECT" ? ["eta", "new_appointment_time", "cannot_fulfil"] : ["patient_unavailable", "sample_collected", "eta", "phlebo_name", "new_appointment_time", "cannot_fulfil", "sample_missed"];
   const [msgs, facts] = await Promise.all([
-    g ? prisma.waMessage.findMany({ where: { groupId: g.id, ts: { gte: new Date(now.getTime() - 2 * 3_600_000) }, NOT: { intent: "AUTOMATED" } }, select: { text: true, orderIds: true } }) : Promise.resolve([]),
-    prisma.providerOrderFact.findMany({ where: { orderId: { in: ids }, createdAt: { gte: new Date(now.getTime() - 3 * 3_600_000) }, kind: { in: ["patient_unavailable", "sample_collected", "eta", "phlebo_name", "new_appointment_time", "cannot_fulfil", "sample_missed"] } }, select: { orderId: true } }),
+    g ? prisma.waMessage.findMany({ where: { groupId: g.id, ts: { gte: new Date(now.getTime() - (ask === "RECOLLECT" ? 30 * 60_000 : 2 * 3_600_000)) }, NOT: { intent: "AUTOMATED" } }, select: { text: true, orderIds: true } }) : Promise.resolve([]),
+    prisma.providerOrderFact.findMany({ where: { orderId: { in: ids }, createdAt: { gte: new Date(now.getTime() - (ask === "RECOLLECT" ? 30 * 60_000 : 3 * 3_600_000)) }, kind: { in: answering } }, select: { orderId: true } }),
   ]);
   for (const f of facts) out.add(f.orderId);
   for (const i of items) {
@@ -208,6 +210,9 @@ export function settledByConsole(ask: string, o: Pick<OrderSnapshot, "orderStatu
     case "UNCONFIRMED": return reached(s, "ORDER_SCHEDULED") || phleboKnown ? `confirmed (${s})` : cancelled ? "cancelled" : null;
     case "ETA": return visitOver ? `visit over (${s})` : null;
     case "STATUS": return visitOver ? `settled (${s})` : null;
+    // A missed urine/stool sample on an order the console calls collected (the blood went): the
+    // console cannot settle it (29 Oct 2026: every re-collection ask was dropped as "settled").
+    case "RECOLLECT": return cancelled ? "cancelled" : null;
     case "ESCALATION": return visitOver ? `settled (${s})` : s === "PHLEBO_STARTED" ? "phlebo on the way" : null;
     case "OVERDUE": return reached(s, "SAMPLE_DELIVERED") || cancelled ? `settled (${s})` : null;
     case "REPORT": return s === "REPORT_DELIVERED" || cancelled ? `settled (${s})` : null;
@@ -275,7 +280,7 @@ async function flushGroup(key: string, queued: Item[], now: Date, batching: { ga
   const groupEscalation = kind === "MANAGER" && !config.managerWhatsapp;
   const toManager = kind === "MANAGER" && !groupEscalation;
   if (!toManager && config.waGroupJid) {
-    const answered = await alreadyInHand(config.waGroupJid, group, now);
+    const answered = await alreadyInHand(config.waGroupJid, group, now, ask);
     if (answered.size) {
       await prisma.agentOutboxItem.updateMany({ where: { id: { in: group.filter((i) => answered.has(i.orderId)).map((i) => i.id) } }, data: { status: "DROPPED" } });
       console.log(`[Agents] ${counterparty} ${ask}: ${answered.size} order(s) already discussed or answered in the group — not asked again`);

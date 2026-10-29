@@ -158,3 +158,13 @@ describe("a correction mutes that reply where it was sent (29 Oct 2026)", () => 
   });
 });
 
+describe("a re-collection ask survives the console's 'collected' (29 Oct 2026, #94834)", () => {
+  it("is not settled by SAMPLE_COLLECTED, only by a cancellation; a status ask still is", async () => {
+    const { settledByConsole } = await import("../executors/dispatcher");
+    assert.equal(settledByConsole("RECOLLECT", { orderStatus: "SAMPLE_COLLECTED", phleboName: "R" }), null);
+    assert.equal(settledByConsole("RECOLLECT", { orderStatus: "REPORT_DELIVERED", phleboName: "R" }), null);
+    assert.equal(settledByConsole("RECOLLECT", { orderStatus: "CANCELLED", phleboName: "" }), "cancelled");
+    assert.ok(settledByConsole("STATUS", { orderStatus: "SAMPLE_COLLECTED", phleboName: "R" }));
+  });
+});
+

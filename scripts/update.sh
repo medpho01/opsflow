@@ -31,8 +31,8 @@ fi
 
 # New mounts or settings in the compose files: recreate the containers (no build).
 if echo "$CHANGED" | grep -qE '^docker-compose(\.wa)?\.yml$'; then
-  echo "→ compose files changed: recreating worker and gateway"
-  $COMPOSE up -d --no-build worker wa-gateway
+  echo "→ compose files changed: recreating app, worker and gateway (no build)"
+  $COMPOSE up -d --no-build app worker wa-gateway
 fi
 if echo "$CHANGED" | grep -qE '^src/(lib|worker|types)/'; then echo "→ agent code changed: restarting the worker"; $COMPOSE restart worker; fi
 if echo "$CHANGED" | grep -qE '^whatsapp-bot/(index\.mjs|lib/)'; then echo "→ gateway code changed: restarting the gateway"; $COMPOSE restart wa-gateway; fi

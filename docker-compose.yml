@@ -98,6 +98,12 @@ services:
     volumes:
       # Ops scripts run from the checkout: `git pull` is enough, no rebuild.
       - ./scripts:/app/scripts:ro
+      # …and see the same agent code the worker runs (29 Oct 2026: a script importing a module added
+      # since the last image build failed in this container). The console pages are served from the
+      # compiled build/ and do not read these.
+      - ./src/lib:/app/src/lib:ro
+      - ./src/worker:/app/src/worker:ro
+      - ./src/types:/app/src/types:ro
     restart: unless-stopped
     depends_on:
       db:

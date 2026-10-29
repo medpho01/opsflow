@@ -155,6 +155,11 @@ export async function guard(action: ProposedAction, ctx: GuardContext, state: Gu
 
   let row: { id: string };
   try {
+    // Looked up first: a repeat is the normal path (every wake re-proposes), and a failed insert
+    // prints a prisma:error to the log each time (29 Oct 2026). The insert still guards the race.
+    if (await prisma.agentAction.findUnique({ where: { idemKey: action.idemKey }, select: { id: true } })) {
+      throw new Prisma.PrismaClientKnownRequestError("idemKey exists", { code: "P2002", clientVersion: Prisma.prismaVersion.client });
+    }
     row = await prisma.agentAction.create({
       data: {
         journeyId: ctx.journeyId, orderId: ctx.orderId, desk: action.desk, action: action.action,

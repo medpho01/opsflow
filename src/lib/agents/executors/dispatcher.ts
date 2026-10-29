@@ -53,6 +53,10 @@ export type EnqueueInput = {
 
 export async function enqueueOutbox(input: EnqueueInput): Promise<{ id: string; queued: boolean }> {
   try {
+    // A repeat is looked up first, so it does not print a prisma:error each time (29 Oct 2026).
+    if (await prisma.agentOutboxItem.findUnique({ where: { idemKey: input.idemKey }, select: { id: true } })) {
+      throw new Prisma.PrismaClientKnownRequestError("idemKey exists", { code: "P2002", clientVersion: Prisma.prismaVersion.client });
+    }
     const row = await prisma.agentOutboxItem.create({
       data: {
         counterparty: input.counterparty, ask: input.ask, orderId: input.orderId, journeyId: input.journeyId, actionId: input.actionId,

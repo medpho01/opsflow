@@ -28,6 +28,10 @@ ln -s "$PWD/node_modules" "$WORK/node_modules"
 ( cd "$WORK" && NEXT_TELEMETRY_DISABLED=1 node node_modules/next/dist/bin/next build >/dev/null )
 rm -rf "$WORK/build/cache"
 OUT="$HOME/Downloads/prebuilt-next-$SHA.tar.gz"
+# macOS tar adds extended attributes (com.apple.provenance) that GNU tar on the VM prints a
+# warning for, once per file; leave them out.
+export COPYFILE_DISABLE=1
 tar -C "$WORK" -czf "$OUT" --transform 's,^build,prebuilt-next,' build 2>/dev/null \
+  || tar -C "$WORK" --no-xattrs --no-mac-metadata -s ',^build,prebuilt-next,' -czf "$OUT" build 2>/dev/null \
   || tar -C "$WORK" -s ',^build,prebuilt-next,' -czf "$OUT" build
 echo "$OUT ($(du -h "$OUT" | cut -f1)) — built from $SHA"

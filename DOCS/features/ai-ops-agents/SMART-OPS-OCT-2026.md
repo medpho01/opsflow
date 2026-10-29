@@ -198,3 +198,5 @@ Decided with the head of ops after a morning in which 22 of 54 Plum messages wer
 - **No re-listing within 45 minutes.** An order listed to a lab in any message in the last 45 minutes waits (held, not dropped) unless a store is asking (Thyrocare: 7 check posts in 2 h, the same orders re-listed 32 minutes apart).
 - **Reminders name the order, not the list number:** "still open: #94666 (VL168E3D)" — "10 (VL168E3D · #94666)" read as a count.
 - **Report chases carry the patient's full name**, as the team's name lists do.
+- **A withdrawn ask is asked again when proposed again** (#92602: the 9:39 report chase to Star was withdrawn as "re-routed", never sent, and the ladder counted it as made — no ask until tomorrow). The guard revives an action whose only record is "withdrawn", and its outbox item is queued again with a fresh window.
+- **A ladder that ran out before the visit still asks "collected?" once, 30 minutes after it** (#91771: Advaith's 7 am visit — asked the evening before, escalated, "stuck" at 5:00, then nothing all morning while Kavita chased by hand).

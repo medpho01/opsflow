@@ -64,7 +64,12 @@ export async function enqueueOutbox(input: EnqueueInput): Promise<{ id: string; 
     return { id: row.id, queued: true };
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
-      const existing = await prisma.agentOutboxItem.findUnique({ where: { idemKey: input.idemKey }, select: { id: true } });
+      const existing = await prisma.agentOutboxItem.findUnique({ where: { idemKey: input.idemKey }, select: { id: true, status: true } });
+      // Withdrawn before it went out and asked for again (guard.ts): queued again, with today's window.
+      if (existing?.status === "WITHDRAWN") {
+        await prisma.agentOutboxItem.update({ where: { id: existing.id }, data: { status: "QUEUED", windowFrom: input.windowFrom, windowTo: input.windowTo, urgent: input.urgent, actionId: input.actionId, payload: { line: { ...input.line, appointment: input.line.appointment?.toISOString() ?? null }, text: input.text ?? null, immediate: input.immediate === true, ...(input.extra ?? {}) } as Prisma.InputJsonValue } });
+        return { id: existing.id, queued: true };
+      }
       return { id: existing?.id ?? "", queued: false };
     }
     throw error;

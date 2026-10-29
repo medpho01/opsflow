@@ -902,6 +902,11 @@ export function step(input: StepInput): StepOutput {
     const postVisitStatus = preVisit && minutesToSlot != null && minutesToSlot < 0 && ["phlebo_assigned", "phlebo_reached", "patient_visited", "confirmed", "visit_confirmed"].includes(next.name) && (ask?.intent === "ETA" || ask?.intent === "PHLEBO" || ask?.intent === "UNCONFIRMED");
     if (apiLadderCapped && slot) wakeAt.push(slot.getTime() + 121 * MIN);
     const askedSinceVisit = a.n >= Math.max(1, ladder.indexOf("reminder") + 1);
+    // The whole ladder ran before the visit — asked the evening before, reminded, escalated, "stuck"
+    // by 5 am — so after the visit nothing asked "collected?" until the next day (29 Oct 2026, #91771:
+    // Advaith's 7 am visit, ladder done at 5:00). Half an hour after the visit the lab is asked once.
+    const exhaustedBeforeVisit = preVisit && !!a.at && slot != null && Date.parse(a.at) < slot.getTime() && minutesToSlot != null && minutesToSlot <= -30;
+    if (preVisit && a.at && slot && Date.parse(a.at) < slot.getTime() && minutesToSlot != null && minutesToSlot > -30) wakeAt.push(slot.getTime() + 31 * MIN);
     if (visitLongPast && from === "LAB" && a.n < 99 && askedSinceVisit) {
       rungLabel = "task";
       actions.push({ desk: "LAB", action: "create_task", params: {
@@ -912,7 +917,7 @@ export function step(input: StepInput): StepOutput {
       }, reason: `${LABELS[next.name]} still open ${Math.round(-minutesToSlot / 60)} h after the visit; the console shows ${order.orderStatus}; ${a.n} ask(s) unanswered`, idemKey: `visit-passed:${order.id}:${next.name}` });
       attempts[next.name] = { ...a, n: 99, at: now.toISOString() };
       journey = { ...journey, attempts };
-    } else if (sop && from === "LAB" && ask && !reportPaused && (a.n >= 99 || a.n >= ladder.length) && (!a.at || now.getTime() - Date.parse(a.at) >= sop.reaskEveryMin * MIN) && !consoleIsLive(order, input.labTier, now, sop.consoleQuietMin)) {
+    } else if (sop && from === "LAB" && ask && !reportPaused && (a.n >= 99 || a.n >= ladder.length) && (!a.at || now.getTime() - Date.parse(a.at) >= sop.reaskEveryMin * MIN || exhaustedBeforeVisit) && !consoleIsLive(order, input.labTier, now, sop.consoleQuietMin)) {
       // The ladder ran out, or the visit is long past with a person told: the lab is still asked,
       // once a day, in the routine combined list, until the console moves (27 Oct 2026). Always a
       // STATUS ask — "what happened with this visit?" — whatever checkpoint is open.

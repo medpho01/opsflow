@@ -165,10 +165,19 @@ export async function guard(action: ProposedAction, ctx: GuardContext, state: Gu
     });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
-      const existing = await prisma.agentAction.findUnique({ where: { idemKey: action.idemKey }, select: { id: true } });
-      return { actionId: existing?.id ?? "", outcome: "BLOCKED", level, blockedBy: "already done (idempotency key)" };
+      const existing = await prisma.agentAction.findUnique({ where: { idemKey: action.idemKey }, select: { id: true, blockedBy: true } });
+      // An ask withdrawn before it went out (a reschedule, a re-route) and proposed again is asked:
+      // otherwise the ladder counts it as made and waits a day (29 Oct 2026, #92602: the report
+      // chase withdrawn at 9:39 as "re-routed" was never sent, and never re-asked).
+      if (existing && outcome === "EXECUTED" && existing.blockedBy?.startsWith("withdrawn:")) {
+        await prisma.agentAction.update({ where: { id: existing.id }, data: { outcome: "PENDING", blockedBy: null, reason: action.reason, params: action.params as Prisma.InputJsonValue } });
+        row = { id: existing.id };
+      } else {
+        return { actionId: existing?.id ?? "", outcome: "BLOCKED", level, blockedBy: "already done (idempotency key)" };
+      }
+    } else {
+      throw error;
     }
-    throw error;
   }
 
   if (outcome === "REVIEW") {

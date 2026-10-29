@@ -646,4 +646,17 @@ describe("a manual lab is asked again every day until the console moves (27 Oct 
     const r2 = wake(tomorrow, at("2026-10-29T07:00:00Z"), prev);
     assert.ok(!r2.actions.some((a) => a.action === "ask"), r2.actions.map((a) => `${a.action}:${a.params.intent}`).join(","));
   });
+
+  it("a ladder that ran out before the visit still asks 'collected?' once, half an hour after it (29 Oct 2026, #91771)", () => {
+    const o = order({ orderStatus: "RESCHEDULED", appointmentTime: at("2026-10-29T01:30:00Z"), statusUpdatedAt: at("2026-10-28T07:49:00Z") });
+    const r0 = wake(o, at("2026-10-28T20:00:00Z"));
+    const prev = { ...r0, journey: { ...r0.journey, attempts: { phlebo_assigned: { n: 5, at: "2026-10-28T23:30:00Z" } } } };
+    const before = wake(o, at("2026-10-29T01:50:00Z"), prev);
+    assert.ok(!before.actions.some((a) => a.action === "ask"), "not before the half hour");
+    const r = wake(o, at("2026-10-29T02:05:00Z"), prev);
+    const ask = r.actions.find((a) => a.action === "ask");
+    assert.equal(ask?.params.intent, "STATUS");
+    const again = wake(o, at("2026-10-29T02:20:00Z"), r);
+    assert.ok(!again.actions.some((a) => a.action === "ask"), "once");
+  });
 });

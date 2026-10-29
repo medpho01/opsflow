@@ -35,7 +35,7 @@ const last10 = (s: string | null | undefined) => (s || "").replace(/\D/g, "").sl
 
 export const COACH_PREFIX_RE = /^\s*@?(bot|agent|coach)\s*[:,\-–—]\s*/i;
 export const COMMAND_RE = /^\s*(pause|stop|resume|start|unpause)\s+(all|everything|store|lab)\s*(.*?)\s*$/i;
-export const RENAME_RE = /^\s*(?:your name is|call yourself|you are called|name\s*[:=])\s*([A-Za-z][A-Za-z .'-]{0,23})\s*[.!]?\s*$/i;
+export const RENAME_RE = /^\s*(?:hey[,!]?\s*)?(?:your (?:name|number) is|call yourself|you are called|we(?:'ll| will) call you|name\s*[:=])\s*([A-Za-z][A-Za-z .'-]{0,23})\s*[.!]?\s*$/i;
 
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
@@ -147,6 +147,11 @@ export async function runCoachReader(now = new Date()): Promise<CoachReaderResul
       if (ours && /^undo\b/i.test(words) && /📝 Noted/.test(ours.text)) {
         const dropped = await undoByNoted(ours.text);
         await reply(g, m, dropped ? "↩️ Dropped." : "That lesson was already gone.");
+        continue;
+      }
+      // A question in the direct chat is answered from the agent's own record, not stored as a lesson.
+      if (isDirect(g) && isQuestion(words)) {
+        await reply(g, m, (await answerQuestion(words, agentName)) + signed());
         continue;
       }
       const command = parseCommand(text, agentName);
@@ -264,3 +269,52 @@ export async function undoByNoted(notedText: string): Promise<boolean> {
   await prisma.agentCoaching.update({ where: { id: row.id }, data: { status: "RETIRED", retiredAt: new Date() } });
   return true;
 }
+
+// ── Questions: "why did you reply on 95226?" ────────────────────────────────
+
+const QUESTION_RE = /\?\s*$|^\s*(why|what|how|when|did|do|does|is|are|was|were|has|have|which|who|explain|tell me|show me|status of)\b/i;
+export function isQuestion(text: string): boolean {
+  return QUESTION_RE.test(text.trim()) && !COMMAND_RE.test(text) && !RENAME_RE.test(text);
+}
+
+/** The agent's own account of an order, or of what it can answer. Facts from its record; nothing invented. */
+export async function answerQuestion(words: string, agentName: string | null): Promise<string> {
+  const ids = [...new Set((words.match(/(?<![\d@+])\d{5,6}(?!\d)/g) ?? []).map(Number))].slice(0, 3);
+  if (!ids.length) return `Ask me about an order by its id — "why did you reply on 95226?", "what happened with 94284?" — and I'll show my record for it. Anything else you write here I take as an instruction.`;
+  const parts: string[] = [];
+  for (const id of ids) parts.push(await explainOrder(id));
+  return parts.join("\n\n") + (agentName ? "" : "");
+}
+
+export async function explainOrder(orderId: number, now = new Date()): Promise<string> {
+  const { fetchOrderSnapshot } = await import("../journey/window");
+  const { LABELS } = await import("../journey/step");
+  const tz = process.env.TIMEZONE || "Asia/Kolkata";
+  const t = (d: Date | null | undefined) => (d ? d.toLocaleString("en-IN", { timeZone: tz, day: "numeric", month: "short", hour: "numeric", minute: "2-digit" }) : "—");
+  const o = await fetchOrderSnapshot(orderId).catch(() => null);
+  if (!o) return `#${orderId}: not in LabStack as far as I can see.`;
+  const journey = await prisma.agentJourney.findUnique({ where: { orderId }, select: { id: true, stage: true, closedAt: true, closeReason: true, checkpoints: { select: { name: true, status: true, dueAt: true, metAt: true }, orderBy: { dueAt: "asc" } } } }).catch(() => null);
+  const since = new Date(now.getTime() - 48 * 3_600_000);
+  const actions = await prisma.agentAction.findMany({ where: { orderId, createdAt: { gte: since }, action: { notIn: ["wait", "portal_read"] } }, orderBy: { createdAt: "asc" }, take: 25, select: { createdAt: true, desk: true, action: true, params: true, reason: true, outcome: true, blockedBy: true } }).catch(() => []);
+  const sent = await prisma.agentOutboxItem.findMany({ where: { orderId, createdAt: { gte: since } }, orderBy: { createdAt: "asc" }, take: 25, select: { createdAt: true, counterparty: true, ask: true, status: true, sentAt: true, payload: true } }).catch(() => []);
+  const threads = await prisma.agentThread.findMany({ where: { orderId, status: "OPEN" }, select: { kind: true, waitingOn: true, openedAt: true, reminders: true } }).catch(() => []);
+  const lines = [`*#${orderId}* · ${o.labName ?? "lab ?"} · visit ${t(o.appointmentTime)} · LabStack: ${o.orderStatus.toLowerCase().replace(/_/g, " ")} (${t(o.statusUpdatedAt)})`];
+  if (journey) {
+    const cp = journey.checkpoints.map((c) => `${LABELS[c.name as keyof typeof LABELS] ?? c.name} ${c.status === "MET" ? `✓ ${t(c.metAt)}` : c.status === "BREACHED" ? `⚠ due ${t(c.dueAt)}` : c.status === "WAIVED" ? "–" : `due ${t(c.dueAt)}`}`);
+    lines.push(`Milestones: ${cp.join(" · ")}${journey.closedAt ? ` · closed (${journey.closeReason})` : ""}`);
+  } else lines.push("No journey: I am not tracking this order (its lab desk may be off).");
+  if (actions.length) {
+    lines.push("What I did (last 48 h):");
+    for (const a of actions) {
+      const p = a.params as { text?: string; template?: string; checkpoint?: string; intent?: string; taskType?: string; note?: string };
+      const what = a.action === "store_reply" || a.action === "ack" || a.action === "store_alert" ? `${a.action}${p.template ? ` ${p.template}` : ""}${p.text ? `: "${String(p.text).replace(/\s+/g, " ").slice(0, 90)}"` : ""}` : a.action === "ask" ? `ask ${a.desk} about ${p.checkpoint ?? "?"}` : a.action === "store_handoff" ? `handoff to a person${p.note ? ` ("${p.note.slice(0, 70)}")` : ""}` : a.action === "create_task" ? `task ${p.taskType ?? ""}` : a.action;
+      const result = a.outcome === "EXECUTED" ? "sent" : a.outcome === "BLOCKED" ? `NOT done — ${a.blockedBy ?? "blocked"}` : a.outcome === "RECORDED" ? `recorded only${a.blockedBy ? ` — ${a.blockedBy}` : ""}` : a.outcome === "REVIEW" ? "waiting for a person's OK" : a.outcome.toLowerCase();
+      lines.push(`• ${t(a.createdAt)} ${what} → ${result}\n   why: ${a.reason.slice(0, 120)}`);
+    }
+  } else lines.push("I took no action on it in the last 48 h.");
+  const undelivered = sent.filter((s) => s.status !== "SENT");
+  if (undelivered.length) lines.push(`Queued but not delivered: ${undelivered.map((s) => `${s.ask} to ${s.counterparty} (${s.status.toLowerCase()})`).join(", ")}`);
+  if (threads.length) lines.push(`Open with the store: ${threads.map((x) => `${x.kind} since ${t(x.openedAt)}, waiting on ${x.waitingOn.toLowerCase()}${x.reminders ? `, reminded ${x.reminders}×` : ""}`).join("; ")}`);
+  return lines.join("\n");
+}
+

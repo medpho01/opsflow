@@ -124,6 +124,9 @@ describe("coaching from WhatsApp (28 Oct 2026)", () => {
     assert.ok(coachPrefixRe("Asha").test("Asha: pause store plum")); assert.ok(coachPrefixRe("Asha").test("hey Asha, too long")); assert.ok(coachPrefixRe("Asha").test("@Asha shorter"));
     assert.ok(!coachPrefixRe("Asha").test("Ashamed of this one")); assert.ok(!coachPrefixRe(null).test("Asha: pause"));
     assert.deepEqual(parseCommand("bot: your name is Asha"), { verb: "rename", target: "self", name: "Asha" });
+    assert.deepEqual(parseCommand("Hey! Your number is Asha"), { verb: "rename", target: "self", name: "Asha" });
+    const { isQuestion } = await import("../brain/coach");
+    assert.ok(isQuestion("why did you reply on 95226?")); assert.ok(isQuestion("what happened with 94284")); assert.ok(!isQuestion("never say chasing to Plum")); assert.ok(!isQuestion("pause store plum"));
     assert.deepEqual(parseCommand("Asha: pause store plum", "Asha"), { verb: "pause", target: "store", name: "plum" });
   });
   it("a lesson without a model is the coach's own words, applied everywhere; wording feedback retires the trial", async () => {

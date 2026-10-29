@@ -75,6 +75,14 @@ async function modelProposals(live: SopBody): Promise<Proposal[]> {
   const counted = new Map<string, number>();
   for (const w of lessons?.wrong ?? []) if (w.kind === "timing" || w.kind === "rule") counted.set(w.what.slice(0, 80), (counted.get(w.what.slice(0, 80)) ?? 0) + 1);
   for (const [cause, count] of counted) causes.push({ cause: `lesson: ${cause}`, count });
+  // What the outcome auditor proposed this week, by how often it came up (29 Oct 2026).
+  const audits = await prisma.agentBrainRun.findMany({ where: { kind: { in: ["outcomes", "outcomes_day"] }, startedAt: { gte: new Date(Date.now() - 7 * 86_400_000) }, finishedAt: { not: null } }, select: { findings: true } }).catch(() => []);
+  const proposed = new Map<string, number>();
+  for (const a of audits) for (const p of ((a.findings as { proposals?: Array<{ title?: string; action?: string; kind?: string }> } | null)?.proposals ?? [])) {
+    const key = `audit ${p.kind ?? ""}: ${String(p.title ?? "").slice(0, 60)} — ${String(p.action ?? "").slice(0, 80)}`;
+    proposed.set(key, (proposed.get(key) ?? 0) + 1);
+  }
+  for (const [cause, count] of proposed) causes.push({ cause, count: count * 2 });
   // What the head of ops coached this week counts three times over: it is the ground truth.
   const coached = await prisma.agentCoaching.findMany({ where: { status: "ACTIVE", createdAt: { gte: new Date(Date.now() - 7 * 86_400_000) } }, select: { lesson: true, text: true, scope: true } }).catch(() => []);
   for (const c of coached) causes.push({ cause: `coaching (${c.scope}): ${String((c.lesson as { rule?: string } | null)?.rule ?? c.text).slice(0, 100)}`, count: 3 });

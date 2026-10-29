@@ -296,6 +296,10 @@ export function isQuestion(text: string): boolean {
 /** The agent's own account of an order, or of what it can answer. Facts from its record; nothing invented. */
 export async function answerQuestion(words: string, agentName: string | null): Promise<string> {
   const ids = [...new Set((words.match(/(?<![\d@+])\d{5,6}(?!\d)/g) ?? []).map(Number))].slice(0, 3);
+  if (!ids.length && /\b(find|found|audit|outcome|gaps?|missed|today|how (did|is) (it|the agent|you)|what went wrong)\b/i.test(words)) {
+    const { latestAuditText } = await import("./outcomes-audit");
+    return latestAuditText();
+  }
   if (!ids.length) return `Ask me about an order by its id — "why did you reply on 95226?", "what happened with 94284?" — and I'll show my record for it. Anything else you write here I take as an instruction.`;
   const parts: string[] = [];
   for (const id of ids) parts.push(await explainOrder(id));

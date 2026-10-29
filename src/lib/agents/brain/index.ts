@@ -14,8 +14,9 @@ import { runNightly } from "./nightly";
 import { runReview } from "./review";
 import { runLearn } from "./learn";
 import { runStyle } from "./style";
+import { runOutcomeAudit } from "./outcomes-audit";
 
-export type BrainKind = "monitor" | "nightly" | "review" | "learn" | "style";
+export type BrainKind = "monitor" | "nightly" | "review" | "learn" | "style" | "outcomes" | "outcomes_day";
 
 export async function runBrain(kind: BrainKind): Promise<Record<string, number>> {
   switch (kind) {
@@ -24,5 +25,8 @@ export async function runBrain(kind: BrainKind): Promise<Record<string, number>>
     case "review": return runReview();
     case "learn": return runLearn();
     case "style": return runStyle();
+    // The outcome auditor (brain/outcomes-audit.ts): hourly on the last 75 minutes, nightly on the day.
+    case "outcomes": return runOutcomeAudit(new Date(), { hours: 1.25, kind: "outcomes" });
+    case "outcomes_day": return runOutcomeAudit(new Date(), { hours: 15, kind: "outcomes_day" });
   }
 }

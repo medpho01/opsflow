@@ -144,6 +144,7 @@ export async function runNightly(now = new Date()): Promise<Record<string, numbe
       ...(efficiency ? renderEfficiency(efficiency) : []),
       ...(styleLine ? [styleLine] : []),
       ...(coachLine ? [coachLine] : []),
+      ...(await import("./outcomes-audit").then((m) => m.latestAuditText()).catch(() => null).then((t) => (t && !t.startsWith("No outcome audit") ? [t] : []))),
       ...(lessons && lessons.runs ? [`Learned today (${lessons.runs} passes): ${lessons.wrong.length} things to fix, ${lessons.unanswered} questions nobody answered${lessons.wrong.length ? ` · top: ${lessons.wrong.slice(0, 3).map((w) => `${w.kind}${w.order ? ` #${w.order}` : ""}: ${w.what.slice(0, 70)}`).join(" | ")}` : ""}`] : []),
     ].join("\n");
     const audit = await auditSample(now).catch((e) => ({ sampled: 0, disagreements: 0, cases: 0, error: e instanceof Error ? e.message : String(e) }));

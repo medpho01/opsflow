@@ -877,6 +877,8 @@ export function step(input: StepInput): StepOutput {
     // and only then is a person told (28 Oct 2026: "Collection stuck" tasks reached the ops group
     // at two hours with the lab never asked; such things are chased with the lab).
     const apiLadderCapped = input.labTier != null && input.labTier !== "C" && preVisit && minutesToSlot != null && minutesToSlot >= -120 && a.n > Math.max(0, ladder.indexOf("reminder"));
+    // Report chases at API labs are paused unless the SOP turns them on; a store's question still goes (5b).
+    const reportPaused = next.name === "report_delivered" && input.labTier != null && input.labTier !== "C" && !(sop?.reportChase?.apiLabs ?? false);
     const postVisitStatus = preVisit && minutesToSlot != null && minutesToSlot < 0 && ["phlebo_assigned", "phlebo_reached", "patient_visited", "confirmed", "visit_confirmed"].includes(next.name) && (ask?.intent === "ETA" || ask?.intent === "PHLEBO" || ask?.intent === "UNCONFIRMED");
     if (apiLadderCapped && slot) wakeAt.push(slot.getTime() + 121 * MIN);
     const askedSinceVisit = a.n >= Math.max(1, ladder.indexOf("reminder") + 1);
@@ -890,7 +892,7 @@ export function step(input: StepInput): StepOutput {
       }, reason: `${LABELS[next.name]} still open ${Math.round(-minutesToSlot / 60)} h after the visit; the console shows ${order.orderStatus}; ${a.n} ask(s) unanswered`, idemKey: `visit-passed:${order.id}:${next.name}` });
       attempts[next.name] = { ...a, n: 99, at: now.toISOString() };
       journey = { ...journey, attempts };
-    } else if (sop && from === "LAB" && ask && (a.n >= 99 || a.n >= ladder.length) && (!a.at || now.getTime() - Date.parse(a.at) >= sop.reaskEveryMin * MIN) && !consoleIsLive(order, input.labTier, now, sop.consoleQuietMin)) {
+    } else if (sop && from === "LAB" && ask && !reportPaused && (a.n >= 99 || a.n >= ladder.length) && (!a.at || now.getTime() - Date.parse(a.at) >= sop.reaskEveryMin * MIN) && !consoleIsLive(order, input.labTier, now, sop.consoleQuietMin)) {
       // The ladder ran out, or the visit is long past with a person told: the lab is still asked,
       // once a day, in the routine combined list, until the console moves (27 Oct 2026). Always a
       // STATUS ask — "what happened with this visit?" — whatever checkpoint is open.
@@ -903,7 +905,7 @@ export function step(input: StepInput): StepOutput {
       }, reason: `${LABELS[next.name]} still open after every ask; asked again (every ${Math.round(sop.reaskEveryMin / 60)} h until the console moves)`, idemKey: `reask:${order.id}:${next.name}:${startOfLocalDay(now, tz)}` });
       attempts[next.name] = { ...a, at: now.toISOString() };
       journey = { ...journey, attempts };
-    } else if (from === "LAB" && ask && started && gapOk && !holding && !apiPhleboTooLate && !consoleAnswers && !apiLadderCapped) {
+    } else if (from === "LAB" && ask && started && gapOk && !holding && !reportPaused && !apiPhleboTooLate && !consoleAnswers && !apiLadderCapped) {
       let rungIndex = a.n;
       if (brokenPromises >= sop.brokenPromisesSkip && rungIndex > 0 && rungIndex < ladder.length - 1) rungIndex += 1;
       const rung = ladder[Math.min(rungIndex, ladder.length - 1)];

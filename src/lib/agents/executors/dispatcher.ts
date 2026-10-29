@@ -107,7 +107,8 @@ export async function flushOutbox(now = new Date(), opts: { urgentOnly?: boolean
   await prisma.agentOutboxItem.updateMany({ where: { status: "SENDING", OR: [{ claimedAt: null }, { claimedAt: { lt: new Date(now.getTime() - 5 * 60_000) } }] }, data: { status: "QUEUED", claimedAt: null } }).catch(() => undefined);
   // Every flush looks at everything queued: a routine ask goes as soon as it has gathered, not at
   // the next :00/:30 (29 Oct 2026). The SOP says how long to gather and how much a lab may hear.
-  const batching = paramsFor((await loadLiveSops().catch(() => new Map())).get("LAB") ?? null, { labTier: null, labId: null, storeId: null, orderType: "HOME_SAMPLE" })?.batching ?? { gatherMin: 15, perHourCap: 3, perDayCap: 10, minGapMin: 20, reportMaxAgeDays: 5 };
+  const labParams = paramsFor((await loadLiveSops().catch(() => new Map())).get("LAB") ?? null, { labTier: null, labId: null, storeId: null, orderType: "HOME_SAMPLE" });
+  const batching = { ...(labParams?.batching ?? { gatherMin: 15, perHourCap: 3, perDayCap: 10, minGapMin: 20, reportMaxAgeDays: 5 }), apiReportChase: labParams?.reportChase?.apiLabs ?? false };
   const items = await prisma.agentOutboxItem.findMany({
     where: { status: "QUEUED" },
     select: { id: true, counterparty: true, ask: true, orderId: true, journeyId: true, actionId: true, windowFrom: true, windowTo: true, urgent: true, payload: true, idemKey: true, createdAt: true },
@@ -243,7 +244,7 @@ export function partitionQueued<T extends { orderId: number; payload: unknown }>
   return { fresh, stale };
 }
 
-type Batching = { gatherMin: number; perHourCap: number; perDayCap: number; minGapMin?: number; reportMaxAgeDays?: number };
+type Batching = { gatherMin: number; perHourCap: number; perDayCap: number; minGapMin?: number; reportMaxAgeDays?: number; apiReportChase?: boolean };
 async function flushGroup(key: string, queued: Item[], now: Date, batching: Batching = { gatherMin: 15, perHourCap: 3, perDayCap: 10, minGapMin: 20, reportMaxAgeDays: 5 }): Promise<{ messages: number; items: number; held: number }> {
   let group = queued;
   const [counterparty, ask] = key.split("|");
@@ -259,7 +260,12 @@ async function flushGroup(key: string, queued: Item[], now: Date, batching: Batc
   // on time?" for a visit a week ago, "please confirm" for a past visit, report
   // chases 14 days old): a pre-visit ask after the visit, a report chase older
   // than a month, and a second rung for an order already in this message.
-  const { fresh, stale } = partitionQueued(group, ask, now, kind === "LAB" ? tierOf(await loadDirectory(), id) : null, batching.reportMaxAgeDays ?? 5);
+  const tier = kind === "LAB" ? tierOf(await loadDirectory(), id) : null;
+  const partitioned = partitionQueued(group, ask, now, tier, batching.reportMaxAgeDays ?? 5);
+  // Report chases to API labs are paused (SOP reportChase.apiLabs): only one a store asked for goes.
+  const pausedReports = ask === "REPORT" && tier != null && tier !== "C" && !batching.apiReportChase ? partitioned.fresh.filter((i) => (i.payload as { immediate?: boolean }).immediate !== true) : [];
+  const fresh = partitioned.fresh.filter((i) => !pausedReports.includes(i));
+  const stale = [...partitioned.stale, ...pausedReports];
   if (stale.length) {
     await prisma.agentOutboxItem.updateMany({ where: { id: { in: stale.map((i) => i.id) } }, data: { status: "DROPPED" } });
     console.log(`[Agents] ${counterparty} ${ask}: dropped ${stale.length} stale or duplicate item(s)`);

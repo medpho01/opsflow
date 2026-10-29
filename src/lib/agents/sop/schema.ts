@@ -128,6 +128,13 @@ export const sopParamsSchema = z.object({
    * for is never relayed back either way.
    */
   storeRelay: z.object({ consoleChanges: z.enum(["digest", "immediate"]).default("digest") }).prefault({}),
+  /**
+   * Chasing reports on the agent's own initiative (29 Oct 2026). Manual labs are always chased — a
+   * person asking is their only status. API labs (Orange, Thyrocare, Redcliffe) are paused: their
+   * report lists drew no replies and buried same-day threads; a store asking about a report is still
+   * relayed to the lab at once.
+   */
+  reportChase: z.object({ apiLabs: z.boolean().default(false) }).prefault({}),
   /** What every lab is told unasked. The evening list: tomorrow's orders with address, tests and confirm link. */
   briefings: z.object({
     /** As soon as an order is placed: the details and the confirmation link (orders gather for a few minutes). */

@@ -53,6 +53,7 @@ export const LAB_SOP_V1: SopBody = parseSop({
     warnStoreBeforeMin: 120,
     consoleQuietMin: 90, reportRungGapMin: 1440, urgentAfterVisitMin: 240, reaskEveryMin: 1440,
     briefings: { newOrder: { enabled: true }, eveningList: { enabled: true, at: "19:00" } },
+    batching: { gatherMin: 15, perHourCap: 3, perDayCap: 10 },
   },
   overrides: [
     // Report TAT by order type: a centre visit 36 h, a kit or camp 48 h.
@@ -81,6 +82,9 @@ export const LAB_SOP_V1: SopBody = parseSop({
     "params.reportRungGapMin": { min: 240, max: 2880 },
     "params.urgentAfterVisitMin": { min: 60, max: 480 },
     "params.reaskEveryMin": { min: 240, max: 2880 },
+    "params.batching.gatherMin": { min: 5, max: 45 },
+    "params.batching.perHourCap": { min: 1, max: 6 },
+    "params.batching.perDayCap": { min: 4, max: 20 },
     "params.asks.phlebo_assigned.dueOffsetMin": { min: -180, max: -30 },
     "params.asks.sample_collected.dueOffsetMin": { min: 15, max: 120 },
     "params.asks.report_delivered.dueOffsetMin": { min: 720, max: 4320 },
@@ -99,6 +103,7 @@ export const LAB_SOP_V1: SopBody = parseSop({
     storeExceptionPhrases: "27 Oct 2026: '94669 - phlebo no show' (Plum) — the lab is asked at once, whatever the console shows",
     urgentAfterVisitMin: "27 Oct 2026: Redcliffe's phlebo started 7:09 for an 8:00 visit and went quiet; 'on time?' waited for the 10:30 slot",
     reaskEveryMin: "27 Oct 2026: after one task the agent never asked Advaith again; a manual lab's reply is the only source, so ask daily until the console moves",
+    batching: "29 Oct 2026: status asks waited for 11:00, 13:30, 16:00 and 18:30 slots — a hangover from hand-sent batches; the agent notices a late order the minute it is late, gathers 15 min so a morning's lateness is one message, and is capped per hour and per day instead",
     briefings: "27 Oct 2026: the new-order message and the evening list are SOP policy, not per-lab rules — the list stopped for Advaith and Star when their desks went LIVE",
   },
 });

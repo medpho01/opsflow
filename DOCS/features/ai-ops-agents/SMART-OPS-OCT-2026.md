@@ -150,3 +150,7 @@ Limits, stated plainly: lessons steer the model-driven parts at once; a rule tha
 
 **Coaching by direct message.** A coach can also write to the ops number directly. The gateway keeps only coaches' 1:1 chats (as a `wa_groups` row of role IGNORE named "Coaching · <name>"; every other direct message is still dropped). There, every message is coaching — no prefix — and the agent answers in the same chat. A lesson that names a store or lab ("…to Plum…") is scoped to it; otherwise it applies everywhere. The internal group is not needed for this.
 
+## Real-time chasing, no slots (29 Oct 2026)
+
+Status, phlebo, ETA and report asks used to wait for fixed slots (status at 11:00, 13:30, 16:00, 18:30; reports at 10:30 and 16:30) — the rhythm of the hand-sent batches the agent replaced. The journey engine notices a late milestone within minutes of it being late; holding the ask for a slot threw that away. Now a routine ask goes as soon as it has gathered for `batching.gatherMin` (15 min, so a morning's lateness at one lab is one combined message), and a lab hears at most `batching.perHourCap` (3) messages an hour and `batching.perDayCap` (10) a day; urgent asks (a store waiting, a visit long past) still go at once. All three are SOP parameters with bounds the Brain may tune. The night hold (21:00–07:00) stands. `DAILY_SLOTS` remain only for the legacy message rules, the evening list and the weekly scorecard.
+

@@ -21,7 +21,8 @@ import { coordinatorsFor } from "@/lib/wa/coordinators";
 import { opsGroup } from "../ops/group";
 import { fetchOrderSnapshots } from "../journey/window";
 import { reached, type OrderSnapshot } from "../journey/policy";
-import { atLocal, currentSlot, isSlotOpen, itemLine, localParts } from "@/lib/provider-rules/batching";
+import { atLocal, currentSlot, itemLine, localParts } from "@/lib/provider-rules/batching";
+import { loadLiveSops, paramsFor } from "../sop/load";
 import { formatTime, TIME_ZONE } from "@/lib/provider-rules/format";
 import { confirmationUrl } from "@/lib/non-api-labs/confirmation-link";
 import { fetchOrderContactDetails } from "@/lib/non-api-labs/order-details";
@@ -29,6 +30,7 @@ import { labstackWorkerQuery } from "@/lib/db/labstack";
 import { actionPageUrl } from "./actionPage";
 import { loadDirectory, tierOf } from "../directory";
 
+/** Scorecard caps only; asks use the SOP's batching params (gatherMin, perHourCap, perDayCap). */
 export const PER_SLOT_CAP = Number(process.env.AGENT_BATCH_PER_SLOT_CAP ?? 3);
 export const PER_DAY_CAP = Number(process.env.AGENT_BATCH_PER_DAY_CAP ?? 8);
 
@@ -103,8 +105,11 @@ export async function flushOutbox(now = new Date(), opts: { urgentOnly?: boolean
   const result: FlushResult = { messages: 0, items: 0, held: 0, dropped: 0, errors: 0 };
   // A claim left by a worker that stopped mid-send (a deploy restarts it) goes back to the queue.
   await prisma.agentOutboxItem.updateMany({ where: { status: "SENDING", OR: [{ claimedAt: null }, { claimedAt: { lt: new Date(now.getTime() - 5 * 60_000) } }] }, data: { status: "QUEUED", claimedAt: null } }).catch(() => undefined);
+  // Every flush looks at everything queued: a routine ask goes as soon as it has gathered, not at
+  // the next :00/:30 (29 Oct 2026). The SOP says how long to gather and how much a lab may hear.
+  const batching = paramsFor((await loadLiveSops().catch(() => new Map())).get("LAB") ?? null, { labTier: null, labId: null, storeId: null, orderType: "HOME_SAMPLE" })?.batching ?? { gatherMin: 15, perHourCap: 3, perDayCap: 10 };
   const items = await prisma.agentOutboxItem.findMany({
-    where: { status: "QUEUED", ...(opts.urgentOnly ? { urgent: true } : {}) },
+    where: { status: "QUEUED" },
     select: { id: true, counterparty: true, ask: true, orderId: true, journeyId: true, actionId: true, windowFrom: true, windowTo: true, urgent: true, payload: true, idemKey: true, createdAt: true },
     orderBy: { createdAt: "asc" },
   });
@@ -123,7 +128,8 @@ export async function flushOutbox(now = new Date(), opts: { urgentOnly?: boolean
   if (hour < 7 || hour >= 21) { result.held += open.length; return result; }
   const ready = open.filter((i) => {
     if (i.windowFrom.getTime() > now.getTime()) return false;
-    if (i.counterparty.startsWith("LAB:") && !i.urgent && !isSlotOpen(i.ask, now, tz)) return false; // routine asks keep the slot rhythm
+    // A routine lab ask gathers for a while so a burst of lateness is one combined message, then goes.
+    if (i.counterparty.startsWith("LAB:") && !i.urgent && now.getTime() - i.windowFrom.getTime() < batching.gatherMin * 60_000) return false;
     // A store's reply, or a chase a store triggered, goes now. Other urgent asks gather for ten
     // minutes, so a morning's asks go as one message, not one each.
     const immediate = i.counterparty.startsWith("STORE:") || (i.payload as { immediate?: boolean }).immediate === true;
@@ -147,7 +153,7 @@ export async function flushOutbox(now = new Date(), opts: { urgentOnly?: boolean
       select: { id: true, counterparty: true, ask: true, orderId: true, journeyId: true, actionId: true, windowFrom: true, windowTo: true, urgent: true, payload: true, idemKey: true, createdAt: true },
     });
     try {
-      const sent = await flushGroup(key, group, now);
+      const sent = await flushGroup(key, group, now, batching);
       await prisma.agentOutboxItem.updateMany({ where: { id: { in: group.map((i) => i.id) }, status: "SENDING" }, data: { status: "QUEUED" } }); // whatever was held stays queued
       result.messages += sent.messages; result.items += sent.items; result.held += sent.held;
     } catch (error) {
@@ -225,7 +231,7 @@ export function partitionQueued<T extends { orderId: number; payload: unknown }>
   return { fresh, stale };
 }
 
-async function flushGroup(key: string, queued: Item[], now: Date): Promise<{ messages: number; items: number; held: number }> {
+async function flushGroup(key: string, queued: Item[], now: Date, batching: { gatherMin: number; perHourCap: number; perDayCap: number } = { gatherMin: 15, perHourCap: 3, perDayCap: 10 }): Promise<{ messages: number; items: number; held: number }> {
   let group = queued;
   const [counterparty, ask] = key.split("|");
   const [kind, idText] = counterparty.split(":");
@@ -280,11 +286,10 @@ async function flushGroup(key: string, queued: Item[], now: Date): Promise<{ mes
   const toOps = false;
   const target = toManager ? { targetJid: toDirectJid(config.managerWhatsapp!), groupId: null } : await resolveLabTarget(config, null);
 
-  // Caps: per day per lab (urgent exempt) and per slot (urgent alone).
+  // Caps (SOP batching): per day per lab and per rolling hour, urgent exempt.
   const dayStart = new Date(now); dayStart.setUTCHours(0, 0, 0, 0);
   const sentToday = await prisma.providerBatch.count({ where: { labId: id, shadow: false, createdAt: { gte: new Date(dayStart.getTime() - 5.5 * 3_600_000) } } });
-  // Per-slot cap, the same rhythm as the message rules: at most PER_SLOT_CAP combined messages per lab per :00/:30 (urgent exempt).
-  const sentThisSlot = await prisma.providerBatch.count({ where: { labId: id, shadow: false, recipient: "LAB", createdAt: { gte: currentSlot(now, tz) } } });
+  const sentLastHour = await prisma.providerBatch.count({ where: { labId: id, shadow: false, recipient: "LAB", createdAt: { gte: new Date(now.getTime() - 3_600_000) } } });
   const urgent = group.filter((i) => i.urgent);
   const routine = group.filter((i) => !i.urgent);
   let messages = 0; let items = 0; let held = 0;
@@ -375,7 +380,7 @@ async function flushGroup(key: string, queued: Item[], now: Date): Promise<{ mes
   // Ten per message for urgent asks too (07:00 can release a night's worth at once); the rest next minute.
   if (urgent.length) { await sendItems(urgent.slice(0, 10), true); held += Math.max(0, urgent.length - 10); }
   if (routine.length) {
-    if (!toManager && (sentToday >= PER_DAY_CAP || sentThisSlot >= PER_SLOT_CAP)) { held += routine.length; }
+    if (!toManager && (sentToday >= batching.perDayCap || sentLastHour >= batching.perHourCap)) { held += routine.length; }
     else {
       // Short lists get answered (CHAT-REVIEW-OCT-2026): ten per message, the rest next slot.
       const take = routine.slice(0, 10);
@@ -402,8 +407,8 @@ async function flushScorecard(labId: number, group: Item[], now: Date): Promise<
   }
   const dayStart = new Date(now); dayStart.setUTCHours(0, 0, 0, 0);
   const sentToday = await prisma.providerBatch.count({ where: { labId, shadow: false, createdAt: { gte: new Date(dayStart.getTime() - 5.5 * 3_600_000) } } });
-  const sentThisSlot = await prisma.providerBatch.count({ where: { labId, shadow: false, recipient: "LAB", createdAt: { gte: currentSlot(now, tz) } } });
-  if (sentToday >= PER_DAY_CAP || sentThisSlot >= PER_SLOT_CAP) return { messages: 0, items: 0, held: group.length };
+  const sentLastHour = await prisma.providerBatch.count({ where: { labId, shadow: false, recipient: "LAB", createdAt: { gte: new Date(now.getTime() - 3_600_000) } } });
+  if (sentToday >= PER_DAY_CAP || sentLastHour >= PER_SLOT_CAP) return { messages: 0, items: 0, held: group.length };
   const [item, ...extra] = group;
   if (extra.length) await prisma.agentOutboxItem.updateMany({ where: { id: { in: extra.map((i) => i.id) } }, data: { status: "DROPPED" } });
   const raw = (item.payload as { text?: string | null }).text;

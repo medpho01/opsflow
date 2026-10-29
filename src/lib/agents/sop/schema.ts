@@ -107,6 +107,16 @@ export const sopParamsSchema = z.object({
    * moves (27 Oct 2026: Advaith's orders went silent after one task; the team asked by hand).
    */
   reaskEveryMin: z.number().int().min(60).default(1440),
+  /**
+   * How asks reach a lab (29 Oct 2026): lateness is noticed the minute it happens; the ask then
+   * gathers for `gatherMin` so a burst becomes one combined message, and a lab hears at most
+   * `perHourCap` messages an hour and `perDayCap` a day (urgent asks exempt). No fixed slots.
+   */
+  batching: z.object({
+    gatherMin: z.number().int().min(2).default(15),
+    perHourCap: z.number().int().min(1).default(3),
+    perDayCap: z.number().int().min(2).default(10),
+  }).prefault({}),
   /** What every lab is told unasked. The evening list: tomorrow's orders with address, tests and confirm link. */
   briefings: z.object({
     /** As soon as an order is placed: the details and the confirmation link (orders gather for a few minutes). */

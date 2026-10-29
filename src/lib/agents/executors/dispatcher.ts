@@ -16,7 +16,7 @@ import prisma from "@/lib/db/client";
 import { resolveLabTarget, toDirectJid } from "@/lib/non-api-labs/target";
 import { BATCH_FOLLOW_UP_FIRM_TEMPLATE, BATCH_FOLLOW_UP_TEMPLATE, BATCH_GENERIC_TEMPLATE, BATCH_TEMPLATE_BY_INTENT, ensureTemplate, renderLabTemplate } from "@/lib/non-api-labs/templates";
 import { recordSend, styledBody } from "@/lib/agents/style";
-import { STORE_ACK_RE } from "../store/scope";
+import { humanSpokeAbout, STORE_ACK_RE } from "../store/scope";
 import { coordinatorsFor } from "@/lib/wa/coordinators";
 import { opsGroup } from "../ops/group";
 import { fetchOrderSnapshots } from "../journey/window";
@@ -464,6 +464,8 @@ async function flushOps(group: Item[], now: Date) {
 }
 
 const ACK_HOLD_MS = 3 * 60_000;
+/** A substantive answer waits this long for a person who may already be typing. */
+export const ANSWER_HOLD_MS = 90_000;
 /** Replies the desk may send on one order in a day before a person is tagged instead. */
 export const STORE_REPLIES_PER_ORDER_PER_DAY = 2;
 
@@ -474,10 +476,11 @@ export const STORE_REPLIES_PER_ORDER_PER_DAY = 2;
  * ("Working on it" at 15:07, the bot's "checking with…" at 15:07). An "on it" waits three
  * minutes for that person before it goes.
  */
-export function storeReplyRedundant(input: { text: string; orderId: number; createdAt: Date; now: Date; sameTextSent: boolean; teamAnswered: boolean }): "duplicate" | "team answered" | "hold" | null {
+export function storeReplyRedundant(input: { text: string; orderId: number; createdAt: Date; now: Date; sameTextSent: boolean; teamAnswered: boolean; holdMs?: number }): "duplicate" | "team answered" | "hold" | null {
   if (input.orderId > 0 && input.sameTextSent) return "duplicate";
-  if (!STORE_ACK_RE.test(input.text)) return null;
-  if (input.now.getTime() - input.createdAt.getTime() < ACK_HOLD_MS) return "hold";
+  const hold = input.holdMs ?? (STORE_ACK_RE.test(input.text) ? ACK_HOLD_MS : 0);
+  if (!hold) return null;
+  if (input.now.getTime() - input.createdAt.getTime() < hold) return "hold";
   return input.teamAnswered ? "team answered" : null;
 }
 
@@ -492,22 +495,24 @@ async function flushStore(storeId: number, group: Item[], now: Date) {
     const quoted = (i.payload as { quotedWaId?: string | null }).quotedWaId ?? null;
     const mentions = (i.payload as { mentions?: string[] }).mentions ?? [];
     const sameTextSent = i.orderId > 0 && !!(await prisma.agentOutboxItem.findFirst({ where: { counterparty: i.counterparty, orderId: i.orderId, status: "SENT", sentAt: { gte: new Date(now.getTime() - 24 * 3_600_000) }, payload: { path: ["text"], equals: text } }, select: { id: true } }).catch(() => null));
+    // Every reply about an order waits a short moment (an ack three minutes, an answer ninety seconds)
+    // and yields to a person who spoke about the order in the group meanwhile — a team member, or
+    // anyone typing by hand from the ops number (29 Oct 2026: "Earliest 10:15 AM" at 9:09, the desk
+    // answered the same question at 9:11).
+    const isAnswer = ["STORE_REPLY", "ACK"].includes(i.ask) && i.orderId > 0;
+    const holdMs = STORE_ACK_RE.test(text) ? ACK_HOLD_MS : isAnswer ? ANSWER_HOLD_MS : 0;
     let teamAnswered = false;
-    if (STORE_ACK_RE.test(text) && now.getTime() - i.createdAt.getTime() >= ACK_HOLD_MS) {
+    if (holdMs && now.getTime() - i.createdAt.getTime() >= holdMs) {
       if (!isTeam) { const { loadTeam, makeTeamMatcher } = await import("@/lib/wa/team"); isTeam = makeTeamMatcher(await loadTeam()); }
-      const idRe = new RegExp(`(?<![\\d])#?${i.orderId}(?![\\d])`);
-      const recent = await prisma.waMessage.findMany({ where: { groupId: g.id, direction: "IN", fromMe: false, ts: { gte: new Date(i.createdAt.getTime() - 5 * 60_000) } }, select: { sender: true, senderJid: true, text: true, replyToWaId: true }, take: 50 }).catch(() => []);
-      teamAnswered = recent.some((m) => isTeam!(m.sender, m.senderJid) && ((quoted && m.replyToWaId === quoted) || (i.orderId > 0 && idRe.test(m.text ?? ""))));
+      teamAnswered = await humanSpokeAbout({ groupId: g.id, orderId: i.orderId, quotedWaId: quoted, from: new Date(i.createdAt.getTime() - 5 * 60_000), to: now, isTeam });
     }
-    let redundant: string | null = storeReplyRedundant({ text, orderId: i.orderId, createdAt: i.createdAt, now, sameTextSent, teamAnswered });
+    let redundant: string | null = storeReplyRedundant({ text, orderId: i.orderId, createdAt: i.createdAt, now, sameTextSent, teamAnswered, holdMs });
     if (redundant === "hold") { held += 1; continue; }
     // A console alert right after a team member told the store the same thing is noise (28 Oct 2026:
     // Deepali confirmed two bookings at 17:11; "the lab has rescheduled" followed at 17:16).
     if (!redundant && i.ask === "STORE_ALERT" && i.orderId > 0) {
       if (!isTeam) { const { loadTeam, makeTeamMatcher } = await import("@/lib/wa/team"); isTeam = makeTeamMatcher(await loadTeam()); }
-      const idRe = new RegExp(`(?<![\\d])#?${i.orderId}(?![\\d])`);
-      const recent = await prisma.waMessage.findMany({ where: { groupId: g.id, direction: "IN", fromMe: false, ts: { gte: new Date(i.createdAt.getTime() - 30 * 60_000), lte: i.createdAt } }, select: { sender: true, senderJid: true, text: true }, take: 100 }).catch(() => []);
-      if (recent.some((m) => isTeam!(m.sender, m.senderJid) && idRe.test(m.text ?? ""))) redundant = "team answered";
+      if (await humanSpokeAbout({ groupId: g.id, orderId: i.orderId, from: new Date(i.createdAt.getTime() - 30 * 60_000), to: i.createdAt, isTeam })) redundant = "team answered";
     }
     // Two replies on one order in a day is the desk's limit; the third means the order needs a
     // person, who is tagged instead (28 Oct 2026: #94284 heard "checking", "expected by", "overdue").

@@ -107,7 +107,13 @@ describe("the desk's scope (28 Oct 2026)", () => {
     assert.equal(storeReplyRedundant({ text: ack, orderId: 95078, createdAt: created, now: new Date(created.getTime() + 60_000), sameTextSent: false, teamAnswered: false }), "hold");
     assert.equal(storeReplyRedundant({ text: ack, orderId: 95078, createdAt: created, now: new Date(created.getTime() + 4 * 60_000), sameTextSent: false, teamAnswered: true }), "team answered");
     assert.equal(storeReplyRedundant({ text: ack, orderId: 95078, createdAt: created, now: new Date(created.getTime() + 4 * 60_000), sameTextSent: false, teamAnswered: false }), null);
-    assert.equal(storeReplyRedundant({ text: "#95078: sample collected 10:15 am.", orderId: 95078, createdAt: created, now: created, sameTextSent: false, teamAnswered: true }), null, "a fact goes at once");
+    assert.equal(storeReplyRedundant({ text: "#95078: sample collected 10:15 am.", orderId: 95078, createdAt: created, now: created, sameTextSent: false, teamAnswered: true }), null, "an alert goes at once");
+    // An answer to a store question waits 90 s and yields to a person who spoke (29 Oct 2026, #94834).
+    const { ANSWER_HOLD_MS } = await import("../executors/dispatcher");
+    const answer = "#94834: blood collected 9:03 am; urine sample pending — asking the lab for a re-collection slot now.";
+    assert.equal(storeReplyRedundant({ text: answer, orderId: 94834, createdAt: created, now: new Date(created.getTime() + 30_000), sameTextSent: false, teamAnswered: false, holdMs: ANSWER_HOLD_MS }), "hold");
+    assert.equal(storeReplyRedundant({ text: answer, orderId: 94834, createdAt: created, now: new Date(created.getTime() + 2 * 60_000), sameTextSent: false, teamAnswered: true, holdMs: ANSWER_HOLD_MS }), "team answered");
+    assert.equal(storeReplyRedundant({ text: answer, orderId: 94834, createdAt: created, now: new Date(created.getTime() + 2 * 60_000), sameTextSent: false, teamAnswered: false, holdMs: ANSWER_HOLD_MS }), null);
   });
 });
 

@@ -20,7 +20,7 @@ import { enqueueOutbox } from "../executors/dispatcher";
 import { liveStoreBody } from "../executors/storeReply";
 import { guard, loadGuardState } from "../guard/guard";
 import { fetchOrderSnapshot } from "../journey/window";
-import { ABOUT_THE_BOT_RE, addressedTeamMember, complaintSignal, labChaseable, makeLabScope } from "./scope";
+import { ABOUT_THE_BOT_RE, addressedTeamMember, complaintSignal, humanSpokeAbout, labChaseable, makeLabScope } from "./scope";
 
 export type StoreIntent = "status" | "report" | "slot" | "reschedule" | "cancel" | "change_tests" | "new_booking" | "serviceability" | "complaint" | "noise" | "other";
 
@@ -207,9 +207,7 @@ const ENGAGED_WINDOW_MS = 2 * 3_600_000;
 
 /** Did a team member write about this order in the group recently? Then the order is theirs for now. */
 async function teamEngaged(groupId: string, orderId: number, at: Date, isTeam: (sender: string, jid: string | null) => unknown): Promise<boolean> {
-  const recent = await prisma.waMessage.findMany({ where: { groupId, direction: "IN", fromMe: false, ts: { gte: new Date(at.getTime() - ENGAGED_WINDOW_MS), lte: at } }, select: { sender: true, senderJid: true, text: true }, take: 200 }).catch(() => []);
-  const idRe = new RegExp(`(?<![\\d])#?${orderId}(?![\\d])`);
-  return recent.some((x) => isTeam(x.sender, x.senderJid) && idRe.test(x.text ?? ""));
+  return humanSpokeAbout({ groupId, orderId, from: new Date(at.getTime() - ENGAGED_WINDOW_MS), to: at, isTeam });
 }
 
 export async function runStoreReader(now = new Date()): Promise<StoreReaderResult> {

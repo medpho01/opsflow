@@ -120,3 +120,15 @@ export async function labGroup(labId: number): Promise<{ id: string; jid: string
 /** "Is this a bot?" and the like: a question about the desk, for a person — never answered with an order's status. */
 export const ABOUT_THE_BOT_RE = /\b(bot|automated|auto(matic)? (message|reply))\b/i;
 
+/**
+ * Did a person on our side speak about this order in the group in a window? A team member from
+ * their own number, or anyone typing by hand from the ops number itself (fromMe, not one of the
+ * engine's sends, which carry the AUTOMATED or CONSOLE intent). 29 Oct 2026: "Earliest 10:15 AM"
+ * typed from the ops phone was not counted, and the desk answered two minutes after it.
+ */
+export async function humanSpokeAbout(input: { groupId: string; orderId: number; quotedWaId?: string | null; from: Date; to: Date; isTeam: (sender: string, jid: string | null) => unknown }): Promise<boolean> {
+  const recent = await prisma.waMessage.findMany({ where: { groupId: input.groupId, ts: { gte: input.from, lte: input.to }, OR: [{ direction: "IN", fromMe: false }, { fromMe: true, intent: { notIn: ["AUTOMATED", "CONSOLE"] } }] }, select: { sender: true, senderJid: true, fromMe: true, text: true, replyToWaId: true }, take: 200 }).catch(() => []);
+  const idRe = new RegExp(`(?<![\\d])#?${input.orderId}(?![\\d])`);
+  return recent.some((m) => (m.fromMe || !!input.isTeam(m.sender, m.senderJid)) && ((input.quotedWaId && m.replyToWaId === input.quotedWaId) || idRe.test(m.text ?? "")));
+}
+

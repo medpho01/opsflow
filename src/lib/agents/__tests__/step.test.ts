@@ -337,6 +337,19 @@ describe("the console moving", () => {
     const early = wake(order({ appointmentTime: at("2026-10-21T02:00:00Z") }), at("2026-10-21T00:10:00Z"));
     assert.equal(early.actions.find((a) => a.action === "ask")?.params.intent, "PHLEBO");
   });
+  it("a lab reply saying RNR is never relayed as 'phlebo reaches by' a default time (Orange #95010, 29 Oct 2026)", () => {
+    const o = order({ orderStatus: "PHLEBO_STARTED", phleboName: "R", appointmentTime: at("2026-10-29T03:00:00Z") });
+    const rnr = { kind: "fact", at: at("2026-10-29T04:03:00Z"), actor: "LAB", payload: { kind: "eta", value: "slots available for today", confidence: 0.7, source: "lab_reply", fullText: "As checked, the order has been marked as RNR (Ring No Response), as the CX did not respond to the call. Additionally, the following slots are available for today. [screenshot] 10:45 am 11:45 am 12:15 pm 01:30 pm" } };
+    const r = wake(o, at("2026-10-29T04:04:00Z"), undefined, { events: [rnr] as never });
+    assert.ok(!r.actions.some((a) => a.params.template === "STORE_LAB_PROMISE"), r.actions.map((a) => `${a.action}:${a.params.template ?? ""}`).join(","));
+    // A lab that does state a time is still relayed.
+    const eta = { kind: "fact", at: at("2026-10-29T04:03:00Z"), actor: "LAB", payload: { kind: "eta", value: "phlebo will reach by 10:30 am", confidence: 0.9, source: "lab_reply", fullText: "phlebo will reach by 10:30 am" } };
+    const r2 = wake(o, at("2026-10-29T04:04:00Z"), undefined, { events: [eta] as never });
+    assert.ok(r2.actions.some((a) => a.params.template === "STORE_LAB_PROMISE"));
+    // No time stated: the agent waits on its own timer, the store hears nothing.
+    const vague = { kind: "fact", at: at("2026-10-29T04:03:00Z"), actor: "LAB", payload: { kind: "eta", value: "on the way", confidence: 0.8, source: "lab_reply", fullText: "on the way" } };
+    assert.ok(!wake(o, at("2026-10-29T04:04:00Z"), undefined, { events: [vague] as never }).actions.some((a) => a.params.template === "STORE_LAB_PROMISE"));
+  });
   it("a reschedule recomputes pre-collection checkpoints, resets attempts, withdraws asks and logs due times", () => {
     const o = order();
     const breached = wake(o, at("2026-10-21T00:10:00Z"));

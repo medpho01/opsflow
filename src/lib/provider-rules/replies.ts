@@ -177,7 +177,9 @@ export async function runReplyPass(now = new Date()): Promise<ReplyPassResult> {
     let fromImage = false;
     if (message.mediaType === "image") {
       const v = await interpretImage(message.waMsgId).catch(() => null);
-      if (v?.ok) { text = `${v.ocrText}${v.candRefs.length ? ` ${v.candRefs.join(" ")}` : ""}${v.resolvedOrderIds.length ? ` ${v.resolvedOrderIds.map((id) => `#${id}`).join(" ")}` : ""}`.trim(); fromImage = true; }
+      // The caption is the lab's own words ("marked RNR … slots available, confirm the preferred slot");
+      // the screenshot adds the detail. Both are read; the caption first (29 Oct 2026, Orange #95010).
+      if (v?.ok) { const ocr = `${v.ocrText}${v.candRefs.length ? ` ${v.candRefs.join(" ")}` : ""}${v.resolvedOrderIds.length ? ` ${v.resolvedOrderIds.map((id) => `#${id}`).join(" ")}` : ""}`.trim(); text = text ? `${text}\n[screenshot] ${ocr}` : ocr; fromImage = !(message.text ?? "").trim(); }
     }
     if (!text) continue;
     const quotesUs = !!message.replyToWaId && !!(await prisma.waOutbound.findFirst({ where: { sentWaMsgId: message.replyToWaId }, select: { id: true } }));

@@ -522,10 +522,16 @@ export function step(input: StepInput): StepOutput {
       // The lab says the visit failed (RNR, not home): "phlebo on time?" and "phlebo needed?" are moot.
       if (kind === "patient_unavailable") withdraw.push({ asks: ["ETA", "PHLEBO"], reason: "patient unreachable" });
       const map = FACT_TO_CHECKPOINT[kind];
-      if (map && sop) {
+      // A reply that says the visit failed (RNR, not home, not collected) promises nothing, whatever
+      // times it carries — they are slots to choose from (29 Oct 2026, Orange #95010: "marked RNR …
+      // slots available 10:45, 11:45 …" became "phlebo reaches the patient by 11:33").
+      const fullText = String(ev.payload.fullText ?? value);
+      const visitFailed = /\bRNR\b|ring no response|not (?:respond|reachable|available|home|picking)|did not respond|not collected|could not (?:be )?collect|patient (?:unavailable|missed)/i.test(fullText);
+      if (map && sop && !(visitFailed && (kind === "eta" || kind === "new_appointment_time" || kind === "delay_reason"))) {
         const cp = checkpoints.find((c) => c.name === map.checkpoint);
         const a = attempts[map.checkpoint] ?? { n: 0, at: null };
-        const promiseAt = map.promise === "custom" ? null : parsePromiseTime(value, ev.at, tz) ?? (map.promise === "confirm" ? null : new Date(ev.at.getTime() + sop.defaultPromiseMin * MIN));
+        const stated = map.promise === "custom" ? null : parsePromiseTime(value, ev.at, tz);
+        const promiseAt = map.promise === "custom" ? null : stated ?? (map.promise === "confirm" ? null : new Date(ev.at.getTime() + sop.defaultPromiseMin * MIN));
         if (cp && cp.status !== "MET" && promiseAt && promiseAt.getTime() > now.getTime() - sop.promiseGraceMin * MIN) {
           const newDue = new Date(promiseAt.getTime() + sop.promiseGraceMin * MIN);
           const superseded = cp.dueSource === "PROMISE";
@@ -533,8 +539,9 @@ export function step(input: StepInput): StepOutput {
           attempts[map.checkpoint] = { ...a, answeredAt: ev.at.toISOString(), promiseDue: promiseAt.toISOString(), promiseText: value.slice(0, 120) };
           newEvents.push({ kind: "promise", at: ev.at, actor: "LAB", payload: { kind: map.promise, checkpoint: map.checkpoint, dueAt: promiseAt, text: value.slice(0, 200), superseded } });
           withdraw.push({ asks: undefined, reason: `lab promised ${map.checkpoint} by ${promiseAt.toISOString()}` });
-          // The store hears the promise too ("lab says report by 6 pm"), so it stops asking.
-          if (order.storeId != null && (map.checkpoint === "report_delivered" || map.checkpoint === "phlebo_reached" || map.checkpoint === "sample_collected")) {
+          // The store hears the promise too ("lab says report by 6 pm"), so it stops asking — only when
+          // the lab stated the time. The default is the agent's own chase timer, never the lab's word.
+          if (stated && order.storeId != null && (map.checkpoint === "report_delivered" || map.checkpoint === "phlebo_reached" || map.checkpoint === "sample_collected")) {
             actions.push({ desk: "STORE", action: "store_alert", params: { template: "STORE_LAB_PROMISE", orderId: order.id, storeId: order.storeId, fact: "promise", text: `${LABELS[map.checkpoint].toLowerCase()} by ${LABELS_TIME(promiseAt, tz)}`, at: ev.at.toISOString() }, reason: `lab promised ${map.checkpoint} by ${LABELS_TIME(promiseAt, tz)}`, idemKey: `promise-relay:${order.id}:${map.checkpoint}:${promiseAt.getTime()}` });
           }
         } else {

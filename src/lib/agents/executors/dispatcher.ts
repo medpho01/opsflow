@@ -504,12 +504,14 @@ async function flushStore(storeId: number, group: Item[], now: Date) {
     // and yields to a person who spoke about the order in the group meanwhile — a team member, or
     // anyone typing by hand from the ops number (29 Oct 2026: "Earliest 10:15 AM" at 9:09, the desk
     // answered the same question at 9:11).
-    const isAnswer = ["STORE_REPLY", "ACK"].includes(i.ask) && i.orderId > 0;
+    // Lab news relayed to the store waits the same 90 s: the team often relays it first (29 Oct 2026,
+    // #95010 — the head of ops had already told Plum when the desk's relay went).
+    const isAnswer = ["STORE_REPLY", "ACK", "STORE_ALERT"].includes(i.ask) && i.orderId > 0;
     const holdMs = STORE_ACK_RE.test(text) ? ACK_HOLD_MS : isAnswer ? ANSWER_HOLD_MS : 0;
     let teamAnswered = false;
     if (holdMs && now.getTime() - i.createdAt.getTime() >= holdMs) {
       if (!isTeam) { const { loadTeam, makeTeamMatcher } = await import("@/lib/wa/team"); isTeam = makeTeamMatcher(await loadTeam()); }
-      teamAnswered = await humanSpokeAbout({ groupId: g.id, orderId: i.orderId, quotedWaId: quoted, from: new Date(i.createdAt.getTime() - 5 * 60_000), to: now, isTeam });
+      teamAnswered = await humanSpokeAbout({ groupId: g.id, orderId: i.orderId, quotedWaId: quoted, from: new Date(i.createdAt.getTime() - (i.ask === "STORE_ALERT" ? 30 : 5) * 60_000), to: now, isTeam });
     }
     let redundant: string | null = storeReplyRedundant({ text, orderId: i.orderId, createdAt: i.createdAt, now, sameTextSent, teamAnswered, holdMs });
     if (redundant === "hold") { held += 1; continue; }

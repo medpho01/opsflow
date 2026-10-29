@@ -377,7 +377,8 @@ export function itemLine(intent: string, item: ItemLineData, now: Date, timeZone
   };
   const p = phrase[intent] ?? { when, extra: "" };
   return renderLoose(body ?? STYLE_DEFAULTS.BATCH_ITEM.body, {
-    n: String(item.n), ref: item.labRef ? `${item.labRef} · ` : "", order_id: String(item.orderId), name: firstName(item.patientName),
+    // A report is found by the patient's full name at a manual lab (29 Oct 2026: the team chases by name lists).
+    n: String(item.n), ref: item.labRef ? `${item.labRef} · ` : "", order_id: String(item.orderId), name: intent === "REPORT" ? (item.patientName || "Patient").trim() : firstName(item.patientName),
     mobile: item.mobile, area: item.area, when: p.when, extra: p.extra, note: item.note, link: item.confirmUrl ? `\n    ${item.confirmUrl}` : "",
   });
 }

@@ -316,13 +316,27 @@ async function flushGroup(key: string, queued: Item[], now: Date, batching: Batc
   const toOps = false;
   const target = toManager ? { targetJid: toDirectJid(config.managerWhatsapp!), groupId: null } : await resolveLabTarget(config, null);
 
+  // An order listed to this lab in the last 45 minutes, in any message, waits — unless a store is
+  // asking (29 Oct 2026: Thyrocare got 7 check posts in 2 h, the same orders re-listed 32 min apart).
+  // Held, not dropped: it goes once the 45 minutes are up, if it still needs asking.
+  let relistHeld = 0;
+  if (kind === "LAB") {
+    const recent = await prisma.providerBatch.findMany({ where: { labId: id, shadow: false, recipient: "LAB", createdAt: { gte: new Date(now.getTime() - RELIST_GAP_MIN * 60_000) } }, select: { items: true } });
+    const listed = new Set(recent.flatMap((b) => ((b.items ?? []) as Array<{ orderId?: number }>).map((x) => x.orderId)).filter((x): x is number => typeof x === "number" && x > 0));
+    const wait = group.filter((i) => listed.has(i.orderId) && (i.payload as { immediate?: boolean }).immediate !== true);
+    if (wait.length) {
+      group = group.filter((i) => !wait.includes(i));
+      relistHeld = wait.length;
+      if (!group.length) return { messages: 0, items: 0, held: relistHeld };
+    }
+  }
   // Caps (SOP batching): per day per lab and per rolling hour, urgent exempt.
   const dayStart = new Date(now); dayStart.setUTCHours(0, 0, 0, 0);
   const sentToday = await prisma.providerBatch.count({ where: { labId: id, shadow: false, createdAt: { gte: new Date(dayStart.getTime() - 5.5 * 3_600_000) } } });
   const sentLastHour = await prisma.providerBatch.count({ where: { labId: id, shadow: false, recipient: "LAB", createdAt: { gte: new Date(now.getTime() - 3_600_000) } } });
   const urgent = group.filter((i) => i.urgent);
   const routine = group.filter((i) => !i.urgent);
-  let messages = 0; let items = 0; let held = 0;
+  let messages = 0; let items = 0; let held = relistHeld;
 
   const sendItems = async (list: Item[], urgentSend: boolean) => {
     // Manual labs get the action page on every nudge (FR-8.4): one tap is evidence. API labs get the
@@ -373,7 +387,8 @@ async function flushGroup(key: string, queued: Item[], now: Date, batching: Batc
       const named = list
         .map((i) => ({ n: original.get(i.orderId)!.n, ref: details?.get(i.orderId)?.labRef ?? (i.payload as { line?: { labRef?: string | null } }).line?.labRef ?? null, orderId: i.orderId }))
         .sort((x, y) => x.n - y.n)
-        .map((x) => `${x.n} (${x.ref ? `${x.ref} · ` : ""}#${x.orderId})`);
+        // "#94666 (VL168E3D)", not "10 (VL168E3D · #94666)": the list number read as a count (29 Oct 2026).
+        .map((x) => `#${x.orderId}${x.ref ? ` (${x.ref})` : ""}`);
       text = renderLabTemplate(t.isActive ? t.body : "{{coordinator}} still open: {{numbers}}", {
         lab_name: config.labName, coordinator: mention.text, count: String(list.length), numbers: named.join(", "), since: formatTime(followUp.since),
       });
@@ -500,6 +515,8 @@ const ACK_HOLD_MS = 3 * 60_000;
 export const ANSWER_HOLD_MS = 90_000;
 /** Replies the desk may send on one order in a day before a person is tagged instead. */
 export const STORE_REPLIES_PER_ORDER_PER_DAY = 2;
+/** Minutes before an order listed to a lab may be listed to it again (a store's question excepted). */
+export const RELIST_GAP_MIN = 45;
 
 /**
  * Why a store reply should not go after all (28 Oct 2026, Plum): the same words went to the

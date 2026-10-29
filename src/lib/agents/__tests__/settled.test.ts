@@ -24,4 +24,13 @@ describe("what the console has settled is not sent (27 Oct 2026)", () => {
     assert.equal(partitionQueued([item("2026-10-30T03:00:00Z")], "ETA", now, "A").stale.length, 1);
     assert.equal(partitionQueued([item("2026-10-29T08:00:00Z")], "ETA", now, "A").fresh.length, 1);
   });
+
+  it("every LabStack status ranks: a partial report is past collection, not before it (29 Oct 2026)", async () => {
+    const { reached } = await import("../journey/policy");
+    assert.ok(reached("PARTIAL_DELIVERED", "SAMPLE_COLLECTED"));
+    assert.ok(reached("SAMPLE_IN_TRANSIT", "SAMPLE_COLLECTED") && !reached("SAMPLE_IN_TRANSIT", "SAMPLE_DELIVERED"));
+    assert.ok(!reached("PARTIAL_DELIVERED", "REPORT_DELIVERED"), "the rest of the report is still owed");
+    assert.ok(reached("PHLEBO_STARTED", "PHLEBO_ASSIGNED") && !reached("PHLEBO_STARTED", "PATIENT_VISITED"));
+    assert.equal(settledByConsole("STATUS", { orderStatus: "PARTIAL_DELIVERED", phleboName: "" }), "settled (PARTIAL_DELIVERED)");
+  });
 });

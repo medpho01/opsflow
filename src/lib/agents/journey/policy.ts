@@ -39,10 +39,14 @@ export type OrderSnapshot = {
   statusNote?: string | null;
 };
 
-/** LabStack order statuses in the order an order moves through them. */
+/**
+ * LabStack order statuses in the order an order moves through them. Every status LabStack has:
+ * one missing ranks −1 and "reaches" nothing (29 Oct 2026: PARTIAL_DELIVERED orders were listed to
+ * the store as "not collected yet" and asked "collected?").
+ */
 export const STATUS_RANK = [
-  "PENDING", "CREATED", "ORDER_SCHEDULED", "RESCHEDULED", "PHLEBO_ASSIGNED", "KIT_DISPATCHED",
-  "PATIENT_VISITED", "SAMPLE_COLLECTED", "SAMPLE_DELIVERED", "SAMPLE_PROCESSED", "REPORT_DELIVERED",
+  "PENDING", "CREATED", "ORDER_SCHEDULED", "RESCHEDULED", "PHLEBO_ASSIGNED", "PHLEBO_DISPATCHED", "PHLEBO_STARTED", "KIT_DISPATCHED",
+  "PATIENT_VISITED", "SAMPLE_COLLECTED", "SAMPLE_IN_TRANSIT", "SAMPLE_DELIVERED", "SAMPLE_PROCESSED", "PARTIAL_DELIVERED", "REPORT_READY", "REPORT_DELIVERED",
 ] as const;
 export const rankOf = (status: string): number => (STATUS_RANK as readonly string[]).indexOf(status);
 export const reached = (status: string, atLeast: string): boolean => rankOf(status) >= rankOf(atLeast) && rankOf(status) >= 0;

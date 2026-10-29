@@ -18,7 +18,7 @@ import { atLocal } from "@/lib/provider-rules/batching";
 import { fetchOrderSnapshots } from "../journey/window";
 import { makeLabScope, type LabScope } from "./scope";
 
-type Row = { id: number; storeId: number; orderType: string; orderStatus: string; appointmentTime: Date | null; patientName: string | null; labId: number | null; labName: string | null; labRef: string | null };
+type Row = { id: number; storeId: number; orderType: string; orderStatus: string; statusUpdatedAt: Date | null; appointmentTime: Date | null; patientName: string | null; labId: number | null; labName: string | null; labRef: string | null };
 export type StoreDay = {
   storeId: number; total: number; collected: number; upcoming: number;
   rnr: Array<{ orderId: number; name: string; time: string; lab: string; detail: string }>;
@@ -45,7 +45,7 @@ export async function storeDays(storeIds: number[], now = new Date(), labOnBot: 
   if (!storeIds.length) return [];
   const from = atLocal(now, TZ(), 0, 0); const to = new Date(from.getTime() + 86_400_000);
   const rows = await labstackWorkerQuery<Row>(
-    `SELECT o.id, o."storeId", o."orderType"::text AS "orderType", o."orderStatus"::text AS "orderStatus", o."appointmentTime", u.name AS "patientName", l.id AS "labId", l."labName", NULLIF(o."labOrderId", '') AS "labRef"
+    `SELECT o.id, o."storeId", o."orderType"::text AS "orderType", o."orderStatus"::text AS "orderStatus", o."statusUpdatedAt", o."appointmentTime", u.name AS "patientName", l.id AS "labId", l."labName", NULLIF(o."labOrderId", '') AS "labRef"
        FROM public."Order" o LEFT JOIN public."User" u ON u.id = o."userId" LEFT JOIN public."Lab" l ON l.id = o."labId"
       WHERE o."storeId" = ANY($1::int[]) AND o."appointmentTime" >= $2 AND o."appointmentTime" < $3 AND o."orderStatus"::text NOT IN ('CANCELED','CANCELLED')`,
     [storeIds, from, to],
@@ -65,7 +65,10 @@ export async function storeDays(storeIds: number[], now = new Date(), labOnBot: 
       const owed = latest(r.id, "sample_missed");
       const rescheduled = latest(r.id, "new_appointment_time");
       const lab = (r.labName ?? "the lab").trim();
-      if (owed && owed.value !== "blood") day.owed.push({ orderId: r.id, name: first(r.patientName), sample: owed.value, lab });
+      // LabStack moved past collection after the lab said the sample was owed: it has been dealt with
+      // (29 Oct 2026: #95226 listed "urine still to collect" at noon, SAMPLE_DELIVERED since 11:13).
+      const owedSettled = !!owed && !!r.statusUpdatedAt && r.statusUpdatedAt > owed.createdAt && reached(r.orderStatus, "SAMPLE_DELIVERED");
+      if (owed && owed.value !== "blood" && !owedSettled) day.owed.push({ orderId: r.id, name: first(r.patientName), sample: owed.value, lab });
       if (collected) { day.collected += 1; continue; }
       if (unreachable && (!rescheduled || rescheduled.createdAt < unreachable.createdAt)) {
         day.rnr.push({ orderId: r.id, name: first(r.patientName), time: hhmm(r.appointmentTime), lab, detail: relayDetail({ kind: "patient_unavailable", value: unreachable.value, fullText: unreachable.sourceText ?? unreachable.value }) });

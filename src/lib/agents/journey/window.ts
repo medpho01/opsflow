@@ -42,7 +42,7 @@ export async function fetchActiveWindow(opts: WindowOptions = {}): Promise<Order
       (o."appointmentTime" >= NOW() - ($1 || ' days')::interval AND o."appointmentTime" < NOW() + ($2 || ' days')::interval)
       OR (o."orderStatus"::text <> ALL($3::text[]) AND o."updatedAt" >= NOW() - ($1 || ' days')::interval)
       OR (o."orderType" = 'KIT_BASED' AND o."orderStatus"::text <> ALL($3::text[]) AND o."createdAt" >= NOW() - ($4 || ' days')::interval)
-      OR (o."orderStatus"::text IN ('SAMPLE_COLLECTED','SAMPLE_DELIVERED','SAMPLE_PROCESSED') AND o."appointmentTime" >= NOW() - ($5 || ' days')::interval)
+      OR (o."orderStatus"::text IN ('SAMPLE_COLLECTED','SAMPLE_IN_TRANSIT','SAMPLE_DELIVERED','SAMPLE_PROCESSED','PARTIAL_DELIVERED','REPORT_READY') AND o."appointmentTime" >= NOW() - ($5 || ' days')::interval)
     )
     ORDER BY o."appointmentTime" ASC NULLS LAST`, [String(lookback), String(lookahead), TERMINAL, String(kitLookback), String(opts.reportLookbackDays ?? 30)]);
   return rows.map(toSnapshot);

@@ -71,6 +71,13 @@ export async function enqueueOutbox(input: EnqueueInput): Promise<{ id: string; 
   }
 }
 
+/** "urine sample collection" when every order owes the same sample, else "sample collection". */
+export function recollectTitle(notes: string[]): string {
+  const samples = new Set(notes.map((n) => /\b(urine|stool|sputum|swab)\b/i.exec(n)?.[1]?.toLowerCase() ?? "sample"));
+  const one = samples.size === 1 ? [...samples][0] : "sample";
+  return one === "sample" ? "sample collection" : `${one} sample collection`;
+}
+
 /** Drop queued items about an order (reschedule, cancel, answered). */
 export async function withdrawOutbox(orderId: number, reason: string, asks?: string[], opts: { keepForStore?: boolean } = {}) {
   const where = { orderId, status: "QUEUED", ...(asks ? { ask: { in: asks } } : {}) };
@@ -376,7 +383,7 @@ async function flushGroup(key: string, queued: Item[], now: Date, batching: Batc
       used.push({ key, variantId: t.variantId });
       text = renderLabTemplate(t.body, {
         lab_name: config.labName, manager_name: config.managerName ?? "there", coordinator: mention.text,
-        count: String(list.length), orders_word: list.length === 1 ? "order" : "orders", items: lines.join("\n"), batch_title: ask.toLowerCase().replace("_", " "),
+        count: String(list.length), orders_word: list.length === 1 ? "order" : "orders", items: lines.join("\n"), batch_title: ask === "RECOLLECT" ? recollectTitle(list.map((i) => (i.payload as { line?: { note?: string | null } }).line?.note ?? "")) : ask.toLowerCase().replace("_", " "),
       });
     }
     const outbound = await sendWhatsApp({ targetJid: target.targetJid, groupId: target.groupId, text, quotedWaId: followUp?.quotedWaId ?? null, mentions: mention.jids, now });

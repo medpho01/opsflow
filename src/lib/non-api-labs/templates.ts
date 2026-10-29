@@ -323,11 +323,10 @@ const BATCH_DEFAULT_BODIES: Record<string, { name: string; body: string }> = {
 {{items}}
 
 Tap each link to confirm, or reply *1 can't do*` },
-  BATCH_RECOLLECT: { name: "Combined: sample to re-collect", body: `{{coordinator}} 🧪 sample still to collect ({{count}}) — when can your phlebo go?
+  // {{batch_title}} is "urine sample collection" when every order owes the same sample (29 Oct 2026: kept to one line).
+  BATCH_RECOLLECT: { name: "Combined: sample to re-collect", body: `{{coordinator}} Available slots for {{batch_title}}?
 
-{{items}}
-
-Please reply with the times you can do, e.g. *1 today 4 pm, tomorrow 8 am*. We'll get the customer to pick one.` },
+{{items}}` },
   BATCH_STATUS_CHECK: { name: "Combined: status check", body: `{{coordinator}} quick check — collected? ({{count}})
 
 {{items}}
@@ -379,8 +378,12 @@ Reply with the number and the update, e.g. *1 done*.` },
 
 /** Later defaults that were replaced in turn (27 Oct 2026: the report chase's reply hint). */
 const BATCH_SUPERSEDED_LATER: Record<string, string[]> = {
-  // 29 Oct 2026: read by a lab as "tell us the time" (#94443).
-  BATCH_RECOLLECT: [`{{coordinator}} sample to re-collect ({{count}}) — please share slots:
+  // 29 Oct 2026: read by a lab as "tell us the time" (#94443), then a longer version, also replaced the same day.
+  BATCH_RECOLLECT: [`{{coordinator}} 🧪 sample still to collect ({{count}}) — when can your phlebo go?
+
+{{items}}
+
+Please reply with the times you can do, e.g. *1 today 4 pm, tomorrow 8 am*. We'll get the customer to pick one.`, `{{coordinator}} sample to re-collect ({{count}}) — please share slots:
 
 {{items}}
 

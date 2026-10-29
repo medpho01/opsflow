@@ -372,12 +372,10 @@ export const OFFERS_TIME_RE = /\b\d{1,2}(:\d{2})?\s*(am|pm)\b/i;
 
 /** What we say to a lab that asked us for the time on a re-collection ask. */
 export function timeQuestionAnswer(lines: Array<{ orderId: number; sample: string; preferred: string | null }>): string {
-  if (lines.length === 1 && lines[0].preferred) {
-    const l = lines[0];
-    return `The customer prefers ${l.preferred} for the ${l.sample} re-collection (#${l.orderId}). Can your phlebo go then? If not, please share the times you can do.`;
-  }
-  const what = lines.length === 1 ? `the ${lines[0].sample} re-collection (#${lines[0].orderId})` : `these re-collections (${lines.map((l) => `#${l.orderId}`).join(", ")})`;
-  return `We don't have a time from the customer yet. Please share the times your phlebo can go for ${what}, e.g. *today 4 pm, tomorrow 8 am*. We'll get the customer to pick one and confirm here.`;
+  const ids = lines.map((l) => `#${l.orderId}`).join(", ");
+  if (lines.length === 1 && lines[0].preferred) return `${ids}: customer prefers ${lines[0].preferred}. Possible?`;
+  const sample = new Set(lines.map((l) => l.sample)).size === 1 && lines[0].sample !== "sample" ? `${lines[0].sample} ` : "";
+  return `${ids}: please share your available slots for ${sample}sample collection.`;
 }
 
 async function answerTimeQuestion(message: { waMsgId: string; groupId: string }, items: BatchItem[], parts: Map<number, string>, now: Date) {

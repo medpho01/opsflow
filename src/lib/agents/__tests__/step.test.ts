@@ -327,6 +327,16 @@ describe("the console moving", () => {
     const lab = wake(moved, at("2026-10-28T09:51:00Z"), wake(o, at("2026-10-28T09:46:00Z")));
     assert.equal(lab.actions.find((a) => a.idemKey.startsWith("console-moved:"))?.params.template, "STORE_LAB_RESCHEDULED");
   });
+  it("after the visit time the lab is asked 'collected?', not 'phlebo on the way?' — which the dispatcher drops (29 Oct 2026)", () => {
+    const o = order({ orderStatus: "PHLEBO_ASSIGNED", phleboName: "Ravi", appointmentTime: at("2026-10-21T02:00:00Z") }); // 7:30 am IST
+    const r = wake(o, at("2026-10-21T02:50:00Z")); // 8:20 am: phlebo_reached (due 7:45) is the open milestone
+    const ask = r.actions.find((a) => a.action === "ask");
+    assert.ok(ask, acts(r).join(","));
+    assert.equal(ask?.params.intent, "STATUS");
+    // Before the visit the pre-visit ask keeps its own intent.
+    const early = wake(order({ appointmentTime: at("2026-10-21T02:00:00Z") }), at("2026-10-21T00:10:00Z"));
+    assert.equal(early.actions.find((a) => a.action === "ask")?.params.intent, "PHLEBO");
+  });
   it("a reschedule recomputes pre-collection checkpoints, resets attempts, withdraws asks and logs due times", () => {
     const o = order();
     const breached = wake(o, at("2026-10-21T00:10:00Z"));
@@ -552,11 +562,11 @@ describe("the console settles queued asks (27 Oct 2026)", () => {
 });
 
 describe("a visit that passed with the console quiet is asked about now (27 Oct 2026)", () => {
-  it("'phlebo on time?' after the visit is urgent, not slot-bound", () => {
+  it("after the visit, the ask is 'collected?' and urgent, not slot-bound — an ETA ask would be dropped at send time", () => {
     const o = order({ orderStatus: "PHLEBO_STARTED", phleboName: "Nakul", appointmentTime: at("2026-10-27T02:30:00Z"), statusUpdatedAt: at("2026-10-27T01:39:00Z") }); // 8:00 visit, started 7:09
     const r = wake(o, at("2026-10-27T04:21:00Z"), undefined, { labTier: "A" } as never); // 9:51
-    const ask = r.actions.find((a) => a.action === "ask" && a.params.intent === "ETA");
-    assert.ok(ask, "an ETA ask");
+    const ask = r.actions.find((a) => a.action === "ask" && a.params.intent === "STATUS");
+    assert.ok(ask, "a status ask");
     assert.equal(ask?.params.urgent, true);
   });
   it("a report chase stays on its slots", () => {

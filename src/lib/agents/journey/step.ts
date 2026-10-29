@@ -844,6 +844,7 @@ export function step(input: StepInput): StepOutput {
     // and only then is a person told (28 Oct 2026: "Collection stuck" tasks reached the ops group
     // at two hours with the lab never asked; such things are chased with the lab).
     const apiLadderCapped = input.labTier != null && input.labTier !== "C" && preVisit && minutesToSlot != null && minutesToSlot >= -120 && a.n > Math.max(0, ladder.indexOf("reminder"));
+    const postVisitStatus = preVisit && minutesToSlot != null && minutesToSlot < 0 && ["phlebo_assigned", "phlebo_reached", "patient_visited", "confirmed", "visit_confirmed"].includes(next.name) && (ask?.intent === "ETA" || ask?.intent === "PHLEBO" || ask?.intent === "UNCONFIRMED");
     if (apiLadderCapped && slot) wakeAt.push(slot.getTime() + 121 * MIN);
     const askedSinceVisit = a.n >= Math.max(1, ladder.indexOf("reminder") + 1);
     if (visitLongPast && from === "LAB" && a.n < 99 && askedSinceVisit) {
@@ -891,7 +892,11 @@ export function step(input: StepInput): StepOutput {
         switch (rung) {
           case "portal_read": actions.push({ desk: "LAB", action: "portal_read", params: { ...common }, reason: why, idemKey: idem }); break;
           case "ask": case "reminder":
-            actions.push({ desk: "LAB", action: rung, params: { ...common, intent: ask.intent, counterparty: `LAB:${order.labId}`, windowFrom: window.from, windowTo: window.to, urgent, line: { orderId: order.id, patientName: order.patientName, appointment: order.appointmentTime, labRef: order.labRef ?? null, mobile: order.mobile ?? null, area: order.area ?? null, milestone: LABELS[next.name], dueAt: due, phlebo: order.phleboName || null } }, reason: why, idemKey: idem });
+            // After the visit time, whatever milestone is still open, the question is "collected?" —
+            // a "phlebo on the way?" (ETA) or "phlebo needed" (PHLEBO) ask for a visit already over is
+            // dropped at send time, and the milestone never moves on to sample_collected, so no status
+            // check reached any lab whose console stayed put (29 Oct 2026).
+            actions.push({ desk: "LAB", action: rung, params: { ...common, intent: postVisitStatus ? "STATUS" : ask.intent, counterparty: `LAB:${order.labId}`, windowFrom: window.from, windowTo: window.to, urgent, line: { orderId: order.id, patientName: order.patientName, appointment: order.appointmentTime, labRef: order.labRef ?? null, mobile: order.mobile ?? null, area: order.area ?? null, milestone: LABELS[next.name], dueAt: due, phlebo: order.phleboName || null } }, reason: why, idemKey: idem });
             break;
           case "manager_whatsapp":
             actions.push({ desk: "LAB", action: "manager_whatsapp", params: { ...common, intent: "ESCALATION", counterparty: `MANAGER:${order.labId}`, windowFrom: window.from, windowTo: window.to, urgent, line: { orderId: order.id, patientName: order.patientName, appointment: order.appointmentTime, labRef: order.labRef ?? null, mobile: order.mobile ?? null, area: order.area ?? null, milestone: LABELS[next.name], dueAt: due } }, reason: `${why}; ${a.n} asks unanswered`, idemKey: idem });

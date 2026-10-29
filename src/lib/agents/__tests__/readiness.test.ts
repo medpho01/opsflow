@@ -139,3 +139,16 @@ describe("coaching from WhatsApp (28 Oct 2026)", () => {
     delete process.env.AGENT_LLM;
   });
 });
+
+describe("a correction mutes that reply where it was sent (29 Oct 2026)", () => {
+  it("the guard hands a muted template or intent to a person in that store, and nothing elsewhere", () => {
+    const state = { scopes: new Map<string, string[]>([["STORE:STORE:6", ["status", "report", "slot"]]]), mutes: [{ scope: "STORE:6", template: "STORE_STATUS_ANSWER", intent: null, rule: "they want the latest on collection, not the console" }, { scope: "STORE:6", template: null, intent: "slot", rule: "slots are a person's" }] };
+    const ctx = { journeyId: null, orderId: 1, labId: 4, storeId: 6 };
+    const a = (params: Record<string, unknown>) => ({ desk: "STORE" as const, action: "store_reply" as const, params, reason: "", idemKey: "k" }) as never;
+    assert.equal(outOfScope(state, a({ intent: "status", template: "STORE_STATUS_ANSWER" }), ctx), "status");
+    assert.equal(outOfScope(state, a({ intent: "status", template: "STORE_CHECKING" }), ctx), null, "a different template still goes");
+    assert.equal(outOfScope(state, a({ intent: "slot", text: "…" }), ctx), "slot");
+    assert.equal(outOfScope(state, a({ intent: "status", template: "STORE_STATUS_ANSWER" }), { ...ctx, storeId: 7 }), null, "another store is untouched");
+  });
+});
+

@@ -56,6 +56,8 @@ async function main() {
     console.log(`${r.createdAt.toLocaleString("en-IN", { timeZone: process.env.TIMEZONE || "Asia/Kolkata", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}  ${r.status.padEnd(7)} ${r.scope.padEnd(10)} #${r.id.slice(-6)}  ${r.contactName}`);
     console.log(`    said:  ${r.text.slice(0, 160)}`);
     if (l?.rule) console.log(`    rule:  [${l.kind}] ${l.rule}`);
+    const mute = (l as { mute?: { template?: string | null; intent?: string | null } } | null)?.mute;
+    if (mute?.template || mute?.intent) console.log(`    muted: ${mute.template ?? mute.intent} in ${r.scope} is handed to a person until this lesson is retired`);
     if (l?.done) console.log(`    did:   ${l.done.note}`);
   }
 }

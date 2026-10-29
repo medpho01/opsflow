@@ -56,13 +56,17 @@ export type GuardResult = { actionId: string; outcome: Outcome; level: Level; bl
 type Settings = { pausedAll: boolean; pausedDesks: string[]; pausedLabIds: number[]; pausedStoreIds: number[] };
 type AutonomyRow = { action: string; desk: string; scopeKind: string; scopeKey: string; level: string };
 
-export async function loadGuardState(): Promise<{ settings: Settings; desks: Map<string, DeskState>; scopes: Map<string, string[]>; autonomy: AutonomyRow[] }> {
-  const [settings, rows, autonomy] = await Promise.all([
+type Mute = { scope: string; template: string | null; intent: string | null; rule: string };
+
+export async function loadGuardState(): Promise<{ settings: Settings; desks: Map<string, DeskState>; scopes: Map<string, string[]>; autonomy: AutonomyRow[]; mutes: Mute[] }> {
+  const [settings, rows, autonomy, mutes] = await Promise.all([
     prisma.agentSettings.upsert({ where: { id: "default" }, update: {}, create: { id: "default" } }),
     prisma.agentDeskState.findMany({ select: { desk: true, scopeKind: true, scopeId: true, state: true, liveIntents: true } }),
     prisma.agentAutonomy.findMany({ select: { action: true, desk: true, scopeKind: true, scopeKey: true, level: true } }),
+    import("../brain/coach").then((c) => c.activeMutes()).catch(() => [] as Mute[]),
   ]);
   return {
+    mutes,
     settings: { pausedAll: settings.pausedAll, pausedDesks: settings.pausedDesks, pausedLabIds: settings.pausedLabIds, pausedStoreIds: settings.pausedStoreIds },
     desks: new Map(rows.map((r) => [`${r.desk}:${r.scopeKind}:${r.scopeId}`, r.state as DeskState])),
     // STORE desk: the kinds of question it answers itself (empty = every kind).
@@ -72,10 +76,14 @@ export async function loadGuardState(): Promise<{ settings: Settings; desks: Map
 }
 
 /** A store reply outside the desk's live scope is handed to a person instead (28 Oct 2026). */
-export function outOfScope(state: Pick<GuardState, "scopes">, action: ProposedAction, ctx: GuardContext): string | null {
-  if (action.desk !== "STORE" || !["store_reply", "ack"].includes(action.action) || ctx.storeId == null) return null;
+export function outOfScope(state: Pick<GuardState, "scopes"> & Partial<Pick<GuardState, "mutes">>, action: ProposedAction, ctx: GuardContext): string | null {
+  if (action.desk !== "STORE" || !["store_reply", "ack", "store_alert"].includes(action.action) || ctx.storeId == null) return null;
   const intent = typeof action.params.intent === "string" ? action.params.intent : null;
-  if (!intent) return null;
+  const template = typeof action.params.template === "string" ? action.params.template : null;
+  // A reply the coach corrected in this store is handed to a person until the lesson is retired.
+  const muted = (state.mutes ?? []).find((m) => m.scope === `STORE:${ctx.storeId}` && ((m.template && m.template === template) || (!m.template && m.intent && m.intent === intent)));
+  if (muted) return intent ?? "other";
+  if (!intent || action.action === "store_alert") return null;
   const live = state.scopes.get(`STORE:STORE:${ctx.storeId}`);
   return live && !live.includes(intent) ? intent : null;
 }
@@ -135,7 +143,8 @@ export async function guard(action: ProposedAction, ctx: GuardContext, state: Gu
     if (desk === "OFF") { outcome = "BLOCKED"; blockedBy = `desk ${action.desk} is off for this ${action.desk === "STORE" ? "store" : "lab"}`; }
     else if (handoff) {
       // Recorded as the draft it is (the self-evaluation reads it); a person in the group is tagged instead.
-      outcome = "RECORDED"; blockedBy = `${handoff} is not live for this store — handed to the team`;
+      const mutedBy = (state.mutes ?? []).find((m) => m.scope === `STORE:${ctx.storeId}` && ((m.template && m.template === action.params.template) || (!m.template && m.intent === action.params.intent)));
+      outcome = "RECORDED"; blockedBy = mutedBy ? `coached: "${mutedBy.rule.slice(0, 80)}" — handed to the team` : `${handoff} is not live for this store — handed to the team`;
       const quoted = typeof action.params.quotedWaId === "string" ? action.params.quotedWaId : null;
       await guard({ desk: "STORE", action: "store_handoff", params: { orderId: ctx.orderId, storeId: ctx.storeId, intent: handoff, quotedWaId: quoted }, reason: `store ${handoff} request: not in the desk's live scope`, idemKey: `${action.idemKey}:handoff` }, ctx, state).catch(() => undefined);
     }

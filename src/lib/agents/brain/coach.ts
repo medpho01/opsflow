@@ -50,7 +50,16 @@ export type CoachLesson = {
   rule: string;
   applies: Array<"reader" | "judge" | "wording" | "handoff" | "digest" | "lab" | "store">;
   retireWording: boolean;
+  /**
+   * A correction of a reply the agent sent mutes that kind of reply where it was sent: the same
+   * template (or intent) to the same store is handed to a person instead until the lesson is
+   * retired (29 Oct 2026). Learning that bites at once, in the guard, not only in a prompt.
+   */
+  mute?: { scope: string; template: string | null; intent: string | null; ask: string | null };
 };
+
+/** Acknowledgements are off unless AGENT_COACH_ACK=1: the coach wants the lesson applied, not a reply. */
+const ACK = process.env.AGENT_COACH_ACK === "1";
 
 export type CoachCommand = { verb: "pause" | "resume"; target: "all" | "store" | "lab"; name: string } | { verb: "rename"; target: "self"; name: string };
 
@@ -164,6 +173,12 @@ export async function runCoachReader(now = new Date()): Promise<CoachReaderResul
         continue;
       }
       const lesson = await readLesson({ words, about: ours?.text ?? null, ask: item?.ask ?? null, scope, groupSubject: g.subject });
+      // The reply being corrected: which template or intent, so the guard can mute it where it was sent.
+      if (ours && lesson.kind !== "praise" && lesson.kind !== "wording" && scope !== "GLOBAL") {
+        const sentAction = item ? await prisma.agentAction.findFirst({ where: { orderId: item.orderId, desk: "STORE", action: { in: ["store_reply", "ack", "store_alert"] }, createdAt: { gte: new Date(m.ts.getTime() - 6 * 3_600_000), lte: m.ts } }, orderBy: { createdAt: "desc" }, select: { params: true } }).catch(() => null) : null;
+        const sp = (sentAction?.params ?? {}) as { template?: string; intent?: string };
+        lesson.mute = { scope, template: sp.template ?? null, intent: sp.intent ?? null, ask: item?.ask ?? null };
+      }
       const row = await prisma.agentCoaching.create({ data: { contactId: coach.id, contactName: coach.name, groupId: m.groupId, waMsgId: m.waMsgId, outboundId: ours?.id ?? null, orderId: item?.orderId || null, scope, text: words, lesson, status: lesson.kind === "praise" ? "RETIRED" : "ACTIVE" }, select: { id: true } });
       result.lessons += 1;
       // A trial wording the coach disliked is retired on the spot.
@@ -175,6 +190,7 @@ export async function runCoachReader(now = new Date()): Promise<CoachReaderResul
           retired = send.key;
         }
       }
+      if (!ACK) continue;
       const where = scope === "GLOBAL" ? "everywhere" : scope.startsWith("STORE:") ? (isDirect(g) ? `for ${named.find((n) => `STORE:${n.g.storeId}` === scope)?.g.subject ?? "that store"}` : "this store") : (isDirect(g) ? `for ${named.find((n) => `LAB:${n.g.labId}` === scope)?.g.subject ?? "that lab"}` : "this lab");
       await reply(g, m, `📝 Noted, ${coach.name.split(/\s+/)[0]} — from now, ${where}: ${lesson.rule}${retired ? `\n(the "${retired}" wording that message used is retired)` : ""}\nReply *undo* to this message to drop it. #${row.id.slice(-6)}${signed()}`);
     } catch (error) {
@@ -316,5 +332,16 @@ export async function explainOrder(orderId: number, now = new Date()): Promise<s
   if (undelivered.length) lines.push(`Queued but not delivered: ${undelivered.map((s) => `${s.ask} to ${s.counterparty} (${s.status.toLowerCase()})`).join(", ")}`);
   if (threads.length) lines.push(`Open with the store: ${threads.map((x) => `${x.kind} since ${t(x.openedAt)}, waiting on ${x.waitingOn.toLowerCase()}${x.reminders ? `, reminded ${x.reminders}×` : ""}`).join("; ")}`);
   return lines.join("\n");
+}
+
+/** The active mutes: a template or intent handed to a person in a store because the coach corrected it. */
+export async function activeMutes(): Promise<Array<{ scope: string; template: string | null; intent: string | null; rule: string }>> {
+  const rows = await prisma.agentCoaching.findMany({ where: { status: "ACTIVE" }, select: { lesson: true } }).catch(() => []);
+  const out: Array<{ scope: string; template: string | null; intent: string | null; rule: string }> = [];
+  for (const r of rows) {
+    const l = r.lesson as Partial<CoachLesson> | null;
+    if (l?.mute && (l.mute.template || l.mute.intent)) out.push({ scope: l.mute.scope, template: l.mute.template, intent: l.mute.intent, rule: l.rule ?? "" });
+  }
+  return out;
 }
 

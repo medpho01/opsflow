@@ -794,6 +794,10 @@ export function step(input: StepInput): StepOutput {
 
   // 6. The ladder for the checkpoint the order waits on (FR-8.7).
   let rungLabel: string | null = null;
+  // Precise next wakes (29 Oct 2026): the minute the console stops counting as live, and the minute the
+  // API-lab cap lifts — not the idle timer, which left Thyrocare's and Redcliffe's late visits unasked
+  // for up to an hour after they should have been.
+  const wakeAt: number[] = [];
   if (sop && next && !taken) {
     const ask = sop.asks[next.name];
     const a = attempts[next.name] ?? { n: 0, at: null };
@@ -820,6 +824,7 @@ export function step(input: StepInput): StepOutput {
     // An API lab whose webhook updated this order around the visit has told us where it is: no
     // WhatsApp ask for the visit checkpoints; ask only when the console has gone quiet (26 Oct 2026).
     const consoleAnswers = preVisit && consoleIsLive(order, input.labTier, now, sop?.consoleQuietMin);
+    if (consoleAnswers && order.statusUpdatedAt) wakeAt.push(order.statusUpdatedAt.getTime() + ((sop?.consoleQuietMin ?? CONSOLE_QUIET_MIN) + 1) * MIN);
     // An API lab asked "phlebo needed?" ten minutes before the visit answers "collection in
     // progress" (Orange, 25 Oct 2026): LabStack has not caught up. Inside the last quarter
     // hour it is not worth a message (Orange assigns at slot − 30 min, so −30…−15 is fair).
@@ -832,6 +837,7 @@ export function step(input: StepInput): StepOutput {
     // and only then is a person told (28 Oct 2026: "Collection stuck" tasks reached the ops group
     // at two hours with the lab never asked; such things are chased with the lab).
     const apiLadderCapped = input.labTier != null && input.labTier !== "C" && preVisit && minutesToSlot != null && minutesToSlot >= -120 && a.n > Math.max(0, ladder.indexOf("reminder"));
+    if (apiLadderCapped && slot) wakeAt.push(slot.getTime() + 121 * MIN);
     const askedSinceVisit = a.n >= Math.max(1, ladder.indexOf("reminder") + 1);
     if (visitLongPast && from === "LAB" && a.n < 99 && askedSinceVisit) {
       rungLabel = "task";
@@ -925,7 +931,7 @@ export function step(input: StepInput): StepOutput {
   }
 
   // 8. Next check.
-  const candidates = [now.getTime() + IDLE_CHECK_MIN * MIN];
+  const candidates = [now.getTime() + IDLE_CHECK_MIN * MIN, ...wakeAt];
   if (next) {
     const atRisk = next.dueAt.getTime() - AT_RISK_WINDOW_MIN * MIN;
     if (atRisk > now.getTime()) candidates.push(atRisk);

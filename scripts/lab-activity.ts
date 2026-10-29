@@ -81,7 +81,7 @@ async function main() {
   // ── 3. Late orders with no ask ──
   const journeys = await prisma.agentJourney.findMany({
     where: { closedAt: null, labId: { not: null }, checkpoints: { some: { status: "BREACHED" } } },
-    select: { id: true, orderId: true, labId: true, stage: true, attempts: true, pausedUntil: true, ownerUserId: true, checkpoints: { where: { status: "BREACHED" }, orderBy: { dueAt: "asc" }, take: 1, select: { name: true, dueAt: true } } },
+    select: { id: true, orderId: true, labId: true, stage: true, attempts: true, pausedUntil: true, ownerUserId: true, nextCheckAt: true, checkpoints: { where: { status: "BREACHED" }, orderBy: { dueAt: "asc" }, take: 1, select: { name: true, dueAt: true } } },
     take: 2000,
   });
   const askedOrders = new Set(items.filter((i) => i.status === "SENT" && i.sentAt && i.sentAt >= since).map((i) => i.orderId));
@@ -114,8 +114,10 @@ async function main() {
       else if (attempts?.n != null && sop && attempts.n >= sop.ladder.length) why = `ladder exhausted (${attempts.n}); daily re-ask due ${attempts.at ? t(new Date(Date.parse(attempts.at) + sop.reaskEveryMin * 60_000)) : "next slot"}`;
       else if (cp && !sop?.asks[cp.name]) why = `checkpoint ${cp.name} has no ask in the SOP`;
       else if (cp && ["confirmed", "visit_confirmed", "sample_at_lab", "samples_received"].includes(cp.name) && tier !== "C") why = `API lab: ${cp.name} is not asked`;
+      else if (cp && tier !== "C" && ["phlebo_assigned", "phlebo_reached", "sample_collected", "patient_visited"].includes(cp.name) && o.appointmentTime && now.getTime() - o.appointmentTime.getTime() < 120 * 60_000 && (attempts?.n ?? 0) > Math.max(0, (sop?.ladder ?? []).indexOf("reminder"))) why = `API lab: asked ${attempts?.n}× before the visit; capped until 2 h past it (${t(new Date(o.appointmentTime.getTime() + 120 * 60_000))})`;
       else if (cp && attempts?.at && Date.parse(attempts.at) > now.getTime() - (sop?.rungGapMin ?? 30) * 60_000) why = `asked ${t(new Date(attempts.at))}, waiting for the rung gap`;
-      else if (cp && attempts?.at) why = `asked ${t(new Date(attempts.at))} (${attempts.n} asks) — waiting for the next slot`;
+      else if (cp && attempts?.at) why = `asked ${t(new Date(attempts.at))} (${attempts.n} asks) — next rung at the next wake (${t(j.nextCheckAt)})`;
+      else if (j.nextCheckAt && j.nextCheckAt > now) why = `nothing stopped it — the journey has not woken since the console went quiet; next wake ${t(j.nextCheckAt)}`;
       const key = why.replace(/\d+:\d+ (am|pm)|\d+ \w{3}/g, "…");
       reasons.set(key, (reasons.get(key) ?? 0) + 1);
       const rank = why.startsWith("no reason") ? 0 : noGroup || why.startsWith("desk ") || why.startsWith("stale") ? 2 : 1;

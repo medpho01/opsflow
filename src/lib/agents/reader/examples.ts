@@ -45,7 +45,7 @@ export const EXAMPLES: Example[] = [
   L("VL000002 serviced\nVL000003 Serviced", { orders: [{ labRef: "VL000002" }, { labRef: "VL000003" }], events: [{ kind: "sample_collected", value: "yes" }] }),
   L("Booking (ID: 19000001)\nsample collected", { orders: [{ labRef: "19000001" }], events: [{ kind: "sample_collected", value: "yes" }] }),
   L("Booking (ID: 19000002)\nRescheduled for tomorrow", { orders: [{ labRef: "19000002" }], events: [{ kind: "new_appointment_time", value: "tomorrow" }] }),
-  L("As checked, the blood sample has been collected, and the urine sample will be collected by 12:15 pm", { samples: { blood: "collected", urine: "pending" }, events: [{ kind: "eta", value: "12:15 pm" }] }, "1. BLR000001 · #90001 · Patient · 98xxxxxx01 · Bengaluru · 10:15 am · urine sample pending — slot for re-collection?"),
+  L("As checked, the blood sample has been collected, and the urine sample will be collected by 12:15 pm", { samples: { blood: "collected", urine: "pending" }, events: [{ kind: "eta", value: "12:15 pm" }] }, "1. BLR000001 · #90001 · Patient · 98xxxxxx01 · Bengaluru · visited 10:15 am · urine re-collection"),
   L("The appointment has been scheduled on 27th at 8:30 am.", { events: [{ kind: "confirmed", value: "yes" }, { kind: "new_appointment_time", value: "27th 8:30 am" }] }, "please confirm (1)\n1. BLR000002 · #90002 · Patient · Tue 27 Oct 8:30 am"),
   L("VL000004 As per update Techncian in customer house", { orders: [{ labRef: "VL000004" }], events: [{ kind: "eta", value: "technician at customer house" }] }),
   L("Kindly share the cx details", { request: { kind: "details" } }),

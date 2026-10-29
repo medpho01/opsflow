@@ -119,7 +119,7 @@ describe("the ladder", () => {
     const msg = { kind: "store_message", at: at("2026-10-20T10:00:00Z"), actor: "STORE", payload: { intent: "slot", text: "94103 - urine samples not collected\nlet us know the slots available", messageId: "m-re", waMsgId: "w8" } };
     const r = wake(o, at("2026-10-20T10:01:00Z"), undefined, { events: [msg] as never, slotSummary: "Lab usually collects between 6 am and 11 am" } as never);
     const ask = r.actions.find((a) => a.action === "ask");
-    assert.equal((ask?.params.line as { note: string }).note, "urine sample pending — slot for re-collection?");
+    assert.equal((ask?.params.line as { note: string }).note, "urine re-collection");
     assert.equal(ask?.params.intent, "RECOLLECT"); // a STATUS ask was dropped as settled once the blood was collected (29 Oct 2026)
     assert.ok(r.actions.some((a) => a.action === "store_reply"));
   });
@@ -176,7 +176,7 @@ describe("the ladder", () => {
     const reply = String(r.actions.find((a) => a.action === "store_reply")?.params.text);
     assert.ok(reply.includes("urine sample pending"), reply);
     assert.ok(!/Report expected/.test(reply));
-    assert.ok(r.actions.some((a) => a.action === "ask" && String((a.params.line as { note: string }).note).startsWith("urine sample pending")));
+    assert.ok(r.actions.some((a) => a.action === "ask" && String((a.params.line as { note: string }).note) === "urine re-collection"));
   });
   it("a store asking for slots gets the lab's usual hours when known", () => {
     const o = order();

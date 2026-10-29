@@ -519,7 +519,7 @@ export function step(input: StepInput): StepOutput {
       const confidence = Number(ev.payload.confidence ?? 0.6);
       const source = String(ev.payload.source ?? "lab_reply");
       const context = typeof ev.payload.context === "string" ? ev.payload.context : "";
-      // Under a re-collection ask ("… · urine sample pending — slot for re-collection?"), the lab's
+      // Under a re-collection ask ("… · visited 10:15 am · urine re-collection"), the lab's
       // time is a promise for the missed sample, not an ETA or a fresh collection (25 Oct 2026).
       const recollect = /re-collection/i.test(context) ? (/\b(urine|stool|sputum|swab)\b/i.exec(context)?.[1]?.toLowerCase() ?? "sample") : null;
       // "the blood has been collected" under that ask is old news, not a fresh collection.
@@ -644,7 +644,7 @@ export function step(input: StepInput): StepOutput {
         if (input.labChaseable !== false && order.labId != null) {
           // The store hears "we're asking the lab for a slot" — so the lab is asked.
           const window = sendWindow(now, now, sop, { intent: "STATUS", leadMin: 0, graceMin: 480, urgentWithinMin: 0, nightBefore: false }, true, false, tz);
-          actions.push({ desk: "LAB", action: "ask", params: { checkpoint: "sample_collected", orderId: order.id, labId: order.labId, attempt: 1, dueAt: now, rung: "ask", intent: "RECOLLECT", counterparty: `LAB:${order.labId}`, windowFrom: window.from, windowTo: window.to, urgent: true, line: { orderId: order.id, patientName: order.patientName, appointment: order.appointmentTime, labRef: order.labRef ?? null, mobile: order.mobile ?? null, area: order.area ?? null, note: `${sample} sample pending — slot for re-collection?` }, forStore: true }, reason: `lab says the ${sample} sample was not collected; asking for a re-collection slot`, idemKey: `owed-recollect:${order.id}:${f.id ?? f.at.getTime()}` });
+          actions.push({ desk: "LAB", action: "ask", params: { checkpoint: "sample_collected", orderId: order.id, labId: order.labId, attempt: 1, dueAt: now, rung: "ask", intent: "RECOLLECT", counterparty: `LAB:${order.labId}`, windowFrom: window.from, windowTo: window.to, urgent: true, line: { orderId: order.id, patientName: order.patientName, appointment: order.appointmentTime, labRef: order.labRef ?? null, mobile: order.mobile ?? null, area: order.area ?? null, note: `${sample === "a" ? "sample" : sample} re-collection` }, forStore: true }, reason: `lab says the ${sample} sample was not collected; asking for a re-collection slot`, idemKey: `owed-recollect:${order.id}:${f.id ?? f.at.getTime()}` });
         } else relay = "STORE_SAMPLE_OWED_TEAM";
       }
       if (relay && order.storeId != null && f.source !== "store_msg" && !sop.handoffs.some((x) => x.onFact === f.kind && x.do === "store_alert")) {
@@ -709,7 +709,7 @@ export function step(input: StepInput): StepOutput {
           actions.push({ desk: "STORE", action: "create_task", params: { taskType: "AGENT_RESCHEDULE", orderId: order.id, cause: "SAMPLE_RECOLLECTION", evidence: [{ kind: "store_msg", at: m.at.toISOString(), text: m.text.slice(0, 300) }], action: `#${order.id}: ${note}`, dueInMinutes: 30 }, reason: `${sampleWord ?? "a"} re-collection needs a person at ${order.labName ?? "the lab"}`, idemKey: `${key}:recollect-task` });
           continue;
         }
-        const note = `${sampleWord ? `${sampleWord} sample` : "a sample"} pending — slot for re-collection?`;
+        const note = `${sampleWord ?? "sample"} re-collection`;
         const window = sendWindow(now, now, sop, { intent: "STATUS", leadMin: 0, graceMin: 480, urgentWithinMin: 0, nightBefore: false }, true, false, tz);
         actions.push({ desk: "LAB", action: "ask", params: { checkpoint: "sample_collected", orderId: order.id, labId: order.labId, attempt: 1, dueAt: now, rung: "ask", intent: "RECOLLECT", counterparty: `LAB:${order.labId}`, windowFrom: window.from, windowTo: window.to, urgent: true, line: { orderId: order.id, patientName: order.patientName, appointment: order.appointmentTime, labRef: order.labRef ?? null, mobile: order.mobile ?? null, area: order.area ?? null, note }, forStore: true }, reason: `store says ${sampleWord ?? "a"} sample was not collected${/slot/i.test(m.text) ? " and asks for slots" : ""}`, idemKey: `${key}:recollect` });
         const collectedLine = collected?.status === "MET" ? `blood collected ${fmt(collected.metAt)}; ` : "";

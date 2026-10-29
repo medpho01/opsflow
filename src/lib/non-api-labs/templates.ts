@@ -323,11 +323,11 @@ const BATCH_DEFAULT_BODIES: Record<string, { name: string; body: string }> = {
 {{items}}
 
 Tap each link to confirm, or reply *1 can't do*` },
-  BATCH_RECOLLECT: { name: "Combined: sample to re-collect", body: `{{coordinator}} sample to re-collect ({{count}}) — please share slots:
+  BATCH_RECOLLECT: { name: "Combined: sample to re-collect", body: `{{coordinator}} 🧪 sample still to collect ({{count}}) — when can your phlebo go?
 
 {{items}}
 
-Reply with the slots, e.g. *1 10:15 am, 12:30 pm*` },
+Please reply with the times you can do, e.g. *1 today 4 pm, tomorrow 8 am*. We'll get the customer to pick one.` },
   BATCH_STATUS_CHECK: { name: "Combined: status check", body: `{{coordinator}} quick check — collected? ({{count}})
 
 {{items}}
@@ -379,6 +379,12 @@ Reply with the number and the update, e.g. *1 done*.` },
 
 /** Later defaults that were replaced in turn (27 Oct 2026: the report chase's reply hint). */
 const BATCH_SUPERSEDED_LATER: Record<string, string[]> = {
+  // 29 Oct 2026: read by a lab as "tell us the time" (#94443).
+  BATCH_RECOLLECT: [`{{coordinator}} sample to re-collect ({{count}}) — please share slots:
+
+{{items}}
+
+Reply with the slots, e.g. *1 10:15 am, 12:30 pm*`],
   BATCH_REPORT_CHASE: [`{{coordinator}} reports pending ({{count}})
 
 {{items}}
@@ -518,6 +524,8 @@ const SUPERSEDED_DEFAULTS: Record<string, { bodies: string[]; names: string[] }>
   [PROVIDER_DAILY_DIGEST_TEMPLATE]: { bodies: [LEGACY_DAILY_DIGEST_BODY], names: ["Any lab: daily summary (today & tomorrow)"] },
   [NON_API_STATUS_CHECK_TEMPLATE]: { bodies: [LEGACY_STATUS_CHECK_BODY], names: [] },
   ...Object.fromEntries(Object.entries(BATCH_PHASE1_BODIES).map(([key, body]) => [key, { bodies: [body, ...(BATCH_SUPERSEDED_LATER[key] ?? [])], names: [] }])),
+  // Templates with no Phase 1 wording, replaced later.
+  ...Object.fromEntries(Object.entries(BATCH_SUPERSEDED_LATER).filter(([key]) => !(key in BATCH_PHASE1_BODIES)).map(([key, bodies]) => [key, { bodies, names: [] }])),
 };
 
 

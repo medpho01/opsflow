@@ -193,6 +193,19 @@ export async function runReplyPass(now = new Date()): Promise<ReplyPassResult> {
         // about is a question, not an answer: reply with what the lab needs (Orange, 24 Oct 2026).
         // Only a short ask for details — "kindly confirm the cx preferred slot" in a long status
         // update is not one (07:09, 26 Oct 2026).
+        // The lab read our ask the other way round — "let us know the appointment date and time so we
+        // can schedule it" under "share slots for re-collection" (29 Oct 2026, #94443): we say once,
+        // plainly, what we need. The facts it restates ("blood collected, urine not") are what we
+        // told them; only a note is kept, so the store is not told again.
+        if (combined.intent === "RECOLLECT" && ASKS_FOR_TIME_RE.test(text) && !OFFERS_TIME_RE.test(text)) {
+          await answerTimeQuestion(message, combined.items, combined.parts, now);
+          for (const item of combined.items) {
+            result.attributed += 1;
+            await applyReply(message, labId, { orderId: item.orderId, via: combined.via, ruleId: null, context: item.line }, text, text, { onlyKinds: [] });
+          }
+          result.facts += 1; // answered: not a question for a person
+          continue;
+        }
         if (DETAILS_REQUEST_RE.test(text) && text.length < 160 && !/\bslots?\b|\bRNR\b|ring no response/i.test(text)) {
           await answerDetailsRequest(message, labId, combined.items, combined.parts, now);
           result.attributed += 1;
@@ -352,6 +365,37 @@ async function applyReply(message: ReplyMessage, labId: number, match: Attributi
 
 type BatchItem = { n: number; orderId: number; ruleId: string; line: string };
 
+/** A lab asking us for a date or time instead of offering one. */
+export const ASKS_FOR_TIME_RE = /\b(let us know|tell us|inform|share|send|confirm|provide|give)\b[^\n]{0,60}\b(date|time|timing|slot)s?\b|\b(what|which) (date|time|slot)\b|\bwhen (should|shall|can|do) (we|i|the phlebo)\b|\b(customer'?s?|cx|patient'?s?) (preferred|convenient) (date|time|slot)/i;
+/** …which it is not when it also offers times ("we can do 4 pm or tomorrow 8 am, please confirm the time"). */
+export const OFFERS_TIME_RE = /\b\d{1,2}(:\d{2})?\s*(am|pm)\b/i;
+
+/** What we say to a lab that asked us for the time on a re-collection ask. */
+export function timeQuestionAnswer(lines: Array<{ orderId: number; sample: string; preferred: string | null }>): string {
+  if (lines.length === 1 && lines[0].preferred) {
+    const l = lines[0];
+    return `The customer prefers ${l.preferred} for the ${l.sample} re-collection (#${l.orderId}). Can your phlebo go then? If not, please share the times you can do.`;
+  }
+  const what = lines.length === 1 ? `the ${lines[0].sample} re-collection (#${lines[0].orderId})` : `these re-collections (${lines.map((l) => `#${l.orderId}`).join(", ")})`;
+  return `We don't have a time from the customer yet. Please share the times your phlebo can go for ${what}, e.g. *today 4 pm, tomorrow 8 am*. We'll get the customer to pick one and confirm here.`;
+}
+
+async function answerTimeQuestion(message: { waMsgId: string; groupId: string }, items: BatchItem[], parts: Map<number, string>, now: Date) {
+  const wanted = parts.size ? items.filter((i) => parts.has(i.n)) : items;
+  if (!wanted.length) return;
+  const journeys = await prisma.agentJourney.findMany({ where: { orderId: { in: wanted.map((i) => i.orderId) } }, select: { orderId: true, subStates: true } }).catch(() => []);
+  const { formatDateTime } = await import("./format");
+  const lines = wanted.map((i) => {
+    const requested = journeys.find((j) => j.orderId === i.orderId)?.subStates.find((x) => x.startsWith("requested:"))?.slice(10);
+    const at = requested ? new Date(requested) : null;
+    return { orderId: i.orderId, sample: /\b(urine|stool|sputum|swab)\b/i.exec(i.line)?.[1]?.toLowerCase() ?? "sample", preferred: at && at.getTime() > now.getTime() ? formatDateTime(at) : null };
+  });
+  const group = await prisma.waGroup.findUnique({ where: { id: message.groupId }, select: { id: true, jid: true } });
+  if (!group) return;
+  const { sendWhatsApp } = await import("@/lib/agents/executors/dispatcher");
+  await sendWhatsApp({ targetJid: group.jid, groupId: group.id, text: timeQuestionAnswer(lines), quotedWaId: message.waMsgId, now });
+}
+
 /**
  * Is this a reply to a combined message? Yes when it quotes one, or when the
  * lab's latest message from us was a combined one (sent in the last 3 h) and
@@ -400,8 +444,8 @@ async function attributeToBatch(
   message: { replyToWaId: string | null; createdAt: Date },
   labId: number,
   text: string,
-): Promise<{ items: BatchItem[]; parts: Map<number, string>; via: Attribution["via"] } | null> {
-  let batch: { items: unknown; createdAt: Date } | null = null;
+): Promise<{ items: BatchItem[]; parts: Map<number, string>; via: Attribution["via"]; intent: string } | null> {
+  let batch: { items: unknown; createdAt: Date; intent: string } | null = null;
   let via: Attribution["via"] = "REPLY_TO";
   if (message.replyToWaId) {
     const outbound = await prisma.waOutbound.findFirst({ where: { sentWaMsgId: message.replyToWaId }, select: { id: true } });
@@ -423,5 +467,5 @@ async function attributeToBatch(
   const items = batch.items as BatchItem[];
   const parts = splitBatchReply(text, items);
   if (via === "ONLY_OPEN" && parts.size === 0) return null;
-  return { items, parts, via };
+  return { items, parts, via, intent: batch.intent };
 }

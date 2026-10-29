@@ -319,7 +319,7 @@ export type ItemLineData = {
   dueAt?: Date;
   /** The lab's own order reference (API labs): what their desk searches by. */
   labRef?: string | null;
-  /** A short specific note on the line ("urine sample pending — slot for re-collection?"). */
+  /** A short specific note on the line ("urine re-collection"). */
   note?: string | null;
   /** New-order block: the patient's details the lab needs to serve the order. */
   mobile?: string | null;
@@ -372,6 +372,8 @@ export function itemLine(intent: string, item: ItemLineData, now: Date, timeZone
     ESCALATION: { when, extra: item.createdAt ? `waiting ${ago(item.createdAt, now)}` : "" },
     REPORT: { when: `visit ${when} (${ago(item.appointment, now)} ago)`, extra: "" },
     OVERDUE: { when: `${item.milestone ?? "update"} ${ago(item.dueAt, now)} late`, extra: "" },
+    // The visit's time is history here, not a slot on offer (29 Oct 2026: "10:15 am · urine sample pending" read as a time).
+    RECOLLECT: { when: `visited ${when}`, extra: "" },
   };
   const p = phrase[intent] ?? { when, extra: "" };
   return renderLoose(body ?? STYLE_DEFAULTS.BATCH_ITEM.body, {

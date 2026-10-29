@@ -37,10 +37,10 @@ export function redact(text: string): { text: string; map: Record<string, string
   return { text: out, map };
 }
 
-export type ModelResult = { text: string; model: string; inputTokens: number; outputTokens: number };
+export type ModelResult = { text: string; model: string; inputTokens: number; outputTokens: number; stopReason?: string };
 
 /** Returns null when no key is configured or the call fails; callers fall back to patterns. */
-export async function askModel(input: { purpose: Purpose; system: string; user: string; maxTokens?: number; journeyId?: string | null; redactUser?: boolean; effort?: "low" | "medium" | "high" | "xhigh" | "max"; timeoutMs?: number }): Promise<ModelResult | null> {
+export async function askModel(input: { purpose: Purpose; system: string; user: string; maxTokens?: number; journeyId?: string | null; redactUser?: boolean; effort?: "low" | "medium" | "high" | "xhigh" | "max"; timeoutMs?: number; schema?: Record<string, unknown> }): Promise<ModelResult | null> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey || process.env.AGENT_LLM === "off") return null;
   const model = MODELS[input.purpose]();
@@ -53,7 +53,8 @@ export async function askModel(input: { purpose: Purpose; system: string; user: 
     const body: Record<string, unknown> = {
       model, max_tokens: thinks ? Math.max(input.maxTokens ?? 600, 8000) : input.maxTokens ?? 600,
       system: input.system, messages: [{ role: "user", content: user }],
-      ...(thinks ? { output_config: { effort: input.effort ?? "medium" } } : {}),
+      // A JSON schema, when given, is enforced by the API: the answer always parses (structured outputs).
+      ...(thinks || input.schema ? { output_config: { ...(thinks ? { effort: input.effort ?? "medium" } : {}), ...(input.schema ? { format: { type: "json_schema", schema: input.schema } } : {}) } } : {}),
       // A request the model declines is answered by the fallback model in the same call.
       ...(fallback ? { fallbacks: "default" } : {}),
     };
@@ -67,7 +68,8 @@ export async function askModel(input: { purpose: Purpose; system: string; user: 
     const data = await response.json() as { model?: string; stop_reason?: string; content?: Array<{ type: string; text?: string }>; usage?: { input_tokens?: number; output_tokens?: number } };
     if (data.stop_reason === "refusal") throw new Error("model declined the request");
     const text = (data.content ?? []).filter((c) => c.type === "text").map((c) => c.text ?? "").join("");
-    const result = { text, model, inputTokens: data.usage?.input_tokens ?? 0, outputTokens: data.usage?.output_tokens ?? 0 };
+    const result = { text, model, inputTokens: data.usage?.input_tokens ?? 0, outputTokens: data.usage?.output_tokens ?? 0, stopReason: data.stop_reason };
+    if (data.stop_reason === "max_tokens") console.warn(`[Agents] model call (${input.purpose}) hit max_tokens (${body.max_tokens}): the answer is cut off`);
     await prisma.agentAction.create({
       data: { journeyId: input.journeyId ?? null, desk: "BRAIN", action: `llm:${input.purpose}`, params: { chars: user.length }, reason: "model call", level: "ACT", outcome: "EXECUTED", model, tokens: result.inputTokens + result.outputTokens, costPaise: estimateCostPaise(model, result.inputTokens, result.outputTokens) },
     }).catch(() => undefined);

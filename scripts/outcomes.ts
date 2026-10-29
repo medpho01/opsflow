@@ -13,8 +13,10 @@ async function main() {
   if (mode === "run") console.log(await runOutcomeAudit(new Date(), { hours: Number(h ?? 3), kind: "outcomes" }));
   console.log(await latestAuditText());
   const run = await prisma.agentBrainRun.findFirst({ where: { kind: { in: ["outcomes", "outcomes_day"] }, finishedAt: { not: null } }, orderBy: { startedAt: "desc" }, select: { findings: true, model: true, costPaise: true, error: true } });
-  const f = run?.findings as Partial<AuditFindings> | null;
-  if (!f) { if (run?.error) console.log("error:", run.error); return; }
+  const f = run?.findings as (Partial<AuditFindings> & { raw?: string }) | null;
+  if (run?.error) console.log("error:", run.error);
+  if (!f) return;
+  if (f.raw) { console.log("model answer (end):", f.raw.slice(-600)); return; }
   console.log(`\n(model ${run?.model}, ~₹${((run?.costPaise ?? 0) / 100).toFixed(0)})`);
   for (const o of f.outcomes ?? []) { console.log(`\njob ${o.id}: ${o.status}`); for (const e of o.evidence ?? []) console.log(`  ${e.time} ${e.group} ${e.order ?? ""} — ${e.note}`); }
   if (f.humanDidAgentWork?.length) { console.log("\npeople did this by hand:"); for (const x of f.humanDidAgentWork) console.log(`  ${x.time} ${x.group} ${x.order ?? ""} — ${x.what}`); }

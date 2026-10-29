@@ -53,6 +53,18 @@ const SYSTEM = [
   'Return ONLY JSON: {"summary": "3-5 sentences: what the agent got done, what it missed, and the single most valuable change", "outcomes": [{"id": "1"|"2"|"3"|"4", "status": "met"|"partly"|"missed", "evidence": [{"group": "", "time": "HH:MM", "order": "#id or null", "quote": "", "note": ""}]}], "humanDidAgentWork": [{"group": "", "time": "", "order": null, "what": ""}], "noise": [{"group": "", "time": "", "order": null, "quote": "", "why": ""}], "proposals": [{"kind": "new_playbook"|"change_playbook"|"retire_playbook"|"lesson"|"wording", "title": "", "why": "evidence in one or two sentences", "trigger": "", "action": "", "scope": "which labs / stores", "measure": "how to tell it worked", "confidence": 0.0}]}',
 ].join("\n");
 
+const str = { type: "string" } as const;
+const nstr = { type: ["string", "null"] } as const;
+const obj = (properties: Record<string, unknown>) => ({ type: "object", additionalProperties: false, required: Object.keys(properties), properties });
+/** The answer's shape, enforced by the API (structured outputs) so it always parses. */
+export const AUDIT_SCHEMA = obj({
+  summary: str,
+  outcomes: { type: "array", items: obj({ id: { type: "string", enum: ["1", "2", "3", "4"] }, status: { type: "string", enum: ["met", "partly", "missed"] }, evidence: { type: "array", items: obj({ group: str, time: str, order: nstr, quote: str, note: str }) } }) },
+  humanDidAgentWork: { type: "array", items: obj({ group: str, time: str, order: nstr, what: str }) },
+  noise: { type: "array", items: obj({ group: str, time: str, order: nstr, quote: str, why: str }) },
+  proposals: { type: "array", items: obj({ kind: { type: "string", enum: ["new_playbook", "change_playbook", "retire_playbook", "lesson", "wording"] }, title: str, why: str, trigger: str, action: str, scope: str, measure: str, confidence: { type: "number" } }) },
+});
+
 /** Audit the last `hours` of every connected store and lab group. Records one brain run; sends nothing. */
 export async function runOutcomeAudit(now = new Date(), opts: { hours?: number; kind?: string } = {}): Promise<Record<string, number>> {
   const hours = opts.hours ?? 1.25;
@@ -103,7 +115,8 @@ export async function runOutcomeAudit(now = new Date(), opts: { hours?: number; 
   ].join("\n");
 
   const run = await prisma.agentBrainRun.create({ data: { kind: opts.kind ?? "outcomes", inputs: { hours, groups: blocks.length, messages: msgs.length, orders: orderLines.length } }, select: { id: true } });
-  const r = await askModel({ purpose: "auditor", system: SYSTEM, user, maxTokens: 16000, effort: "high", timeoutMs: 600_000 });
+  // Room for the thinking and a full answer: at high effort the model can spend most of 16k thinking (29 Oct 2026: the first run's answer was cut off).
+  const r = await askModel({ purpose: "auditor", system: SYSTEM.replace(/\n\nReturn ONLY JSON:[\s\S]*$/, "\n\nAnswer in the JSON shape given; keep quotes short (under 120 characters) and at most 6 evidence items per job."), user, maxTokens: 48000, effort: "high", timeoutMs: 600_000, schema: AUDIT_SCHEMA });
   if (!r) {
     await prisma.agentBrainRun.update({ where: { id: run.id }, data: { finishedAt: new Date(), error: "no model result (no key, declined, or failed)" } }).catch(() => undefined);
     return { groups: blocks.length, messages: msgs.length, audited: 0 };
@@ -112,7 +125,7 @@ export async function runOutcomeAudit(now = new Date(), opts: { hours?: number; 
   try { findings = JSON.parse(r.text.slice(r.text.indexOf("{"), r.text.lastIndexOf("}") + 1)) as AuditFindings; } catch { findings = null; }
   await prisma.agentBrainRun.update({
     where: { id: run.id },
-    data: { finishedAt: new Date(), findings: (findings ?? { raw: r.text.slice(0, 20000) }) as object, brief: findings?.summary ?? null, model: r.model, tokens: r.inputTokens + r.outputTokens, costPaise: estimateCostPaise(r.model, r.inputTokens, r.outputTokens), ...(findings ? {} : { error: "unparsable model output" }) },
+    data: { finishedAt: new Date(), findings: (findings ?? { raw: r.text.slice(0, 20000) }) as object, brief: findings?.summary ?? null, model: r.model, tokens: r.inputTokens + r.outputTokens, costPaise: estimateCostPaise(r.model, r.inputTokens, r.outputTokens), ...(findings ? {} : { error: `unparsable model output (stop: ${r.stopReason ?? "?"}, ${r.outputTokens} output tokens)` }) },
   });
   return { groups: blocks.length, messages: msgs.length, audited: findings ? 1 : 0, proposals: findings?.proposals?.length ?? 0, noise: findings?.noise?.length ?? 0 };
 }

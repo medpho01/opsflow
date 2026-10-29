@@ -26,6 +26,9 @@ services:
       BACKFILL_DAYS: ${BACKFILL_DAYS:-3}
     volumes:
       - wa_auth:/app/auth
+      # The gateway's code from the checkout: a gateway fix is `git pull` + restart (scripts/update.sh).
+      - ./whatsapp-bot/index.mjs:/app/index.mjs:ro
+      - ./whatsapp-bot/lib:/app/lib:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
 

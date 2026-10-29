@@ -184,6 +184,12 @@ services:
     image: ${OPSFLOW_APP_IMAGE:-opsflow-app}
     volumes:
       - ./scripts:/app/scripts:ro
+      # The worker runs from source (tsx), so it reads its code from the checkout: an agent fix is
+      # `git pull` + restart (scripts/update.sh), no image build (29 Oct 2026). The web app is
+      # pre-built and keeps the image's copy until the next full deploy.
+      - ./src/lib:/app/src/lib:ro
+      - ./src/worker:/app/src/worker:ro
+      - ./src/types:/app/src/types:ro
     restart: unless-stopped
     depends_on:
       app:

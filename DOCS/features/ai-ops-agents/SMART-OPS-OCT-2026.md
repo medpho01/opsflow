@@ -162,3 +162,7 @@ Orange's four city labs share "Labstack <> Orange Ops"; connecting it to Orange 
 
 After a visit the first open milestone is usually "phlebo reached" (due slot + 15 min), whose ask is an ETA ("phlebo on the way?"). Since 26 Oct the dispatcher drops ETA and PHLEBO asks once the visit time has passed, so every such ask was queued and thrown away — and the milestone never closed (LabStack rarely marks "visited"), so the "collected?" ask on sample_collected was never reached. Now any ask after the visit time, whatever pre-collection milestone is open, goes as a STATUS ask ("collected?"). Two related fixes the same day: a urine re-collection is its own RECOLLECT ask (a STATUS ask was dropped as settled once the blood was collected), and a journey closed when its order left the window is reopened when the order comes back (a reschedule) instead of being skipped for good.
 
+## Fewer deploys (29 Oct 2026)
+
+The worker (every agent decision and send) and the WhatsApp gateway now read their code from the checkout, as scripts already did: `bash scripts/update.sh` on the VM pulls and restarts only the container whose code changed — seconds, no image build. It stops and says so when a change needs the full deploy: the web app (`src/app`, `src/components`), the database schema (`prisma/`), dependencies, or the images; then `scripts/deploy.sh` with a package built at the same commit, as before. The console's pages keep the image's copy of `src/lib` until the next full deploy; the agent runs the new code at once.
+

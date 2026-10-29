@@ -15,6 +15,7 @@ import { relayDetail } from "../journey/step";
 import { guard, loadGuardState } from "../guard/guard";
 import { enqueueOutbox } from "../executors/dispatcher";
 import { atLocal } from "@/lib/provider-rules/batching";
+import { fetchOrderSnapshots } from "../journey/window";
 import { makeLabScope, type LabScope } from "./scope";
 
 type Row = { id: number; storeId: number; orderType: string; orderStatus: string; appointmentTime: Date | null; patientName: string | null; labId: number | null; labName: string | null; labRef: string | null };
@@ -27,6 +28,9 @@ export type StoreDay = {
   centreMissed: Array<{ orderId: number; name: string; time: string; lab: string }>;
   /** Visits past their time with labs the bot cannot chase (no API, no live WhatsApp desk): the team's, counted only. */
   otherLabs?: number;
+  /** What LabStack moved or cancelled since the last summary, the store's own requests left out (29 Oct 2026). */
+  moved?: Array<{ orderId: number; name: string; when: string; reason: string }>;
+  cancelled?: Array<{ orderId: number; name: string; reason: string }>;
 };
 
 const TZ = () => process.env.TIMEZONE || "Asia/Kolkata";
@@ -84,7 +88,7 @@ export async function storeDays(storeIds: number[], now = new Date(), labOnBot: 
 
 /** The message a store reads. Needs-you first, then the counts. */
 export function digestText(day: StoreDay, storeName: string | null, now = new Date()): string | null {
-  if (!day.total && !day.owed.length) return null;
+  if (!day.total && !day.owed.length && !day.moved?.length && !day.cancelled?.length) return null;
   const lines = [`*Today's visits — ${storeName?.trim() || "update"}* (as of ${hhmm(now)})`, ""];
   if (day.rnr.length) {
     lines.push(`📞 *Customer not reachable (${day.rnr.length})* — please get them to pick up, or share a slot:`);
@@ -106,6 +110,16 @@ export function digestText(day: StoreDay, storeName: string | null, now = new Da
     day.centreMissed.forEach((o, i) => lines.push(`${i + 1}. #${o.orderId} · ${o.name} · ${o.time} · ${o.lab}`));
     lines.push("");
   }
+  if (day.moved?.length) {
+    lines.push(`🔁 *Moved by the lab (${day.moved.length})* — please let the customers know:`);
+    day.moved.forEach((o, i) => lines.push(`${i + 1}. #${o.orderId} · ${o.name} · now ${o.when}${o.reason ? ` · ${o.reason}` : ""}`));
+    lines.push("");
+  }
+  if (day.cancelled?.length) {
+    lines.push(`⛔ *Cancelled by the lab (${day.cancelled.length})* — our team is arranging the alternative:`);
+    day.cancelled.forEach((o, i) => lines.push(`${i + 1}. #${o.orderId} · ${o.name}${o.reason ? ` · ${o.reason}` : ""}`));
+    lines.push("");
+  }
   if (day.otherLabs) lines.push(`☎️ ${day.otherLabs} visit${day.otherLabs === 1 ? "" : "s"} past time with labs we chase by phone — our team will update here.`, "");
   lines.push(`✅ Collected: ${day.collected}   🕐 Still to come: ${day.upcoming}   Total: ${day.total}`);
   return lines.join("\n");
@@ -122,6 +136,7 @@ export async function runStoreDigests(now = new Date()): Promise<{ stores: numbe
   const groups = await prisma.waGroup.findMany({ where: { role: "SUPPORT", storeId: { not: null }, archivedAt: null, active: true }, select: { storeId: true, subject: true } });
   const storeIds = [...new Set(groups.map((g) => g.storeId!))].filter((id) => summariesOn.has(id) || (state.desks.get(`STORE:STORE:${id}`) ?? "OFF") !== "OFF");
   const days = await storeDays(storeIds, now, makeLabScope(state.desks));
+  for (const day of days) Object.assign(day, await consoleChangesSince(day.storeId, now).catch(() => ({})));
   const result = { stores: storeIds.length, sent: 0, recorded: 0, rnr: 0 };
   const slot = `${atLocal(now, TZ(), 0, 0).toISOString().slice(0, 10)}:${now.toLocaleTimeString("en-GB", { timeZone: TZ(), hour: "2-digit" })}`;
   for (const day of days) {
@@ -139,3 +154,44 @@ export async function runStoreDigests(now = new Date()): Promise<{ stores: numbe
   }
   return result;
 }
+
+const CUSTOMER_MADE_RE = /customer requested|requested (?:through|via|by) (?:the )?(?:api|customer|user)/i;
+
+/**
+ * What LabStack moved or cancelled for this store since its last summary (or the last 12 h). Left
+ * out: what the store itself asked for (a reschedule or cancel request about the order in its group
+ * in the 6 h before) and changes the customer made through the store's own API. One line per order,
+ * its latest change.
+ */
+export async function consoleChangesSince(storeId: number, now = new Date()): Promise<Pick<StoreDay, "moved" | "cancelled">> {
+  const last = await prisma.agentOutboxItem.findFirst({ where: { counterparty: `STORE:${storeId}`, ask: "STORE_DIGEST", status: "SENT" }, orderBy: { sentAt: "desc" }, select: { sentAt: true } });
+  const since = last?.sentAt ?? new Date(now.getTime() - 12 * 3_600_000);
+  const events = await prisma.agentJourneyEvent.findMany({ where: { kind: "console_change", at: { gt: since, lte: now }, journey: { storeId } }, orderBy: { at: "asc" }, select: { at: true, payload: true, journey: { select: { orderId: true } } } });
+  const latest = new Map<number, { at: Date; changes: string[]; to: { status?: string; appointmentTime?: string | null } }>();
+  for (const e of events) {
+    const p = e.payload as { changes?: string[]; to?: { status?: string; appointmentTime?: string | null } };
+    const changes = p.changes ?? [];
+    if (!changes.includes("RESCHEDULED") && !changes.includes("CANCELLED")) continue;
+    latest.set(e.journey.orderId, { at: e.at, changes, to: p.to ?? {} });
+  }
+  if (!latest.size) return { moved: [], cancelled: [] };
+  const ids = [...latest.keys()];
+  const snaps = await fetchOrderSnapshots(ids).catch(() => new Map());
+  const groups = await prisma.waGroup.findMany({ where: { storeId, role: "SUPPORT" }, select: { id: true } });
+  const asked = await prisma.waMessage.findMany({ where: { groupId: { in: groups.map((g) => g.id) }, ts: { gte: new Date(since.getTime() - 6 * 3_600_000) }, intent: { in: ["STORE_RESCHEDULE", "STORE_CANCEL"] } }, select: { text: true, orderIds: true, ts: true } });
+  const askedFor = (orderId: number, at: Date) => asked.some((m) => m.ts <= at && m.ts.getTime() >= at.getTime() - 6 * 3_600_000 && (m.orderIds.includes(orderId) || new RegExp(`(?<![\\d])${orderId}(?![\\d])`).test(m.text ?? "")));
+  const out: Required<Pick<StoreDay, "moved" | "cancelled">> = { moved: [], cancelled: [] };
+  for (const [orderId, c] of latest) {
+    if (askedFor(orderId, c.at)) continue;
+    const o = snaps.get(orderId);
+    const reason = (o?.statusNote ?? "").trim().slice(0, 80);
+    if (CUSTOMER_MADE_RE.test(reason)) continue;
+    const name = first(o?.patientName ?? null);
+    if (c.changes.includes("CANCELLED") || o?.orderStatus === "CANCELLED" || o?.orderStatus === "CANCELED") { out.cancelled.push({ orderId, name, reason }); continue; }
+    const when = o?.appointmentTime ?? (c.to.appointmentTime ? new Date(c.to.appointmentTime) : null);
+    if (!when) continue;
+    out.moved.push({ orderId, name, when: when.toLocaleString("en-IN", { timeZone: TZ(), weekday: "short", day: "numeric", month: "short", hour: "numeric", minute: "2-digit" }), reason });
+  }
+  return out;
+}
+

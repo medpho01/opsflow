@@ -117,6 +117,13 @@ export const sopParamsSchema = z.object({
     perHourCap: z.number().int().min(1).default(3),
     perDayCap: z.number().int().min(2).default(10),
   }).prefault({}),
+  /**
+   * How LabStack's own changes reach a store (29 Oct 2026: 12 of the bot's 22 Plum messages one
+   * morning were "the lab has rescheduled / cancelled", five of them at 7:00). "digest": listed in the
+   * 9 / 12 / 4 summary; "immediate": one message each, as before. A change the store itself asked
+   * for is never relayed back either way.
+   */
+  storeRelay: z.object({ consoleChanges: z.enum(["digest", "immediate"]).default("digest") }).prefault({}),
   /** What every lab is told unasked. The evening list: tomorrow's orders with address, tests and confirm link. */
   briefings: z.object({
     /** As soon as an order is placed: the details and the confirmation link (orders gather for a few minutes). */

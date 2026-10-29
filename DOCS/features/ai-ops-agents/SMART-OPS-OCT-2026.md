@@ -166,3 +166,12 @@ After a visit the first open milestone is usually "phlebo reached" (due slot + 1
 
 The worker (every agent decision and send) and the WhatsApp gateway now read their code from the checkout, as scripts already did: `bash scripts/update.sh` on the VM pulls and restarts only the container whose code changed — seconds, no image build. It stops and says so when a change needs the full deploy: the web app (`src/app`, `src/components`), the database schema (`prisma/`), dependencies, or the images; then `scripts/deploy.sh` with a package built at the same commit, as before. The console's pages keep the image's copy of `src/lib` until the next full deploy; the agent runs the new code at once.
 
+## What the bot is for, and what it stays quiet about (29 Oct 2026)
+
+Decided with the head of ops after a morning in which 22 of 54 Plum messages were the bot's, 12 of them reschedule/cancel relays:
+
+1. **Track every order against its milestones; check with the lab when one is missed.** Manual labs (no API: Advaith, Star, …) get the full chase at every milestone — a person's check is the only source of status. API labs (Orange, Thyrocare, Redcliffe) are read from LabStack, and asked in their group only when the console goes quiet past a milestone.
+2. **Relay what the store must act on, batch the rest.** At once: answers to the store's own questions, and failures the customer must act on (RNR with the lab's slots, a sample owed, the lab cannot do it). LabStack's own reschedules and cancellations go in the 9 / 12 / 4 summary (`storeRelay.consoleChanges`, SOP; "immediate" restores one message each). A change the store asked for is never relayed back.
+3. **Service agent = relay + tracking.** Questions that need the lab are relayed to the lab group and answered when the lab replies. Reschedules, cancellations and test changes are done by people: the bot posts nothing (handoffs are silent — `AGENT_HANDOFF_TAG=1` restores the tag), and tracks the request until LabStack shows it done.
+4. **Learn what, how and when to ask** from replies, corrections and what people still do by hand.
+

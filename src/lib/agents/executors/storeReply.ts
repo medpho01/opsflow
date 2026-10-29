@@ -106,6 +106,10 @@ const INTENT_WORDS: Record<string, string> = { status: "status question", report
 export async function storeHandoff(action: ProposedAction, ctx: ExecuteContext): Promise<ExecuteResult> {
   const storeId = (action.params.storeId as number | null | undefined) ?? ctx.storeId;
   if (storeId == null) return { outcome: "FAILED", note: "no store for this order" };
+  // Silent by default (29 Oct 2026): the team tracks these themselves, and an @mention of a LabStack
+  // person in a client's group is noise to the client. The request stays tracked (thread + task);
+  // AGENT_HANDOFF_TAG=1 brings the tag back.
+  if (process.env.AGENT_HANDOFF_TAG !== "1") return { outcome: "RECORDED", note: `silent handoff: ${String(action.params.note ?? action.params.intent ?? "request")} — tracked, nothing posted` };
   const g = await prisma.waGroup.findFirst({ where: { storeId, role: "SUPPORT", archivedAt: null, active: true }, select: { id: true } });
   if (!g) return { outcome: "FAILED", note: "no store group" };
   const { loadTeam, makeTeamMatcher } = await import("@/lib/wa/team");

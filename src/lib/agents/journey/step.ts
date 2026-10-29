@@ -343,6 +343,21 @@ const CUSTOMER_MADE = /customer requested|requested (through|via|by) (the )?(api
 const CONCRETE_TIME = /\d|\b(today|tomorrow|tonight|mon|tue|wed|thu|fri|sat|sun)/i;
 const A_REQUEST = /\b(please|kindly|pls|request(ed|s)?|wants?|asks?|asked)\b/i;
 
+/** LabStack's own changes the SOP routes to the summary instead of a message each. */
+const DIGESTED = new Set(["STORE_LAB_RESCHEDULED", "STORE_LAB_CANCELLED"]);
+
+/** What the store hears from this wake: curated, then lab-made changes held for the summary when the SOP says so. */
+export function storeBound(actions: ProposedAction[], sop: SopParams | null): ProposedAction[] {
+  const curated = curateStoreAlerts(actions);
+  return curated.filter((a) => {
+    if (a.desk !== "STORE") return true;
+    // A move the store itself asked for is the team's to confirm — never echoed back (29 Oct 2026: #95010, #94849).
+    if (a.action === "ack" && a.params.template === "STORE_CONFIRMED_CHANGE") return false;
+    if (a.action === "store_alert" && DIGESTED.has(String(a.params.template)) && (sop?.storeRelay?.consoleChanges ?? "digest") === "digest") return false;
+    return true;
+  });
+}
+
 export function curateStoreAlerts(actions: ProposedAction[]): ProposedAction[] {
   const out: ProposedAction[] = [];
   const best = new Map<string, number>(); // lab message → index in out
@@ -474,7 +489,7 @@ export function step(input: StepInput): StepOutput {
     if (!journey.closedAt) { newEvents.push({ kind: "closed", at: now, actor: "SYSTEM", payload: { reason } }); withdraw.push({ reason: reason.toLowerCase() }); }
     return {
       journey: { ...journey, closedAt: journey.closedAt ?? now, closeReason: reason, waitingFor: null, dueAt: null, dueSource: null, nextCheckAt: null, health: "ON_TRACK", plan: planOf(checkpoints, now, undefined, null) },
-      checkpoints, newEvents, actions: curateStoreAlerts(actions), withdraw, risk: null, caseworker: null,
+      checkpoints, newEvents, actions: storeBound(actions, sop), withdraw, risk: null, caseworker: null,
     };
   }
 
@@ -968,5 +983,5 @@ export function step(input: StepInput): StepOutput {
     dueAt: next?.dueAt ?? null, dueSource: next ? (next.dueSource === "PROMISE" ? "PROMISE" : "POLICY") : null,
     nextCheckAt, health, plan: planOf(checkpoints, now, next, rungLabel),
   };
-  return { journey, checkpoints, newEvents, actions: curateStoreAlerts(actions), withdraw, risk, caseworker };
+  return { journey, checkpoints, newEvents, actions: storeBound(actions, sop), withdraw, risk, caseworker };
 }

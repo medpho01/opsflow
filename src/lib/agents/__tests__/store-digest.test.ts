@@ -36,3 +36,17 @@ describe("store summary — labs the bot cannot chase (28 Oct 2026)", () => {
     assert.match(text, /☎️ 2 visits past time with labs we chase by phone — our team will update here\./);
   });
 });
+
+describe("store summary — what the lab moved or cancelled (29 Oct 2026)", () => {
+  it("lists moves and cancellations once, in the summary, instead of a message each", () => {
+    const text = digestText({ ...day, moved: [{ orderId: 95227, name: "Rajrajeshwari", when: "Thu, 29 Oct, 11:00 am", reason: "" }], cancelled: [{ orderId: 94478, name: "Chaithra", reason: "" }] }, "Labstack<>Plum Ops", new Date("2026-10-29T03:30:00Z"))!;
+    assert.match(text, /🔁 \*Moved by the lab \(1\)\*[\s\S]*#95227 · Rajrajeshwari · now Thu, 29 Oct, 11:00 am/);
+    assert.match(text, /⛔ \*Cancelled by the lab \(1\)\*[\s\S]*#94478 · Chaithra/);
+  });
+  it("a summary with only changes still goes", () => {
+    const empty = { storeId: 6, total: 0, collected: 0, upcoming: 0, rnr: [], owed: [], missed: [], centreMissed: [] };
+    assert.equal(digestText(empty, "Plum"), null);
+    assert.ok(digestText({ ...empty, moved: [{ orderId: 1, name: "A", when: "Fri 8 am", reason: "" }] }, "Plum"));
+  });
+});
+

@@ -10,6 +10,8 @@ const H = 3_600_000;
 const IST = "Asia/Kolkata";
 const SOP_C = resolveParams(LAB_SOP_V1, { labTier: "C", labId: 2229 });
 const SOP_A = resolveParams(LAB_SOP_V1, { labTier: "A", labId: 4 });
+/** The relay of LabStack's changes one message each, as before 29 Oct 2026 (now an SOP choice; the default is the summary). */
+const SOP_IMMEDIATE = { ...SOP_C, storeRelay: { consoleChanges: "immediate" as const } };
 
 const order = (o: Partial<OrderSnapshot> = {}): OrderSnapshot => ({
   id: 92288, orderType: "HOME_SAMPLE", orderStatus: "ORDER_SCHEDULED",
@@ -308,24 +310,22 @@ describe("the store desk", () => {
 });
 
 describe("the console moving", () => {
-  it("a move the store asked for is confirmed as done, not announced as the lab's reschedule (28 Oct 2026)", () => {
+  it("a move the store asked for is never echoed back; a lab's move waits for the summary unless the SOP says immediate (29 Oct 2026)", () => {
     const o = order({ appointmentTime: at("2026-10-28T04:30:00Z") });
-    const asked = wake(o, at("2026-10-28T09:46:00Z"), undefined, { events: [{ kind: "store_message", at: at("2026-10-28T09:46:00Z"), actor: "STORE", payload: { intent: "reschedule", text: "94301 - Kindly reschedule for tomorrow 9am", messageId: "m-mv", waMsgId: "w-mv" } }] as never });
+    const msg = [{ kind: "store_message", at: at("2026-10-28T09:46:00Z"), actor: "STORE", payload: { intent: "reschedule", text: "94301 - Kindly reschedule for tomorrow 9am", messageId: "m-mv", waMsgId: "w-mv" } }];
+    const asked = wake(o, at("2026-10-28T09:46:00Z"), undefined, { events: msg as never, sop: SOP_IMMEDIATE } as never);
     assert.ok(asked.journey.subStates.includes("change_pending"));
     const moved = order({ orderStatus: "RESCHEDULED", appointmentTime: at("2026-10-29T03:30:00Z"), statusUpdatedAt: at("2026-10-28T09:50:00Z"), statusNote: "Patient unavailable" });
-    const out = wake(moved, at("2026-10-28T09:51:00Z"), asked);
-    const confirm = out.actions.find((a) => a.idemKey.startsWith("console-moved:"));
-    assert.equal(confirm?.action, "ack");
-    assert.equal(confirm?.params.template, "STORE_CONFIRMED_CHANGE");
-    assert.match(String(confirm?.params.change), /^moved to Thu, 29 Oct, 9:00 am as requested$/);
+    // Store asked: nothing to the store, whatever the SOP — the team confirms (Plum #95010, #94849).
+    const out = wake(moved, at("2026-10-28T09:51:00Z"), asked, { sop: SOP_IMMEDIATE } as never);
+    assert.ok(!out.actions.some((a) => a.desk === "STORE" && a.idemKey.startsWith("console-moved:")), out.actions.map((a) => a.idemKey).join(","));
     assert.ok(!out.journey.subStates.includes("change_pending"));
-    // Moved to a different time than asked: the lab's news, not "as requested" (28 Oct 2026: asked 9:45, moved to 8:30).
-    const elsewhere = order({ orderStatus: "RESCHEDULED", appointmentTime: at("2026-10-29T02:30:00Z"), statusUpdatedAt: at("2026-10-28T09:50:00Z") });
-    const other = wake(elsewhere, at("2026-10-28T09:51:00Z"), asked);
-    assert.equal(other.actions.find((a) => a.idemKey.startsWith("console-moved:"))?.params.template, "STORE_LAB_RESCHEDULED");
-    // Unasked, the same move is the lab's news for the store.
-    const lab = wake(moved, at("2026-10-28T09:51:00Z"), wake(o, at("2026-10-28T09:46:00Z")));
+    // Unasked, with the SOP on "immediate": the lab's news, one message.
+    const lab = wake(moved, at("2026-10-28T09:51:00Z"), wake(o, at("2026-10-28T09:46:00Z"), undefined, { sop: SOP_IMMEDIATE } as never), { sop: SOP_IMMEDIATE } as never);
     assert.equal(lab.actions.find((a) => a.idemKey.startsWith("console-moved:"))?.params.template, "STORE_LAB_RESCHEDULED");
+    // Default SOP ("digest"): nothing now — it is in the next 9 / 12 / 4 summary.
+    const quiet = wake(moved, at("2026-10-28T09:51:00Z"), wake(o, at("2026-10-28T09:46:00Z")));
+    assert.ok(!quiet.actions.some((a) => a.desk === "STORE"));
   });
   it("after the visit time the lab is asked 'collected?', not 'phlebo on the way?' — which the dispatcher drops (29 Oct 2026)", () => {
     const o = order({ orderStatus: "PHLEBO_ASSIGNED", phleboName: "Ravi", appointmentTime: at("2026-10-21T02:00:00Z") }); // 7:30 am IST
@@ -368,8 +368,10 @@ describe("the console moving", () => {
     const before = wake(o, at("2026-10-21T00:10:00Z"));
     const out = wake(order({ orderStatus: "CANCELED" }), at("2026-10-21T00:40:00Z"), before);
     assert.ok(out.journey.closedAt);
-    // The store and the ops group hear a lab's cancellation (27 Oct 2026); the lab is asked nothing.
-    assert.deepEqual(out.actions.map((a) => a.action).sort(), ["ops_post", "store_alert"]);
+    // The ops group hears a lab's cancellation at once; the store in the next summary (29 Oct 2026); the lab is asked nothing.
+    assert.deepEqual(out.actions.map((a) => a.action).sort(), ["ops_post"]);
+    const immediate = wake(order({ orderStatus: "CANCELED" }), at("2026-10-21T00:40:00Z"), wake(o, at("2026-10-21T00:10:00Z"), undefined, { sop: SOP_IMMEDIATE } as never), { sop: SOP_IMMEDIATE } as never);
+    assert.deepEqual(immediate.actions.map((a) => a.action).sort(), ["ops_post", "store_alert"]);
     assert.equal(out.withdraw[0].reason, "cancelled");
   });
   it("patient missed keeps the journey open, waiting on ops", () => {
@@ -501,10 +503,10 @@ describe("the time a store asked for (26 Oct 2026)", () => {
 
 describe("the lab cancelled (27 Oct 2026)", () => {
   const before = order({ orderStatus: "ORDER_SCHEDULED", appointmentTime: at("2026-10-27T02:30:00Z") });
-  it("the store hears it with the reason; the ops group hears it when the area is non-serviceable", () => {
-    const r1 = wake(before, at("2026-10-26T04:00:00Z"));
+  it("the store hears it with the reason (immediate SOP); the ops group hears it when the area is non-serviceable", () => {
+    const r1 = wake(before, at("2026-10-26T04:00:00Z"), undefined, { sop: SOP_IMMEDIATE } as never);
     const cancelled = { ...before, orderStatus: "CANCELLED", statusNote: "NSA (Non-Serviceable Area)", statusUpdatedAt: at("2026-10-26T05:00:00Z") };
-    const r2 = wake(cancelled, at("2026-10-26T05:01:00Z"), r1);
+    const r2 = wake(cancelled, at("2026-10-26T05:01:00Z"), r1, { sop: SOP_IMMEDIATE } as never);
     const alert = r2.actions.find((a) => a.action === "store_alert");
     assert.equal(alert?.params.template, "STORE_LAB_CANCELLED");
     assert.match(String(alert?.params.detail), /Non-Serviceable/);

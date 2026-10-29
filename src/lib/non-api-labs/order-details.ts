@@ -143,10 +143,10 @@ export function formatTestBreakdown(packages: OrderPackage[], directTests: strin
  *          CBC, HbA1c, Lipid Profile, …
  *   Also: Vitamin D
  */
-export function testsForLab(details: Pick<OrderContactDetails, "packages" | "directTests" | "tests"> | null, indent = "       "): string | null {
+export function testsForLab(details: Pick<OrderContactDetails, "packages" | "directTests" | "tests"> | null, indent = "       ", cap = MAX_TESTS_PER_PACKAGE): string | null {
   if (!details) return null;
   const unique = (tests: string[]) => [...new Set((tests ?? []).map((t) => t.trim()).filter(Boolean))];
-  const capped = (tests: string[]) => (tests.length > MAX_TESTS_PER_PACKAGE ? `${tests.slice(0, MAX_TESTS_PER_PACKAGE).join(", ")} +${tests.length - MAX_TESTS_PER_PACKAGE} more` : tests.join(", "));
+  const capped = (tests: string[]) => (tests.length > cap ? `${tests.slice(0, cap).join(", ")} +${tests.length - cap} more` : tests.join(", "));
   const lines: string[] = [];
   for (const pkg of details.packages ?? []) {
     const name = pkg.name?.trim();

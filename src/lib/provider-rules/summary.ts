@@ -9,7 +9,7 @@
  * link to confirm it.
  */
 import { confirmationUrl, ConfirmationLinkConfigError } from "@/lib/non-api-labs/confirmation-link";
-import type { OrderContactDetails } from "@/lib/non-api-labs/order-details";
+import { testsForLab, type OrderContactDetails } from "@/lib/non-api-labs/order-details";
 import { isAwaitingConfirmation } from "@/lib/non-api-labs/source-check";
 import type { TemplateVariables } from "@/lib/non-api-labs/templates";
 import { dayLabel, durationText, formatTime, formatDate } from "./format";
@@ -34,7 +34,9 @@ export type EntryBodies = { tomorrow?: string; past?: string };
  * The numbered list. `scope` decides how "when" reads: a time for one day, else date and time since.
  * What an entry carries is the entry template's choice (27 Oct 2026: the pending-reports list
  * repeated every address and every test of a 13-test package — the lab needed the id, the name,
- * the phone and the visit date). Package names, never their tests.
+ * the phone and the visit date). Package names, never their tests — on that list only: tomorrow's
+ * list is what the phlebo collects from, and a manual lab does not know what a package holds, so
+ * each package carries every one of its tests (29 Oct 2026).
  */
 export function orderListBlock(entries: SummaryEntry[], rule: Pick<MessageRule, "summaryScope">, now: Date, timeZone: string, bodies: EntryBodies = {}): string {
   if (entries.length === 0) return "No orders on this list.";
@@ -47,7 +49,7 @@ export function orderListBlock(entries: SummaryEntry[], rule: Pick<MessageRule, 
     const centre = order.orderType === "CENTER_VISIT" ? `Centre visit${details?.storeName ? ` – ${details.storeName}` : ""}` : "";
     const packages = [...new Set((details?.packages ?? []).map((p) => p.name?.trim()).filter(Boolean))];
     const direct = [...new Set((details?.directTests ?? []).map((t) => t.trim()).filter(Boolean))];
-    const what = [...packages, ...direct].join("; ") || details?.tests || "";
+    const what = (sameDay ? testsForLab(details, "      ", Infinity) : null) || [...packages, ...direct].join("; ") || details?.tests || "";
     const state = !isAwaitingConfirmation(order.orderStatus) ? "" : confirmedInChat ? "✅ _Confirmed in chat – not yet in LabStack_" : "⚠️ _Not confirmed_";
     return renderLoose(body, {
       n: String(index + 1), time, date_time: dateTime, name: order.patientName || "Name not on file", order_id: String(order.id),

@@ -23,18 +23,22 @@ const tomorrow = { summaryScope: "APPOINTMENT_TOMORROW" } as Pick<MessageRule, "
 const now = new Date("2026-10-06T13:30:00Z");
 
 describe("summary list", () => {
-  it("one entry per order: time, patient, order, phone, address, map, package names — never the tests inside a package (27 Oct 2026)", () => {
+  it("one entry per order: time, patient, order, phone, address, map, each package with all its tests (29 Oct 2026: a manual lab does not know what a package holds)", () => {
     assert.equal(orderListBlock([entry()], tomorrow, now, IST), [
       "*1. 8:00 am* – Varun · #101",
       "   📍 Flat 2, 4th Cross, Solan – 173212",
       "   🗺️ https://maps.google.com/?q=30.900000,77.100000",
-      "   🧪 Full Body Check; Vitamin D",
+      "   🧪 Full Body Check (2 tests):",
+      "      CBC, HbA1c",
+      "      Also: Vitamin D",
     ].join("\n"));
     assert.equal(orderListBlock([entry({}, { patientMobile: "98xxxxxx01" })], tomorrow, now, IST).split("\n")[0], "*1. 8:00 am* – Varun · #101 · 📞 98xxxxxx01");
     assert.equal(orderListBlock([entry({ orderType: "CENTER_VISIT" }, { storeName: "Plum Solan" })], tomorrow, now, IST), [
       "*1. 8:00 am* – Varun · #101",
       "   🏥 Centre visit – Plum Solan",
-      "   🧪 Full Body Check; Vitamin D",
+      "   🧪 Full Body Check (2 tests):",
+      "      CBC, HbA1c",
+      "      Also: Vitamin D",
     ].join("\n"));
   });
 
@@ -51,6 +55,13 @@ describe("summary list", () => {
   it("caps the list and counts the rest", () => {
     const many = Array.from({ length: 15 }, (_, i) => entry({ id: i + 1 }));
     assert.match(orderListBlock(many, tomorrow, now, IST), /…and 3 more — full list in LabStack\.$/);
+  });
+
+  it("tomorrow's list never cuts a package short", () => {
+    const tests = Array.from({ length: 34 }, (_, i) => `T${i + 1}`);
+    const block = orderListBlock([entry({}, { packages: [{ name: "Full Body", tests }], directTests: [] })], tomorrow, now, IST);
+    assert.match(block, /🧪 Full Body \(34 tests\):\n      T1, .*, T34$/);
+    assert.doesNotMatch(block, /more/);
   });
 });
 

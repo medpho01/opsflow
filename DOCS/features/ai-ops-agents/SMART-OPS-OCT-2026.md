@@ -181,3 +181,10 @@ Decided with the head of ops after a morning in which 22 of 54 Plum messages wer
 
 **Playbooks (next).** The lab SOP splits into playbooks, one job each — manual-lab chase, API-lab check-in, report chase, re-collection, store updates, store service, lab briefings — under one channel limit per group. The set is not fixed: an auditor proposal of kind `new_playbook` that recurs becomes a draft playbook (trigger, recipient, message, timing, scope) that runs in **shadow** — it records what it would have sent — and is graded the same way against the groups; a person promotes it, changes it or retires it on the Playbooks page, which shows every playbook's messages, replies and corrections. Playbooks the auditor finds adding noise are proposed for retirement the same way.
 
+
+## From the 10:31 audit (29 Oct 2026)
+
+- **A store's question keeps its lab ask through a reschedule.** LabStack moving the visit withdraws the routine asks, not the one the store's own question started (#93413: "are the samples collected?" was withdrawn as "rescheduled"). A re-route still drops it. And "rescheduled" to a time already gone is not an answer: the lab is asked.
+- **A lab's time reaches the store only if it is still ahead,** and never a visit-day time once LabStack moved the visit to another day (#95010, #95226). LabStack's own moves were already in the summary since the 10:02 change.
+- **Manual labs that stay silent: the store hears it before the visit.** `store/atrisk.ts`, every 10 minutes from 07:00 to 21:00: a visit within 60 minutes at a lab with no API, which the agent has asked 2+ times with no answer and nothing collected, goes in one message per store — "At risk — the lab hasn't confirmed these visits yet", each order once a day, no one tagged. It skips orders a person on our side already wrote about in the store group. Live store desks (or stores with summaries on) receive it; shadow desks record it. Per-order store warnings stay "suggest" in the guard.
+- **No "which order?" when the sender just named one.** A message with no id is about the order its sender named in the last 10 minutes, if exactly one.

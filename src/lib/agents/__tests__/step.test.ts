@@ -360,6 +360,7 @@ describe("the console moving", () => {
     assert.deepEqual(out.journey.attempts, {});
     assert.equal(out.journey.rescheduleCount, 1);
     assert.equal(out.withdraw.length, 1);
+    assert.equal(out.withdraw[0].keepForStore, true, "a lab ask the store's question started stays (29 Oct 2026, #93413)");
     assert.equal(out.checkpoints.find((c) => c.name === "phlebo_assigned")?.dueSource, "RESET");
     assert.equal(out.journey.health, "ON_TRACK");
   });
@@ -610,5 +611,28 @@ describe("a manual lab is asked again every day until the console moves (27 Oct 
     assert.equal(reask?.params.urgent, false);
     const r3 = wake(o, at("2026-10-25T09:00:00Z"), r2, { labTier: "C" } as never); // same day, later
     assert.ok(!r3.actions.some((a) => a.action === "ask"), "not twice in a day");
+  });
+
+  it("'are the samples collected?' on an order still 'rescheduled' to a time gone by asks the lab, never answers 'rescheduled' (29 Oct 2026, #93413)", () => {
+    const o = order({ orderStatus: "RESCHEDULED", appointmentTime: at("2026-10-27T02:30:00Z"), statusUpdatedAt: at("2026-10-26T09:00:00Z"), labName: "Advaith" });
+    const msg = { kind: "store_message", at: at("2026-10-29T03:33:00Z"), actor: "STORE", payload: { intent: "status", text: "93413 please check if samples are collected", messageId: "m-st", waMsgId: "w-st" } };
+    const r = wake(o, at("2026-10-29T03:33:30Z"), undefined, { events: [msg] as never });
+    const reply = r.actions.find((a) => a.action === "store_reply");
+    assert.equal(reply?.params.template, "STORE_CHECKING");
+    assert.ok(r.actions.some((a) => a.action === "ask" && a.params.forStore === true), "the lab is asked");
+    // A move to a time still ahead is the answer.
+    const ahead = order({ orderStatus: "RESCHEDULED", appointmentTime: at("2026-10-30T02:30:00Z"), statusUpdatedAt: at("2026-10-29T02:00:00Z") });
+    const r2 = wake(ahead, at("2026-10-29T03:33:30Z"), undefined, { events: [msg] as never });
+    assert.equal(r2.actions.find((a) => a.action === "store_reply")?.params.template, "STORE_STATUS_ANSWER");
+  });
+  it("a lab's time is not relayed to the store once the visit moved to another day (29 Oct 2026, #95010)", () => {
+    const moved = order({ orderStatus: "RESCHEDULED", appointmentTime: at("2026-10-30T03:30:00Z"), statusUpdatedAt: at("2026-10-29T03:00:00Z") });
+    const eta = { kind: "fact", at: at("2026-10-29T04:00:00Z"), actor: "LAB", payload: { kind: "eta", value: "phlebo will reach by 10:45 am", confidence: 0.9, source: "lab_reply", fullText: "phlebo will reach by 10:45 am" } };
+    const r = wake(moved, at("2026-10-29T04:01:00Z"), undefined, { events: [eta] as never });
+    assert.ok(!r.actions.some((a) => a.params.template === "STORE_LAB_PROMISE"));
+    // The same answer on a visit today is relayed.
+    const today = order({ appointmentTime: at("2026-10-29T05:00:00Z"), statusUpdatedAt: at("2026-10-28T09:00:00Z") });
+    const r2 = wake(today, at("2026-10-29T04:01:00Z"), undefined, { events: [eta] as never });
+    assert.ok(r2.actions.some((a) => a.params.template === "STORE_LAB_PROMISE"));
   });
 });

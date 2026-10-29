@@ -157,7 +157,7 @@ export async function wakeJourney(orderId: number, reason: WakeReason, opts: Wak
     return saved.id;
   });
 
-  for (const w of out.withdraw) await withdrawOutbox(orderId, w.reason, w.asks).catch(() => 0);
+  for (const w of out.withdraw) await withdrawOutbox(orderId, w.reason, w.asks, { keepForStore: w.keepForStore }).catch(() => 0);
 
   let executed = 0; let review = 0;
   // A ladder rung counts as an ask only when it actually went out. In shadow (or

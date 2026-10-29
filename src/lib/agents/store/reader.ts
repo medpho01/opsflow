@@ -204,6 +204,8 @@ async function answerClosedOrder(orderId: number, storeId: number, intent: Store
 }
 
 const ENGAGED_WINDOW_MS = 2 * 3_600_000;
+/** How far back a sender's own message naming an order carries over to their next one without an id. */
+export const SENDER_RECENT_MS = 10 * 60_000;
 
 /** Did a team member write about this order in the group recently? Then the order is theirs for now. */
 async function teamEngaged(groupId: string, orderId: number, at: Date, isTeam: (sender: string, jid: string | null) => unknown): Promise<boolean> {
@@ -294,6 +296,14 @@ export async function runStoreReader(now = new Date()): Promise<StoreReaderResul
       const t = await threadForNudge({ storeId: g.storeId!, replyToWaId: m.replyToWaId, at: m.ts }).catch(() => null);
       if (t) { links = [{ orderId: t.orderId, via: "THREAD" }]; thread = t; }
       else if (!m.replyToWaId) candidates = await openThreadOrders(g.storeId!, m.ts).catch(() => []);
+    }
+    // "Can you add insulin resistance?" a few minutes after the same person named #95226 three times
+    // is about #95226 — never "Which order is this about?" (29 Oct 2026). Only when that sender named
+    // exactly one of this store's orders in the last 10 minutes.
+    if (!links.length && !wroteAnId && !candidates.length && m.senderJid) {
+      const recentOwn = await prisma.waMessage.findMany({ where: { groupId: m.groupId, senderJid: m.senderJid, direction: "IN", ts: { gte: new Date(m.ts.getTime() - SENDER_RECENT_MS), lt: m.ts } }, select: { text: true } }).catch(() => []);
+      const named = await writtenOrders(recentOwn.map((x) => x.text ?? "").join("\n"), g.storeId!);
+      if (named.length === 1) links = [{ orderId: named[0], via: "SENDER_RECENT" }];
     }
     // "2251875 - @Gokul to follow up": the store tagging its own colleague is not asking us.
     if (!links.length && /@\d{5,}/.test(text) && !addressed) continue;

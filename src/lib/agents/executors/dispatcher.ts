@@ -72,9 +72,11 @@ export async function enqueueOutbox(input: EnqueueInput): Promise<{ id: string; 
 }
 
 /** Drop queued items about an order (reschedule, cancel, answered). */
-export async function withdrawOutbox(orderId: number, reason: string, asks?: string[]) {
+export async function withdrawOutbox(orderId: number, reason: string, asks?: string[], opts: { keepForStore?: boolean } = {}) {
   const where = { orderId, status: "QUEUED", ...(asks ? { ask: { in: asks } } : {}) };
-  const rows = await prisma.agentOutboxItem.findMany({ where, select: { id: true } });
+  const all = await prisma.agentOutboxItem.findMany({ where, select: { id: true, counterparty: true, payload: true } });
+  // keepForStore: a lab ask the store's own question started stays (it carries immediate: true).
+  const rows = opts.keepForStore ? all.filter((r) => !(r.counterparty.startsWith("LAB:") && (r.payload as { immediate?: boolean } | null)?.immediate === true)) : all;
   if (!rows.length) return 0;
   await prisma.agentOutboxItem.updateMany({ where: { id: { in: rows.map((r) => r.id) } }, data: { status: "WITHDRAWN" } });
   await prisma.agentAction.updateMany({ where: { id: { in: (await prisma.agentOutboxItem.findMany({ where: { id: { in: rows.map((r) => r.id) } }, select: { actionId: true } })).map((r) => r.actionId).filter((x): x is string => !!x) } }, data: { outcome: "BLOCKED", blockedBy: `withdrawn: ${reason}` } });

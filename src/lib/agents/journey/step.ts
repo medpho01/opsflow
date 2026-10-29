@@ -114,8 +114,8 @@ export type StepOutput = {
   checkpoints: CheckpointState[];
   newEvents: JourneyEvent[];
   actions: ProposedAction[];
-  /** Asks to withdraw from the outbox (reschedule, cancel, answered). */
-  withdraw: Array<{ asks?: string[]; reason: string }>;
+  /** Asks to withdraw from the outbox (reschedule, cancel, answered). keepForStore leaves a lab ask the store's own question started. */
+  withdraw: Array<{ asks?: string[]; reason: string; keepForStore?: boolean }>;
   risk: ReturnType<typeof scoreRisk> | null;
   /** No deterministic step fits: the case worker decides (DESIGN.md §4.6). */
   caseworker: { reason: string; text: string; checkpoint: string | null; factKind?: string | null; intent?: string | null; at: Date } | null;
@@ -431,7 +431,11 @@ export function step(input: StepInput): StepOutput {
     checkpoints = waiveImplied(buildCheckpoints(order, checkpoints, now, { recomputePreCollection: resets, rebuildAll: rebuild, labTier: input.labTier, sop: input.sop }));
     if (resets || rebuild) {
       journey = { ...journey, attempts: {}, subStates: journey.subStates.filter((s) => s !== "change_pending" && !s.startsWith("requested:")), rescheduleCount: journey.rescheduleCount + (changes.includes("RESCHEDULED") ? 1 : 0) };
-      withdraw.push({ reason: changes.includes("REROUTED") ? "re-routed to another lab" : "rescheduled" });
+      // A question the store asked ("are the samples collected?") still needs the lab's answer after a
+      // move — the console's "rescheduled" is not that answer (29 Oct 2026, #93413: the ask to Advaith
+      // was withdrawn as "rescheduled" and a person relayed it by hand). A re-route drops it: the old
+      // lab is not the one to ask.
+      withdraw.push({ reason: changes.includes("REROUTED") ? "re-routed to another lab" : "rescheduled", keepForStore: !changes.includes("REROUTED") });
     }
     newEvents.push({
       kind: "console_change", at: now, actor: "CONSOLE",
@@ -559,7 +563,11 @@ export function step(input: StepInput): StepOutput {
           withdraw.push({ asks: undefined, reason: `lab promised ${map.checkpoint} by ${promiseAt.toISOString()}` });
           // The store hears the promise too ("lab says report by 6 pm"), so it stops asking — only when
           // the lab stated the time. The default is the agent's own chase timer, never the lab's word.
-          if (stated && order.storeId != null && (map.checkpoint === "report_delivered" || map.checkpoint === "phlebo_reached" || map.checkpoint === "sample_collected")) {
+          // Never a time already gone, and never a visit-day time once the visit moved to another day
+          // (29 Oct 2026: #95226 heard a garbled date; #95010 an ETA after its reschedule).
+          const day = (d: Date) => d.toLocaleDateString("en-CA", { timeZone: tz });
+          const movedAway = map.checkpoint !== "report_delivered" && order.orderStatus === "RESCHEDULED" && order.appointmentTime != null && day(order.appointmentTime) !== day(promiseAt);
+          if (stated && order.storeId != null && promiseAt.getTime() > now.getTime() && !movedAway && (map.checkpoint === "report_delivered" || map.checkpoint === "phlebo_reached" || map.checkpoint === "sample_collected")) {
             actions.push({ desk: "STORE", action: "store_alert", params: { template: "STORE_LAB_PROMISE", orderId: order.id, storeId: order.storeId, fact: "promise", text: `${LABELS[map.checkpoint].toLowerCase()} by ${LABELS_TIME(promiseAt, tz)}`, at: ev.at.toISOString() }, reason: `lab promised ${map.checkpoint} by ${LABELS_TIME(promiseAt, tz)}`, idemKey: `promise-relay:${order.id}:${map.checkpoint}:${promiseAt.getTime()}` });
           }
         } else {
@@ -665,7 +673,11 @@ export function step(input: StepInput): StepOutput {
       const report = checkpoints.find((c) => c.name === "report_delivered");
       const fmt = (d: Date | null | undefined) => (d ? d.toLocaleString("en-IN", { timeZone: tz, hour: "numeric", minute: "2-digit" }) : "");
       const fmtDay = (d: Date | null | undefined) => (d ? d.toLocaleString("en-IN", { timeZone: tz, weekday: "short", day: "numeric", month: "short", hour: "numeric", minute: "2-digit" }) : "");
+      // "Rescheduled" to a time already gone is not where the order is now (29 Oct 2026, #93413:
+      // "rescheduled since 27 Oct" answered "are the samples collected?"). The lab is asked.
+      const staleMove = order.orderStatus === "RESCHEDULED" && (!slot || slot.getTime() < now.getTime() - 30 * MIN);
       const known = (() => {
+        if (staleMove) return null;
         if (order.orderStatus === "REPORT_DELIVERED") return { statusLine: "report delivered.", nextLine: "" };
         if (order.orderStatus === "PATIENT_MISSED") return { statusLine: `the lab marked the patient as missed${order.statusNote ? ` (${order.statusNote.slice(0, 80)})` : ""}.`, nextLine: "Please share a new slot." };
         if (order.orderStatus === "RESCHEDULED") return { statusLine: `rescheduled to ${fmtDay(slot)}${order.statusNote ? ` (${order.statusNote.slice(0, 80)})` : ""}.`, nextLine: "" };
@@ -730,7 +742,7 @@ export function step(input: StepInput): StepOutput {
         case "status": case "report": {
           const slotPassed = slot != null && now.getTime() > slot.getTime() + 30 * MIN;
           // A console that says the patient was missed or the visit was moved explains a passed slot itself.
-          const consoleExplains = order.orderStatus === "PATIENT_MISSED" || order.orderStatus === "RESCHEDULED";
+          const consoleExplains = order.orderStatus === "PATIENT_MISSED" || (order.orderStatus === "RESCHEDULED" && !staleMove);
           // The report's due time has passed with no report: never "expected by <a time gone by>",
           // whatever the question was called (28 Oct 2026, 4:12 pm: "sample collected 7:38 am.
           // Report expected by Tue, 27 Oct" — the store had just written "the TAT is breached").

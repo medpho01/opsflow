@@ -109,9 +109,13 @@ describe("the ladder", () => {
     const o = order();
     // Two lab messages (one alert per message): collected, then not responding.
     const fact = (kind: string, value: string, id: string, iso: string) => ({ kind: "fact", at: at(iso), actor: "LAB", payload: { kind, value, confidence: 0.9, source: "lab_reply", attributedBy: "REPLY_TO", factId: id } });
-    const r = wake(o, at("2026-10-21T02:31:00Z"), undefined, { events: [fact("sample_collected", "collected", "f1", "2026-10-21T02:20:00Z"), fact("patient_unavailable", "customer not responding", "f2", "2026-10-21T02:30:00Z")] as never });
+    const events = [fact("sample_collected", "collected", "f1", "2026-10-21T02:20:00Z"), fact("patient_unavailable", "customer not responding", "f2", "2026-10-21T02:30:00Z")] as never;
+    const r = wake(o, at("2026-10-21T02:31:00Z"), undefined, { events, sop: { ...SOP_C, storeRelay: { consoleChanges: "digest", collected: "immediate" } } } as never);
     const alerts = r.actions.filter((a) => a.action === "store_alert").map((a) => a.params.template);
     assert.ok(alerts.includes("STORE_COLLECTED")); assert.ok(alerts.includes("STORE_PATIENT_UNREACHABLE"));
+    // By default "collected" waits for the summary; a failure the customer must act on still goes at once (29 Oct 2026).
+    const quiet = wake(o, at("2026-10-21T02:31:00Z"), undefined, { events }).actions.filter((a) => a.action === "store_alert").map((a) => a.params.template);
+    assert.ok(!quiet.includes("STORE_COLLECTED") && quiet.includes("STORE_PATIENT_UNREACHABLE"));
     assert.equal(alerts.filter((t) => t === "STORE_PATIENT_UNREACHABLE").length, 1); // the SOP's own hand-off, not twice
   });
   it("'urine not collected, slots?' asks the lab for a re-collection slot, naming the sample, and answers the store", () => {

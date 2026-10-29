@@ -104,8 +104,22 @@ export async function wakeJourney(orderId: number, reason: WakeReason, opts: Wak
   // A store asking for slots gets the lab's usual hours (slots.ts); fetched only when asked.
   const slotSummary = events.some((e) => e.kind === "store_message" && (e.payload as { intent?: string }).intent === "slot") && order.labId != null
     ? await typicalSlotsFor(order.labId, order.labName).catch(() => null) : null;
+  // A rung withdrawn before it went out (a re-route, a reschedule) was never asked: it does not count,
+  // or the ladder waits a day for an answer to a message nobody saw (29 Oct 2026, #92602). The step
+  // proposes it again under the same key, and the guard revives it.
+  const journeyState = row ? toJourneyState(row) : null;
+  if (journeyState && Object.keys(journeyState.attempts).length) {
+    const withdrawn = await prisma.agentAction.findMany({ where: { journeyId: row!.id, desk: "LAB", outcome: "BLOCKED", blockedBy: { startsWith: "withdrawn:" } }, select: { params: true } }).catch(() => []);
+    const attempts = { ...journeyState.attempts };
+    for (const [cp, a] of Object.entries(attempts)) {
+      if (!a || !a.n || a.n >= 99) continue;
+      const gone = withdrawn.some((w) => { const p = w.params as { checkpoint?: string; attempt?: number }; return p.checkpoint === cp && Number(p.attempt) === a.n; });
+      if (gone) attempts[cp] = { ...a, n: a.n - 1, at: a.n - 1 === 0 ? null : a.at };
+    }
+    journeyState.attempts = attempts;
+  }
   const out = step({
-    now, order, journey: row ? toJourneyState(row) : null, checkpoints: row ? row.checkpoints.map(toCheckpointState) : [], events,
+    now, order, journey: journeyState, checkpoints: row ? row.checkpoints.map(toCheckpointState) : [], events,
     sop: sopParams, sopVersionId: labSop?.versionId ?? null, labTier, portalReady, slotSummary, labSilentHours: opts.labSilentHours ?? null, timeZone: process.env.TIMEZONE || "Asia/Kolkata", labChaseable: labChaseableNow,
   });
   const j = out.journey;

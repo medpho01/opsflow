@@ -357,6 +357,7 @@ export function storeBound(actions: ProposedAction[], sop: SopParams | null): Pr
     // A move the store itself asked for is the team's to confirm — never echoed back (29 Oct 2026: #95010, #94849).
     if (a.action === "ack" && a.params.template === "STORE_CONFIRMED_CHANGE") return false;
     if (a.action === "store_alert" && DIGESTED.has(String(a.params.template)) && (sop?.storeRelay?.consoleChanges ?? "digest") === "digest") return false;
+    if (a.action === "store_alert" && a.params.template === "STORE_COLLECTED" && (sop?.storeRelay?.collected ?? "digest") === "digest") return false;
     return true;
   });
 }

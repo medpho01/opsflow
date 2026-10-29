@@ -127,7 +127,9 @@ export const sopParamsSchema = z.object({
    * 9 / 12 / 4 summary; "immediate": one message each, as before. A change the store itself asked
    * for is never relayed back either way.
    */
-  storeRelay: z.object({ consoleChanges: z.enum(["digest", "immediate"]).default("digest") }).prefault({}),
+  // collected: the lab's "sample collected" as its own store message ("immediate") or only in the 9/12/4
+  // summary's count ("digest", 29 Oct 2026: four unasked posts in 30 min, one wrong). A store asking still gets its answer.
+  storeRelay: z.object({ consoleChanges: z.enum(["digest", "immediate"]).default("digest"), collected: z.enum(["digest", "immediate"]).default("digest") }).prefault({}),
   /**
    * Chasing reports on the agent's own initiative (29 Oct 2026). Manual labs are always chased — a
    * person asking is their only status. API labs (Orange, Thyrocare, Redcliffe) are paused: their

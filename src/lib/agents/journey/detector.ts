@@ -11,13 +11,14 @@
 import prisma from "@/lib/db/client";
 import { fetchActiveWindow } from "./window";
 import { fingerprint } from "./step";
+import { TERMINAL_STATUSES } from "./policy";
 import { wakeJourney, type WakeReason } from "./run";
 import { loadGuardState } from "../guard/guard";
 import { loadLiveSops } from "../sop/load";
 import { loadDirectory } from "../directory";
 import type { OrderSnapshot } from "./policy";
 
-export type SweepResult = { window: number; opened: number; changed: number; due: number; closedOut: number; errors: number };
+export type SweepResult = { window: number; opened: number; changed: number; due: number; closedOut: number; errors: number ; reopened?: number };
 
 export type Wake = (orderId: number, reason: WakeReason, order?: OrderSnapshot, labSilentHours?: number | null) => Promise<void>;
 
@@ -48,7 +49,25 @@ export async function sweep(now = new Date(), wake?: Wake, opts: { reason?: Wake
   // week, and a wake of a closed journey does nothing. They used to be re-queued as "opened" on
   // every sweep — ~1,500 a minute, a backlog that delayed every real wake (26 Oct 2026).
   const unknownIds = orders.filter((o) => !known.has(o.id)).map((o) => o.id);
-  const closed = new Set(unknownIds.length ? (await prisma.agentJourney.findMany({ where: { orderId: { in: unknownIds }, closedAt: { not: null } }, select: { orderId: true } })).map((j) => j.orderId) : []);
+  const closedRows = unknownIds.length ? await prisma.agentJourney.findMany({ where: { orderId: { in: unknownIds }, closedAt: { not: null } }, select: { id: true, orderId: true, closeReason: true, consoleFingerprint: true } }) : [];
+  const closed = new Set(closedRows.map((j) => j.orderId));
+  // A closed journey whose order is live again is reopened (29 Oct 2026: #93413 left the window as
+  // its old visit aged past a week, was rescheduled to 29 Oct 8 am, came back — and was skipped
+  // for good, so nobody asked Advaith at 8:30). Live again: not delivered or cancelled, and either it
+  // left the window or LabStack has changed it since the journey closed.
+  const reopen: string[] = [];
+  for (const j of closedRows) {
+    const o = byId.get(j.orderId);
+    if (!o || TERMINAL_STATUSES.has(o.orderStatus)) continue;
+    if (j.closeReason === "LEFT_WINDOW" || j.consoleFingerprint !== fingerprint(o)) reopen.push(j.id);
+  }
+  if (reopen.length) {
+    await prisma.agentJourney.updateMany({ where: { id: { in: reopen } }, data: { closedAt: null, closeReason: null, nextCheckAt: now } });
+    await prisma.agentJourneyEvent.createMany({ data: reopen.map((id) => ({ journeyId: id, at: now, kind: "reopened", actor: "SYSTEM", payload: { reason: "order live again in LabStack" }, applied: true })) });
+    for (const j of closedRows) if (reopen.includes(j.id)) { closed.delete(j.orderId); known.set(j.orderId, { orderId: j.orderId, consoleFingerprint: j.consoleFingerprint, nextCheckAt: now }); }
+    result.reopened = reopen.length;
+  }
+  const reopenedOrders = new Set(closedRows.filter((j) => reopen.includes(j.id)).map((j) => j.orderId));
 
   const [guardState, sops, directory] = await Promise.all([loadGuardState(), loadLiveSops(), loadDirectory()]);
   const silence = await labSilence([...new Set(orders.map((o) => o.labId).filter((x): x is number => x != null))], now);
@@ -60,6 +79,7 @@ export async function sweep(now = new Date(), wake?: Wake, opts: { reason?: Wake
     let reason: WakeReason | null = null;
     if (!j) reason = "opened";
     else if (j.consoleFingerprint !== fingerprint(order)) reason = "console_change";
+    else if (reopenedOrders.has(order.id)) reason = "console_change";
     else if (opts.all) reason = opts.reason ?? "block_start";
     else if (j.nextCheckAt && j.nextCheckAt.getTime() <= now.getTime()) reason = "timer";
     if (!reason) continue;

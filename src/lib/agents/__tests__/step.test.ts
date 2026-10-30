@@ -173,6 +173,21 @@ describe("the ladder", () => {
     const note = String((headsUp?.params.line as { note: string } | undefined)?.note);
     assert.ok(note.startsWith("urine re-collection requested at 10:45"), note);
   });
+  it("a lab's answer to our re-collection ask reaches the store even when it quotes someone else, and a slot screenshot's times are read (30 Oct 2026, #95568)", () => {
+    const o = order({ id: 95568, labId: 4, orderStatus: "SAMPLE_COLLECTED", appointmentTime: at("2026-10-30T01:00:00Z") });
+    const now = at("2026-10-30T02:56:00Z");
+    const ev = (iso: string, kind: string, value: string, fullText: string, context = "") => ({ kind: "fact", at: at(iso), actor: "LAB", payload: { kind, value, confidence: 0.5, source: "lab_reply", attributedBy: "ORDER_ID", factId: iso, fullText, context } });
+    const run = (events: StepInput["events"], openRecollect: string | null) => step({ now, order: o, journey: null, checkpoints: [], events, sop: SOP_A, labTier: "A", timeZone: IST, openRecollect });
+    const alert = (r: StepOutput) => r.actions.find((a) => a.action === "store_alert")?.params.detail as string | undefined;
+    // "Time: 10:15 am" quoting a team member's message: no re-collection context on the line itself.
+    const booked = [ev("2026-10-30T02:55:00Z", "note", "Day: Today, 30th October 2026", "BLR6386734 Day: Today, 30th October 2026 Time: 10:15 am\n[screenshot] Booking confirmed for 10:15 am. Booked: 10:15 am.")];
+    assert.equal(alert(run(booked, "urine")), "urine re-collection scheduled for 10:15 am");
+    assert.equal(alert(run(booked, null)), undefined); // no open ask: a note, as before
+    // A slot screenshot quoting our ask: the slots it shows, for the store to pick from.
+    const slots = [ev("2026-10-30T02:48:00Z", "note", "slot booking screen", "BLR6386734\n[screenshot] Slot booking screen. Slots: 10:15 am, 11:45 am, 1:15 pm.", "1. BLR6386734 · #95568 · urine pending")];
+    assert.match(alert(run(slots, "urine")) ?? "", /^urine re-collection slots: 10:15 am, 11:45 am, 1:15 pm — reply with the customer's pick/);
+  });
+
   it("'urine samples not collected' read as a status question is still a re-collection, never 'sample collected'", () => {
     const o = order({ orderStatus: "SAMPLE_COLLECTED", labRef: "BLR6366831", appointmentTime: at("2026-10-25T04:45:00Z") });
     const msg = { kind: "store_message", at: at("2026-10-25T05:00:00Z"), actor: "STORE", payload: { intent: "status", text: "94178 - urine samples not collected\nlet us know the slots available today", messageId: "m-u", waMsgId: "w6" } };

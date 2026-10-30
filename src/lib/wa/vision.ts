@@ -21,7 +21,10 @@ const PROMPT =
   '{"summary":"<=100 words describing the image for the agent, incl. any status, date or time slots shown",' +
   '"orderIds":[integer order/booking/lab-order ids visible, e.g. 73077],' +
   '"labRefs":["city-prefixed refs like BLR5560683, VL…, or long booking ids if any"],' +
-  '"status":"any order status shown or empty","patient":"patient name if shown or empty"}';
+  '"status":"any order status shown or empty","patient":"patient name if shown or empty",' +
+  // A slot screen read as "booking interface with available slots" told the store nothing (30 Oct 2026, #95568).
+  '"slots":["every appointment time offered as available, each with am/pm, e.g. 10:15 am or 7 am-8 am; empty if none"],' +
+  '"booked":"the one appointment time shown as booked or confirmed (not merely offered), e.g. 10:15 am; empty if none"}';
 
 export async function interpretImage(waMsgId: string): Promise<VisionResult> {
   const msg = await prisma.waMessage.findUnique({ where: { waMsgId }, select: { id: true, mediaType: true, ocrText: true, ocrJson: true, orderIds: true, refIds: true } });
@@ -38,7 +41,7 @@ export async function interpretImage(waMsgId: string): Promise<VisionResult> {
   const buf = Buffer.isBuffer(media.bytes) ? media.bytes : Buffer.from(media.bytes);
   const mime = /^image\/(png|jpeg|gif|webp)$/.test(media.mime || "") ? media.mime : "image/jpeg";
 
-  let parsed: { summary?: string; orderIds?: number[]; labRefs?: string[]; status?: string; patient?: string } = {};
+  let parsed: { summary?: string; orderIds?: number[]; labRefs?: string[]; status?: string; patient?: string; slots?: unknown[]; booked?: string } = {};
   try {
     const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
@@ -61,7 +64,10 @@ export async function interpretImage(waMsgId: string): Promise<VisionResult> {
   } catch (e) {
     return { ok: false, status: 502, error: "vision-call-error", detail: (e as Error).message };
   }
-  const ocrText = (parsed.summary || "").trim();
+  // The times are spelled out after the summary, so whatever reads the sentence sees them.
+  const booked = String(parsed.booked ?? "").trim();
+  const slots = (parsed.slots ?? []).map((x) => String(x).trim()).filter(Boolean).slice(0, 12);
+  const ocrText = [(parsed.summary || "").trim(), booked ? `Booked: ${booked}.` : "", slots.length ? `Slots: ${slots.join(", ")}.` : ""].filter(Boolean).join(" ");
   if (!ocrText) return { ok: false, status: 502, error: "empty interpretation" };
 
   // Only ids that exist as orders count — the model reads digits, LabStack says which are orders.

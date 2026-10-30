@@ -203,3 +203,11 @@ Decided with the head of ops after a morning in which 22 of 54 Plum messages wer
 - **A withdrawn rung does not count as asked.** Before each step, a ladder rung whose action was withdrawn before it went out is taken back off the count, so the step proposes it again under the same key and the guard revives it (the e92db2a fix alone left #92602 waiting a day: the count still said "asked at 9:39").
 - **"Sample collected" waits for the summary** (SOP `storeRelay.collected`, default "digest"; "immediate" restores one message each). Four unasked "collected" posts reached Plum in 30 minutes, one of them wrong (#95227 had a PSA/gender block). A store asking about the order still gets its answer; failures the customer must act on still go at once.
 - **The rung gap runs only from an ask that went out.** #92602 showed `report_delivered: { n: 0, at: 9:39 }` — no ask counted, yet the day-long report gap ran from the withdrawn one. With no ask counted there is no gap, and a blocked rung reverted to 0 drops its time.
+
+## Re-collection answers reach the store (30 Oct 2026)
+
+#95568: Plum asked for urine slots at 8:15; the ask reached Orange at 8:16. Orange answered twice and Plum heard neither — the team relayed by hand.
+- **8:18, a slot screenshot quoting our ask.** The image reader summed it up as "booking interface with available slots" — no times — so there was nothing to relay. The reader now also returns the times it shows (`Slots: …`) and the one booked (`Booked: …`), appended to the reading.
+- **8:25, "Time: 10:15 am", quoting a team member's message.** The re-collection was recognised only from the line of our ask a reply quotes, so this read as a plain note. Now any lab answer within a day of a re-collection ask (`openRecollect`) is read as its answer: one time → "urine re-collection scheduled for 10:15 am", two or more → the slots for the store to pick from. The lab's own words win over a screenshot's times.
+- A later "collected" that does not quote the ask is no longer dropped as old news — it may be the re-collection itself.
+- Both answers had been drafted by the case worker and held for review; the relay now goes out on its own.

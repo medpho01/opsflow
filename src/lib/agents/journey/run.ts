@@ -118,9 +118,15 @@ export async function wakeJourney(orderId: number, reason: WakeReason, opts: Wak
     }
     journeyState.attempts = attempts;
   }
+  // A re-collection we asked the lab for in the last day: its answer may not quote our ask (30 Oct 2026, #95568).
+  const recollectAsk = await prisma.agentAction.findFirst({
+    where: { orderId, desk: "LAB", action: "ask", outcome: "EXECUTED", createdAt: { gte: new Date(now.getTime() - 24 * 3_600_000) }, params: { path: ["intent"], equals: "RECOLLECT" } },
+    orderBy: { createdAt: "desc" }, select: { params: true },
+  }).catch(() => null);
+  const openRecollect = recollectAsk ? (/\b(urine|stool|sputum|swab)\b/i.exec(String((recollectAsk.params as { line?: { note?: string } }).line?.note ?? ""))?.[1]?.toLowerCase() ?? "sample") : null;
   const out = step({
     now, order, journey: journeyState, checkpoints: row ? row.checkpoints.map(toCheckpointState) : [], events,
-    sop: sopParams, sopVersionId: labSop?.versionId ?? null, labTier, portalReady, slotSummary, labSilentHours: opts.labSilentHours ?? null, timeZone: process.env.TIMEZONE || "Asia/Kolkata", labChaseable: labChaseableNow,
+    sop: sopParams, sopVersionId: labSop?.versionId ?? null, labTier, portalReady, slotSummary, labSilentHours: opts.labSilentHours ?? null, timeZone: process.env.TIMEZONE || "Asia/Kolkata", labChaseable: labChaseableNow, openRecollect,
   });
   const j = out.journey;
   const snapshot = j.consoleSnapshot ? { ...j.consoleSnapshot, __journey: { rescheduleCount: j.rescheduleCount } } : null;

@@ -106,6 +106,13 @@ export type StepInput = {
   labSilentHours?: number | null;
   /** Can the desk chase this lab itself (a connected group with a LIVE lab desk)? Default yes. */
   labChaseable?: boolean;
+  /**
+   * The sample we asked the lab to re-collect within the last day ("urine"), if any. A lab answers
+   * that ask however it likes — quoting a team member's message, or with only its own reference —
+   * and the answer is still about the re-collection (30 Oct 2026, #95568: Orange's "Time: 10:15 am"
+   * quoted our team's message, so it read as a plain note and Plum never heard).
+   */
+  openRecollect?: string | null;
   timeZone?: string;
 };
 
@@ -525,20 +532,34 @@ export function step(input: StepInput): StepOutput {
       const context = typeof ev.payload.context === "string" ? ev.payload.context : "";
       // Under a re-collection ask ("Available slots for urine sample collection?" · "… · urine pending"), the lab's
       // time is a promise for the missed sample, not an ETA or a fresh collection (25 Oct 2026).
-      const recollect = /re-collection|\b(urine|stool|sputum|swab|sample) pending\b/i.test(context) ? (/\b(urine|stool|sputum|swab)\b/i.exec(context)?.[1]?.toLowerCase() ?? "sample") : null;
-      // "the blood has been collected" under that ask is old news, not a fresh collection.
-      if (recollect && kind === "sample_collected" && !parsePromiseTime(String(ev.payload.fullText ?? value), ev.at, tz)) continue;
-      if (recollect && order.storeId != null && ["eta", "new_appointment_time", "note", "sample_collected"].includes(kind)) {
+      const underAsk = /re-collection|\b(urine|stool|sputum|swab|sample) pending\b/i.test(context);
+      const recollect = underAsk ? (/\b(urine|stool|sputum|swab)\b/i.exec(context)?.[1]?.toLowerCase() ?? "sample")
+        : source !== "store_msg" && input.openRecollect ? input.openRecollect : null;
+      // "the blood has been collected" in reply to that ask is old news, not a fresh collection; a
+      // later "collected" that does not quote it may be the re-collection itself.
+      if (underAsk && kind === "sample_collected" && !parsePromiseTime(String(ev.payload.fullText ?? value), ev.at, tz)) continue;
+      if (recollect && order.storeId != null && ["eta", "new_appointment_time", "note", ...(underAsk ? ["sample_collected"] : [])].includes(kind)) {
         // Several times offered ("10:15, 12:30, 3 pm"): slots to choose from, passed to the store as
         // they are — the store picks, a person books (29 Oct 2026: the team pasted these by hand).
-        const offered = [...new Set((String(ev.payload.fullText ?? value).match(/\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b(?:\s*[-–to]+\s*\d{1,2}(?::\d{2})?\s*(?:am|pm))?/gi) ?? []).map((x) => x.replace(/\s+/g, " ").toLowerCase()))];
+        // The lab's own words decide; a screenshot's times count only when the words carry none (30 Oct
+        // 2026, #95568: a slot screenshot, then "Time: 10:15 am" with a booking screenshot).
+        const parts = String(ev.payload.fullText ?? value).split(/\n\[screenshot\]/);
+        // A screenshot with no caption arrives as the reading alone.
+        const bare = parts.length === 1 && /\b(Booked|Slots): /.test(parts[0]);
+        const said = bare ? "" : parts[0];
+        const shot = bare ? parts[0] : parts[1] ?? "";
+        const times = (t: string) => [...new Set((t.match(/\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b(?:\s*[-–to]+\s*\d{1,2}(?::\d{2})?\s*(?:am|pm))?/gi) ?? []).map((x) => x.replace(/\s+/g, " ").toLowerCase()))];
+        const shotTimes = times(/Booked: ([^\n]+?)\./.exec(shot)?.[1] ?? /Slots: ([^\n]+?)\./.exec(shot)?.[1] ?? shot);
+        const offered = times(said).length ? times(said) : shotTimes;
         if (offered.length >= 2) {
           actions.push({ desk: "STORE", action: "store_alert", params: { template: "STORE_LAB_PROMISE", orderId: order.id, storeId: order.storeId, fact: "recollection_slots", detail: `${recollect} re-collection slots: ${offered.slice(0, 6).join(", ")} — reply with the customer's pick and we'll book it`, at: ev.at.toISOString() }, reason: `lab offers ${recollect} re-collection slots: ${offered.join(", ")}`, idemKey: `recollect-slots:${order.id}:${ev.at.getTime()}` });
           continue;
         }
-        const when = parsePromiseTime(value, ev.at, tz) ?? parsePromiseTime(String(ev.payload.fullText ?? ""), ev.at, tz);
+        const when = offered.length === 1
+          ? parsePromiseTime(said || shot, ev.at, tz) ?? parsePromiseTime(offered[0], ev.at, tz)
+          : parsePromiseTime(value, ev.at, tz) ?? parsePromiseTime(said, ev.at, tz);
         if (when) {
-          actions.push({ desk: "STORE", action: "store_alert", params: { template: "STORE_LAB_PROMISE", orderId: order.id, storeId: order.storeId, fact: "recollection_promise", detail: `${recollect} re-collection by ${LABELS_TIME(when, tz)}`, at: ev.at.toISOString() }, reason: `lab offers ${recollect} re-collection by ${LABELS_TIME(when, tz)}`, idemKey: `recollect-promise:${order.id}:${when.getTime()}` });
+          actions.push({ desk: "STORE", action: "store_alert", params: { template: "STORE_LAB_PROMISE", orderId: order.id, storeId: order.storeId, fact: "recollection_promise", detail: `${recollect} re-collection ${offered.length === 1 ? "scheduled for" : "by"} ${LABELS_TIME(when, tz)}`, at: ev.at.toISOString() }, reason: `lab offers ${recollect} re-collection by ${LABELS_TIME(when, tz)}`, idemKey: `recollect-promise:${order.id}:${when.getTime()}` });
           newEvents.push({ kind: "promise", at: ev.at, actor: "LAB", payload: { kind: "recollection", checkpoint: "sample_collected", dueAt: when, text: value.slice(0, 200), superseded: false } });
           continue; // not a fresh "collected", not an ETA
         }

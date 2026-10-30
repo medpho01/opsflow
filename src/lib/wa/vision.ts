@@ -26,10 +26,11 @@ const PROMPT =
   '"slots":["every appointment time offered as available, each with am/pm, e.g. 10:15 am or 7 am-8 am; empty if none"],' +
   '"booked":"the one appointment time shown as booked or confirmed (not merely offered), e.g. 10:15 am; empty if none"}';
 
-export async function interpretImage(waMsgId: string): Promise<VisionResult> {
+/** `fresh`: read the image again, ignoring the cached reading; `save: false`: change nothing (a replay). */
+export async function interpretImage(waMsgId: string, opts: { fresh?: boolean; save?: boolean } = {}): Promise<VisionResult> {
   const msg = await prisma.waMessage.findUnique({ where: { waMsgId }, select: { id: true, mediaType: true, ocrText: true, ocrJson: true, orderIds: true, refIds: true } });
   if (!msg) return { ok: false, status: 404, error: "not found" };
-  if (msg.ocrText) {
+  if (msg.ocrText && !opts.fresh) {
     const j = (msg.ocrJson ?? {}) as { orderIds?: number[]; labRefs?: string[]; status?: string | null; patient?: string | null; model?: string; at?: string };
     return { ok: true, cached: true, ocrText: msg.ocrText, ocrJson: { model: j.model ?? VISION_MODEL, at: j.at ?? "", orderIds: j.orderIds ?? [], labRefs: j.labRefs ?? [], status: j.status ?? null, patient: j.patient ?? null }, resolvedOrderIds: j.orderIds ?? [], candRefs: j.labRefs ?? [] };
   }
@@ -84,6 +85,7 @@ export async function interpretImage(waMsgId: string): Promise<VisionResult> {
   }
   resolvedOrderIds = [...new Set(resolvedOrderIds)];
   const ocrJson = { model: VISION_MODEL, at: new Date().toISOString(), orderIds: resolvedOrderIds, labRefs: candRefs, status: parsed.status || null, patient: parsed.patient || null };
+  if (opts.save === false) return { ok: true, cached: false, ocrText, ocrJson, resolvedOrderIds, candRefs };
   await prisma.waMessage.update({ where: { id: msg.id }, data: { ocrText, ocrJson, orderIds: { set: [...new Set([...(msg.orderIds || []), ...resolvedOrderIds])] }, refIds: { set: [...new Set([...(msg.refIds || []), ...candRefs])] } } }).catch(() => {});
   await prisma.waMedia.update({ where: { waMsgId }, data: { ocrText } }).catch(() => {});
   return { ok: true, cached: false, ocrText, ocrJson, resolvedOrderIds, candRefs };

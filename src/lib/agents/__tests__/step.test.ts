@@ -201,6 +201,14 @@ describe("the ladder", () => {
     assert.ok(!pick.actions.some((a) => a.action === "create_task"), "the lab books it; no console task");
     assert.equal(detail(run("2026-10-30T03:10:30Z", [lab("2026-10-30T03:10:00Z", "note", "Ok done")], pick)), "urine re-collection booked for 11:45 am");
     assert.match(detail(run("2026-10-30T03:10:30Z", [lab("2026-10-30T03:10:00Z", "patient_unavailable", "11:45 not available, can do 1:15 pm")], pick)), /the time asked isn't possible; the lab offers 1:15 pm/);
+    // "11:45 works" with no id, linked to the open slot request: still a pick, not "your request is with the lab".
+    const bare = run("2026-10-30T03:00:30Z", [{ kind: "store_message", at: at("2026-10-30T03:00:00Z"), actor: "STORE", payload: { intent: "other", text: "11:45 works", messageId: "m-b", waMsgId: "w-b", thread: { kind: "slot", waitingOn: "LAB", openedAt: "2026-10-30T02:45:00.000Z" } } }], slots);
+    assert.ok(bare.actions.some((a) => a.idemKey.endsWith(":recollect-pick")), bare.actions.map((a) => a.idemKey).join(","));
+    // A report delivered without the urine: the loop still runs, the order is not closed.
+    const delivered = step({ now: at("2026-10-30T02:49:00Z"), order: { ...o, orderStatus: "REPORT_DELIVERED" }, journey: null, checkpoints: [], events: [lab("2026-10-30T02:48:00Z", "note", "Slots: 10:15 am, 11:45 am.")] as never, sop: SOP_A, labTier: "A", timeZone: IST, openRecollect: "urine" });
+    assert.equal(delivered.journey.closedAt, null);
+    assert.match(detail(delivered), /^urine re-collection slots: 10:15 am, 11:45 am/);
+    assert.notEqual(step({ now: at("2026-10-30T02:49:00Z"), order: { ...o, orderStatus: "REPORT_DELIVERED" }, journey: null, checkpoints: [], events: [], sop: SOP_A, labTier: "A", timeZone: IST }).journey.closedAt, null);
     // A report question with a time is not a pick.
     const rep = run("2026-10-30T03:00:30Z", [{ kind: "store_message", at: at("2026-10-30T03:00:00Z"), actor: "STORE", payload: { intent: "status", text: "95568 report by 5 pm?", messageId: "m-r", waMsgId: "w-r" } }], slots);
     assert.ok(!rep.actions.some((a) => a.idemKey.endsWith(":recollect-pick")));

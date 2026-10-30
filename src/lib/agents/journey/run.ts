@@ -78,8 +78,11 @@ export async function repeatsRecentAlert(orderId: number, action: ProposedAction
 export async function wakeJourney(orderId: number, reason: WakeReason, opts: WakeContext = {}): Promise<WakeResult> {
   const now = opts.now ?? new Date();
   const empty = (skipped: string): WakeResult => ({ orderId, opened: false, closed: false, events: 0, actions: 0, executed: 0, review: 0, skipped });
-  const row = await prisma.agentJourney.findUnique({ where: { orderId }, include: { checkpoints: true } });
-  if (row?.closedAt) return { ...empty("journey closed"), closed: true };
+  let row = await prisma.agentJourney.findUnique({ where: { orderId }, include: { checkpoints: true } });
+  if (row?.closedAt) {
+    if (!(await reopenForRecollect(orderId, row.id, now))) return { ...empty("journey closed"), closed: true };
+    row = await prisma.agentJourney.findUnique({ where: { orderId }, include: { checkpoints: true } });
+  }
 
   // Read the order now, not from the job: a queued wake carries the snapshot of when it was
   // queued, and a backlog made the agent act on 20-minute-old statuses (26 Oct 2026: a
@@ -118,12 +121,7 @@ export async function wakeJourney(orderId: number, reason: WakeReason, opts: Wak
     }
     journeyState.attempts = attempts;
   }
-  // A re-collection we asked the lab for in the last day: its answer may not quote our ask (30 Oct 2026, #95568).
-  const recollectAsk = await prisma.agentAction.findFirst({
-    where: { orderId, desk: "LAB", action: "ask", outcome: "EXECUTED", createdAt: { gte: new Date(now.getTime() - 24 * 3_600_000) }, params: { path: ["intent"], equals: "RECOLLECT" } },
-    orderBy: { createdAt: "desc" }, select: { params: true },
-  }).catch(() => null);
-  const openRecollect = recollectAsk ? (/\b(urine|stool|sputum|swab)\b/i.exec(String((recollectAsk.params as { line?: { note?: string } }).line?.note ?? ""))?.[1]?.toLowerCase() ?? "sample") : null;
+  const openRecollect = await openRecollectFor(orderId, now);
   const out = step({
     now, order, journey: journeyState, checkpoints: row ? row.checkpoints.map(toCheckpointState) : [], events,
     sop: sopParams, sopVersionId: labSop?.versionId ?? null, labTier, portalReady, slotSummary, labSilentHours: opts.labSilentHours ?? null, timeZone: process.env.TIMEZONE || "Asia/Kolkata", labChaseable: labChaseableNow, openRecollect,
@@ -232,9 +230,35 @@ export async function wakeJourney(orderId: number, reason: WakeReason, opts: Wak
 }
 
 /** Record something that happened to an order (a fact, a person's action) and wake it. */
+/**
+ * The sample we asked a lab to re-collect in the last day ("urine"), or null. Its answer may not quote
+ * our ask (30 Oct 2026, #95568), and the store's pick may come with no id: both belong to it.
+ */
+export async function openRecollectFor(orderId: number, now: Date): Promise<string | null> {
+  const ask = await prisma.agentAction.findFirst({
+    where: { orderId, desk: "LAB", action: "ask", outcome: "EXECUTED", createdAt: { gte: new Date(now.getTime() - 24 * 3_600_000) }, params: { path: ["intent"], equals: "RECOLLECT" } },
+    orderBy: { createdAt: "desc" }, select: { params: true },
+  }).catch(() => null);
+  return ask ? (/\b(urine|stool|sputum|swab)\b/i.exec(String((ask.params as { line?: { note?: string } }).line?.note ?? ""))?.[1]?.toLowerCase() ?? "sample") : null;
+}
+
+/**
+ * A journey closed on "report delivered" with a re-collection still open is reopened: the lab's slots
+ * and the store's pick were being dropped, because a report sent without the urine closes the order
+ * (30 Oct 2026, replay). It closes again once the day of the re-collection ask has passed.
+ */
+async function reopenForRecollect(orderId: number, journeyId: string, now: Date): Promise<boolean> {
+  const j = await prisma.agentJourney.findUnique({ where: { id: journeyId }, select: { closedAt: true, closeReason: true } });
+  if (!j?.closedAt) return true;
+  if (j.closeReason !== "REPORT_DELIVERED" || !(await openRecollectFor(orderId, now))) return false;
+  await prisma.agentJourney.update({ where: { id: journeyId }, data: { closedAt: null, closeReason: null } });
+  return true;
+}
+
 export async function recordJourneyEvent(orderId: number, event: JourneyEvent, wake = true): Promise<boolean> {
   const journey = await prisma.agentJourney.findUnique({ where: { orderId }, select: { id: true, closedAt: true } });
-  if (!journey || journey.closedAt) return false;
+  if (!journey) return false;
+  if (journey.closedAt && !(await reopenForRecollect(orderId, journey.id, event.at > new Date() ? event.at : new Date()))) return false;
   await prisma.agentJourneyEvent.create({ data: { journeyId: journey.id, at: event.at, kind: event.kind, actor: event.actor, payload: event.payload as Prisma.InputJsonValue, applied: false } });
   if (wake) await wakeJourney(orderId, "inbound").catch((error) => console.error(`[Agents] wake after ${event.kind} failed:`, error instanceof Error ? error.message : error));
   return true;

@@ -188,6 +188,24 @@ describe("the ladder", () => {
     assert.match(alert(run(slots, "urine")) ?? "", /^urine re-collection slots: 10:15 am, 11:45 am, 1:15 pm — reply with the customer's pick/);
   });
 
+  it("a re-collection runs end to end: slots to the store, its pick to the lab, the lab's ok or counter-offer back (30 Oct 2026 dry run)", () => {
+    const o = order({ id: 95568, labId: 4, orderStatus: "SAMPLE_COLLECTED", appointmentTime: at("2026-10-30T01:00:00Z"), labName: "Orange Health" });
+    const run = (iso: string, events: unknown[], prev?: StepOutput) => step({ now: at(iso), order: o, journey: prev?.journey ?? null, checkpoints: prev?.checkpoints ?? [], events: events as never, sop: SOP_A, labTier: "A", timeZone: IST, openRecollect: "urine" });
+    const lab = (iso: string, kind: string, text: string) => ({ kind: "fact", at: at(iso), actor: "LAB", payload: { kind, value: text, confidence: 0.6, source: "lab_reply", attributedBy: "ORDER_ID", factId: iso, fullText: text, context: "" } });
+    const detail = (r: StepOutput) => String(r.actions.find((a) => a.action === "store_alert")?.params.detail);
+    const slots = run("2026-10-30T02:49:00Z", [lab("2026-10-30T02:48:00Z", "note", "BLR6386734\n[screenshot] Slot screen. Slots: 10:15 am, 11:45 am, 1:15 pm.")]);
+    assert.match(detail(slots), /^urine re-collection slots: 10:15 am, 11:45 am, 1:15 pm — reply with the customer's pick/);
+    const pick = run("2026-10-30T03:00:30Z", [{ kind: "store_message", at: at("2026-10-30T03:00:00Z"), actor: "STORE", payload: { intent: "other", text: "95568 - customer prefers 11:45 am", messageId: "m-pick", waMsgId: "w-pick" } }], slots);
+    assert.equal((pick.actions.find((a) => a.action === "ask")?.params.line as { note: string }).note, "urine re-collection: customer picks 11:45 am — please book and confirm");
+    assert.match(String(pick.actions.find((a) => a.action === "store_reply")?.params.text), /asking Orange Health to book the urine re-collection at 11:45 am/);
+    assert.ok(!pick.actions.some((a) => a.action === "create_task"), "the lab books it; no console task");
+    assert.equal(detail(run("2026-10-30T03:10:30Z", [lab("2026-10-30T03:10:00Z", "note", "Ok done")], pick)), "urine re-collection booked for 11:45 am");
+    assert.match(detail(run("2026-10-30T03:10:30Z", [lab("2026-10-30T03:10:00Z", "patient_unavailable", "11:45 not available, can do 1:15 pm")], pick)), /the time asked isn't possible; the lab offers 1:15 pm/);
+    // A report question with a time is not a pick.
+    const rep = run("2026-10-30T03:00:30Z", [{ kind: "store_message", at: at("2026-10-30T03:00:00Z"), actor: "STORE", payload: { intent: "status", text: "95568 report by 5 pm?", messageId: "m-r", waMsgId: "w-r" } }], slots);
+    assert.ok(!rep.actions.some((a) => a.idemKey.endsWith(":recollect-pick")));
+  });
+
   it("'urine samples not collected' read as a status question is still a re-collection, never 'sample collected'", () => {
     const o = order({ orderStatus: "SAMPLE_COLLECTED", labRef: "BLR6366831", appointmentTime: at("2026-10-25T04:45:00Z") });
     const msg = { kind: "store_message", at: at("2026-10-25T05:00:00Z"), actor: "STORE", payload: { intent: "status", text: "94178 - urine samples not collected\nlet us know the slots available today", messageId: "m-u", waMsgId: "w6" } };

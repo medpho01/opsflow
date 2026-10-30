@@ -12,7 +12,9 @@ set -euo pipefail
 main() {
 cd "$(dirname "$0")/.."
 COMPOSE="docker compose -f docker-compose.yml -f docker-compose.wa.yml"
-BEFORE=$(git rev-parse HEAD)
+# Compared with what the worker last ran, not with HEAD before this pull: a `git pull` run by hand
+# first left the worker on old code and this script saying "nothing to update" (30 Oct 2026).
+BEFORE=$(cat .deployed-commit 2>/dev/null || git rev-parse HEAD)
 git pull -q --ff-only
 AFTER=$(git rev-parse HEAD)
 if [ "$BEFORE" = "$AFTER" ]; then echo "already at $(git rev-parse --short HEAD) — nothing to update"; exit 0; fi
@@ -39,6 +41,7 @@ fi
 if echo "$CHANGED" | grep -qE '^src/(lib|worker|types)/'; then echo "→ agent code changed: restarting the worker"; $COMPOSE restart worker; fi
 if echo "$CHANGED" | grep -qE '^whatsapp-bot/(index\.mjs|lib/)'; then echo "→ gateway code changed: restarting the gateway"; $COMPOSE restart wa-gateway; fi
 if echo "$CHANGED" | grep -qE '^src/lib/' ; then echo "  (the console's own pages keep the previous src/lib until the next full deploy — the agent runs the new code now)"; fi
+echo "$AFTER" > .deployed-commit
 sleep 8
 $COMPOSE exec -T app npx tsx scripts/health.ts
 }

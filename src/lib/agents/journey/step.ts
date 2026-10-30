@@ -538,7 +538,7 @@ export function step(input: StepInput): StepOutput {
       // "the blood has been collected" in reply to that ask is old news, not a fresh collection; a
       // later "collected" that does not quote it may be the re-collection itself.
       if (underAsk && kind === "sample_collected" && !parsePromiseTime(String(ev.payload.fullText ?? value), ev.at, tz)) continue;
-      if (recollect && order.storeId != null && ["eta", "new_appointment_time", "note", ...(underAsk ? ["sample_collected"] : [])].includes(kind)) {
+      if (recollect && order.storeId != null && ["eta", "new_appointment_time", "note", "confirmed", "patient_unavailable", "cannot_fulfil", "delay_reason", ...(underAsk ? ["sample_collected"] : [])].includes(kind)) {
         // Several times offered ("10:15, 12:30, 3 pm"): slots to choose from, passed to the store as
         // they are — the store picks, a person books (29 Oct 2026: the team pasted these by hand).
         // The lab's own words decide; a screenshot's times count only when the words carry none (30 Oct
@@ -551,8 +551,10 @@ export function step(input: StepInput): StepOutput {
         const times = (t: string) => [...new Set((t.match(/\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b(?:\s*[-–to]+\s*\d{1,2}(?::\d{2})?\s*(?:am|pm))?/gi) ?? []).map((x) => x.replace(/\s+/g, " ").toLowerCase()))];
         const shotTimes = times(/Booked: ([^\n]+?)\./.exec(shot)?.[1] ?? /Slots: ([^\n]+?)\./.exec(shot)?.[1] ?? shot);
         const offered = times(said).length ? times(said) : shotTimes;
-        if (offered.length >= 2) {
-          actions.push({ desk: "STORE", action: "store_alert", params: { template: "STORE_LAB_PROMISE", orderId: order.id, storeId: order.storeId, fact: "recollection_slots", detail: `${recollect} re-collection slots: ${offered.slice(0, 6).join(", ")} — reply with the customer's pick and we'll book it`, at: ev.at.toISOString() }, reason: `lab offers ${recollect} re-collection slots: ${offered.join(", ")}`, idemKey: `recollect-slots:${order.id}:${ev.at.getTime()}` });
+        // "11:45 not available, can do 1:15 pm" is a counter-offer, not "patient not available" (dry run, 30 Oct 2026).
+        const refused = /\bnot (available|possible|free)\b|\bcan'?t\b|\bcannot\b|\bunable\b|\bno slots?\b|\b(full|booked out)\b/i.test(said || shot);
+        if (offered.length >= 2 || (offered.length >= 1 && refused)) {
+          actions.push({ desk: "STORE", action: "store_alert", params: { template: "STORE_LAB_PROMISE", orderId: order.id, storeId: order.storeId, fact: "recollection_slots", detail: `${recollect} re-collection ${refused ? "— the time asked isn't possible; the lab offers" : "slots:"} ${offered.slice(0, 6).join(", ")} — reply with the customer's pick and we'll book it`, at: ev.at.toISOString() }, reason: `lab offers ${recollect} re-collection slots: ${offered.join(", ")}`, idemKey: `recollect-slots:${order.id}:${ev.at.getTime()}` });
           continue;
         }
         const when = offered.length === 1
@@ -562,6 +564,20 @@ export function step(input: StepInput): StepOutput {
           actions.push({ desk: "STORE", action: "store_alert", params: { template: "STORE_LAB_PROMISE", orderId: order.id, storeId: order.storeId, fact: "recollection_promise", detail: `${recollect} re-collection ${offered.length === 1 ? "scheduled for" : "by"} ${LABELS_TIME(when, tz)}`, at: ev.at.toISOString() }, reason: `lab offers ${recollect} re-collection by ${LABELS_TIME(when, tz)}`, idemKey: `recollect-promise:${order.id}:${when.getTime()}` });
           newEvents.push({ kind: "promise", at: ev.at, actor: "LAB", payload: { kind: "recollection", checkpoint: "sample_collected", dueAt: when, text: value.slice(0, 200), superseded: false } });
           continue; // not a fresh "collected", not an ETA
+        }
+        // "Ok done" to the time we asked it to book: the store hears it is booked, at that time.
+        const asked = journey.subStates.find((x) => x.startsWith("recollect-asked:"));
+        if (asked && !refused && /^[\s\p{P}]*(ok(ay)?|done|booked|confirmed|sure|yes|noted|scheduled|👍|✅)\b/iu.test(said || shot || value)) {
+          const at = new Date(asked.slice("recollect-asked:".length));
+          actions.push({ desk: "STORE", action: "store_alert", params: { template: "STORE_LAB_PROMISE", orderId: order.id, storeId: order.storeId, fact: "recollection_promise", detail: `${recollect} re-collection booked for ${LABELS_TIME(at, tz)}`, at: ev.at.toISOString() }, reason: `lab confirms the ${recollect} re-collection at ${LABELS_TIME(at, tz)}`, idemKey: `recollect-promise:${order.id}:${at.getTime()}` });
+          newEvents.push({ kind: "promise", at: ev.at, actor: "LAB", payload: { kind: "recollection", checkpoint: "sample_collected", dueAt: at, text: value.slice(0, 200), superseded: false } });
+          journey = { ...journey, subStates: journey.subStates.filter((x) => x !== asked) };
+          continue;
+        }
+        // A refusal with no time ("no slots today"): the store hears the lab's words, nothing more alarming.
+        if (refused && (kind === "cannot_fulfil" || kind === "patient_unavailable" || kind === "note")) {
+          actions.push({ desk: "STORE", action: "store_alert", params: { template: "STORE_LAB_PROMISE", orderId: order.id, storeId: order.storeId, fact: "recollection_refused", detail: `${recollect} re-collection — lab says "${(said || value).replace(/\s+/g, " ").slice(0, 120)}"`, at: ev.at.toISOString() }, reason: `lab cannot do the ${recollect} re-collection as asked`, idemKey: `recollect-refused:${order.id}:${ev.at.getTime()}` });
+          continue;
         }
       }
       const named = ev.payload.attributedBy !== "ONLY_OPEN";
@@ -742,6 +758,18 @@ export function step(input: StepInput): StepOutput {
         actions.push({ desk: "STORE", action: "store_reply", params: { text: `#${order.id}: ${collectedLine}${sampleWord ? `${sampleWord} sample` : "a sample"} pending — asking the lab for a re-collection slot now.${hours} Share a preferred time and we'll book it.`, orderId: order.id, storeId: order.storeId, intent: m.intent, ...quote }, reason: `store says ${sampleWord ?? "a"} sample was not collected; the lab is being asked`, idemKey: `${key}:recollect-ack` });
         continue;
       }
+      // The customer's pick, after the lab offered re-collection slots ("customer prefers 11:45 am",
+      // "11:45 works"): the lab is asked to book it and the store hears so. Read as chatter, it reached
+      // nobody (30 Oct 2026, dry run of #95568). The lab's confirmation comes back as a store alert.
+      const picked = input.openRecollect && order.labId != null && sop && !["cancel", "change_tests", "complaint", "reschedule", "report"].includes(m.intent) && !/\breport\b/i.test(m.text) ? requestedTime(m.text, m.at, null, tz) : null;
+      if (picked && order.labId != null && sop) {
+        const whenText = LABELS_TIME(picked, tz) + (picked.toDateString() !== now.toDateString() ? ` ${picked.toLocaleDateString("en-IN", { timeZone: tz, weekday: "short", day: "numeric", month: "short" })}` : "");
+        const window = sendWindow(now, now, sop, { intent: "STATUS", leadMin: 0, graceMin: 480, urgentWithinMin: 0, nightBefore: false }, true, false, tz);
+        actions.push({ desk: "LAB", action: "ask", params: { checkpoint: "sample_collected", orderId: order.id, labId: order.labId, attempt: 1, dueAt: now, rung: "ask", intent: "RECOLLECT", counterparty: `LAB:${order.labId}`, windowFrom: window.from, windowTo: window.to, urgent: true, line: { orderId: order.id, patientName: order.patientName, appointment: order.appointmentTime, labRef: order.labRef ?? null, mobile: order.mobile ?? null, area: order.area ?? null, note: `${input.openRecollect} re-collection: customer picks ${whenText} — please book and confirm` }, forStore: true }, reason: `store picked ${whenText} for the ${input.openRecollect} re-collection`, idemKey: `${key}:recollect-pick` });
+        actions.push({ desk: "STORE", action: "store_reply", params: { text: `#${order.id}: asking ${order.labName ?? "the lab"} to book the ${input.openRecollect} re-collection at ${whenText} — will confirm here.`, orderId: order.id, storeId: order.storeId, intent: m.intent, ...quote }, reason: `store picked ${whenText}`, idemKey: `${key}:recollect-pick-ack` });
+        journey = { ...journey, subStates: [...journey.subStates.filter((x) => !x.startsWith("recollect-asked:")), `recollect-asked:${picked.toISOString()}`] };
+        continue;
+      }
       // The store reports the visit failed ("94669 - phlebo no show", Plum, 27 Oct 2026). Whatever the
       // console shows, the lab is asked now with the store's words, and the store hears we are on
       // it — unless the console already says the lab could not reach the patient, which answers it.
@@ -817,14 +845,17 @@ export function step(input: StepInput): StepOutput {
           // booking is changed ("94103 — urine collection at 10:45?", Plum, 25 Oct 2026).
           if (order.labId != null && sop && (m.intent !== "change_tests")) {
             const whenText = requested ? LABELS_TIME(requested, tz) + (requested.toDateString() !== now.toDateString() ? ` ${requested.toLocaleDateString("en-IN", { timeZone: tz, weekday: "short", day: "numeric", month: "short" })}` : "") : null;
-            const sample = /\b(urine|stool|sputum|swab)\b/i.exec(m.text)?.[1]?.toLowerCase();
+            const sample = /\b(urine|stool|sputum|swab)\b/i.exec(m.text)?.[1]?.toLowerCase() ?? input.openRecollect ?? undefined;
             const note = m.intent === "cancel" ? "store asks to cancel — please stand down"
               : tomorrowOnly ? `${sample ? `${sample} re-collection` : "reschedule"} requested for tomorrow — which slot?`
               : `${sample ? `${sample} re-collection` : "reschedule"} requested${whenText ? ` at ${whenText}` : ""} — ok?`;
             const window = sendWindow(now, now, sop, { intent: "STATUS", leadMin: 0, graceMin: 480, urgentWithinMin: 0, nightBefore: false }, true, false, tz);
             actions.push({ desk: "LAB", action: "ask", params: { checkpoint: next?.name ?? "sample_collected", orderId: order.id, labId: order.labId, attempt: 1, dueAt: now, rung: "ask", intent: sample && m.intent !== "cancel" ? "RECOLLECT" : "STATUS", counterparty: `LAB:${order.labId}`, windowFrom: window.from, windowTo: window.to, urgent: false, line: { orderId: order.id, patientName: order.patientName, appointment: order.appointmentTime, labRef: order.labRef ?? null, mobile: order.mobile ?? null, area: order.area ?? null, note }, forStore: true }, reason: `store asked to ${m.intent}${whenText ? ` at ${whenText}` : ""}; the lab is told`, idemKey: `${key}:lab-heads-up` });
           }
-          actions.push({ desk: "STORE", action: "create_task", params: { taskType, orderId: order.id, cause: `STORE_${m.intent.toUpperCase()}`, evidence: [{ kind: "store_msg", at: m.at.toISOString(), text: m.text.slice(0, 300) }], action: m.intent === "reschedule" ? `Reschedule #${order.id}${requested ? ` to ${fmtDay(requested)}` : " as the store asked"} in the console` : m.intent === "cancel" ? `Cancel #${order.id} in the console` : `Change #${order.id}'s tests as the store asked, then tell the lab`, verify: m.intent === "reschedule" ? (requested ? { kind: "slot_equals", value: requested.toISOString() } : { kind: "none" }) : m.intent === "cancel" ? { kind: "status_at_least", value: "CANCELED" } : { kind: "none" }, dueInMinutes: 30 }, reason: `store asked to ${m.intent.replace("_", " ")}: "${m.text.slice(0, 80)}"`, idemKey: `${key}:task` });
+          // A re-collection the lab books itself needs no console change: its confirmation comes back as an alert.
+          const recollectPick = m.intent === "reschedule" && !!input.openRecollect && !!requested;
+          if (recollectPick) journey = { ...journey, subStates: [...journey.subStates.filter((x) => !x.startsWith("recollect-asked:")), `recollect-asked:${requested!.toISOString()}`] };
+          if (!recollectPick) actions.push({ desk: "STORE", action: "create_task", params: { taskType, orderId: order.id, cause: `STORE_${m.intent.toUpperCase()}`, evidence: [{ kind: "store_msg", at: m.at.toISOString(), text: m.text.slice(0, 300) }], action: m.intent === "reschedule" ? `Reschedule #${order.id}${requested ? ` to ${fmtDay(requested)}` : " as the store asked"} in the console` : m.intent === "cancel" ? `Cancel #${order.id} in the console` : `Change #${order.id}'s tests as the store asked, then tell the lab`, verify: m.intent === "reschedule" ? (requested ? { kind: "slot_equals", value: requested.toISOString() } : { kind: "none" }) : m.intent === "cancel" ? { kind: "status_at_least", value: "CANCELED" } : { kind: "none" }, dueInMinutes: 30 }, reason: `store asked to ${m.intent.replace("_", " ")}: "${m.text.slice(0, 80)}"`, idemKey: `${key}:task` });
           if (!journey.subStates.includes("change_pending")) journey = { ...journey, subStates: [...journey.subStates, "change_pending"] };
           // The time asked for, so the console's move can be checked against it.
           journey = { ...journey, subStates: [...journey.subStates.filter((s) => !s.startsWith("requested:")), ...(requested && m.intent === "reschedule" ? [`requested:${requested.toISOString()}`] : [])] };

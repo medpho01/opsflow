@@ -53,3 +53,4 @@ prebuilt-next/
 
 # Analysis exports (aggregates for presentations) — never committed
 exports/
+.deployed-commit

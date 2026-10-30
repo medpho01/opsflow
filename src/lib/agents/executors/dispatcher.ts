@@ -294,7 +294,10 @@ async function flushGroup(key: string, queued: Item[], now: Date, batching: Batc
   if (!group.length) return { messages: 0, items: 0, held: 0 };
   // The console, read now: what it has settled since the item was queued is not sent.
   const snapshots = await fetchOrderSnapshots(group.map((i) => i.orderId)).catch(() => new Map<number, OrderSnapshot>());
-  const settled = group.filter((i) => { const o = snapshots.get(i.orderId); return !!o && !!settledByConsole(ask, o); });
+  // A store's own request (reschedule, cancel, book this slot) is never "settled": the console showing
+  // the visit missed is why it was asked (30 Oct 2026, #95448: "reschedule to tomorrow" never reached Orange).
+  const storeRequest = (i: Item) => (i.payload as { storeRequest?: boolean }).storeRequest === true;
+  const settled = group.filter((i) => { const o = snapshots.get(i.orderId); return !storeRequest(i) && !!o && !!settledByConsole(ask, o); });
   if (settled.length) {
     await prisma.agentOutboxItem.updateMany({ where: { id: { in: settled.map((i) => i.id) } }, data: { status: "DROPPED" } });
     console.log(`[Agents] ${counterparty} ${ask}: ${settled.length} item(s) settled by the console since queued — not sent`);
@@ -314,7 +317,7 @@ async function flushGroup(key: string, queued: Item[], now: Date, batching: Batc
   const groupEscalation = kind === "MANAGER" && !config.managerWhatsapp;
   const toManager = kind === "MANAGER" && !groupEscalation;
   if (!toManager && config.waGroupJid) {
-    const answered = await alreadyInHand(config.waGroupJid, group, now, ask);
+    const answered = await alreadyInHand(config.waGroupJid, group.filter((i) => !storeRequest(i)), now, ask);
     if (answered.size) {
       await prisma.agentOutboxItem.updateMany({ where: { id: { in: group.filter((i) => answered.has(i.orderId)).map((i) => i.id) } }, data: { status: "DROPPED" } });
       console.log(`[Agents] ${counterparty} ${ask}: ${answered.size} order(s) already discussed or answered in the group — not asked again`);

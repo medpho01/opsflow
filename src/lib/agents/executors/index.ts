@@ -35,6 +35,8 @@ export async function execute(action: ProposedAction, ctx: ExecuteContext): Prom
         counterparty: String(p.counterparty), ask: String(p.intent), orderId: ctx.orderId, journeyId: ctx.journeyId, actionId: ctx.actionId,
         windowFrom: asDate(p.windowFrom) ?? new Date(), windowTo: asDate(p.windowTo) ?? new Date(Date.now() + 4 * 3_600_000), urgent: p.urgent === true || p.forStore === true, immediate: p.forStore === true,
         idemKey: `outbox:${action.idemKey}`, line: { ...line, appointment: asDate(line.appointment) },
+        // What the store asked the lab to do (reschedule, cancel, book this slot) goes whatever the console says.
+        ...(p.storeRequest === true ? { extra: { storeRequest: true } } : {}),
       });
       return r.queued ? { outcome: "EXECUTED", note: `queued for ${String(p.counterparty)} ${String(p.intent)}` } : { outcome: "RECORDED", note: "already queued" };
     }

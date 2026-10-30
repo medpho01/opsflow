@@ -172,6 +172,10 @@ describe("the ladder", () => {
     const headsUp = r.actions.find((a) => a.action === "ask" && a.idemKey.endsWith(":lab-heads-up"));
     const note = String((headsUp?.params.line as { note: string } | undefined)?.note);
     assert.ok(note.startsWith("urine re-collection requested at 10:45"), note);
+    // Never dropped at send time as "settled" or "already discussed" (30 Oct 2026, #95448).
+    assert.equal(headsUp?.params.storeRequest, true);
+    const plain = wake(o, at("2026-10-25T04:02:00Z"), undefined, { events: [{ ...msg, payload: { ...msg.payload, text: "94103 - reschedule to tomorrow same slot", messageId: "m-rs2" } }] as never });
+    assert.equal(plain.actions.find((a) => a.idemKey.endsWith(":lab-heads-up"))?.params.intent, "RESCHEDULE");
   });
   it("a lab's answer to our re-collection ask reaches the store even when it quotes someone else, and a slot screenshot's times are read (30 Oct 2026, #95568)", () => {
     const o = order({ id: 95568, labId: 4, orderStatus: "SAMPLE_COLLECTED", appointmentTime: at("2026-10-30T01:00:00Z") });

@@ -68,6 +68,15 @@ export const LAB_SOP_V1: SopBody = parseSop({
     { when: { labId: 5 }, set: { asks: { phlebo_assigned: { dueOffsetMin: -30 } } } },
     { when: { labId: 6 }, set: { asks: { phlebo_assigned: { dueOffsetMin: -30 } } } },
     { when: { labId: 7 }, set: { asks: { phlebo_assigned: { dueOffsetMin: -30 } } } },
+    // "Collected?" at each API lab's own pace (30 Oct 2026, 31,000 visits from LabStack's history):
+    // 80–90% of Orange visits show collected by +20, Thyrocare by +35–65, Redcliffe by +76–111.
+    // Past these, a visit still open fails 26% (Orange), 55% (Thyrocare), 39% (Redcliffe) of the time.
+    { when: { labId: 4 }, set: { asks: { sample_collected: { dueOffsetMin: 20 } } } },
+    { when: { labId: 5 }, set: { asks: { sample_collected: { dueOffsetMin: 20 } } } },
+    { when: { labId: 6 }, set: { asks: { sample_collected: { dueOffsetMin: 20 } } } },
+    { when: { labId: 7 }, set: { asks: { sample_collected: { dueOffsetMin: 20 } } } },
+    { when: { labId: 14 }, set: { asks: { sample_collected: { dueOffsetMin: 45 } } } },
+    { when: { labId: 2 }, set: { asks: { sample_collected: { dueOffsetMin: 90 } } } },
     // API labs: the portal is the first rung when an order runs late (FR-17.2).
     { when: { labTier: "A" }, set: { ladder: ["portal_read", "ask", "reminder", "manager_whatsapp", "task", "stuck"] } },
     { when: { labTier: "B" }, set: { ladder: ["portal_read", "ask", "reminder", "manager_whatsapp", "task", "stuck"] } },

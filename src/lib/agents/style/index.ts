@@ -67,7 +67,7 @@ export const STYLE_CONTRACTS: Record<string, StyleContract> = {
   PROVIDER_DAILY_DIGEST: lab("The evening list: tomorrow's orders for the lab (the entries are rendered separately into {{tomorrow_schedule}}), with counts and a line asking to confirm the pending ones.", ["tomorrow_schedule"], ["lab_name", "tomorrow_date", "tomorrow_total", "tomorrow_schedule", "tomorrow_confirmed", "tomorrow_unconfirmed", "summary_date", "order_count", "order_list"], 400),
   STORE_STATUS_ANSWER: store("Answer to a store's status question about an order, from the console.", ["order_id", "status_line"], 240),
   STORE_CHECKING: store("Tell the store we are asking the lab and will update here.", ["order_id"], 160),
-  STORE_NOTED: store("Acknowledge a store's change request (reschedule, cancel, change): noted, confirming shortly.", ["order_id"], 160),
+  STORE_NOTED: store("Acknowledge a store's change request (reschedule, cancel, change): noted, the lab is being asked now, confirmed here once done.", ["order_id"], 160),
   STORE_PATIENT_UNREACHABLE: store("Tell the store the lab could not reach the customer; ask them to help reach them or share a slot.", ["order_id", "patient_name"], 320),
   STORE_COLLECTED: store("Tell the store the sample was collected.", ["order_id", "patient_name"], 200),
   STORE_LAB_RESCHEDULED: store("Tell the store the lab rescheduled, so they can tell the customer.", ["order_id", "patient_name", "detail"], 280),

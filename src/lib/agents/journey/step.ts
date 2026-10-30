@@ -280,7 +280,7 @@ const RUNG_TO_ACTION: Record<Rung, ActionName> = {
 /** The SOP's default when no SOP is at hand (scripts): an API lab's console counts as answering only while it updated this recently. */
 export const CONSOLE_QUIET_MIN = 90;
 
-export function consoleIsLive(order: OrderSnapshot, labTier: LabTier | null | undefined, now: Date, quietMin = CONSOLE_QUIET_MIN): boolean {
+export function consoleIsLive(order: OrderSnapshot, labTier: LabTier | null | undefined, now: Date, quietMin = CONSOLE_QUIET_MIN, postVisitMin = POST_VISIT_ANSWER_MIN): boolean {
   if (!labTier || labTier === "C" || !order.statusUpdatedAt || !order.appointmentTime) return false;
   const from = order.appointmentTime.getTime() - 2 * 3_600_000;
   const updated = order.statusUpdatedAt.getTime();
@@ -291,11 +291,15 @@ export function consoleIsLive(order: OrderSnapshot, labTier: LabTier | null | un
   // at 7:50 kept an 8:00 visit "live" until 9:20, and the lab was asked at 9:25 — after the store
   // already knew (30 Oct 2026, Orange #94868, RNR).
   const visit = order.appointmentTime.getTime();
-  if (now.getTime() > visit + POST_VISIT_ANSWER_MIN * MIN && updated < visit) return false;
+  if (now.getTime() > visit + postVisitMin * MIN && updated < visit) return false;
   return updated >= from && updated <= now.getTime() && now.getTime() - updated <= quietMin * MIN;
 }
 
-/** Minutes after the visit by which the console must have moved past the visit, or the lab is asked. */
+/**
+ * Minutes after the visit by which the console must have moved past the visit, or the lab is asked —
+ * the SOP's asks.sample_collected.dueOffsetMin per lab (30 Oct 2026, from 31,000 API-lab visits:
+ * Orange 20, Thyrocare 45, Redcliffe 90); this is the default.
+ */
 export const POST_VISIT_ANSWER_MIN = 30;
 
 /** A store reporting that the visit failed, in the SOP's phrases (params.storeExceptionPhrases). */
@@ -839,7 +843,7 @@ export function step(input: StepInput): StepOutput {
           // report itself, whatever sits between (the console may still show "sample at lab").
           const chase = (reason: string, overdue = false) => {
             const cp = overdue ? report! : next;
-            if (cp && sop && (overdue || from === "LAB") && sop.asks[cp.name] && (overdue || !consoleIsLive(order, input.labTier, now, sop.consoleQuietMin))) {
+            if (cp && sop && (overdue || from === "LAB") && sop.asks[cp.name] && (overdue || !consoleIsLive(order, input.labTier, now, sop.consoleQuietMin, sop.asks.sample_collected?.dueOffsetMin))) {
               const ask = sop.asks[cp.name];
               const urgent = overdue || slotPassed || (minutesToSlot != null && minutesToSlot <= ask.urgentWithinMin);
               const window = sendWindow(now, now, sop, { ...ask, leadMin: 0, graceMin: 240 }, true, urgent, tz);
@@ -969,10 +973,15 @@ export function step(input: StepInput): StepOutput {
     const preVisit = checkpointDefs(order.orderType).find((d) => d.name === next.name)?.preCollection === true;
     // An API lab whose webhook updated this order around the visit has told us where it is: no
     // WhatsApp ask for the visit checkpoints; ask only when the console has gone quiet (26 Oct 2026).
-    const consoleAnswers = preVisit && consoleIsLive(order, input.labTier, now, sop?.consoleQuietMin);
+    const collectedAfterMin = sop?.asks.sample_collected?.dueOffsetMin ?? POST_VISIT_ANSWER_MIN;
+    const consoleAnswers = preVisit && consoleIsLive(order, input.labTier, now, sop?.consoleQuietMin, collectedAfterMin);
     if (consoleAnswers && order.statusUpdatedAt) wakeAt.push(order.statusUpdatedAt.getTime() + ((sop?.consoleQuietMin ?? CONSOLE_QUIET_MIN) + 1) * MIN);
     // …and half an hour after the visit, when an update from before it stops counting.
-    if (consoleAnswers && slot && slot.getTime() + (POST_VISIT_ANSWER_MIN + 1) * MIN > now.getTime()) wakeAt.push(slot.getTime() + (POST_VISIT_ANSWER_MIN + 1) * MIN);
+    if (consoleAnswers && slot && slot.getTime() + (collectedAfterMin + 1) * MIN > now.getTime()) wakeAt.push(slot.getTime() + (collectedAfterMin + 1) * MIN);
+    // An API lab is not asked about the visit between the visit and its own "collected by" time, quiet
+    // console or not: Redcliffe's console shows collected at +45 on a normal day (30 Oct 2026 analysis).
+    const apiPostVisitEarly = input.labTier != null && input.labTier !== "C" && preVisit && minutesToSlot != null && minutesToSlot < 0 && -minutesToSlot < collectedAfterMin;
+    if (apiPostVisitEarly && slot) wakeAt.push(slot.getTime() + (collectedAfterMin + 1) * MIN);
     // An API lab asked "phlebo needed?" ten minutes before the visit answers "collection in
     // progress" (Orange, 25 Oct 2026): LabStack has not caught up. Inside the last quarter
     // hour it is not worth a message (Orange assigns at slot − 30 min, so −30…−15 is fair).
@@ -1010,7 +1019,7 @@ export function step(input: StepInput): StepOutput {
       }, reason: `${LABELS[next.name]} still open ${Math.round(-minutesToSlot / 60)} h after the visit; the console shows ${order.orderStatus}; ${a.n} ask(s) unanswered`, idemKey: `visit-passed:${order.id}:${next.name}` });
       attempts[next.name] = { ...a, n: 99, at: now.toISOString() };
       journey = { ...journey, attempts };
-    } else if (sop && from === "LAB" && ask && !reportPaused && (a.n >= 99 || a.n >= ladder.length) && (!a.at || now.getTime() - Date.parse(a.at) >= sop.reaskEveryMin * MIN || exhaustedBeforeVisit) && !consoleIsLive(order, input.labTier, now, sop.consoleQuietMin)) {
+    } else if (sop && from === "LAB" && ask && !reportPaused && (a.n >= 99 || a.n >= ladder.length) && (!a.at || now.getTime() - Date.parse(a.at) >= sop.reaskEveryMin * MIN || exhaustedBeforeVisit) && !consoleIsLive(order, input.labTier, now, sop.consoleQuietMin, sop.asks.sample_collected?.dueOffsetMin)) {
       // The ladder ran out, or the visit is long past with a person told: the lab is still asked,
       // once a day, in the routine combined list, until the console moves (27 Oct 2026). Always a
       // STATUS ask — "what happened with this visit?" — whatever checkpoint is open.
@@ -1023,7 +1032,7 @@ export function step(input: StepInput): StepOutput {
       }, reason: `${LABELS[next.name]} still open after every ask; asked again (every ${Math.round(sop.reaskEveryMin / 60)} h until the console moves)`, idemKey: `reask:${order.id}:${next.name}:${startOfLocalDay(now, tz)}` });
       attempts[next.name] = { ...a, at: now.toISOString() };
       journey = { ...journey, attempts };
-    } else if (from === "LAB" && ask && started && gapOk && !holding && !reportPaused && !etaTooEarly && !apiPhleboTooLate && !consoleAnswers && !apiLadderCapped) {
+    } else if (from === "LAB" && ask && started && gapOk && !holding && !reportPaused && !etaTooEarly && !apiPhleboTooLate && !consoleAnswers && !apiLadderCapped && !apiPostVisitEarly) {
       let rungIndex = a.n;
       if (brokenPromises >= sop.brokenPromisesSkip && rungIndex > 0 && rungIndex < ladder.length - 1) rungIndex += 1;
       const rung = ladder[Math.min(rungIndex, ladder.length - 1)];

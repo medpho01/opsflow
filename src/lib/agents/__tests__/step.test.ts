@@ -591,6 +591,19 @@ describe("the console answers only while it keeps updating (27 Oct 2026)", () =>
     assert.equal(consoleIsLive(o, "A", at("2026-10-27T04:30:00Z")), false); // 10:00: quiet for over 90 min
     assert.equal(consoleIsLive(o, "C", at("2026-10-27T03:00:00Z")), false); // manual labs never
   });
+  it("each API lab is asked 'collected?' at its own pace: Orange +20, Thyrocare +45, Redcliffe +90 (30 Oct 2026)", () => {
+    const visit = at("2026-10-30T02:30:00Z"); // 8:00
+    const asked = (labId: number, minutesAfter: number) => {
+      const o = order({ labId, orderStatus: "PHLEBO_ASSIGNED", appointmentTime: visit, statusUpdatedAt: at("2026-10-30T02:00:00Z"), phleboName: "R" });
+      const sop = resolveParams(LAB_SOP_V1, { labTier: "A", labId });
+      const r0 = step({ now: at("2026-10-30T02:00:00Z"), order: o, journey: null, checkpoints: [], events: [], sop, labTier: "A", timeZone: IST });
+      const r = step({ now: new Date(visit.getTime() + minutesAfter * 60_000), order: o, journey: r0.journey, checkpoints: r0.checkpoints, events: [], sop, labTier: "A", timeZone: IST });
+      return r.actions.some((a) => a.desk === "LAB" && (a.action === "ask" || a.action === "reminder"));
+    };
+    assert.equal(asked(4, 15), false); assert.equal(asked(4, 21), true);   // Orange Bangalore
+    assert.equal(asked(14, 31), false); assert.equal(asked(14, 46), true); // Thyrocare
+    assert.equal(asked(2, 31), false); assert.equal(asked(2, 60), false); assert.equal(asked(2, 91), true); // Redcliffe
+  });
   it("half an hour after the visit, only an update since the visit counts (30 Oct 2026, Orange #94868: asked at 9:25 for an 8:00 visit)", () => {
     const o = order({ orderStatus: "PHLEBO_STARTED", appointmentTime: at("2026-10-30T02:30:00Z"), statusUpdatedAt: at("2026-10-30T02:20:00Z") }); // visit 8:00, "phlebo started" 7:50
     assert.equal(consoleIsLive(o, "A", at("2026-10-30T02:55:00Z")), true);  // 8:25

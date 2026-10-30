@@ -14,7 +14,7 @@ import { enqueueOutbox } from "./dispatcher";
 export const STORE_TEMPLATES: Record<string, { name: string; body: string }> = {
   STORE_STATUS_ANSWER: { name: "Store: status answer", body: "#{{order_id}}: {{status_line}}{{next_line}}" },
   STORE_CHECKING: { name: "Store: checking with the lab", body: "#{{order_id}}: checking with {{lab_name}}, will update here." },
-  STORE_NOTED: { name: "Store: change request noted", body: "#{{order_id}}: noted, we'll confirm shortly." },
+  STORE_NOTED: { name: "Store: change request noted", body: "#{{order_id}}: noted — asking the lab now; we'll confirm here once it's done." },
   STORE_CONFIRMED_CHANGE: { name: "Store: change confirmed", body: "#{{order_id}}: done — {{change}}." },
   STORE_PATIENT_UNREACHABLE: { name: "Store: lab could not reach the patient", body: "#{{order_id}}\n{{patient_name}}\n\nUser is not available, pickup not done ({{detail}}, {{time}}). Please help reach them or share a new slot." },
   STORE_COLLECTED: { name: "Store: sample collected", body: "#{{order_id}}\n{{patient_name}}\n\nSample collected ({{time}}). Report will follow." },
@@ -33,9 +33,19 @@ export const STORE_TEMPLATES: Record<string, { name: string; body: string }> = {
   STORE_UNKNOWN_ORDER_ID: { name: "Store: id not found", body: "{{ids}} is not an order of this store — could you check the order id?" },
 };
 
+/** Earlier default wordings: a stored body still equal to one is moved to today's default; an edited one stays. */
+const SUPERSEDED: Record<string, string[]> = {
+  // 30 Oct 2026: a reschedule asked for is passed to the lab at once — say so.
+  STORE_NOTED: ["#{{order_id}}: noted, we'll confirm shortly."],
+};
+
 export async function liveStoreBody(key: string): Promise<string> {
   const def = STORE_TEMPLATES[key] ?? STORE_TEMPLATES.STORE_NOTED;
   const row = await prisma.labCommunicationTemplate.upsert({ where: { key }, update: {}, create: { key, name: def.name, body: def.body, isActive: true }, select: { body: true, isActive: true } });
+  if (SUPERSEDED[key]?.includes(row.body)) {
+    await prisma.labCommunicationTemplate.update({ where: { key }, data: { body: def.body } }).catch(() => undefined);
+    return def.body;
+  }
   return row.isActive ? row.body : def.body;
 }
 

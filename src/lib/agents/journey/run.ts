@@ -121,7 +121,7 @@ export async function wakeJourney(orderId: number, reason: WakeReason, opts: Wak
     }
     journeyState.attempts = attempts;
   }
-  const openRecollect = await openRecollectFor(orderId, now);
+  const openRecollect = await openRecollectFor(orderId, now, order.labRef ?? null);
   const out = step({
     now, order, journey: journeyState, checkpoints: row ? row.checkpoints.map(toCheckpointState) : [], events,
     sop: sopParams, sopVersionId: labSop?.versionId ?? null, labTier, portalReady, slotSummary, labSilentHours: opts.labSilentHours ?? null, timeZone: process.env.TIMEZONE || "Asia/Kolkata", labChaseable: labChaseableNow, openRecollect,
@@ -234,12 +234,25 @@ export async function wakeJourney(orderId: number, reason: WakeReason, opts: Wak
  * The sample we asked a lab to re-collect in the last day ("urine"), or null. Its answer may not quote
  * our ask (30 Oct 2026, #95568), and the store's pick may come with no id: both belong to it.
  */
-export async function openRecollectFor(orderId: number, now: Date): Promise<string | null> {
+export async function openRecollectFor(orderId: number, now: Date, labRef?: string | null): Promise<string | null> {
+  const since = new Date(now.getTime() - 24 * 3_600_000);
   const ask = await prisma.agentAction.findFirst({
-    where: { orderId, desk: "LAB", action: "ask", outcome: "EXECUTED", createdAt: { gte: new Date(now.getTime() - 24 * 3_600_000) }, params: { path: ["intent"], equals: "RECOLLECT" } },
+    where: { orderId, desk: "LAB", action: "ask", outcome: "EXECUTED", createdAt: { gte: since }, params: { path: ["intent"], equals: "RECOLLECT" } },
     orderBy: { createdAt: "desc" }, select: { params: true },
   }).catch(() => null);
-  return ask ? (/\b(urine|stool|sputum|swab)\b/i.exec(String((ask.params as { line?: { note?: string } }).line?.note ?? ""))?.[1]?.toLowerCase() ?? "sample") : null;
+  if (ask) return /\b(urine|stool|sputum|swab)\b/i.exec(String((ask.params as { line?: { note?: string } }).line?.note ?? ""))?.[1]?.toLowerCase() ?? "sample";
+  // Our team asked the lab by hand ("MUM6367190 - please schedule urine sample collection", Veena, 28 Oct
+  // 2026): the lab's slots and booking were ignored, and relayed to the store by hand 14 minutes later.
+  const needles = [String(orderId), ...(labRef ? [labRef] : [])];
+  const said = await prisma.waMessage.findMany({
+    where: { ts: { gte: since, lte: now }, group: { role: "PROVIDER" }, OR: needles.map((n) => ({ text: { contains: n, mode: "insensitive" as const } })) },
+    select: { text: true, sender: true, senderJid: true, fromMe: true, intent: true }, orderBy: { ts: "desc" }, take: 30,
+  }).catch(() => []);
+  if (!said.length) return null;
+  const { loadTeam, makeTeamMatcher, isAutomated } = await import("@/lib/wa/team");
+  const isTeam = makeTeamMatcher(await loadTeam());
+  const asked = said.find((m) => (m.fromMe && !isAutomated(m)) || isTeam(m.sender, m.senderJid) ? /\b(urine|stool|sputum|swab|sample)\b[^\n]{0,40}\b(collect\w*|slots?|schedul\w*|book\w*|pending)\b|\b(re-?collect\w*|schedul\w*|book\w*)\b[^\n]{0,40}\b(urine|stool|sputum|swab)\b/i.test(m.text ?? "") : false);
+  return asked ? /\b(urine|stool|sputum|swab)\b/i.exec(asked.text ?? "")?.[1]?.toLowerCase() ?? "sample" : null;
 }
 
 /**

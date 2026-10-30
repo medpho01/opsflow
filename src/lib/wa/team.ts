@@ -25,6 +25,9 @@ export function makeTeamMatcher(team: TeamContact[]) {
     }
     const s = norm(sender || "");
     if (!s) return null;
+    // Our people name themselves "Labstack Veena", "Labstack Deepali" in the groups; one not yet on the
+    // roster was read as the store or the lab (30 Oct 2026 replay). "Labstack Operations" is the bot.
+    if (/^labstack (?!operations\b)\S/.test(s)) return { id: `name:${s}`, name: sender, phone: null, aliases: [], team: null };
     for (const { c, n, aliases } of named) {
       if (n && n.length >= 3 && (s === n || s.includes(n) || n.includes(s))) return c;
       if (aliases.includes(s)) return c;

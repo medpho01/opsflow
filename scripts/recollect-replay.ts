@@ -20,6 +20,9 @@ import { labChaseable, labGroup } from "@/lib/agents/store/scope";
 import { explicitOrderIds } from "@/lib/agents/store/reader";
 import { readMessage } from "@/lib/agents/reader/read";
 import { contextFor } from "@/lib/agents/reader/context";
+import { openRecollectFor } from "@/lib/agents/journey/run";
+import { labstackWorkerQuery } from "@/lib/db/labstack";
+import type { OrderSnapshot } from "@/lib/agents/journey/policy";
 import { interpretImage } from "@/lib/wa/vision";
 import { loadTeam, makeTeamMatcher } from "@/lib/wa/team";
 
@@ -39,9 +42,9 @@ async function cases(days: number, only: number[]): Promise<number[]> {
   const since = new Date(Date.now() - days * 86_400_000);
   const asked = await prisma.agentAction.findMany({ where: { desk: "LAB", action: "ask", createdAt: { gte: since }, params: { path: ["intent"], equals: "RECOLLECT" } }, select: { orderId: true } });
   const stores = await prisma.waGroup.findMany({ where: { role: "SUPPORT", storeId: { not: null } }, select: { id: true } });
-  const said = await prisma.waMessage.findMany({ where: { groupId: { in: stores.map((g) => g.id) }, ts: { gte: since }, fromMe: false }, select: { text: true, orderIds: true } });
+  const said = await prisma.waMessage.findMany({ where: { groupId: { in: stores.map((g) => g.id) }, ts: { gte: since }, fromMe: false }, select: { text: true } });
   const ids = new Set<number>(asked.map((a) => a.orderId!).filter(Boolean));
-  for (const m of said) if (SAMPLE_LEFT.test(m.text ?? "")) for (const id of [...m.orderIds, ...explicitOrderIds(m.text ?? "")]) ids.add(id);
+  for (const m of said) if (SAMPLE_LEFT.test(m.text ?? "")) for (const id of explicitOrderIds(m.text ?? "")) ids.add(id);
   return [...ids].sort();
 }
 
@@ -65,7 +68,8 @@ async function replay(orderId: number, ctx: { team: ReturnType<typeof makeTeamMa
   // The window: from the first word of a sample left behind (or our first ask) to a day later.
   const groups = [storeGroup?.id, labG?.id].filter(Boolean) as string[];
   const all: Msg[] = groups.length ? await prisma.waMessage.findMany({ where: { groupId: { in: groups }, ts: { gte: new Date(Date.now() - 6 * 86_400_000) } }, orderBy: { ts: "asc" }, select: { id: true, waMsgId: true, groupId: true, ts: true, sender: true, senderJid: true, fromMe: true, text: true, mediaType: true, ocrText: true, replyToWaId: true, orderIds: true, refIds: true } }) : [];
-  const names = (m: Msg) => m.orderIds.includes(orderId) || explicitOrderIds(m.text ?? "").includes(orderId) || (!!ref && (m.refIds.map((r) => r.toUpperCase()).includes(ref) || (m.text ?? "").toUpperCase().includes(ref) || (m.ocrText ?? "").toUpperCase().includes(ref)));
+  // What the message itself says — never the gateway's tag, which a reply chain can carry to the wrong order.
+  const names = (m: Msg) => explicitOrderIds(m.text ?? "").includes(orderId) || (!!ref && ((m.text ?? "").toUpperCase().includes(ref) || (m.ocrText ?? "").toUpperCase().includes(ref)));
   const start = [all.find((m) => m.groupId === storeGroup?.id && names(m) && SAMPLE_LEFT.test(m.text ?? ""))?.ts, realAsks[0]?.createdAt].filter(Boolean).sort((a, b) => a!.getTime() - b!.getTime())[0];
   if (!start) { console.log(`\n#${orderId}: no sample-left message or re-collection ask found`); return { stalls: 0 }; }
   const end = new Date(Math.min(Date.now(), start.getTime() + 24 * 3_600_000));
@@ -76,8 +80,26 @@ async function replay(orderId: number, ctx: { team: ReturnType<typeof makeTeamMa
     const q = m.replyToWaId ? byWa.get(m.replyToWaId) : null;
     if (names(m) || (m.replyToWaId && (ourIds.has(m.replyToWaId) || batchLine.has(m.replyToWaId) || (q && about.has(q.id))))) about.add(m.id);
   }
-  console.log(`\n━━ #${orderId} · ${order.labName ?? `lab ${order.labId}`} · ${storeGroup?.subject ?? "no store group"} · LabStack now ${order.orderStatus}${labG ? "" : " · ⚠ lab has no connected group"}`);
 
+  // LabStack as it was at each message, from its change log — not as it is now.
+  const changes = await labstackWorkerQuery<{ at: Date; status: string | null; appt: string | null }>(
+    `SELECT "changeDate" AS at, new->>'orderStatus' AS status, new->>'appointmentTime' AS appt FROM public."OrderChange" WHERE "orderId" = $1 ORDER BY "changeDate"`, [orderId]).catch(() => []);
+  const firstAppt = await labstackWorkerQuery<{ appt: string | null }>(
+    `SELECT previous->>'appointmentTime' AS appt FROM public."OrderChange" WHERE "orderId" = $1 AND new ? 'appointmentTime' ORDER BY "changeDate" LIMIT 1`, [orderId]).catch(() => []);
+  const firstStatus = await labstackWorkerQuery<{ status: string | null }>(
+    `SELECT previous->>'orderStatus' AS status FROM public."OrderChange" WHERE "orderId" = $1 AND new ? 'orderStatus' ORDER BY "changeDate" LIMIT 1`, [orderId]).catch(() => []);
+  const asOf = (at: Date): OrderSnapshot => {
+    let status = firstStatus[0]?.status ?? order.orderStatus; let updated: Date | null = null;
+    let appt = firstAppt[0]?.appt ? new Date(firstAppt[0].appt) : order.appointmentTime;
+    for (const c of changes) {
+      const t = new Date(c.at);
+      if (t > at) break;
+      if (c.status) { status = c.status; updated = t; }
+      if (c.appt) appt = new Date(c.appt);
+    }
+    return changes.length ? { ...order, orderStatus: status, statusUpdatedAt: updated ?? order.statusUpdatedAt, appointmentTime: appt } : order;
+  };
+  console.log(`\n━━ #${orderId} · ${order.labName ?? `lab ${order.labId}`} · ${storeGroup?.subject ?? "no store group"} · LabStack at the start ${asOf(start).orderStatus}, now ${order.orderStatus}${labG ? "" : " · ⚠ lab has no connected group"}`);
   const labSop = ctx.sops.get("LAB") ?? null;
   const labTier = tierOf(ctx.directory, order.labId);
   const sop = paramsFor(labSop, { labTier, labId: order.labId, storeId: order.storeId, orderType: order.orderType });
@@ -88,10 +110,11 @@ async function replay(orderId: number, ctx: { team: ReturnType<typeof makeTeamMa
   let lastStoreNamedAt = new Map<string, Date>();
   let stalls = 0;
   const flag = (why: string) => { stalls += 1; console.log(`      ⚠ STALL — ${why}`); };
-  const run = (m: Msg, events: JourneyEvent[]) => {
-    const open = [...realAsks.map((a) => a.createdAt), ...(simAskAt ? [simAskAt] : [])].some((at) => at <= m.ts && m.ts.getTime() - at.getTime() <= 24 * 3_600_000);
-    const sample = open ? (/\b(urine|stool|sputum|swab)\b/i.exec(JSON.stringify(realAsks.at(-1)?.params ?? "") + " " + (all.filter((x) => about.has(x.id)).map((x) => x.text).join(" ")))?.[1]?.toLowerCase() ?? "sample") : null;
-    const r = step({ now: new Date(m.ts.getTime() + MIN), order, journey: prev?.journey ?? null, checkpoints: prev?.checkpoints ?? [], events, sop, labTier, timeZone: TZ, labChaseable: chaseable, openRecollect: sample });
+  const run = async (m: Msg, events: JourneyEvent[]) => {
+    // As production decides it (an ask by the agent or by our team in the lab group), plus asks this replay made.
+    const simOpen = !!simAskAt && simAskAt <= m.ts && m.ts.getTime() - simAskAt.getTime() <= 24 * 3_600_000;
+    const sample = (await openRecollectFor(orderId, m.ts, order.labRef ?? null)) ?? (simOpen ? (/\b(urine|stool|sputum|swab)\b/i.exec(all.filter((x) => about.has(x.id)).map((x) => x.text).join(" "))?.[1]?.toLowerCase() ?? "sample") : null);
+    const r = step({ now: new Date(m.ts.getTime() + MIN), order: asOf(m.ts), journey: prev?.journey ?? null, checkpoints: prev?.checkpoints ?? [], events, sop, labTier, timeZone: TZ, labChaseable: chaseable, openRecollect: sample });
     prev = r;
     for (const a of r.actions) {
       if (a.desk === "LAB" && a.action === "ask") { if (a.params.intent === "RECOLLECT") simAskAt = m.ts; console.log(`      → lab: ${(a.params.line as { note?: string })?.note ?? a.params.intent}`); }
@@ -130,7 +153,7 @@ async function replay(orderId: number, ctx: { team: ReturnType<typeof makeTeamMa
       if (intent === "noise") { console.log("      · read as noise (no request)"); if (TIME.test(text) || SAMPLE_LEFT.test(text)) flag("a time or a sample left, read as noise"); continue; }
       if (intent === "slot") slotThreadAt ??= m.ts;
       const thread = !rel && slotThreadAt ? { kind: "slot", waitingOn: "LAB", openedAt: slotThreadAt.toISOString() } : null;
-      const r = run(m, [{ kind: "store_message", at: m.ts, actor: "STORE", payload: { intent, text, messageId: m.id, waMsgId: m.waMsgId, samples: reading.samples, requestTime: reading.request.time ?? null, ...(thread ? { thread } : {}) } }]);
+      const r = await run(m, [{ kind: "store_message", at: m.ts, actor: "STORE", payload: { intent, text, messageId: m.id, waMsgId: m.waMsgId, samples: reading.samples, requestTime: reading.request.time ?? null, ...(thread ? { thread } : {}) } }]);
       const toLab = r.actions.some((a) => a.desk === "LAB" && a.action === "ask");
       if ((SAMPLE_LEFT.test(text) || (TIME.test(text) && (slotThreadAt || simAskAt || realAsks.length))) && !toLab && !r.actions.some((a) => a.action === "store_handoff")) flag(`store ${SAMPLE_LEFT.test(text) ? "reports a sample left" : "gives a time"} (read as ${intent}) and the lab is not told`);
       continue;
@@ -156,7 +179,7 @@ async function replay(orderId: number, ctx: { team: ReturnType<typeof makeTeamMa
       .filter((f) => f.kind !== "confirmed").filter((f) => !(f.kind === "sample_collected" && outstanding));
     console.log(`      · read as ${read.map((f) => `${f.kind}="${short(f.value, 50)}"`).join(", ") || "nothing"} (${lr.via})`);
     const facts = read.length ? read : [{ kind: "note" as const, value: full.slice(0, 200), confidence: 0.5 }];
-    const r = run(m, facts.map((f, i) => ({ kind: "fact", at: m.ts, actor: "LAB", payload: { fullText: full.slice(0, 600), kind: f.kind, value: f.value, confidence: f.confidence, source: "lab_reply", attributedBy: m.replyToWaId && context ? "REPLY_TO" : "ORDER_ID", factId: `${m.id}:${i}`, context } })));
+    const r = await run(m, facts.map((f, i) => ({ kind: "fact", at: m.ts, actor: "LAB", payload: { fullText: full.slice(0, 600), kind: f.kind, value: f.value, confidence: f.confidence, source: "lab_reply", attributedBy: m.replyToWaId && context ? "REPLY_TO" : "ORDER_ID", factId: `${m.id}:${i}`, context } })));
     if (LAB_SIGNAL.test(full) && !r.actions.some((a) => a.desk === "STORE")) flag("the lab answered with a time, an ok or a refusal, and the store hears nothing");
   }
   return { stalls };

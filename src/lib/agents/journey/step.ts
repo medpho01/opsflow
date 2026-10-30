@@ -287,8 +287,16 @@ export function consoleIsLive(order: OrderSnapshot, labTier: LabTier | null | un
   // Updated around the visit AND recently: a console that moved at 7:50 and said nothing since
   // is not answering at 10:00 (Orange and Thyrocare got no status asks, 27 Oct 2026). The window
   // is the SOP's consoleQuietMin — the Brain may move it within its bounds.
+  // Half an hour after the visit only an update since the visit answers "collected?": "phlebo started"
+  // at 7:50 kept an 8:00 visit "live" until 9:20, and the lab was asked at 9:25 — after the store
+  // already knew (30 Oct 2026, Orange #94868, RNR).
+  const visit = order.appointmentTime.getTime();
+  if (now.getTime() > visit + POST_VISIT_ANSWER_MIN * MIN && updated < visit) return false;
   return updated >= from && updated <= now.getTime() && now.getTime() - updated <= quietMin * MIN;
 }
+
+/** Minutes after the visit by which the console must have moved past the visit, or the lab is asked. */
+export const POST_VISIT_ANSWER_MIN = 30;
 
 /** A store reporting that the visit failed, in the SOP's phrases (params.storeExceptionPhrases). */
 export function storeExceptionRe(sop: Pick<SopParams, "storeExceptionPhrases"> | null): RegExp | null {
@@ -940,6 +948,8 @@ export function step(input: StepInput): StepOutput {
     // WhatsApp ask for the visit checkpoints; ask only when the console has gone quiet (26 Oct 2026).
     const consoleAnswers = preVisit && consoleIsLive(order, input.labTier, now, sop?.consoleQuietMin);
     if (consoleAnswers && order.statusUpdatedAt) wakeAt.push(order.statusUpdatedAt.getTime() + ((sop?.consoleQuietMin ?? CONSOLE_QUIET_MIN) + 1) * MIN);
+    // …and half an hour after the visit, when an update from before it stops counting.
+    if (consoleAnswers && slot && slot.getTime() + (POST_VISIT_ANSWER_MIN + 1) * MIN > now.getTime()) wakeAt.push(slot.getTime() + (POST_VISIT_ANSWER_MIN + 1) * MIN);
     // An API lab asked "phlebo needed?" ten minutes before the visit answers "collection in
     // progress" (Orange, 25 Oct 2026): LabStack has not caught up. Inside the last quarter
     // hour it is not worth a message (Orange assigns at slot − 30 min, so −30…−15 is fair).

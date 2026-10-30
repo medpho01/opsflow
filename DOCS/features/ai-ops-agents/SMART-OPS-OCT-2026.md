@@ -229,3 +229,7 @@ Read alone, a message lost what made it mean something: "11:45 works" after the 
 The store side guesses the order before linking (ids written, the quoted message, our quoted message's order, the sender's last-named order, the store's open requests) — for context only; linking is unchanged. The context explains the message; the reader is told never to return facts only the context states. The rules added earlier stay as the safety net. With the context, a pick reads as a reschedule with a time; a reschedule while a re-collection is open takes the pick path, answered as a slot request (Plum is live for slots).
 
 `recollect-replay.ts` reads exactly as production does; `-e NO_CONTEXT=1` reads without the context, for a before/after on the same chats.
+
+## "Collected?" half an hour after the visit at API labs too (30 Oct 2026)
+
+Orange #94868, visit 8:00: the console said "phlebo started" at 7:50, which kept the order "live" (updated in the last 90 min, `consoleQuietMin`) until 9:20; the lab was asked at 9:25 — it had marked the customer RNR long before, and the store knew. Now, 30 minutes after the visit (`POST_VISIT_ANSWER_MIN`), only an update made after the visit counts as the console answering; the order is woken at visit + 31 min and the lab asked then (sent within the 10-minute gather, so about visit + 40). An update after the visit (collected, patient missed, rescheduled) still answers it.

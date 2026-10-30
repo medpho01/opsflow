@@ -584,6 +584,17 @@ describe("the console answers only while it keeps updating (27 Oct 2026)", () =>
     assert.equal(consoleIsLive(o, "A", at("2026-10-27T04:30:00Z")), false); // 10:00: quiet for over 90 min
     assert.equal(consoleIsLive(o, "C", at("2026-10-27T03:00:00Z")), false); // manual labs never
   });
+  it("half an hour after the visit, only an update since the visit counts (30 Oct 2026, Orange #94868: asked at 9:25 for an 8:00 visit)", () => {
+    const o = order({ orderStatus: "PHLEBO_STARTED", appointmentTime: at("2026-10-30T02:30:00Z"), statusUpdatedAt: at("2026-10-30T02:20:00Z") }); // visit 8:00, "phlebo started" 7:50
+    assert.equal(consoleIsLive(o, "A", at("2026-10-30T02:55:00Z")), true);  // 8:25
+    assert.equal(consoleIsLive(o, "A", at("2026-10-30T03:01:00Z")), false); // 8:31: nothing since the visit — ask
+    assert.equal(consoleIsLive({ ...o, orderStatus: "PATIENT_MISSED", statusUpdatedAt: at("2026-10-30T02:45:00Z") }, "A", at("2026-10-30T03:01:00Z")), true); // 8:15 update answers it
+    // The order is woken at 8:31 rather than at the end of the 90 minutes, and the lab is asked then.
+    const r = step({ now: at("2026-10-30T02:40:00Z"), order: o, journey: null, checkpoints: [], events: [], sop: SOP_A, labTier: "A", timeZone: IST });
+    assert.ok(r.journey.nextCheckAt && r.journey.nextCheckAt.getTime() <= at("2026-10-30T03:01:00Z").getTime(), String(r.journey.nextCheckAt));
+    const later = step({ now: at("2026-10-30T03:02:00Z"), order: o, journey: r.journey, checkpoints: r.checkpoints, events: [], sop: SOP_A, labTier: "A", timeZone: IST });
+    assert.ok(later.actions.some((a) => a.desk === "LAB" && a.action === "ask"), later.actions.map((a) => `${a.action}:${a.reason}`).join(" | "));
+  });
   it("a store reporting a no-show gets the lab asked at once, whatever the console shows", () => {
     const o = order({ orderStatus: "PHLEBO_ASSIGNED", appointmentTime: at("2026-10-27T01:30:00Z"), statusUpdatedAt: at("2026-10-27T01:55:00Z"), phleboName: "Ramesh" }); // visit 7:00, updated 7:25
     const msg = { kind: "store_message", at: at("2026-10-27T02:09:00Z"), actor: "STORE", payload: { intent: "status", text: "94669 - phlebo no show", messageId: "m-ns", waMsgId: "w-ns" } };

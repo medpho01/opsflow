@@ -6,6 +6,9 @@
  * saving) when their stored reading has no times.
  *
  *   docker compose -f docker-compose.yml -f docker-compose.wa.yml exec -T app npx tsx scripts/recollect-replay.ts [days=3] [orderId …]
+ *
+ * With -e NO_CONTEXT=1 (after `exec`) messages are read alone, as before the context packet: run both
+ * and compare the stall counts.
  */
 import prisma from "@/lib/db/client";
 import { step, type StepOutput, type JourneyEvent } from "@/lib/agents/journey/step";
@@ -16,11 +19,12 @@ import { loadGuardState } from "@/lib/agents/guard/guard";
 import { labChaseable, labGroup } from "@/lib/agents/store/scope";
 import { explicitOrderIds } from "@/lib/agents/store/reader";
 import { readMessage } from "@/lib/agents/reader/read";
-import { extractFacts } from "@/lib/provider-rules/reply-extract";
+import { contextFor } from "@/lib/agents/reader/context";
 import { interpretImage } from "@/lib/wa/vision";
 import { loadTeam, makeTeamMatcher } from "@/lib/wa/team";
 
 const TZ = process.env.TIMEZONE || "Asia/Kolkata";
+const ctxFor: typeof contextFor = (...a) => (process.env.NO_CONTEXT === "1" ? Promise.resolve("") : contextFor(...a));
 const MIN = 60_000;
 const t = (d: Date) => d.toLocaleString("en-IN", { timeZone: TZ, day: "numeric", month: "short", hour: "numeric", minute: "2-digit" });
 const short = (s: string | null | undefined, n = 110) => (s ?? "").replace(/\s+/g, " ").trim().slice(0, n);
@@ -121,7 +125,7 @@ async function replay(orderId: number, ctx: { team: ReturnType<typeof makeTeamMa
       const engaged = inWin.find((x) => x.groupId === m.groupId && x.ts < m.ts && m.ts.getTime() - x.ts.getTime() <= 2 * 3_600_000 && !x.fromMe && ctx.team(x.sender, x.senderJid) && about.has(x.id));
       if (engaged) { console.log(`      · team member ${engaged.sender} wrote about it at ${t(engaged.ts)} — the desk stays out for 2 h`); continue; }
       const quoted = q?.text ?? null;
-      const reading = await readMessage({ side: "store", text, quotedText: quoted, scope: { storeId: order.storeId, groupId: m.groupId } });
+      const reading = await readMessage({ side: "store", text, quotedText: quoted, scope: { storeId: order.storeId, groupId: m.groupId }, context: await ctxFor([orderId], m.ts) });
       const intent = reading.ack || reading.request.kind === "none" ? "noise" : reading.request.kind === "details" ? "other" : reading.request.kind;
       if (intent === "noise") { console.log("      · read as noise (no request)"); if (TIME.test(text) || SAMPLE_LEFT.test(text)) flag("a time or a sample left, read as noise"); continue; }
       if (intent === "slot") slotThreadAt ??= m.ts;
@@ -145,9 +149,13 @@ async function replay(orderId: number, ctx: { team: ReturnType<typeof makeTeamMa
     console.log(`  ${t(m.ts)} LAB  ${m.sender}${quoteTag}${m.mediaType ? ` [${m.mediaType}]` : ""} "${short(text || "(no caption)")}"${m.mediaType === "image" ? `\n      · image read as: "${short(reading, 160)}"` : ""}`);
     if (!rel) { console.log("      · names no order and quotes nothing about it — may be tied to another order, or to none"); }
     const context = m.replyToWaId ? batchLine.get(m.replyToWaId) ?? "" : "";
-    const ex = await extractFacts(full, context || null, { confirmation: false });
-    console.log(`      · read as ${ex.facts.map((f) => `${f.kind}="${short(f.value, 50)}"`).join(", ") || "nothing"} (${ex.extractor})`);
-    const facts = ex.facts.length ? ex.facts : [{ kind: "note" as const, value: full.slice(0, 200), confidence: 0.5 }];
+    // As replies.ts reads it: the reader, with the order's context; a missed sample is a fact too.
+    const lr = await readMessage({ side: "lab", text: full, quotedText: context || null, scope: { labId: order.labId }, context: await ctxFor([orderId], m.ts, { groupId: m.groupId, senderJid: m.senderJid }) });
+    const outstanding = Object.values(lr.samples).some((x) => x === "missed" || x === "pending");
+    const read = [...lr.events.map((e) => ({ kind: e.kind, value: e.value, confidence: e.confidence ?? 0.8 })), ...Object.entries(lr.samples).filter(([, x]) => x === "missed").map(([k]) => ({ kind: "sample_missed" as const, value: k, confidence: 0.85 }))]
+      .filter((f) => f.kind !== "confirmed").filter((f) => !(f.kind === "sample_collected" && outstanding));
+    console.log(`      · read as ${read.map((f) => `${f.kind}="${short(f.value, 50)}"`).join(", ") || "nothing"} (${lr.via})`);
+    const facts = read.length ? read : [{ kind: "note" as const, value: full.slice(0, 200), confidence: 0.5 }];
     const r = run(m, facts.map((f, i) => ({ kind: "fact", at: m.ts, actor: "LAB", payload: { fullText: full.slice(0, 600), kind: f.kind, value: f.value, confidence: f.confidence, source: "lab_reply", attributedBy: m.replyToWaId && context ? "REPLY_TO" : "ORDER_ID", factId: `${m.id}:${i}`, context } })));
     if (LAB_SIGNAL.test(full) && !r.actions.some((a) => a.desk === "STORE")) flag("the lab answered with a time, an ok or a refusal, and the store hears nothing");
   }

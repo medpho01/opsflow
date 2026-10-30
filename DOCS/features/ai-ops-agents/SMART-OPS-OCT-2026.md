@@ -216,3 +216,16 @@ Decided with the head of ops after a morning in which 22 of 54 Plum messages wer
 - **Two more stalls, found reading the store side for the replay.** "11:45 works" with no order id is linked to the open slot request and was answered "your slot request is with the lab" — the pick never reached the lab; the pick is now read before that answer. And a report delivered without the urine closed the order's journey, so the lab's slots and the store's pick for it were dropped; a journey closed on delivery reopens while a re-collection asked in the last day is open (`openRecollectFor`).
 - `scripts/recollect-replay.ts [days] [ids]` replays the last days' re-collection chats through the current code — no sends, no writes — and marks every message that would get no answer.
 - **A store's request to the lab is never dropped at send time** (#95448: Plum's "reschedule to tomorrow same slot" was queued for Orange Hyderabad and dropped — LabStack showed the visit over, and Orange had written about the order in the last two hours). Reschedule, cancel and slot-pick asks carry `storeRequest` and skip the "settled by the console" and "already discussed" checks; a reschedule or cancel goes under its own heading ("reschedule (1)") instead of "quick check — collected?".
+
+## The reader reads in context (30 Oct 2026)
+
+Read alone, a message lost what made it mean something: "11:45 works" after the lab's slots was chatter; Orange's "Time: 10:15 am" quoting a team member was a note; an RNR reply listed blood, urine, stool, swab and sputum as missed on a blood-and-urine order. The reader (`reader/read.ts`, both sides) now gets a context block (`reader/context.ts`) for the order(s) the message is likely about:
+- the order: lab, LabStack status, visit, its packages with their tests and tests booked alone;
+- what is open: a re-collection asked in the last day, the time the store picked, a move the store asked for, the journey's next step;
+- the last 8 messages about it in the past two hours, from both groups, marked store / lab / our team / us;
+- for a lab message, what the same person wrote in the 10 minutes before ("Checking." then the answer);
+- a screenshot is read with its caption.
+
+The store side guesses the order before linking (ids written, the quoted message, our quoted message's order, the sender's last-named order, the store's open requests) — for context only; linking is unchanged. The context explains the message; the reader is told never to return facts only the context states. The rules added earlier stay as the safety net. With the context, a pick reads as a reschedule with a time; a reschedule while a re-collection is open takes the pick path, answered as a slot request (Plum is live for slots).
+
+`recollect-replay.ts` reads exactly as production does; `-e NO_CONTEXT=1` reads without the context, for a before/after on the same chats.

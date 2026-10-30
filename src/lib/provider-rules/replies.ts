@@ -274,7 +274,7 @@ export async function runReplyPass(now = new Date()): Promise<ReplyPassResult> {
   return result;
 }
 
-type ReplyMessage = { id: string; sender: string; createdAt: Date };
+type ReplyMessage = { id: string; sender: string; createdAt: Date; groupId?: string; senderJid?: string | null };
 type ApplyOptions = {
   /** Keep only these fact kinds (empty: record no facts, just the note). */
   onlyKinds?: FactKind[];
@@ -302,7 +302,9 @@ async function applyReply(message: ReplyMessage, labId: number, match: Attributi
   const { readMessage } = await import("@/lib/agents/reader/read");
   const reading = options.presetFacts
     ? { samples: {} as Record<string, string>, events: options.presetFacts.map((f) => ({ kind: f.kind, value: f.value, confidence: f.confidence })), via: "patterns" as const }
-    : await readMessage({ side: "lab", text: said, quotedText: match.context, confirmation: ask.confirmation, scope: { labId } });
+    : await readMessage({ side: "lab", text: said, quotedText: match.context, confirmation: ask.confirmation, scope: { labId },
+      // The order, what is open on it, the last messages, and this person's "Checking." just before (30 Oct 2026).
+      context: await (await import("@/lib/agents/reader/context")).contextFor([match.orderId], message.createdAt, { groupId: message.groupId, senderJid: message.senderJid }).catch(() => "") });
   const missed = Object.entries(reading.samples).filter(([, s]) => s === "missed").map(([k]) => ({ kind: "sample_missed" as FactKind, value: k, confidence: 0.85 }));
   const outstanding = Object.values(reading.samples).some((s) => s === "missed" || s === "pending");
   const all = [...reading.events.map((e) => ({ kind: e.kind, value: e.value, confidence: e.confidence ?? 0.8 })), ...missed]

@@ -41,6 +41,8 @@ export type ReadInput = {
   scope?: { storeId?: number | null; labId?: number | null; groupId?: string | null };
   /** Our message asked the lab to confirm — a plain "ok" means confirmed. */
   confirmation?: boolean;
+  /** The order(s) it is likely about: tests, what is open, the last messages (context.ts). */
+  context?: string | null;
 };
 
 const SAMPLE_RE = /\b(blood|urine|stool|swab|sputum)\b/gi;
@@ -127,13 +129,16 @@ export async function readMessage(input: ReadInput): Promise<Reading> {
     "request.kind is what the writer wants from us now: status (any update, 'make sure it happens', 'check with the lab', or a question why something happened — 'why was it cancelled' is status, we answer with the fact), report, slot (asks for available slots), reschedule (gives or wants a new time), cancel, change_tests, new_booking, serviceability, complaint (only with anger, escalation or a demand for an RCA), details (ONLY a lab asking for the patient's phone/address; a store asking about tests or packages is 'other'), other, none.",
     "ack=true only for a bare acknowledgement ('ok', 'checking', 'will check', 'thanks') with no request in it.",
     input.confirmation ? "Our message asked the lab to confirm the order: a plain yes/ok/done/haan/👍 is event kind 'confirmed' with value 'yes'." : "Never return event kind 'confirmed' unless the message plainly confirms an order we asked about.",
+    "You may be given Context: the order, its tests, what is open on it, and the last messages about it. Read the message the way a person who saw that conversation would: after the lab offered slots, a store's '11:45 works' or 'customer prefers 11:45' is request.kind 'reschedule' with time '11:45 am'; after we asked the lab to book a time, the lab's 'ok done' is a confirmation of that time (event new_appointment_time with that time); a lab's 'Time: 10:15 am' after we asked for re-collection slots is new_appointment_time.",
+    "Samples: name only samples the order has (see Tests) and the message speaks of. 'RNR' / 'patient not available' means the visit failed — that is patient_unavailable, not a list of missed samples.",
+    "The context explains the message; it is not the message. Never return facts or requests that only the context states.",
     "Only what the message states. Return ONLY JSON matching: " + SCHEMA,
     "",
     "Examples:",
     shots,
     team.length ? "\nHow our team recently answered in this group (for what messages here usually mean):\n" + team.map((t) => `Message: ${JSON.stringify(t.message)}\nTeam replied: ${JSON.stringify(t.reply)}`).join("\n\n") : "",
   ].join("\n");
-  const user = `${input.quotedText ? `Replying to: ${JSON.stringify(input.quotedText.slice(0, 600))}\n` : ""}Message: ${JSON.stringify(input.text.slice(0, 1200))}\nReading:`;
+  const user = `${input.context ? `Context:\n${input.context.slice(0, 3000)}\n\n` : ""}${input.quotedText ? `Replying to: ${JSON.stringify(input.quotedText.slice(0, 600))}\n` : ""}Message: ${JSON.stringify(input.text.slice(0, 1200))}\nReading:`;
   const result = await askModel({ purpose: "reader", system, user, maxTokens: 400 });
   if (!result) return patterns;
   try {

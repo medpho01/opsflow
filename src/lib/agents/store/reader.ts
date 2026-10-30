@@ -15,6 +15,7 @@ import { labstackWorkerQuery } from "@/lib/db/labstack";
 import { isAutomated, loadTeam, makeTeamMatcher } from "@/lib/wa/team";
 import { recordJourneyEvent, wakeJourney } from "../journey/run";
 import { readMessage } from "../reader/read";
+import { contextFor } from "../reader/context";
 import { openThread, openThreadOrders, teamAnswered, threadForNudge, whichOrderQuestion, THREAD_KINDS } from "./threads";
 import { enqueueOutbox } from "../executors/dispatcher";
 import { liveStoreBody } from "../executors/storeReply";
@@ -203,6 +204,22 @@ async function answerClosedOrder(orderId: number, storeId: number, intent: Store
   return { executed, review };
 }
 
+/** Before linking: the orders a message is likely about, for the reader's context only (never a link). */
+async function likelyOrders(m: { orderIds: number[]; replyToWaId: string | null; groupId: string; senderJid: string | null; ts: Date }, text: string, quotedText: string | null, storeId: number): Promise<number[]> {
+  const ids = [...explicitOrderIds(text), ...m.orderIds, ...explicitOrderIds(quotedText ?? "")];
+  if (!ids.length && m.replyToWaId) {
+    const ours = await prisma.waOutbound.findFirst({ where: { sentWaMsgId: m.replyToWaId }, select: { id: true } }).catch(() => null);
+    const item = ours ? await prisma.agentOutboxItem.findFirst({ where: { outboundId: ours.id }, select: { orderId: true } }).catch(() => null) : null;
+    if (item?.orderId) ids.push(item.orderId);
+  }
+  if (!ids.length && m.senderJid) {
+    const own = await prisma.waMessage.findMany({ where: { groupId: m.groupId, senderJid: m.senderJid, ts: { gte: new Date(m.ts.getTime() - SENDER_RECENT_MS), lt: m.ts } }, select: { text: true } }).catch(() => []);
+    ids.push(...explicitOrderIds(own.map((x) => x.text ?? "").join("\n")));
+  }
+  if (!ids.length) ids.push(...(await openThreadOrders(storeId, m.ts).catch(() => [])));
+  return [...new Set(ids)].slice(0, 2);
+}
+
 const ENGAGED_WINDOW_MS = 2 * 3_600_000;
 /** How far back a sender's own message naming an order carries over to their next one without an id. */
 export const SENDER_RECENT_MS = 10 * 60_000;
@@ -263,7 +280,10 @@ export async function runStoreReader(now = new Date()): Promise<StoreReaderResul
     }
     // The reader (model first, patterns as fallback) fills in the form: orders, samples, request, ack.
     const quoted = m.replyToWaId ? await prisma.waMessage.findUnique({ where: { waMsgId: m.replyToWaId }, select: { text: true, sender: true, senderJid: true, fromMe: true } }).catch(() => null) : null;
-    const reading = await readMessage({ side: "store", text, quotedText: quoted?.text ?? null, scope: { storeId: g.storeId, groupId: m.groupId } });
+    // The order it is likely about, and what is open on it and was just said (context.ts): read alone,
+    // "11:45 works" after the lab's slots was chatter (30 Oct 2026).
+    const context = await contextFor(await likelyOrders(m, text, quoted?.text ?? null, g.storeId!), m.ts, {}).catch(() => "");
+    const reading = await readMessage({ side: "store", text, quotedText: quoted?.text ?? null, scope: { storeId: g.storeId, groupId: m.groupId }, context });
     let intent: StoreIntent = reading.ack || reading.request.kind === "none" ? "noise" : reading.request.kind === "details" ? "other" : reading.request.kind;
     if (intent === "noise") continue;
     // A grievance ("samples collected but cancelled", "consultation was not done") is a complaint

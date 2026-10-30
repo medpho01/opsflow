@@ -733,12 +733,14 @@ export function step(input: StepInput): StepOutput {
       // "11:45 works"): the lab is asked to book it and the store hears so. Read as chatter, it reached
       // nobody (30 Oct 2026, dry run of #95568). The lab's confirmation comes back as a store alert. Before the nudge
       // answer: "11:45 works" with no id is linked to the open slot request, and is still a pick.
-      const picked = input.openRecollect && order.labId != null && sop && !["cancel", "change_tests", "complaint", "reschedule", "report"].includes(m.intent) && !/\breport\b/i.test(m.text) ? requestedTime(m.text, m.at, null, tz) : null;
+      // A reschedule while a re-collection is open is the pick (the reader, given the context, calls it one);
+      // answered as a slot request, which a store live for slots hears.
+      const picked = input.openRecollect && order.labId != null && sop && !["cancel", "change_tests", "complaint", "report"].includes(m.intent) && !/\breport\b/i.test(m.text) ? requestedTime(m.text, m.at, null, tz) : null;
       if (picked && order.labId != null && sop) {
         const whenText = LABELS_TIME(picked, tz) + (picked.toDateString() !== now.toDateString() ? ` ${picked.toLocaleDateString("en-IN", { timeZone: tz, weekday: "short", day: "numeric", month: "short" })}` : "");
         const window = sendWindow(now, now, sop, { intent: "STATUS", leadMin: 0, graceMin: 480, urgentWithinMin: 0, nightBefore: false }, true, false, tz);
         actions.push({ desk: "LAB", action: "ask", params: { checkpoint: "sample_collected", orderId: order.id, labId: order.labId, attempt: 1, dueAt: now, rung: "ask", intent: "RECOLLECT", counterparty: `LAB:${order.labId}`, windowFrom: window.from, windowTo: window.to, urgent: true, line: { orderId: order.id, patientName: order.patientName, appointment: order.appointmentTime, labRef: order.labRef ?? null, mobile: order.mobile ?? null, area: order.area ?? null, note: `${input.openRecollect} re-collection: customer picks ${whenText} — please book and confirm` }, forStore: true, storeRequest: true }, reason: `store picked ${whenText} for the ${input.openRecollect} re-collection`, idemKey: `${key}:recollect-pick` });
-        actions.push({ desk: "STORE", action: "store_reply", params: { text: `#${order.id}: asking ${order.labName ?? "the lab"} to book the ${input.openRecollect} re-collection at ${whenText} — will confirm here.`, orderId: order.id, storeId: order.storeId, intent: m.intent, ...quote }, reason: `store picked ${whenText}`, idemKey: `${key}:recollect-pick-ack` });
+        actions.push({ desk: "STORE", action: "store_reply", params: { text: `#${order.id}: asking ${order.labName ?? "the lab"} to book the ${input.openRecollect} re-collection at ${whenText} — will confirm here.`, orderId: order.id, storeId: order.storeId, intent: "slot", ...quote }, reason: `store picked ${whenText}`, idemKey: `${key}:recollect-pick-ack` });
         journey = { ...journey, subStates: [...journey.subStates.filter((x) => !x.startsWith("recollect-asked:")), `recollect-asked:${picked.toISOString()}`] };
         continue;
       }

@@ -28,7 +28,7 @@ const PROMPT =
 
 /** `fresh`: read the image again, ignoring the cached reading; `save: false`: change nothing (a replay). */
 export async function interpretImage(waMsgId: string, opts: { fresh?: boolean; save?: boolean } = {}): Promise<VisionResult> {
-  const msg = await prisma.waMessage.findUnique({ where: { waMsgId }, select: { id: true, mediaType: true, ocrText: true, ocrJson: true, orderIds: true, refIds: true } });
+  const msg = await prisma.waMessage.findUnique({ where: { waMsgId }, select: { id: true, mediaType: true, ocrText: true, ocrJson: true, orderIds: true, refIds: true, text: true } });
   if (!msg) return { ok: false, status: 404, error: "not found" };
   if (msg.ocrText && !opts.fresh) {
     const j = (msg.ocrJson ?? {}) as { orderIds?: number[]; labRefs?: string[]; status?: string | null; patient?: string | null; model?: string; at?: string };
@@ -51,7 +51,8 @@ export async function interpretImage(waMsgId: string, opts: { fresh?: boolean; s
         model: VISION_MODEL, max_tokens: 800,
         messages: [{ role: "user", content: [
           { type: "image", source: { type: "base64", media_type: mime, data: buf.toString("base64") } },
-          { type: "text", text: PROMPT },
+          // The caption says what the screenshot is for ("slots available", "booked as asked") (30 Oct 2026).
+          { type: "text", text: (msg.text ?? "").trim() ? `${PROMPT}\nThe sender's caption: ${JSON.stringify((msg.text ?? "").trim().slice(0, 300))}` : PROMPT },
         ] }],
       }),
     });

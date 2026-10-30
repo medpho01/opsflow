@@ -25,6 +25,7 @@ export const STORE_TEMPLATES: Record<string, { name: string; body: string }> = {
   STORE_LAB_CANCELLED: { name: "Store: the lab cancelled", body: "#{{order_id}}\n{{patient_name}}\n\nThe lab has cancelled this order ({{detail}}). We're on it — another lab, a centre visit or a new slot — and will confirm here. Please let the customer know." },
   STORE_LAB_CANNOT: { name: "Store: lab cannot fulfil", body: "#{{order_id}}\n{{patient_name}}\n\nThe lab cannot do this one ({{detail}}). We are arranging an alternative and will confirm here." },
   STORE_REPORT_SHARED: { name: "Store: report shared by the lab", body: "#{{order_id}}\n{{patient_name}}\n\nReport received from the lab; uploading to the console now." },
+  STORE_RECOLLECTED: { name: "Store: a re-collected sample is in", body: "#{{order_id}}\n{{patient_name}}\n\n{{detail}}." },
   STORE_LAB_PROMISE: { name: "Store: the lab's promise", body: "#{{order_id}}\n{{patient_name}}\n\nLab says: {{detail}}. We'll confirm once it's done." },
   STORE_AT_RISK: { name: "Store: order at risk", body: "#{{order_id}}: {{slot}} collection is at risk — {{reason}}. We expect to collect by {{expected}}, or can you offer {{alternative}}?" },
   STORE_CANNOT_TODAY: { name: "Store: cannot be done today", body: "#{{order_id}}: {{slot}} collection cannot happen today — {{reason}}. Can you offer {{alternative}}?" },

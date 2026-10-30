@@ -21,7 +21,6 @@ import { explicitOrderIds } from "@/lib/agents/store/reader";
 import { readMessage } from "@/lib/agents/reader/read";
 import { contextFor } from "@/lib/agents/reader/context";
 import { openRecollectFor } from "@/lib/agents/journey/run";
-import { labstackWorkerQuery } from "@/lib/db/labstack";
 import type { OrderSnapshot } from "@/lib/agents/journey/policy";
 import { interpretImage } from "@/lib/wa/vision";
 import { loadTeam, makeTeamMatcher } from "@/lib/wa/team";
@@ -82,12 +81,14 @@ async function replay(orderId: number, ctx: { team: ReturnType<typeof makeTeamMa
   }
 
   // LabStack as it was at each message, from its change log — not as it is now.
-  const changes = await labstackWorkerQuery<{ at: Date; status: string | null; appt: string | null }>(
-    `SELECT "changeDate" AS at, new->>'orderStatus' AS status, new->>'appointmentTime' AS appt FROM public."OrderChange" WHERE "orderId" = $1 ORDER BY "changeDate"`, [orderId]).catch(() => []);
-  const firstAppt = await labstackWorkerQuery<{ appt: string | null }>(
-    `SELECT previous->>'appointmentTime' AS appt FROM public."OrderChange" WHERE "orderId" = $1 AND new ? 'appointmentTime' ORDER BY "changeDate" LIMIT 1`, [orderId]).catch(() => []);
-  const firstStatus = await labstackWorkerQuery<{ status: string | null }>(
-    `SELECT previous->>'orderStatus' AS status FROM public."OrderChange" WHERE "orderId" = $1 AND new ? 'orderStatus' ORDER BY "changeDate" LIMIT 1`, [orderId]).catch(() => []);
+  // Production's replica has no change log; the agent's own record of each change it saw stands in.
+  const jr = await prisma.agentJourney.findUnique({ where: { orderId }, select: { id: true } });
+  const seen = jr ? await prisma.agentJourneyEvent.findMany({ where: { journeyId: jr.id, kind: "console_change" }, orderBy: { at: "asc" }, select: { at: true, payload: true } }) : [];
+  type Side = { status?: string; appointmentTime?: string | null } | null;
+  const changes = seen.map((e) => { const p = e.payload as { to?: Side }; return { at: e.at, status: p.to?.status ?? null, appt: p.to?.appointmentTime ?? null }; });
+  const first = (seen[0]?.payload as { from?: Side } | undefined)?.from ?? null;
+  const firstAppt = [{ appt: first?.appointmentTime ?? null }];
+  const firstStatus = [{ status: first?.status ?? null }];
   const asOf = (at: Date): OrderSnapshot => {
     let status = firstStatus[0]?.status ?? order.orderStatus; let updated: Date | null = null;
     let appt = firstAppt[0]?.appt ? new Date(firstAppt[0].appt) : order.appointmentTime;
@@ -154,7 +155,14 @@ async function replay(orderId: number, ctx: { team: ReturnType<typeof makeTeamMa
       if (intent === "slot") slotThreadAt ??= m.ts;
       const thread = !rel && slotThreadAt ? { kind: "slot", waitingOn: "LAB", openedAt: slotThreadAt.toISOString() } : null;
       const r = await run(m, [{ kind: "store_message", at: m.ts, actor: "STORE", payload: { intent, text, messageId: m.id, waMsgId: m.waMsgId, samples: reading.samples, requestTime: reading.request.time ?? null, ...(thread ? { thread } : {}) } }]);
-      const toLab = r.actions.some((a) => a.desk === "LAB" && a.action === "ask");
+      let toLab = r.actions.some((a) => a.desk === "LAB" && a.action === "ask");
+      // A delivered order's journey is closed; the store reader answers it itself (answerClosedOrder): a
+      // sample left is asked of the lab, and the store told so.
+      const missed = Object.entries(reading.samples).find(([k, x]) => x === "missed" && k !== "blood")?.[0] ?? /\b(urine|stool|swab|sputum)\b[^.\n]{0,30}\bnot\b|\bnot collected\b/i.exec(text)?.[1]?.toLowerCase();
+      if (!toLab && missed && intent !== "cancel" && ["REPORT_DELIVERED", "CANCELED", "CANCELLED"].includes(asOf(m.ts).orderStatus) && !r.actions.length) {
+        console.log(`      → lab (closed-order path): ${missed} pending\n      → store: #${orderId}: the report shared was without the ${missed} sample — asking the lab for a re-collection slot now.`);
+        simAskAt = m.ts; toLab = true;
+      }
       if ((SAMPLE_LEFT.test(text) || (TIME.test(text) && (slotThreadAt || simAskAt || realAsks.length))) && !toLab && !r.actions.some((a) => a.action === "store_handoff")) flag(`store ${SAMPLE_LEFT.test(text) ? "reports a sample left" : "gives a time"} (read as ${intent}) and the lab is not told`);
       continue;
     }
@@ -163,6 +171,9 @@ async function replay(orderId: number, ctx: { team: ReturnType<typeof makeTeamMa
     const recentAsk = [...realAsks.map((a) => a.createdAt), ...(simAskAt ? [simAskAt] : [])].filter((at) => at <= m.ts).at(-1);
     const candidate = !rel && recentAsk && m.ts.getTime() - recentAsk.getTime() <= 3 * 3_600_000 && (LAB_SIGNAL.test(text) || m.mediaType === "image");
     if (!rel && !candidate) continue;
+    // A message naming another order (its id or the lab's reference) is that order's, not this one's.
+    const otherRef = /\b[A-Z]{2,4}\d{6,8}\b/.exec(`${text} ${m.ocrText ?? ""}`.toUpperCase())?.[0];
+    if (!rel && ((otherRef && otherRef !== ref) || explicitOrderIds(text).some((id) => id !== orderId))) continue;
     let reading = m.ocrText ?? "";
     if (m.mediaType === "image" && !/\b(Slots|Booked): /.test(reading)) {
       const v = await interpretImage(m.waMsgId, { fresh: true, save: false }).catch(() => null);

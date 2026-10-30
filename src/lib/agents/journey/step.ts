@@ -353,7 +353,7 @@ export function requestedTime(text: string, at: Date, appointment: Date | null, 
  */
 const ALERT_RANK: Record<string, number> = {
   STORE_PATIENT_UNREACHABLE: 5, STORE_SAMPLE_OWED: 5, STORE_SAMPLE_OWED_TEAM: 5, STORE_LAB_CANNOT: 5, STORE_LAB_DATA_CHECK: 5, STORE_LAB_CANCELLED: 6,
-  STORE_LAB_RESCHEDULED: 4, STORE_REPORT_SHARED: 3, STORE_COLLECTED: 2, STORE_LAB_PROMISE: 1,
+  STORE_LAB_RESCHEDULED: 4, STORE_REPORT_SHARED: 3, STORE_COLLECTED: 2, STORE_RECOLLECTED: 2, STORE_LAB_PROMISE: 1,
 };
 const SAMPLE_LEFT = /\b(urine|stool|sputum|swab)\b[^.\n]{0,40}\b(not|pending|missed|left|skipped)\b|\b(not|pending)\b[^.\n]{0,20}\b(urine|stool|sputum|swab)\b/i;
 const DATA_FIX = /\bmismatch\b|\b(wrong|incorrect)\b|\b(age|gender|dob|date of birth)\b/i;
@@ -547,6 +547,17 @@ export function step(input: StepInput): StepOutput {
       // "the blood has been collected" in reply to that ask is old news, not a fresh collection; a
       // later "collected" that does not quote it may be the re-collection itself.
       if (underAsk && kind === "sample_collected" && !parsePromiseTime(String(ev.payload.fullText ?? value), ev.at, tz)) continue;
+      // "The sample has been collected … 10:45 am" while a re-collection is open is that sample — the store
+      // asked for it and hears at once, not in the summary (30 Oct 2026, #94545). "Blood collected" alone is old news.
+      if (recollect && kind === "sample_collected" && order.storeId != null) {
+        const txt = `${value} ${String(ev.payload.fullText ?? "")}`;
+        const namesOther = /\b(blood|serum)\b/i.test(txt) && (recollect === "sample" || !new RegExp(`\\b${recollect}\\b`, "i").test(txt));
+        if (namesOther) continue;
+        const when = parsePromiseTime(txt, ev.at, tz);
+        const label = recollect === "sample" ? "Sample" : `${recollect[0].toUpperCase()}${recollect.slice(1)} sample`;
+        actions.push({ desk: "STORE", action: "store_alert", params: { template: "STORE_RECOLLECTED", orderId: order.id, storeId: order.storeId, fact: "recollected", detail: `${label} collected${when ? ` (${LABELS_TIME(when, tz)})` : ""}`, at: ev.at.toISOString() }, reason: `lab says the ${recollect} sample is collected`, idemKey: `recollected:${order.id}:${ev.at.toISOString().slice(0, 10)}` });
+        continue;
+      }
       if (recollect && order.storeId != null && ["eta", "new_appointment_time", "note", "confirmed", "patient_unavailable", "cannot_fulfil", "delay_reason", ...(underAsk ? ["sample_collected"] : [])].includes(kind)) {
         // Several times offered ("10:15, 12:30, 3 pm"): slots to choose from, passed to the store as
         // they are — the store picks, a person books (29 Oct 2026: the team pasted these by hand).
@@ -557,11 +568,23 @@ export function step(input: StepInput): StepOutput {
         const bare = parts.length === 1 && /\b(Booked|Slots): /.test(parts[0]);
         const said = bare ? "" : parts[0];
         const shot = bare ? parts[0] : parts[1] ?? "";
-        const times = (t: string) => [...new Set((t.match(/\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b(?:\s*[-–to]+\s*\d{1,2}(?::\d{2})?\s*(?:am|pm))?/gi) ?? []).map((x) => x.replace(/\s+/g, " ").toLowerCase()))];
+        // "10:45" with no am/pm is a time too (30 Oct 2026, #94834: "scheduled at 11:45").
+        const times = (t: string) => [...new Set((t.match(/\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b(?:\s*[-–to]+\s*\d{1,2}(?::\d{2})?\s*(?:am|pm))?|\b\d{1,2}:\d{2}\b(?!\s*(?:am|pm))/gi) ?? []).map((x) => x.replace(/\s+/g, " ").toLowerCase()))];
         const shotTimes = times(/Booked: ([^\n]+?)\./.exec(shot)?.[1] ?? /Slots: ([^\n]+?)\./.exec(shot)?.[1] ?? shot);
-        const offered = times(said).length ? times(said) : shotTimes;
+        // A time the lab says it cannot do ("11:45 not available") is not on offer.
+        const offeredSaid = said.replace(/\b\d{1,2}(?::\d{2})?\s*(?:am|pm)?\s*(?:slot\s*)?(?:is\s*|has been\s*)?(?:not available|not possible|unavailable|full|moved off|booked out)/gi, "");
+        const offered = times(offeredSaid).length ? times(offeredSaid) : times(said).length ? [] : shotTimes;
         // "11:45 not available, can do 1:15 pm" is a counter-offer, not "patient not available" (dry run, 30 Oct 2026).
         const refused = /\bnot (available|possible|free)\b|\bcan'?t\b|\bcannot\b|\bunable\b|\bno slots?\b|\b(full|booked out)\b/i.test(said || shot);
+        // "Scheduled at 10:45 as the 10:45 slot moved off — hence 11:45": a booking, at the time the reader
+        // took from it, never the first time a screenshot shows (30 Oct 2026, #94834 read "10:45").
+        const stated = /\b(scheduled|rescheduled|booked|confirmed|fixed)\b/i.test(said) && (kind === "new_appointment_time" || kind === "eta") ? parsePromiseTime(value, ev.at, tz) : null;
+        if (stated && order.storeId != null) {
+          actions.push({ desk: "STORE", action: "store_alert", params: { template: "STORE_LAB_PROMISE", orderId: order.id, storeId: order.storeId, fact: "recollection_promise", detail: `${recollect} re-collection scheduled for ${LABELS_TIME(stated, tz)}`, at: ev.at.toISOString() }, reason: `lab booked the ${recollect} re-collection at ${LABELS_TIME(stated, tz)}`, idemKey: `recollect-promise:${order.id}:${stated.getTime()}` });
+          newEvents.push({ kind: "promise", at: ev.at, actor: "LAB", payload: { kind: "recollection", checkpoint: "sample_collected", dueAt: stated, text: value.slice(0, 200), superseded: false } });
+          journey = { ...journey, subStates: journey.subStates.filter((x) => !x.startsWith("recollect-asked:")) };
+          continue;
+        }
         if (offered.length >= 2 || (offered.length >= 1 && refused)) {
           actions.push({ desk: "STORE", action: "store_alert", params: { template: "STORE_LAB_PROMISE", orderId: order.id, storeId: order.storeId, fact: "recollection_slots", detail: `${recollect} re-collection ${refused ? "— the time asked isn't possible; the lab offers" : "slots:"} ${offered.slice(0, 6).join(", ")} — reply with the customer's pick and we'll book it`, at: ev.at.toISOString() }, reason: `lab offers ${recollect} re-collection slots: ${offered.join(", ")}`, idemKey: `recollect-slots:${order.id}:${ev.at.getTime()}` });
           continue;

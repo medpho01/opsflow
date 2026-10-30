@@ -213,6 +213,13 @@ describe("the ladder", () => {
     assert.equal(delivered.journey.closedAt, null);
     assert.match(detail(delivered), /^urine re-collection slots: 10:15 am, 11:45 am/);
     assert.notEqual(step({ now: at("2026-10-30T02:49:00Z"), order: { ...o, orderStatus: "REPORT_DELIVERED" }, journey: null, checkpoints: [], events: [], sop: SOP_A, labTier: "A", timeZone: IST }).journey.closedAt, null);
+    // #94834: "scheduled at 10:45 as 10:45 slot has been moved off. Hence scheduled at 11:45" — 11:45, never the screenshot's 10:45.
+    const moved = run("2026-10-30T04:26:00Z", [lab("2026-10-30T04:25:00Z", "new_appointment_time", "11:45 am")].map((e) => ({ ...e, payload: { ...e.payload, fullText: "The appointment has been scheduled at 10:45 as 10:45 slot has been moved off. Hence scheduled at 11:45 kindly inform\n[screenshot] Recollection scheduled. Slots: 10:45 am." } })), pick);
+    assert.equal(detail(moved), "urine re-collection scheduled for 11:45 am");
+    // #94545: "The sample has been collected … Time: 10:45 am" in answer to our team's ask — the store hears it now.
+    assert.equal(detail(run("2026-10-30T05:20:00Z", [lab("2026-10-30T05:19:00Z", "sample_collected", "BLR6372852 The sample has been collected. Day: Today, 30th October 2026 Time: 10:45 am")], pick)), "Urine sample collected (10:45 am)");
+    // "MUM6367190-Blood sample collected here" is the morning's blood, not the urine.
+    assert.ok(!run("2026-10-30T05:20:00Z", [lab("2026-10-30T05:19:00Z", "sample_collected", "MUM6367190-Blood sample collected here.")], pick).actions.some((a) => a.action === "store_alert"));
     // A report question with a time is not a pick.
     const rep = run("2026-10-30T03:00:30Z", [{ kind: "store_message", at: at("2026-10-30T03:00:00Z"), actor: "STORE", payload: { intent: "status", text: "95568 report by 5 pm?", messageId: "m-r", waMsgId: "w-r" } }], slots);
     assert.ok(!rep.actions.some((a) => a.idemKey.endsWith(":recollect-pick")));

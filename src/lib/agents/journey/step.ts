@@ -280,6 +280,9 @@ const RUNG_TO_ACTION: Record<Rung, ActionName> = {
 /** The SOP's default when no SOP is at hand (scripts): an API lab's console counts as answering only while it updated this recently. */
 export const CONSOLE_QUIET_MIN = 90;
 
+/** Minutes a team member tagged in a store's request has to act before the desk does. */
+export const TAGGED_HOLD_MIN = 3;
+
 export function consoleIsLive(order: OrderSnapshot, labTier: LabTier | null | undefined, now: Date, quietMin = CONSOLE_QUIET_MIN, postVisitMin = POST_VISIT_ANSWER_MIN): boolean {
   if (!labTier || labTier === "C" || !order.statusUpdatedAt || !order.appointmentTime) return false;
   const from = order.appointmentTime.getTime() - 2 * 3_600_000;
@@ -527,7 +530,7 @@ export function step(input: StepInput): StepOutput {
   // 3. Events: people, facts, promises.
   const attempts: Record<string, Attempt> = { ...journey.attempts };
   const factsSeen: Array<{ kind: string; value: string; confidence: number; source: string; named: boolean; id: string | null; at: Date; fullText?: string }> = [];
-  const storeMessages: Array<{ intent: string; text: string; messageId: string; waMsgId: string | null; at: Date; samples?: Record<string, string>; requestTime?: string | null; thread?: { kind: string; waitingOn: string; openedAt: string } | null }> = [];
+  const storeMessages: Array<{ intent: string; text: string; messageId: string; waMsgId: string | null; at: Date; samples?: Record<string, string>; requestTime?: string | null; thread?: { kind: string; waitingOn: string; openedAt: string } | null; tagged?: boolean }> = [];
   let caseworker: StepOutput["caseworker"] = null;
   for (const ev of events) {
     if (ev.kind === "takeover") {
@@ -652,7 +655,7 @@ export function step(input: StepInput): StepOutput {
         }
       }
     } else if (ev.kind === "store_message") {
-      storeMessages.push({ intent: String(ev.payload.intent ?? "other"), text: String(ev.payload.text ?? ""), messageId: String(ev.payload.messageId ?? ""), waMsgId: (ev.payload.waMsgId as string | null) ?? null, at: ev.at, samples: (ev.payload.samples as Record<string, string> | undefined) ?? {}, requestTime: (ev.payload.requestTime as string | null | undefined) ?? null, thread: (ev.payload.thread as { kind: string; waitingOn: string; openedAt: string } | null | undefined) ?? null });
+      storeMessages.push({ intent: String(ev.payload.intent ?? "other"), text: String(ev.payload.text ?? ""), messageId: String(ev.payload.messageId ?? ""), waMsgId: (ev.payload.waMsgId as string | null) ?? null, at: ev.at, samples: (ev.payload.samples as Record<string, string> | undefined) ?? {}, requestTime: (ev.payload.requestTime as string | null | undefined) ?? null, thread: (ev.payload.thread as { kind: string; waitingOn: string; openedAt: string } | null | undefined) ?? null, tagged: Array.isArray(ev.payload.tagged) && ev.payload.tagged.length > 0 });
     }
   }
   if (journey.pausedUntil && journey.pausedUntil.getTime() <= now.getTime()) journey = { ...journey, ownerUserId: null, pausedUntil: null };
@@ -914,6 +917,20 @@ export function step(input: StepInput): StepOutput {
           break;
         default: break;
       }
+    }
+  }
+
+  // A request that tagged a team member ("… slots available @Deepali") is the desk's too, but the person
+  // gets three minutes first: the lab ask waits, and is dropped at send time if they asked the lab
+  // themselves (no storeRequest, so "already discussed" applies); the store reply already holds and
+  // yields to a team answer (2 Nov 2026, #96025: tagged, and nothing happened at all).
+  for (const m of storeMessages.filter((x) => x.tagged)) {
+    const prefix = `store:${order.id}:${m.messageId}`;
+    for (const a of actions) {
+      if (a.desk !== "LAB" || a.action !== "ask" || !a.idemKey.startsWith(prefix)) continue;
+      const from = new Date(Math.max(now.getTime(), m.at.getTime()) + TAGGED_HOLD_MIN * MIN);
+      const { storeRequest: _drop, ...rest } = a.params as Record<string, unknown>;
+      a.params = { ...rest, windowFrom: from, windowTo: new Date(Math.max(from.getTime(), new Date(String(a.params.windowTo ?? from)).getTime())), teamTagged: true };
     }
   }
 

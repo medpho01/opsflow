@@ -145,7 +145,7 @@ async function linkOrder(message: { orderIds: number[]; idType: string | null; i
 
 const CLOSED_TASK: Partial<Record<StoreIntent, string>> = { report: "AGENT_REPORT_UPLOAD", reschedule: "AGENT_RESCHEDULE", cancel: "AGENT_CANCEL", change_tests: "AGENT_ORDER_CHANGE", complaint: "AGENT_COMPLAINT" };
 
-async function answerClosedOrder(orderId: number, storeId: number, intent: StoreIntent, text: string, waMsgId: string, at: Date, state: Awaited<ReturnType<typeof loadGuardState>>, samples: Record<string, string> = {}): Promise<{ executed: number; review: number }> {
+async function answerClosedOrder(orderId: number, storeId: number, intent: StoreIntent, text: string, waMsgId: string, at: Date, state: Awaited<ReturnType<typeof loadGuardState>>, samples: Record<string, string> = {}, tagged = false): Promise<{ executed: number; review: number }> {
   const o = await fetchOrderSnapshot(orderId).catch(() => null);
   if (!o) return { executed: 0, review: 0 };
   const tz = process.env.TIMEZONE || "Asia/Kolkata";
@@ -160,7 +160,9 @@ async function answerClosedOrder(orderId: number, storeId: number, intent: Store
     const timeAsked = /\d{1,2}(:\d{2})?\s*(am|pm)/i.exec(text)?.[0] ?? null;
     const note = intent === "reschedule" && timeAsked ? `${sample} re-collection requested at ${timeAsked} — ok?` : `${sample === "a" ? "sample" : sample} pending`;
     const now = new Date();
-    const ask = await guard({ desk: "LAB", action: "ask", params: { checkpoint: "sample_collected", orderId, labId: o.labId, attempt: 1, dueAt: now, rung: "ask", intent: "RECOLLECT", counterparty: `LAB:${o.labId}`, windowFrom: now, windowTo: new Date(now.getTime() + 8 * 3_600_000), urgent: true, forStore: true, line: { orderId, patientName: o.patientName, appointment: o.appointmentTime, labRef: o.labRef ?? null, mobile: o.mobile ?? null, area: o.area ?? null, note } }, reason: `store says the ${sample} sample was not collected on an order LabStack shows ${o.orderStatus}`, idemKey: `closed-recollect:${orderId}:${waMsgId}` }, ctx, state);
+    // A tagged team member gets three minutes to ask the lab themselves (step.ts, TAGGED_HOLD_MIN).
+    const from = tagged ? new Date(now.getTime() + 3 * 60_000) : now;
+    const ask = await guard({ desk: "LAB", action: "ask", params: { checkpoint: "sample_collected", orderId, labId: o.labId, attempt: 1, dueAt: now, rung: "ask", intent: "RECOLLECT", counterparty: `LAB:${o.labId}`, windowFrom: from, windowTo: new Date(now.getTime() + 8 * 3_600_000), urgent: true, forStore: true, line: { orderId, patientName: o.patientName, appointment: o.appointmentTime, labRef: o.labRef ?? null, mobile: o.mobile ?? null, area: o.area ?? null, note } }, reason: `store says the ${sample} sample was not collected on an order LabStack shows ${o.orderStatus}`, idemKey: `closed-recollect:${orderId}:${waMsgId}` }, ctx, state);
     const reply = await guard({ desk: "STORE", action: "store_reply", params: { text: `#${orderId}: the report shared was without the ${sample} sample — asking ${o.labName ?? "the lab"} for a re-collection slot now. Share a preferred time and we'll book it.`, orderId, storeId, quotedWaId: waMsgId }, reason: `${sample} sample owed on a delivered order`, idemKey: `closed-recollect-ack:${orderId}:${waMsgId}` }, ctx, state);
     let executed = 0; let review = 0;
     for (const r of [ask, reply]) { if (r.outcome === "EXECUTED") executed += 1; else if (r.outcome === "REVIEW") review += 1; }
@@ -299,7 +301,11 @@ export async function runStoreReader(now = new Date()): Promise<StoreReaderResul
     const inHumanThread = !!quoted && !quotedOurs && (quoted.fromMe || !!isTeam(quoted.sender, quoted.senderJid));
     // "Is this message through Bot or what??" is about the desk, for a person (28 Oct 2026).
     const aboutTheBot = ABOUT_THE_BOT_RE.test(text) && /\?/.test(text);
-    const forPerson = !!addressed || inHumanThread || aboutTheBot;
+    // Plum tags a team member on nearly every request ("… let us know the slots available @Deepali"). A
+    // request that needs the lab is still the desk's — after a short hold for the person (step.ts);
+    // only a tag on anything else ("as discussed, shared the details") stays theirs (2 Nov 2026, #96025).
+    const needsLab = ["status", "report", "slot", "reschedule", "cancel"].includes(intent) || /\b(urine|stool|sputum|swab)\b[^.\n]{0,40}\b(not|pending|missed|left)\b|\bnot collected\b/i.test(text);
+    const forPerson = inHumanThread || aboutTheBot || (!!addressed && !needsLab);
     // The model's ids count only when the store wrote them, here or in the message it quoted: the
     // model learns from the group's recent messages and has returned an order from those instead
     // (26 Oct 2026: "94301 - RNR" linked to 94188, "93807 93811 …" to 93412).
@@ -360,7 +366,7 @@ export async function runStoreReader(now = new Date()): Promise<StoreReaderResul
     }
     const recorded = await recordJourneyEvent(link.orderId, {
       kind: "store_message", at: m.ts, actor: "STORE",
-      payload: { intent, text: text.slice(0, 500), messageId: m.id, waMsgId: m.waMsgId, via: link.via, storeId: g.storeId, sender: m.sender, samples: reading.samples, requestTime: reading.request.time ?? null, readVia: reading.via, ...(thread ? { thread: { kind: thread.kind, waitingOn: thread.waitingOn, openedAt: thread.openedAt.toISOString() } } : {}) },
+      payload: { intent, text: text.slice(0, 500), messageId: m.id, waMsgId: m.waMsgId, via: link.via, ...(addressed ? { tagged: addressed.names.length ? addressed.names : ["(as discussed)"] } : {}), storeId: g.storeId, sender: m.sender, samples: reading.samples, requestTime: reading.request.time ?? null, readVia: reading.via, ...(thread ? { thread: { kind: thread.kind, waitingOn: thread.waitingOn, openedAt: thread.openedAt.toISOString() } } : {}) },
     }, false);
     if (recorded) {
       const r = await wakeJourney(link.orderId, "inbound");
@@ -369,7 +375,7 @@ export async function runStoreReader(now = new Date()): Promise<StoreReaderResul
       // No open journey — delivered, cancelled or missed. Still an answer (Plum asked about a
       // partial report and a cancelled order on 25 Oct 2026 and heard nothing).
       try {
-        const r = await answerClosedOrder(link.orderId, g.storeId!, intent, text, m.waMsgId, m.ts, state, reading.samples as Record<string, string>);
+        const r = await answerClosedOrder(link.orderId, g.storeId!, intent, text, m.waMsgId, m.ts, state, reading.samples as Record<string, string>, !!addressed);
         result.answered += r.executed; result.review += r.review;
       } catch (error) {
         console.error(`[Agents] store pass: closed-order answer for ${link.orderId} failed:`, error instanceof Error ? error.message : error);

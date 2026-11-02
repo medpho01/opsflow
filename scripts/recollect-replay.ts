@@ -18,6 +18,7 @@ import { loadDirectory, tierOf } from "@/lib/agents/directory";
 import { loadGuardState } from "@/lib/agents/guard/guard";
 import { labChaseable, labGroup } from "@/lib/agents/store/scope";
 import { explicitOrderIds } from "@/lib/agents/store/reader";
+import { addressedTeamMember } from "@/lib/agents/store/scope";
 import { readMessage } from "@/lib/agents/reader/read";
 import { contextFor } from "@/lib/agents/reader/context";
 import { openRecollectFor } from "@/lib/agents/journey/run";
@@ -47,7 +48,7 @@ async function cases(days: number, only: number[]): Promise<number[]> {
   return [...ids].sort();
 }
 
-async function replay(orderId: number, ctx: { team: ReturnType<typeof makeTeamMatcher>; sops: Awaited<ReturnType<typeof loadLiveSops>>; directory: Awaited<ReturnType<typeof loadDirectory>>; desks: Map<string, string> }) {
+async function replay(orderId: number, ctx: { team: ReturnType<typeof makeTeamMatcher>; roster: Awaited<ReturnType<typeof loadTeam>>; sops: Awaited<ReturnType<typeof loadLiveSops>>; directory: Awaited<ReturnType<typeof loadDirectory>>; desks: Map<string, string> }) {
   const order = await fetchOrderSnapshot(orderId).catch(() => null);
   if (!order) { console.log(`\n#${orderId}: not in LabStack's replica`); return { stalls: 0 }; }
   const storeGroup = order.storeId != null ? await prisma.waGroup.findFirst({ where: { role: "SUPPORT", storeId: order.storeId, active: true }, select: { id: true, subject: true } }) : null;
@@ -152,9 +153,14 @@ async function replay(orderId: number, ctx: { team: ReturnType<typeof makeTeamMa
       const reading = await readMessage({ side: "store", text, quotedText: quoted, scope: { storeId: order.storeId, groupId: m.groupId }, context: await ctxFor([orderId], m.ts) });
       const intent = reading.ack || reading.request.kind === "none" ? "noise" : reading.request.kind === "details" ? "other" : reading.request.kind;
       if (intent === "noise") { console.log("      · read as noise (no request)"); if (TIME.test(text) || SAMPLE_LEFT.test(text)) flag("a time or a sample left, read as noise"); continue; }
+      // As the reader: a tag on a team member leaves the message to them unless it needs the lab (then a 3-min hold).
+      const addressed = await addressedTeamMember(text, ctx.roster).catch(() => null);
+      const needsLab = ["status", "report", "slot", "reschedule", "cancel"].includes(intent) || /\b(urine|stool|sputum|swab)\b[^.\n]{0,40}\b(not|pending|missed|left)\b|\bnot collected\b/i.test(text);
+      if (addressed && !needsLab) { console.log(`      · tags ${addressed.names.join(", ") || "a person"} and needs no lab — left to them`); continue; }
+      if (addressed) console.log(`      · tags ${addressed.names.join(", ") || "a person"} — the desk acts after a 3-minute hold for them`);
       if (intent === "slot") slotThreadAt ??= m.ts;
       const thread = !rel && slotThreadAt ? { kind: "slot", waitingOn: "LAB", openedAt: slotThreadAt.toISOString() } : null;
-      const r = await run(m, [{ kind: "store_message", at: m.ts, actor: "STORE", payload: { intent, text, messageId: m.id, waMsgId: m.waMsgId, samples: reading.samples, requestTime: reading.request.time ?? null, ...(thread ? { thread } : {}) } }]);
+      const r = await run(m, [{ kind: "store_message", at: m.ts, actor: "STORE", payload: { intent, text, messageId: m.id, waMsgId: m.waMsgId, samples: reading.samples, requestTime: reading.request.time ?? null, ...(thread ? { thread } : {}), ...(addressed ? { tagged: addressed.names.length ? addressed.names : ["(as discussed)"] } : {}) } }]);
       let toLab = r.actions.some((a) => a.desk === "LAB" && a.action === "ask");
       // A delivered order's journey is closed; the store reader answers it itself (answerClosedOrder): a
       // sample left is asked of the lab, and the store told so.
@@ -202,7 +208,7 @@ async function main() {
   const ids = await cases(days, args);
   console.log(`${ids.length} order(s) with a sample left behind in the last ${days} day(s)`);
   const [team, sops, directory, guard] = await Promise.all([loadTeam(), loadLiveSops(), loadDirectory(), loadGuardState()]);
-  const ctx = { team: makeTeamMatcher(team), sops, directory, desks: guard.desks };
+  const ctx = { team: makeTeamMatcher(team), roster: team, sops, directory, desks: guard.desks };
   let stalls = 0;
   for (const id of ids) stalls += (await replay(id, ctx).catch((e) => { console.log(`\n#${id}: replay failed — ${e instanceof Error ? e.message : e}`); return { stalls: 0 }; })).stalls;
   console.log(`\n${stalls} stall(s) across ${ids.length} order(s)`);

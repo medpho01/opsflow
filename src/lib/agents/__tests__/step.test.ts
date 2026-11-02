@@ -127,6 +127,16 @@ describe("the ladder", () => {
     assert.equal(ask?.params.intent, "RECOLLECT"); // a STATUS ask was dropped as settled once the blood was collected (29 Oct 2026)
     assert.ok(r.actions.some((a) => a.action === "store_reply"));
   });
+  it("a request tagging a team member is still the desk's, after a three-minute hold for that person (2 Nov 2026, #96025)", () => {
+    const o = order({ orderStatus: "SAMPLE_COLLECTED", labRef: "BLR6390001" });
+    const msg = { kind: "store_message", at: at("2026-11-02T11:06:00Z"), actor: "STORE", payload: { intent: "slot", text: "96025 - Urine samples not collected\nlet us know the slots available @225012345678901", messageId: "m-tag", waMsgId: "w-tag", tagged: ["Labstack Deepali"] } };
+    const r = wake(o, at("2026-11-02T11:06:30Z"), undefined, { events: [msg] } as never);
+    const ask = r.actions.find((a) => a.action === "ask" && a.idemKey.endsWith(":recollect"));
+    assert.equal(ask?.params.intent, "RECOLLECT");
+    assert.ok(new Date(String(ask?.params.windowFrom)).getTime() >= at("2026-11-02T11:09:00Z").getTime(), String(ask?.params.windowFrom));
+    assert.equal(ask?.params.storeRequest, undefined); // dropped at send time if the person asked the lab first
+    assert.ok(r.actions.some((a) => a.action === "store_reply"));
+  });
   it("a report past its due time is answered as overdue and the lab is chased, whatever the question was called (28 Oct 2026)", () => {
     const o = order({ orderStatus: "SAMPLE_COLLECTED", appointmentTime: at("2026-10-26T02:00:00Z"), statusUpdatedAt: at("2026-10-26T02:08:00Z"), labName: "Redcliffe" });
     const msg = { kind: "store_message", at: at("2026-10-28T10:42:00Z"), actor: "STORE", payload: { intent: "status", text: "exactly!! The TAT is breached already", messageId: "m-od", waMsgId: "w-od" } };

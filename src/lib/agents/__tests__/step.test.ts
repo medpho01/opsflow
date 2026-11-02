@@ -76,18 +76,17 @@ describe("the ladder", () => {
     assert.equal(r1.journey.attempts.phlebo_assigned.n, 1);
     const tooSoon = wake(o, at("2026-10-21T00:20:00Z"), r1);
     assert.equal(tooSoon.actions.length, 0, "rung gap not reached");
+    // A manual lab: one unanswered ask, then a person calls (2 Nov 2026) — no reminder in the same group.
     const r2 = wake(o, at("2026-10-21T00:41:00Z"), tooSoon);
-    assert.deepEqual(acts(r2), ["reminder"]);
+    assert.deepEqual(acts(r2), ["create_task"]);
+    assert.equal(r2.actions[0].params.taskType, "AGENT_COLLECTION_STUCK");
     const r3 = wake(o, at("2026-10-21T01:12:00Z"), r2);
     assert.deepEqual(acts(r3), ["manager_whatsapp"]);
     assert.equal(r3.actions[0].params.counterparty, "MANAGER:2229");
     const r4 = wake(o, at("2026-10-21T01:43:00Z"), r3);
-    assert.deepEqual(acts(r4), ["create_task"]);
-    assert.equal(r4.actions[0].params.taskType, "AGENT_COLLECTION_STUCK");
+    assert.deepEqual(acts(r4), ["stuck"]);
     const r5 = wake(o, at("2026-10-21T02:14:00Z"), r4);
-    assert.deepEqual(acts(r5), ["stuck"]);
-    const r6 = wake(o, at("2026-10-21T02:45:00Z"), r5);
-    assert.equal(r6.actions.length, 0, "ladder exhausted");
+    assert.equal(r5.actions.length, 0, "ladder exhausted");
   });
   it("API labs read the portal first — when a portal session is set up; otherwise they are asked in the group", () => {
     const o = order({ labId: 4, appointmentTime: at("2026-10-21T04:00:00Z") }); // 9:30 am IST; Orange assigns at slot − 30, so due 9:00
@@ -278,13 +277,11 @@ describe("the ladder", () => {
     const alert = r2.actions.find((a) => a.action === "store_alert");
     assert.match(String(alert?.params.detail), /patient missed — RNR - customer did not respond/);
   });
-  it("a pre-visit checkpoint still open long after the visit: the lab is asked and reminded in its group, then a person is told (28 Oct 2026)", () => {
+  it("a pre-visit checkpoint still open long after the visit: the lab is asked in its group, then a person is told (28 Oct 2026)", () => {
     const o = order({ appointmentTime: at("2026-10-19T02:30:00Z"), orderStatus: "ORDER_SCHEDULED" });
     const r1 = wake(o, at("2026-10-24T13:45:00Z"));
     assert.deepEqual(acts(r1), ["ask"]);
-    const r2 = wake(o, at("2026-10-24T14:20:00Z"), r1);
-    assert.deepEqual(acts(r2), ["reminder"]);
-    const r3 = wake(o, at("2026-10-24T14:55:00Z"), r2);
+    const r3 = wake(o, at("2026-10-24T14:20:00Z"), r1);
     assert.deepEqual(acts(r3), ["create_task"]);
     assert.equal(r3.actions[0].params.cause, "VISIT_PASSED_NO_UPDATE");
     assert.match(String(r3.actions[0].params.action), /^Call .* about #/);
@@ -690,9 +687,7 @@ describe("a manual lab is asked again every day until the console moves (27 Oct 
     const r0 = wake(o, at("2026-10-24T05:00:00Z"), undefined, { labTier: "C" } as never); // 10:30, visit 2.5 h past → asked (urgent)
     assert.deepEqual(acts(r0), ["ask"]);
     assert.equal(r0.actions[0].params.urgent, true);
-    const r0b = wake(o, at("2026-10-24T05:35:00Z"), r0, { labTier: "C" } as never);
-    assert.deepEqual(acts(r0b), ["reminder"]);
-    const r1 = wake(o, at("2026-10-24T06:10:00Z"), r0b, { labTier: "C" } as never); // still nothing → a person
+    const r1 = wake(o, at("2026-10-24T05:35:00Z"), r0, { labTier: "C" } as never); // no answer → a person
     assert.ok(r1.actions.some((a) => a.action === "create_task"));
     const r2 = wake(o, at("2026-10-25T06:30:00Z"), r1, { labTier: "C" } as never); // next day, a day after the task
     const reask = r2.actions.find((a) => a.action === "ask" && String(a.idemKey).startsWith("reask:"));

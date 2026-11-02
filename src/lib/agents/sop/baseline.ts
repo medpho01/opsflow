@@ -82,6 +82,8 @@ export const LAB_SOP_V1: SopBody = parseSop({
     { when: { labTier: "B" }, set: { ladder: ["portal_read", "ask", "reminder", "manager_whatsapp", "task", "stuck"] } },
     // Manual labs: no portal; chase early and the night before (FR-2.5).
     { when: { labTier: "C" }, set: { asks: { phlebo_assigned: { intent: "PHLEBO", dueOffsetMin: -120, leadMin: 0, graceMin: 180, urgentWithinMin: 90, nightBefore: true } } } },
+    // Manual labs: one unanswered ask, then a person phones the lab — a reminder in the same group goes unread too.
+    { when: { labTier: "C" }, set: { ladder: ["ask", "task", "manager_whatsapp", "stuck"] } },
   ],
   bounds: {
     "params.rungGapMin": { min: 20, max: 60 },
@@ -103,7 +105,7 @@ export const LAB_SOP_V1: SopBody = parseSop({
     "params.asks.report_delivered.dueOffsetMin": { min: 720, max: 4320 },
   },
   provenance: {
-    ladder: "Ops rules; FR-8.7; CHAT-REVIEW-OCT-2026 (hourly @mention asks are what gets answered)",
+    ladder: "Ops rules; FR-8.7; CHAT-REVIEW-OCT-2026 (hourly @mention asks are what gets answered). 2 Nov 2026: manual labs answered 39–50% of asks (Vision, Advaith, Star; median 1.6–2.4 h) — after one unanswered ask the order goes to a person to call the lab",
     "asks.confirmed": "Standard message set: reminders 1 h / 3 h, final reminder 5 h, 2 h before",
     "asks.sample_collected": "Standard message set: status check 30 min after the appointment",
     "asks.*.dueOffsetMin": "27 Oct 2026: checkpoint timings were code; now SOP, per order type and lab, so the Brain can move them",

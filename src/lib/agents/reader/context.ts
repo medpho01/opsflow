@@ -37,7 +37,7 @@ function openLines(j: { waitingFor: unknown; subStates: string[] } | null, recol
  * The context block for these orders (at most two), as of `at`. `sender` (a lab or store member's
  * jid) adds what that person said in the 10 minutes before — "Checking." then the answer.
  */
-export async function contextFor(orderIds: number[], at: Date, opts: { groupId?: string | null; senderJid?: string | null; asOf?: Map<number, { orderStatus: string; appointmentTime: Date | null }>; max?: number } = {}): Promise<string> {
+export async function contextFor(orderIds: number[], at: Date, opts: { groupId?: string | null; senderJid?: string | null; asOf?: Map<number, { orderStatus: string; appointmentTime: Date | null }>; max?: number; recentHours?: number; lines?: number; facts?: boolean } = {}): Promise<string> {
   try {
     const ids = [...new Set(orderIds)].slice(0, opts.max ?? 2);
     const blocks: string[] = [];
@@ -60,9 +60,18 @@ export async function contextFor(orderIds: number[], at: Date, opts: { groupId?:
       // The last messages about it, in any group, ours and the team's included.
       const needles = [`#${id}`, String(id), ...(o.labRef ? [o.labRef] : [])];
       const recent = await prisma.waMessage.findMany({
-        where: { ts: { gte: new Date(at.getTime() - RECENT_MS), lt: at }, OR: [{ orderIds: { has: id } }, ...needles.map((n) => ({ text: { contains: n, mode: "insensitive" as const } }))] },
-        orderBy: { ts: "desc" }, take: MAX_LINES, select: { ts: true, sender: true, senderJid: true, fromMe: true, text: true, intent: true, group: { select: { role: true } } },
+        where: { ts: { gte: new Date(at.getTime() - (opts.recentHours ? opts.recentHours * 3_600_000 : RECENT_MS)), lt: at }, OR: [{ orderIds: { has: id } }, ...needles.map((n) => ({ text: { contains: n, mode: "insensitive" as const } }))] },
+        orderBy: { ts: "desc" }, take: opts.lines ?? MAX_LINES, select: { ts: true, sender: true, senderJid: true, fromMe: true, text: true, intent: true, group: { select: { role: true } } },
       }).catch(() => []);
+      // What the lab has told us about the order, as recorded: "urine sample pending" from two days
+      // ago is why a report shows results pending today (10 Nov 2026, #96823).
+      if (opts.facts) {
+        const facts = await prisma.providerOrderFact.findMany({ where: { orderId: id, createdAt: { gte: new Date(at.getTime() - 4 * 86_400_000), lt: at } }, orderBy: { createdAt: "desc" }, take: 6, select: { kind: true, value: true, createdAt: true } }).catch(() => []);
+        if (facts.length) {
+          lines.push("What the lab has said (recorded):");
+          for (const f of facts.reverse()) lines.push(`  ${f.createdAt.toLocaleString("en-IN", { timeZone: TZ(), weekday: "short", hour: "numeric", minute: "2-digit" })} ${f.kind.replace(/_/g, " ")}: ${oneLine(f.value, 160)}`);
+        }
+      }
       if (recent.length) {
         lines.push("Recent messages about it:");
         for (const m of recent.reverse()) {
@@ -76,7 +85,7 @@ export async function contextFor(orderIds: number[], at: Date, opts: { groupId?:
       const before = await prisma.waMessage.findMany({ where: { groupId: opts.groupId, senderJid: opts.senderJid, ts: { gte: new Date(at.getTime() - 10 * 60_000), lt: at } }, orderBy: { ts: "asc" }, select: { ts: true, text: true } }).catch(() => []);
       if (before.length) blocks.push(`The same person just before:\n${before.map((m) => `  ${clock(m.ts)}: ${oneLine(m.text, 200)}`).join("\n")}`);
     }
-    return blocks.join("\n\n").slice(0, 3000 * Math.max(1, (opts.max ?? 2) / 2));
+    return blocks.join("\n\n").slice(0, 3000 * Math.max(1, (opts.max ?? 2) / 2) * (opts.facts || opts.lines ? 1.6 : 1));
   } catch {
     return "";
   }

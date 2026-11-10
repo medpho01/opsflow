@@ -21,6 +21,7 @@ import { enqueueOutbox } from "../executors/dispatcher";
 import { liveStoreBody } from "../executors/storeReply";
 import { guard, loadGuardState } from "../guard/guard";
 import { fetchOrderSnapshot } from "../journey/window";
+import { deskHandle, deskStores } from "./desk";
 import { ABOUT_THE_BOT_RE, addressedTeamMember, complaintSignal, humanSpokeAbout, labChaseable, makeLabScope } from "./scope";
 
 export type StoreIntent = "status" | "report" | "slot" | "reschedule" | "cancel" | "change_tests" | "new_booking" | "serviceability" | "complaint" | "noise" | "other";
@@ -266,6 +267,7 @@ export async function runStoreReader(now = new Date()): Promise<StoreReaderResul
   if (!messages.length) return result;
   const team = await loadTeam();
   const isTeam = makeTeamMatcher(team);
+  const understands = deskStores();
   const labOnBot = makeLabScope(state.desks);
   const consumed = new Set<string>();
 
@@ -363,6 +365,14 @@ export async function runStoreReader(now = new Date()): Promise<StoreReaderResul
         await enqueueOutbox({ counterparty: `STORE:${g.storeId}`, ask: "STORE_REPLY", orderId: 0, journeyId: null, actionId: null, windowFrom: now, windowTo: new Date(now.getTime() + 2 * 3_600_000), urgent: true, idemKey: `askid:${m.id}`, line: { orderId: 0, patientName: null, appointment: null }, text: body.replace("{{ids}}", unknown), extra: { quotedWaId: m.waMsgId } }).catch(() => undefined);
       }
       continue;
+    }
+    // The desk that understands before it answers, where it is switched on (desk.ts). A message for
+    // a person stays theirs; when the desk cannot run, the old path below takes the message.
+    if (understands.has(g.storeId!) && !forPerson && state.desks.get(`STORE:STORE:${g.storeId}`) === "LIVE") {
+      const engaged = (await Promise.all(links.map((l) => teamEngaged(m.groupId, l.orderId, m.ts, isTeam)))).some(Boolean);
+      const done = engaged ? null : await deskHandle({ message: { id: m.id, waMsgId: m.waMsgId, groupId: m.groupId, senderJid: m.senderJid, ts: m.ts, text, quotedText: quoted?.text ?? null }, storeId: g.storeId!, orderIds: links.map((l) => l.orderId), tagged: !!addressed, state, isTeam, now })
+        .catch((error) => { console.error(`[Agents] store pass: desk failed on ${m.id}:`, error instanceof Error ? error.message : error); return null; });
+      if (done) { result.linked += links.length; result.answered += done.executed; result.review += done.review; continue; }
     }
     for (const link of links) {
     result.linked += 1;

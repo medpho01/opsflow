@@ -80,7 +80,7 @@ async function main() {
     }
     const thread = before.reverse().map((b) => `  ${clock(b.ts)} ${b.fromMe || isAutomated(b) ? "us" : isTeam(b.sender, b.senderJid) ? "our team" : "store"}: ${mask(b.text, 200)}`).join("\n");
     const [context, examples] = await Promise.all([
-      candidates.length ? contextFor(candidates, m.ts, { groupId: m.groupId, senderJid: m.senderJid, asOf, max: 3 }) : Promise.resolve(""),
+      candidates.length ? contextFor(candidates, m.ts, { groupId: m.groupId, senderJid: m.senderJid, asOf, max: 3, recentHours: 48, lines: 12, facts: true }) : Promise.resolve(""),
       teamExamples(storeId, m.text, m.ts),
     ]);
     const out = await runDesk({ storeId, orderId: linked ?? null, text: m.text, quotedText: quoted?.text ?? null, context, thread, labReachable: false, candidates, reachable, coaching, examples });

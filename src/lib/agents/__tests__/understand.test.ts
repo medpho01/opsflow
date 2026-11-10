@@ -36,3 +36,18 @@ describe("the team's earlier answers are read in, the closest first", () => {
     assert.deepEqual(closest("zzz", rows, 2), []);
   });
 });
+
+describe("the live switch (11 Nov 2026)", () => {
+  it("is off unless a store is named, and maps a topic to the kind the store's live scope knows", async () => {
+    const { deskStores, TOPIC_KIND } = await import("../store/desk");
+    const prev = process.env.AGENT_DESK_UNDERSTAND_STORES;
+    delete process.env.AGENT_DESK_UNDERSTAND_STORES;
+    assert.equal(deskStores().size, 0);
+    process.env.AGENT_DESK_UNDERSTAND_STORES = "6, 12,x";
+    assert.deepEqual([...deskStores()], [6, 12]);
+    if (prev === undefined) delete process.env.AGENT_DESK_UNDERSTAND_STORES; else process.env.AGENT_DESK_UNDERSTAND_STORES = prev;
+    assert.equal(TOPIC_KIND.collection, "status");
+    assert.equal(TOPIC_KIND.cancel, "cancel");
+    assert.equal(TOPIC_KIND.information, "other");
+  });
+});

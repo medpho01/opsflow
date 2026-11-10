@@ -215,6 +215,9 @@ services:
       LAB_TICK_HOST: ${LAB_TICK_HOST:-worker}
       NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
       WA_VISION_MODEL: ${WA_VISION_MODEL:-}
+      # Stores whose desk understands the question before it answers (store/desk.ts), e.g. "6". Empty = off.
+      AGENT_DESK_UNDERSTAND_STORES: ${AGENT_DESK_UNDERSTAND_STORES:-}
+      AGENT_MODEL_DESK: ${AGENT_MODEL_DESK:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       AGENT_LLM: ${AGENT_LLM:-}
       AGENT_MODEL_READER: ${AGENT_MODEL_READER:-}

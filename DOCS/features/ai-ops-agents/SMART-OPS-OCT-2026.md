@@ -270,3 +270,13 @@ The 14-day efficiency index was flat (59–68) and the hour audited on 10 Nov ha
 - **Asks and tasks are never held for review** (`guard.ts`, `NEVER_HELD`): `ask`, `reminder`, `manager_whatsapp`, `create_task`, `wait`, `stuck`, `portal_read` act even when the case worker proposed them or a scope is set to SUGGEST. In 14 days 60 asks and 510 tasks had waited for an approval nobody gave. SHADOW still only records; telling a store something (`store_reply`, `store_alert`, `store_warning`) and `status_write` stay suggest-first.
 - **A lab's "Confirmed" in its group** meets the `confirmed` checkpoint for the agent's own tracking and withdraws the "please confirm" ask. The agent has no write access to LabStack, so one task (`AGENT_CONSOLE_UPDATE`, cause `CONFIRMED_IN_CHAT`, once per order) asks a person to mark it there while LabStack still shows it unconfirmed.
 - **Lab feedback on our messages** (`brain/feedback.ts`, pure): a lab asking for tests or parameters, for patient or address details, saying we repeat ourselves, that an order is not theirs, or that it did not understand. `scripts/lab-effectiveness.ts` counts these per lab over its window from the stored messages, quoting only the matched phrase. On three weeks of real lab-group messages: 27 of 2,212 — Orange asking which parameter is missing (4) and for customer details (7), Star and Aster asking for tests (4).
+
+## Why Plum's desk answered so little (11 Nov 2026, `scripts/plum-gaps.ts 6 7`)
+
+In the week to 10 Nov the desk sent 21 replies and held 81. Three causes, all fixed:
+
+- **Coaching corrections never expired.** A coach's reply to one agent message muted that kind of reply for the store until someone retired the lesson; nobody did, and replies such as "Ignore this" counted. Lessons from 29–31 Oct were holding every status and report answer (0 sent of 35) and 49 lab updates. A correction now keeps that kind with the team for `MUTE_HOURS` (24, `AGENT_COACH_MUTE_HOURS`); the lesson stays active as guidance.
+- **34 store alerts failed at render**: a trial wording carried the optional `{{next_line}}`, which only a status answer fills. It is now removed for every other store message.
+- **Long-closed orders were answered with their old status** ("report delivered on 26 Sept" to a store asking for a re-collection — three contradictions of the team). An order closed more than `CLOSED_STALE_DAYS` (2) ago is handed to a person unless the store asks for the report.
+
+Still suggest-first: 36 free-text replies the case worker drafted for messages with no clear intent.

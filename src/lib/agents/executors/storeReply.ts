@@ -79,6 +79,11 @@ async function renderStoreTextWith(action: ProposedAction, ctx: Pick<ExecuteCont
   const p = action.params;
   if (action.action !== "store_alert" && typeof p.text === "string" && p.text.trim()) return p.text;
   const slot = (p.slot instanceof Date ? p.slot : typeof p.slot === "string" ? new Date(p.slot) : ctx.appointmentTime) ?? null;
+  // {{next_line}} is optional in every store wording; only a status answer ever fills it. A trial
+  // wording that carried it made every alert FAIL at render ("Template variable {{next_line}} is
+  // missing" — 34 store alerts in the week to 10 Nov 2026 never left).
+  const plain = storeTemplate;
+  storeTemplate = async (key: string) => { const b = await plain(key); return action.action === "store_reply" ? b : b.replace(/\s*{{\s*next_line\s*}}/g, ""); };
   switch (action.action) {
     case "store_alert": {
       const body = await storeTemplate(String(p.template ?? "STORE_PATIENT_UNREACHABLE"));

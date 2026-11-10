@@ -339,8 +339,17 @@ export async function explainOrder(orderId: number, now = new Date()): Promise<s
 }
 
 /** The active mutes: a template or intent handed to a person in a store because the coach corrected it. */
-export async function activeMutes(): Promise<Array<{ scope: string; template: string | null; intent: string | null; rule: string }>> {
-  const rows = await prisma.agentCoaching.findMany({ where: { status: "ACTIVE" }, select: { lesson: true } }).catch(() => []);
+/**
+ * How long a correction keeps that kind of reply with the team. A correction is about one message;
+ * held for ever it silenced the desk — by 10 Nov 2026 lessons from 29–31 Oct ("Ignore this", "They
+ * are asking for the latest status of collection…") were still handing every Plum status and report
+ * answer and 49 lab updates a week to a person, and none had been retired. The lesson itself stays
+ * active as guidance for the reader and the judge; only the blanket hand-over ends.
+ */
+export const MUTE_HOURS = Number(process.env.AGENT_COACH_MUTE_HOURS ?? 24);
+
+export async function activeMutes(now = new Date()): Promise<Array<{ scope: string; template: string | null; intent: string | null; rule: string }>> {
+  const rows = await prisma.agentCoaching.findMany({ where: { status: "ACTIVE", createdAt: { gte: new Date(now.getTime() - MUTE_HOURS * 3_600_000) } }, select: { lesson: true } }).catch(() => []);
   const out: Array<{ scope: string; template: string | null; intent: string | null; rule: string }> = [];
   for (const r of rows) {
     const l = r.lesson as Partial<CoachLesson> | null;

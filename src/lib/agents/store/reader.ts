@@ -143,6 +143,9 @@ async function linkOrder(message: { orderIds: number[]; idType: string | null; i
   return null;
 }
 
+/** Days after an order closed beyond which a store's message about it is a new request, not a status question. */
+export const CLOSED_STALE_DAYS = 2;
+
 const CLOSED_TASK: Partial<Record<StoreIntent, string>> = { report: "AGENT_REPORT_UPLOAD", reschedule: "AGENT_RESCHEDULE", cancel: "AGENT_CANCEL", change_tests: "AGENT_ORDER_CHANGE", complaint: "AGENT_COMPLAINT" };
 
 async function answerClosedOrder(orderId: number, storeId: number, intent: StoreIntent, text: string, waMsgId: string, at: Date, state: Awaited<ReturnType<typeof loadGuardState>>, samples: Record<string, string> = {}, tagged = false): Promise<{ executed: number; review: number }> {
@@ -189,6 +192,20 @@ async function answerClosedOrder(orderId: number, storeId: number, intent: Store
     }
     const h = await guard({ desk: "STORE", action: "store_handoff", params: { orderId, storeId, intent, quotedWaId: waMsgId, note: `the store asks for the latest on collection; ${shows} — please check with ${o.labName ?? "the lab"} and update here` }, reason: `store asked for ${intent} on an untracked order at a lab with no desk to chase; ${shows}`, idemKey: `untracked-handoff:${orderId}:${waMsgId}` }, ctx, state);
     return { executed: h.outcome === "EXECUTED" ? 1 : 0, review: h.outcome === "REVIEW" ? 1 : 0 };
+  }
+  // An order closed days ago that the store writes about again is not asking where it stands: the
+  // old line reads as a brush-off or as wrong ("report delivered on 26 Sept" to a store asking for a
+  // re-collection; three such answers contradicted the team in the week to 10 Nov 2026). Only "send
+  // the report" is answered from the console; anything else goes to a person, tracked.
+  const ctxClosed = { journeyId: null, orderId, labId: o.labId, storeId, orderType: o.orderType, appointmentTime: o.appointmentTime, patientName: o.patientName, labName: o.labName, storeName: o.storeName };
+  const closedDays = o.statusUpdatedAt ? (at.getTime() - o.statusUpdatedAt.getTime()) / 86_400_000 : 99;
+  if (closedDays > CLOSED_STALE_DAYS && intent !== "report") {
+    const h = await guard({ desk: "STORE", action: "store_handoff", params: { orderId, storeId, intent, quotedWaId: waMsgId, note: `the store wrote about #${orderId}, closed ${Math.round(closedDays)} days ago (${o.orderStatus.toLowerCase().replace(/_/g, " ")}) — a new request, not a status question` }, reason: `store wrote about an order closed ${Math.round(closedDays)} days ago (${intent})`, idemKey: `closed-stale:${orderId}:${waMsgId}` }, ctxClosed, state);
+    // A request with a task type of its own (reschedule, cancel, change, complaint) gets its task; a
+    // question is tracked by the handoff's thread.
+    const t = CLOSED_TASK[intent] ? await guard({ desk: "STORE", action: "create_task", params: { taskType: CLOSED_TASK[intent], orderId, cause: `STORE_${intent.toUpperCase()}_CLOSED_ORDER`, evidence: [{ kind: "store_msg", at: at.toISOString(), text: text.slice(0, 300) }], action: `#${orderId}: the store wrote about an order closed ${Math.round(closedDays)} days ago — read the message and act` }, reason: `store wrote about a long-closed order (${intent})`, idemKey: `closed-stale-task:${orderId}:${waMsgId}` }, ctxClosed, state) : null;
+    const rs = [h, ...(t ? [t] : [])];
+    return { executed: rs.filter((r) => r.outcome === "EXECUTED").length, review: rs.filter((r) => r.outcome === "REVIEW").length };
   }
   const line = o.orderStatus === "REPORT_DELIVERED" ? `report delivered on ${when}` : o.orderStatus === "CANCELED" || o.orderStatus === "CANCELLED" ? `cancelled on ${when}`
     : o.orderStatus === "PATIENT_MISSED" ? `marked patient missed on ${when}` : `shows ${o.orderStatus.toLowerCase().replace(/_/g, " ")} since ${when}`;

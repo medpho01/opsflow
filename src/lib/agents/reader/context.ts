@@ -37,9 +37,9 @@ function openLines(j: { waitingFor: unknown; subStates: string[] } | null, recol
  * The context block for these orders (at most two), as of `at`. `sender` (a lab or store member's
  * jid) adds what that person said in the 10 minutes before — "Checking." then the answer.
  */
-export async function contextFor(orderIds: number[], at: Date, opts: { groupId?: string | null; senderJid?: string | null; asOf?: Map<number, { orderStatus: string; appointmentTime: Date | null }> } = {}): Promise<string> {
+export async function contextFor(orderIds: number[], at: Date, opts: { groupId?: string | null; senderJid?: string | null; asOf?: Map<number, { orderStatus: string; appointmentTime: Date | null }>; max?: number } = {}): Promise<string> {
   try {
-    const ids = [...new Set(orderIds)].slice(0, 2);
+    const ids = [...new Set(orderIds)].slice(0, opts.max ?? 2);
     const blocks: string[] = [];
     const isTeam = makeTeamMatcher(await loadTeam());
     const details = ids.length ? await fetchOrderContactDetails(ids).catch(() => null) : null;
@@ -76,7 +76,7 @@ export async function contextFor(orderIds: number[], at: Date, opts: { groupId?:
       const before = await prisma.waMessage.findMany({ where: { groupId: opts.groupId, senderJid: opts.senderJid, ts: { gte: new Date(at.getTime() - 10 * 60_000), lt: at } }, orderBy: { ts: "asc" }, select: { ts: true, text: true } }).catch(() => []);
       if (before.length) blocks.push(`The same person just before:\n${before.map((m) => `  ${clock(m.ts)}: ${oneLine(m.text, 200)}`).join("\n")}`);
     }
-    return blocks.join("\n\n").slice(0, 3000);
+    return blocks.join("\n\n").slice(0, 3000 * Math.max(1, (opts.max ?? 2) / 2));
   } catch {
     return "";
   }

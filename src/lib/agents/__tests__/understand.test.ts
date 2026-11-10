@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { closest, settle, type DeskPlan } from "../store/understand";
 
-const plan = (p: Partial<DeskPlan>): DeskPlan => ({ action: "answer", reply: "#1: collected at 8:04 am.", labQuestion: null, basis: ["LabStack: SAMPLE_COLLECTED"], reason: "", confidence: 0.9, ...p });
+const plan = (p: Partial<DeskPlan>): DeskPlan => ({ orderId: 1, action: "answer", reply: "#1: collected at 8:04 am.", labQuestion: null, basis: ["LabStack: SAMPLE_COLLECTED"], reason: "", confidence: 0.9, ...p });
 
 describe("the desk's plan is held to rules the model may not bend (11 Nov 2026)", () => {
   it("an answer needs evidence and enough confidence, else a person takes it", () => {

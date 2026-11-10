@@ -24,15 +24,16 @@ const TZ = process.env.TIMEZONE || "Asia/Kolkata";
 const mask = (s: string | null | undefined, n = 200) => (s ?? "").replace(/(?:\+?91[\s-]?)?\b[6-9]\d{9}\b/g, "<phone>").replace(/@\d{6,}/g, "@…").replace(/\s+/g, " ").trim().slice(0, n);
 const clock = (d: Date) => d.toLocaleString("en-IN", { timeZone: TZ, day: "numeric", month: "short", hour: "numeric", minute: "2-digit" });
 
-type Grade = "MATCHES" | "USEFUL" | "BESIDE_THE_POINT" | "WRONG";
+type Grade = "MATCHES" | "USEFUL" | "BESIDE_THE_POINT" | "WRONG" | "TEAM_REPLY_UNRELATED";
 async function grade(question: string, reply: string, team: string): Promise<{ grade: Grade; why: string } | null> {
   const r = await askModel({
     purpose: "desk_check", maxTokens: 250, effort: "low",
-    schema: { type: "object", additionalProperties: false, required: ["grade", "why"], properties: { grade: { type: "string", enum: ["MATCHES", "USEFUL", "BESIDE_THE_POINT", "WRONG"] }, why: { type: "string" } } },
+    schema: { type: "object", additionalProperties: false, required: ["grade", "why"], properties: { grade: { type: "string", enum: ["MATCHES", "USEFUL", "BESIDE_THE_POINT", "WRONG", "TEAM_REPLY_UNRELATED"] }, why: { type: "string" } } },
     system: [
       "A partner store asked LabStack's operations desk something in WhatsApp. You are given what a human on the team actually replied, and a reply a bot would have sent instead. Grade the bot's reply against the human's.",
       "MATCHES: it tells the store the same thing the human did. USEFUL: different words or an earlier step (for example, saying the lab is being asked, when the human went on to give the lab's answer), with nothing wrong and nothing beside the point.",
-      "BESIDE_THE_POINT: true perhaps, but it does not address what the store asked — a status line where the store wanted a reason, an action or a next step. WRONG: it states something the human's reply shows to be false, or promises what was not done.",
+      "BESIDE_THE_POINT: true perhaps, but it does not address what the store asked — a status line where the store wanted a reason, an action or a next step; or 'asking the lab' when the human's reply shows the answer was already known to our side. WRONG: it states something the human's reply shows to be false, or promises what was not done. Saying the lab is being asked for a slot or a change is not WRONG merely because the lab later said no — it is USEFUL.",
+      "TEAM_REPLY_UNRELATED: the human's reply is not an answer to this message at all (a general notice, a reply about another order).",
     ].join("\n"),
     user: `STORE ASKED: ${question}\n\nHUMAN REPLIED: ${team}\n\nBOT WOULD REPLY: ${reply}`,
   });
@@ -58,24 +59,31 @@ async function main() {
     const m = await prisma.waMessage.findUnique({ where: { id: row.messageId }, select: { text: true, groupId: true, senderJid: true, replyToWaId: true, ts: true } });
     if (!m) continue;
     const quoted = m.replyToWaId ? await prisma.waMessage.findUnique({ where: { waMsgId: m.replyToWaId }, select: { text: true } }) : null;
-    // The order as it stood when the message came: the last console change the journey saw before it.
+    const before = await prisma.waMessage.findMany({ where: { groupId: m.groupId, ts: { lt: m.ts, gte: new Date(m.ts.getTime() - 45 * 60_000) } }, orderBy: { ts: "desc" }, take: 8, select: { ts: true, text: true, sender: true, senderJid: true, fromMe: true, intent: true } });
+    // The orders the message can be about: the linked one and those it names; else those the quoted
+    // message names; else the ones just discussed in the thread (most recent first).
+    const idsIn = (t: string | null | undefined) => [...(t ?? "").matchAll(/(?<![\d@+])(\d{5,6})(?!\d)/g)].map((x) => Number(x[1])).filter((n) => n >= 20000);
+    let candidates = [...new Set([...(row.orderId && row.orderId >= 20000 && !/pincode/i.test(m.text) ? [row.orderId] : []), ...idsIn(m.text.replace(/pin ?code:?\s*\d{6}/gi, " "))])];
+    if (!candidates.length) candidates = [...new Set(idsIn(quoted?.text))];
+    if (!candidates.length) candidates = [...new Set(before.flatMap((b) => idsIn(b.text)))];
+    candidates = candidates.slice(0, 3);
+    const linked = candidates.includes(row.orderId ?? -1) ? row.orderId : null;
+    // Each as it stood when the message came: the last console change its journey saw before it.
     const asOf = new Map<number, { orderStatus: string; appointmentTime: Date | null }>();
-    let labId: number | null = null;
-    if (row.orderId) {
-      const j = await prisma.agentJourney.findUnique({ where: { orderId: row.orderId }, select: { id: true, labId: true } });
-      labId = j?.labId ?? null;
+    const reachable: Record<number, boolean> = {};
+    for (const id of candidates) {
+      const j = await prisma.agentJourney.findUnique({ where: { orderId: id }, select: { id: true, labId: true } });
       const ev = j ? await prisma.agentJourneyEvent.findFirst({ where: { journeyId: j.id, kind: "console_change", at: { lte: m.ts } }, orderBy: { at: "desc" }, select: { payload: true } }) : null;
       const to = (ev?.payload as { to?: { status?: string; appointmentTime?: string | null } } | null)?.to;
-      if (to?.status) asOf.set(row.orderId, { orderStatus: to.status, appointmentTime: to.appointmentTime ? new Date(to.appointmentTime) : null });
+      if (to?.status) asOf.set(id, { orderStatus: to.status, appointmentTime: to.appointmentTime ? new Date(to.appointmentTime) : null });
+      reachable[id] = j?.labId != null ? await labChaseable(j.labId, state.desks).catch(() => false) : false;
     }
-    const before = await prisma.waMessage.findMany({ where: { groupId: m.groupId, ts: { lt: m.ts, gte: new Date(m.ts.getTime() - 45 * 60_000) } }, orderBy: { ts: "desc" }, take: 8, select: { ts: true, text: true, sender: true, senderJid: true, fromMe: true, intent: true } });
     const thread = before.reverse().map((b) => `  ${clock(b.ts)} ${b.fromMe || isAutomated(b) ? "us" : isTeam(b.sender, b.senderJid) ? "our team" : "store"}: ${mask(b.text, 200)}`).join("\n");
-    const [context, examples, reachable] = await Promise.all([
-      row.orderId ? contextFor([row.orderId], m.ts, { groupId: m.groupId, senderJid: m.senderJid, asOf }) : Promise.resolve(""),
+    const [context, examples] = await Promise.all([
+      candidates.length ? contextFor(candidates, m.ts, { groupId: m.groupId, senderJid: m.senderJid, asOf, max: 3 }) : Promise.resolve(""),
       teamExamples(storeId, m.text, m.ts),
-      labId != null ? labChaseable(labId, state.desks).catch(() => false) : Promise.resolve(false),
     ]);
-    const out = await runDesk({ storeId, orderId: row.orderId, text: m.text, quotedText: quoted?.text ?? null, context, thread, labReachable: reachable, coaching, examples });
+    const out = await runDesk({ storeId, orderId: linked ?? null, text: m.text, quotedText: quoted?.text ?? null, context, thread, labReachable: false, candidates, reachable, coaching, examples });
     if (!out) { tally.failed += 1; continue; }
     tally[out.plan.action] += 1;
     if (out.check && !out.check.ok) tally.held += 1;
@@ -88,7 +96,7 @@ async function main() {
       if (out.plan.reply) { g = await grade(row.question, out.plan.reply, row.teamReply); if (g) grades[g.grade] = (grades[g.grade] ?? 0) + 1; }
       else grades[out.plan.action === "silent" ? "SILENT_BUT_TEAM_ANSWERED" : "HANDED_TO_TEAM"] = (grades[out.plan.action === "silent" ? "SILENT_BUT_TEAM_ANSWERED" : "HANDED_TO_TEAM"] ?? 0) + 1;
     }
-    console.log(`── ${clock(row.at)} · #${row.orderId ?? "—"} · old kind "${row.intent}"`);
+    console.log(`── ${clock(row.at)} · linked #${linked ?? "—"}${out.plan.orderId && out.plan.orderId !== linked ? ` · desk read it as #${out.plan.orderId}` : ""}${candidates.length > 1 ? ` · could be ${candidates.map((c) => `#${c}`).join(" ")}` : ""} · old kind "${row.intent}"`);
     console.log(`   store:      ${mask(row.question, 220)}`);
     console.log(`   understood: ${out.understanding.question} [${out.understanding.topic}]`);
     console.log(`   old desk:   ${row.botDraft ? mask(row.botDraft, 180) : "(nothing)"}  → ${row.verdict}`);
@@ -102,6 +110,7 @@ async function main() {
   console.log(`Spoke in the group: new ${newSpoke} (${pct(newSpoke, n)}) · old ${oldSpoke} (${pct(oldSpoke, n)})`);
   console.log(`Against the team's reply (${withTeam} messages the team answered): ${Object.entries(grades).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${v}`).join(" · ") || "—"}`);
   const good = (grades.MATCHES ?? 0) + (grades.USEFUL ?? 0); const bad = (grades.WRONG ?? 0) + (grades.BESIDE_THE_POINT ?? 0);
+  console.log(`Answered from the evidence, without the lab: ${tally.answer} of ${n}`);
   console.log(`  of the replies it would have sent where the team also answered: ${pct(good, good + bad)} right or useful, ${bad} wrong or beside the point`);
   console.log(`Old desk's verdicts on the same messages: ${Object.entries(oldVerdicts).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${v}`).join(" · ")}`);
   void tokens;

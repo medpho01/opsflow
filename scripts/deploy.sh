@@ -27,4 +27,7 @@ tar xzf "$PKG"
 COMPOSE="docker compose -f docker-compose.yml -f docker-compose.wa.yml"
 $COMPOSE build app wa-gateway
 $COMPOSE up -d app worker wa-gateway
+# What is running now, for scripts/update.sh: without it the next quick update compared against the
+# commit before this deploy and asked for the full deploy again (11 Nov 2026).
+git rev-parse HEAD > .deployed-commit
 $COMPOSE exec -T app npx tsx scripts/health.ts

@@ -37,7 +37,7 @@ function openLines(j: { waitingFor: unknown; subStates: string[] } | null, recol
  * The context block for these orders (at most two), as of `at`. `sender` (a lab or store member's
  * jid) adds what that person said in the 10 minutes before — "Checking." then the answer.
  */
-export async function contextFor(orderIds: number[], at: Date, opts: { groupId?: string | null; senderJid?: string | null } = {}): Promise<string> {
+export async function contextFor(orderIds: number[], at: Date, opts: { groupId?: string | null; senderJid?: string | null; asOf?: Map<number, { orderStatus: string; appointmentTime: Date | null }> } = {}): Promise<string> {
   try {
     const ids = [...new Set(orderIds)].slice(0, 2);
     const blocks: string[] = [];
@@ -50,10 +50,13 @@ export async function contextFor(orderIds: number[], at: Date, opts: { groupId?:
         openRecollectFor(id, at),
       ]);
       if (!o) continue;
+      // A replay reads the order as it stood then, and what is open now is not what was open then.
+      const then = opts.asOf?.get(id);
+      if (then) { o.orderStatus = then.orderStatus; o.appointmentTime = then.appointmentTime; }
       const d = details?.get(id);
       const tests = [...(d?.packages ?? []).map((p) => `${p.name}${p.tests.length ? ` (${p.tests.slice(0, 20).join(", ")}${p.tests.length > 20 ? ", …" : ""})` : ""}`), ...(d?.directTests ?? [])].join("; ");
       const head = `Order #${id}${o.labRef ? ` (lab ref ${o.labRef})` : ""} · lab ${o.labName ?? o.labId} · LabStack: ${o.orderStatus}${o.appointmentTime ? `, visit ${o.appointmentTime.toLocaleString("en-IN", { timeZone: TZ(), weekday: "short", hour: "numeric", minute: "2-digit" })}` : ""}`;
-      const lines = [head, ...(tests ? [`Tests: ${oneLine(tests, 400)}`] : []), ...openLines(j, recollect)];
+      const lines = [head, ...(tests ? [`Tests: ${oneLine(tests, 400)}`] : []), ...openLines(then ? null : j, recollect)];
       // The last messages about it, in any group, ours and the team's included.
       const needles = [`#${id}`, String(id), ...(o.labRef ? [o.labRef] : [])];
       const recent = await prisma.waMessage.findMany({

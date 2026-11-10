@@ -8,7 +8,7 @@
  */
 import prisma from "@/lib/db/client";
 
-export type Purpose = "reader" | "store_reader" | "caseworker" | "drafter" | "brain" | "audit" | "auditor";
+export type Purpose = "reader" | "store_reader" | "caseworker" | "drafter" | "brain" | "audit" | "auditor" | "desk" | "desk_check";
 
 const MODELS: Record<Purpose, () => string> = {
   reader: () => process.env.AGENT_MODEL_READER || process.env.PROVIDER_REPLY_MODEL || "claude-haiku-4-5-20251001",
@@ -20,6 +20,11 @@ const MODELS: Record<Purpose, () => string> = {
   // The outcome auditor reads the groups as they are and judges whether the jobs got done — the
   // strongest model the account runs (29 Oct 2026). AGENT_MODEL_AUDITOR=claude-fable-5-1 for the most capable.
   auditor: () => process.env.AGENT_MODEL_AUDITOR || "claude-opus-5-5",
+  // The store desk that understands the question before it answers (11 Nov 2026): the strongest model,
+  // because a wrong or beside-the-point answer in a client's group costs more than the call. The check
+  // is a second, independent read of the drafted reply.
+  desk: () => process.env.AGENT_MODEL_DESK || "claude-opus-5-5",
+  desk_check: () => process.env.AGENT_MODEL_DESK_CHECK || process.env.AGENT_MODEL_DESK || "claude-opus-5-5",
 };
 
 /** Models that always think before answering: they need room for it, and a little patience. */

@@ -809,3 +809,22 @@ describe("a plainly late visit is asked about whatever the console shows (10 Nov
     assert.equal(ask!.params.intent, "STATUS");
   });
 });
+
+describe("a lab's 'confirmed' in its group counts, though LabStack cannot be written (10 Nov 2026, Aster #97826)", () => {
+  it("the confirmation checkpoint is met, the 'please confirm' ask is withdrawn, and a person is asked to mark LabStack", () => {
+    const o = order({ orderStatus: "CREATED", appointmentTime: at("2026-11-11T03:30:00Z"), createdAt: at("2026-11-10T08:40:00Z"), statusUpdatedAt: at("2026-11-10T08:40:00Z") });
+    const r1 = wake(o, at("2026-11-10T09:00:00Z"));
+    assert.notEqual(r1.checkpoints.find((c) => c.name === "confirmed")?.status, "MET");
+    const r2 = wake(o, at("2026-11-10T09:35:00Z"), r1, { events: [{ kind: "fact", at: at("2026-11-10T09:33:00Z"), actor: "LAB", payload: { kind: "confirmed", value: "Confirmed", confidence: 0.9, source: "lab_reply", attributedBy: "REPLY_TO", factId: "f1" } }] });
+    assert.equal(r2.checkpoints.find((c) => c.name === "confirmed")?.status, "MET");
+    const task = r2.actions.find((a) => a.action === "create_task" && a.params.cause === "CONFIRMED_IN_CHAT");
+    assert.ok(task, JSON.stringify(acts(r2)));
+    assert.match(String(task!.params.action), /^Mark #92288 confirmed in LabStack/);
+    assert.ok(r2.withdraw.some((w) => w.asks?.includes("UNCONFIRMED")));
+    // Next wake: still confirmed for the agent, no second task, and the order moves on to the phlebo.
+    const r3 = wake(o, at("2026-11-10T10:30:00Z"), r2);
+    assert.equal(r3.checkpoints.find((c) => c.name === "confirmed")?.status, "MET");
+    assert.ok(!r3.actions.some((a) => a.params.cause === "CONFIRMED_IN_CHAT"));
+    assert.notEqual(r3.journey.waitingFor?.what, "confirmed");
+  });
+});

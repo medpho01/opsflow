@@ -14,6 +14,8 @@
  *               and for "never", what the agent decided instead
  *   by hand     orders our team chased in the lab group themselves: with no agent ask before
  *               (the agent missed it) or after an agent ask went unanswered (the lab ignored it)
+ *   feedback    lab messages about OUR messages — asking for test or patient details, saying we repeat
+ *               ourselves, that an order is not theirs, or that they did not understand — by lab
  *   store loop  store requests on the lab's orders, counted once each and only from stores whose
  *               desk was LIVE then: answered by the agent, handed to a person by design, answered
  *               by a person, or by nobody within 2 h
@@ -25,6 +27,7 @@
 import prisma from "@/lib/db/client";
 import { loadDirectory } from "@/lib/agents/directory";
 import { isAutomated, loadTeam, makeTeamMatcher } from "@/lib/wa/team";
+import { FEEDBACK_LABEL, feedbackPhrase, labFeedback, type FeedbackKind } from "@/lib/agents/brain/feedback";
 
 const TZ = process.env.TIMEZONE || "Asia/Kolkata";
 const MIN = 60_000;
@@ -231,6 +234,19 @@ async function main() {
     if (L.asks) console.log(`   asks: ${[...L.byAsk].map(([k, v]) => `${k} ${v.answered}/${v.sent}`).join(", ")} answered · answered via lab message ${L.answeredBy.lab}, quoted reply ${L.answeredBy.quote}, console ${L.answeredBy.console} · ${L.dropped} held back (console had moved, or a person had asked)`);
     for (const w of works) console.log(`   ✓ ${w}`);
     for (const f of fails) console.log(`   ✗ ${f}`.replace("   ✗     ", "       "));
+  }
+
+  // ── What labs said about our messages ──
+  const said = await prisma.waMessage.findMany({ where: { ts: { gte: start }, fromMe: false, group: { role: "PROVIDER", ...(only ? { labId: only } : {}) } }, select: { ts: true, text: true, sender: true, senderJid: true, intent: true, group: { select: { subject: true } } } });
+  const fb = said.filter((m) => !isAutomated(m) && !isTeam(m.sender, m.senderJid)).map((m) => ({ m, kinds: labFeedback(m.text) })).filter((x) => x.kinds.length);
+  console.log(`\n── Lab feedback on our messages: ${fb.length} of ${said.length} lab-group messages`);
+  for (const kind of Object.keys(FEEDBACK_LABEL) as FeedbackKind[]) {
+    const rows = fb.filter((x) => x.kinds.includes(kind));
+    if (!rows.length) continue;
+    const groups = new Map<string, number>();
+    for (const r of rows) groups.set(r.m.group.subject, (groups.get(r.m.group.subject) ?? 0) + 1);
+    console.log(`   ${rows.length} × a lab ${FEEDBACK_LABEL[kind]} — ${[...groups].sort((a, b) => b[1] - a[1]).map(([g, n]) => `${g.slice(0, 30)} ${n}`).join(", ")}`);
+    for (const r of rows.slice(-4)) console.log(`       ${r.m.ts.toLocaleDateString("en-IN", { timeZone: TZ, day: "numeric", month: "short" })} "${(feedbackPhrase(r.m.text) ?? "").replace(/\d{6,}/g, "#")}"`);
   }
 }
 

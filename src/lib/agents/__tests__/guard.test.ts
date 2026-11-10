@@ -34,3 +34,17 @@ describe("hard rules", () => {
     assert.equal(hardRuleViolation(action()), null);
   });
 });
+
+describe("a question to a lab and a task for a person never wait for a click (10 Nov 2026)", () => {
+  const ctx = { journeyId: null, orderId: 1, labId: 14, storeId: 6, labTier: "A" as const };
+  it("the case worker's ask and task act; a console write and a store message still wait", () => {
+    assert.equal(levelFor({ autonomy: [] }, action({ action: "ask", params: { alwaysSuggest: true } }), ctx), "ACT");
+    assert.equal(levelFor({ autonomy: [] }, action({ action: "create_task", params: { alwaysSuggest: true, taskType: "AGENT_CONSOLE_UPDATE" } }), ctx), "ACT");
+    assert.equal(levelFor({ autonomy: [] }, action({ action: "status_write", params: { to: "PATIENT_MISSED", meetsBar: true, alwaysSuggest: true } }), ctx), "SUGGEST");
+    assert.equal(levelFor({ autonomy: [] }, action({ desk: "STORE", action: "store_reply", params: { alwaysSuggest: true } }), ctx), "SUGGEST");
+  });
+  it("a lab set to suggest still gets its asks; a lab on shadow stays recorded only", () => {
+    assert.equal(levelFor(rows([["ask", "LAB", "14", "SUGGEST"]]), action({ action: "ask", params: {} }), ctx), "ACT");
+    assert.equal(levelFor(rows([["ask", "LAB", "14", "SHADOW"]]), action({ action: "ask", params: {} }), ctx), "SHADOW");
+  });
+});

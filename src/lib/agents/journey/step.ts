@@ -673,6 +673,20 @@ export function step(input: StepInput): StepOutput {
         }
       }
       const named = ev.payload.attributedBy !== "ONLY_OPEN";
+      // The lab confirmed in its group. The agent cannot write to LabStack, so the order would stay
+      // "awaiting confirmation" there and be chased again (10 Nov 2026, Aster #97826: "Confirmed" at
+      // 15:03, a team member chasing it at 15:16). The lab's word meets the checkpoint for the agent's
+      // own tracking, and one task asks a person to mark it in LabStack.
+      if (kind === "confirmed" && source !== "store_msg" && confidence >= 0.8) {
+        const cp = checkpoints.find((c) => (c.name === "confirmed" || c.name === "visit_confirmed") && c.status !== "MET" && c.status !== "WAIVED");
+        if (cp) {
+          checkpoints = checkpoints.map((c) => (c.name === cp.name ? { ...c, status: "MET", metAt: ev.at } : c));
+          withdraw.push({ asks: ["UNCONFIRMED"], reason: "lab confirmed in its group" });
+          if (!reached(order.orderStatus, "ORDER_SCHEDULED")) {
+            actions.push({ desk: "LAB", action: "create_task", params: { taskType: "AGENT_CONSOLE_UPDATE", orderId: order.id, cause: "CONFIRMED_IN_CHAT", evidence: [{ kind: source, at: ev.at.toISOString(), text: value.slice(0, 200) }], action: `Mark #${order.id} confirmed in LabStack — ${order.labName ?? "the lab"} confirmed it in its WhatsApp group at ${LABELS_TIME(ev.at, tz)}` }, reason: `the lab confirmed in its group; LabStack still shows ${order.orderStatus}`, idemKey: `confirm-console:${order.id}` });
+          }
+        }
+      }
       factsSeen.push({ kind, value, confidence, source, named, id: (ev.payload.factId as string | null) ?? null, at: ev.at, fullText: typeof ev.payload.fullText === "string" ? ev.payload.fullText : value });
       // The lab says the visit failed (RNR, not home): "phlebo on time?" and "phlebo needed?" are moot.
       if (kind === "patient_unavailable") withdraw.push({ asks: ["ETA", "PHLEBO"], reason: "patient unreachable" });

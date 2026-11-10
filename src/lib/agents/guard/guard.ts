@@ -35,6 +35,15 @@ export const DEFAULT_LEVELS: Partial<Record<ActionName, Level>> = {
   store_handoff: "ACT",
 };
 
+/**
+ * Never held for a person's click (10 Nov 2026): a question to a lab and a task for a person are
+ * how the agent gets help — parked in review they reached nobody (a Thyrocare ask for a visit four
+ * hours late sat unsent; 510 tasks waited for approval to become tasks). What the dispatcher checks
+ * at send time (settled by the console, already asked, caps) still applies. Telling a store
+ * something and writing to the console stay suggest-first.
+ */
+export const NEVER_HELD = new Set<string>(["ask", "reminder", "manager_whatsapp", "create_task", "wait", "stuck", "portal_read"]);
+
 export type GuardContext = {
   journeyId: string | null;
   orderId: number;
@@ -110,7 +119,8 @@ export function levelFor(state: Pick<GuardState, "autonomy">, action: ProposedAc
   let level: Level = specific ?? tier;
   if (specific && LEVELS.indexOf(specific) > LEVELS.indexOf(tier)) level = specific; // promoted on its own sample
   // The two risky transitions and anything the SOP marks always-suggest never go above SUGGEST on their own.
-  if (action.params.alwaysSuggest === true && LEVELS.indexOf(level) > LEVELS.indexOf("SUGGEST")) level = "SUGGEST";
+  if (action.params.alwaysSuggest === true && !NEVER_HELD.has(action.action) && LEVELS.indexOf(level) > LEVELS.indexOf("SUGGEST")) level = "SUGGEST";
+  if (level === "SUGGEST" && NEVER_HELD.has(action.action)) level = "ACT";
   if (action.action === "status_write" && action.params.meetsBar === false) level = "SUGGEST";
   return level;
 }

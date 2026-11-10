@@ -280,3 +280,9 @@ In the week to 10 Nov the desk sent 21 replies and held 81. Three causes, all fi
 - **Long-closed orders were answered with their old status** ("report delivered on 26 Sept" to a store asking for a re-collection — three contradictions of the team). An order closed more than `CLOSED_STALE_DAYS` (2) ago is handed to a person unless the store asks for the report.
 
 Still suggest-first: 36 free-text replies the case worker drafted for messages with no clear intent.
+
+## The lab tick runs in the worker (11 Nov 2026)
+
+The evening list for 11 Nov still named packages without their tests although LabStack held them and the checkout rendered them (`scripts/evening-list-preview.ts`). Cause: the lab tick — reading lab replies (`provider-rules/replies.ts`), new-order messages, reminders and the evening lists — was started by the web app (`instrumentation-node.ts`), which is pre-built and runs the code of its last image build (about 28 Oct). `scripts/update.sh` restarts only the worker, so every fix to those paths since then was in the checkout and never ran: full tests in the list (29 Oct, 10 Nov), reading lab replies in context (30 Oct), tying a reply to the order it quotes (10 Nov).
+
+Now `LAB_TICK_HOST=worker` (the compose default) starts the tick in the worker, which runs from the checkout; the web app skips it. One full deploy is needed for the web app to learn the setting; after that a fix to these paths is `update.sh` like any other. `update.sh` also treats `src/instrumentation*` as needing a full deploy. The worker now receives `NEXT_PUBLIC_APP_URL` and `WA_VISION_MODEL`, which the tick uses; unlike the web app it has `AGENT_LLM`, so lab replies are read by the model with context, as designed on 30 Oct.

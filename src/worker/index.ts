@@ -152,7 +152,13 @@ export async function startWorker(): Promise<PgBoss> {
   // Each store's day before it asks: needs-you first (RNR with the lab's slots, sample owed, visit passed).
   await boss.schedule(QUEUES.digest, process.env.AGENT_DIGEST_CRON || "0 9,12,16 * * *", {}, { tz });
   await boss.send(QUEUES.sweep, {}, { singletonKey: "boot" });
-  console.log("[Worker] started: sweep, wake, dispatch, risk, verify, store pass, brain, scorecard, digest, health");
+  // The lab tick — reading lab replies, new-order messages, reminders, the evening lists — runs here
+  // when LAB_TICK_HOST=worker, from the checkout like the rest of the agent (see instrumentation-node.ts).
+  if (process.env.LAB_TICK_HOST === "worker") {
+    const { startNonApiLabRunner } = await import("@/lib/non-api-labs/runner");
+    await startNonApiLabRunner();
+  }
+  console.log(`[Worker] started: sweep, wake, dispatch, risk, verify, store pass, brain, scorecard, digest, health${process.env.LAB_TICK_HOST === "worker" ? ", lab tick" : ""}`);
   return boss;
 }
 

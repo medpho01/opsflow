@@ -50,10 +50,18 @@ export async function registerNode() {
   // and escalations only need primary-key lookups, so they must keep running
   // when the replica is too contended for the poller's bulk scans. Uses
   // polling-lock key 1001.
+  // With LAB_TICK_HOST=worker the tick runs in the agents worker instead (11 Nov 2026). This web app
+  // is pre-built, so it ran the tick — lab replies, new-order messages, the evening lists — from the
+  // code of its last image build: every fix to them since 28 Oct reached the checkout and never ran
+  // (the evening list kept naming packages without their tests). The worker runs from the checkout.
   try {
-    const { startNonApiLabRunner } = await import("@/lib/non-api-labs/runner");
-    await startNonApiLabRunner();
-    console.log("[Instrumentation] Non-API lab communication tick started (every minute)");
+    if (process.env.LAB_TICK_HOST === "worker") {
+      console.log("[Instrumentation] Non-API lab communication tick runs in the worker (LAB_TICK_HOST=worker)");
+    } else {
+      const { startNonApiLabRunner } = await import("@/lib/non-api-labs/runner");
+      await startNonApiLabRunner();
+      console.log("[Instrumentation] Non-API lab communication tick started (every minute)");
+    }
   } catch (err) {
     console.error("[Instrumentation] Failed to start non-API lab tick:", err);
   }

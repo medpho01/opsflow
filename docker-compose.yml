@@ -130,6 +130,9 @@ services:
       JWT_SECRET: ${JWT_SECRET:-please-change-me-in-production}
       JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-8h}
       NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
+      # Where the lab tick runs (lab replies, new-order messages, evening lists): the worker, which
+      # runs from the checkout. Set to "app" to run it in this pre-built web app as before 11 Nov 2026.
+      LAB_TICK_HOST: ${LAB_TICK_HOST:-worker}
       # LabStack's order-confirmation link (console.labstack.in/confirmation/…).
       # The 32-character AES key LabStack uses to encrypt the order id — set it
       # in .env, never here (this repo is public). Unset → provider messages
@@ -208,6 +211,10 @@ services:
       MALLOC_ARENA_MAX: "2"
       TIMEZONE: ${TIMEZONE:-Asia/Kolkata}
       NODE_ENV: production
+      # The lab tick runs here (see the app service); it builds links from the app URL and reads screenshots.
+      LAB_TICK_HOST: ${LAB_TICK_HOST:-worker}
+      NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
+      WA_VISION_MODEL: ${WA_VISION_MODEL:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       AGENT_LLM: ${AGENT_LLM:-}
       AGENT_MODEL_READER: ${AGENT_MODEL_READER:-}

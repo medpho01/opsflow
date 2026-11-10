@@ -23,7 +23,7 @@ echo "updated $(git rev-parse --short "$BEFORE") → $(git rev-parse --short "$A
 git log --oneline "$BEFORE..$AFTER" | sed 's/^/  /'
 
 # What only a full deploy can bring: the web app's build, the Prisma client, dependencies, images.
-FULL=$(echo "$CHANGED" | grep -E '^(prisma/|package(-lock)?\.json$|Dockerfile$|docker/|src/app/|src/components/|next\.config|public/|whatsapp-bot/(package(-lock)?\.json|Dockerfile)$)' || true)
+FULL=$(echo "$CHANGED" | grep -E '^(prisma/|package(-lock)?\.json$|Dockerfile$|docker/|src/app/|src/components/|src/instrumentation|next\.config|public/|whatsapp-bot/(package(-lock)?\.json|Dockerfile)$)' || true)
 if [ -n "$FULL" ]; then
   echo
   echo "✗ these changes need the full deploy (an image build), not just a restart:"

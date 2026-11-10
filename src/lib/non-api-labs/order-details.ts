@@ -212,7 +212,11 @@ export async function fetchOrderContactDetails(ids: number[]): Promise<Map<numbe
                         (SELECT array_agg(DISTINCT m.name ORDER BY m.name)
                            FROM public."_MasterToPackage" mp JOIN public."Master" m ON m.id = mp."A"
                           WHERE mp."B" = pk.id),
-                        ARRAY[]::text[]))
+                        -- A package with no catalogue tests linked keeps its list as free text in
+                        -- panelSubTests; the evening list showed only its name (Star, 5 Nov 2026).
+                        -- Read through to_jsonb so a copy without the column still answers.
+                        ARRAY(SELECT jsonb_array_elements_text(
+                          CASE WHEN jsonb_typeof(to_jsonb(pk) -> 'panelSubTests') = 'array' THEN to_jsonb(pk) -> 'panelSubTests' ELSE '[]'::jsonb END))))
                       ORDER BY pk."packageName")
                FROM public."_OrderToPackage" op JOIN public."Package" pk ON pk.id = op."B"
               WHERE op."A" = o.id) AS packages,

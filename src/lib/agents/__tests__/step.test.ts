@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { step, fingerprint, classifyChange, sendWindow, curateStoreAlerts, requestedTime, consoleIsLive, type ProposedAction, type StepInput, type StepOutput } from "../journey/step";
+import { step, fingerprint, classifyChange, sendWindow, curateStoreAlerts, requestedTime, requestedDay, aheadOfConsole, storeBound, consoleIsLive, type ProposedAction, type StepInput, type StepOutput } from "../journey/step";
 import { checkpointDefs, type OrderSnapshot } from "../journey/policy";
 import { LAB_SOP_V1 } from "../sop/baseline";
 import { resolveParams } from "../sop/schema";
@@ -751,5 +751,61 @@ describe("a manual lab is asked again every day until the console moves (27 Oct 
     const prev = { ...r0, journey: { ...r0.journey, attempts: { report_delivered: { n: 0, at: "2026-10-29T04:09:00.451Z" } } } };
     const r = wake(o, at("2026-10-29T08:40:00Z"), prev);
     assert.ok(r.actions.some((a) => a.action === "ask" && a.params.checkpoint === "report_delivered"));
+  });
+});
+
+describe("a written date is a day, never an hour (10 Nov 2026, #95454: '18/11' reached Orange as 6 pm)", () => {
+  const said = at("2026-11-10T09:39:00Z"); // 3:09 pm IST
+  const appt = at("2026-11-11T02:30:00Z"); // 8:00 am IST
+  const ist = (d: Date | null) => d?.toLocaleString("en-GB", { timeZone: IST, day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }) ?? null;
+  it("a date with no time is no time at all; with a time, that time on that day", () => {
+    assert.equal(requestedTime("95454 reschedule to 18/11", said, appt, IST), null);
+    assert.equal(ist(requestedDay("95454 reschedule to 18/11", said, IST)?.day ?? null), "18/11, 12:00");
+    assert.equal(ist(requestedTime("reschedule to 18/11 8 am", said, appt, IST)), "18/11, 08:00");
+    assert.equal(ist(requestedTime("please reschedule to 18th at 7:30 am", said, appt, IST)), "18/11, 07:30");
+    assert.equal(ist(requestedTime("reschedule to 18 Nov same slot", said, appt, IST)), "18/11, 08:00");
+    assert.equal(ist(requestedTime("move to 2/12/26 9 am", said, appt, IST)), "02/12, 09:00");
+  });
+  it("a time range is not a date, and a day already past is not a request", () => {
+    assert.equal(requestedDay("between 10-11 am tomorrow", said, IST), null);
+    assert.equal(requestedTime("collected on 05/11 please check", said, appt, IST), null);
+  });
+  it("the lab is asked for a slot on the day named, not for an invented time", () => {
+    const o = order({ labId: 4, appointmentTime: appt, orderStatus: "ORDER_SCHEDULED", statusUpdatedAt: at("2026-11-10T05:00:00Z") });
+    const r = step({ now: at("2026-11-10T09:40:00Z"), order: o, journey: null, checkpoints: [], sop: SOP_A, labTier: "A", timeZone: IST,
+      events: [{ kind: "store_message", at: said, actor: "STORE", payload: { intent: "reschedule", text: "95454 reschedule to 18/11", messageId: "m1", waMsgId: "w1" } }] });
+    const ask = r.actions.find((a) => a.desk === "LAB" && a.params.intent === "RESCHEDULE");
+    assert.ok(ask, JSON.stringify(acts(r)));
+    assert.match(JSON.stringify(ask!.params), /requested for Wed,? 18 Nov — which slot\?/);
+    assert.doesNotMatch(JSON.stringify(ask!.params), /6:00 pm/);
+  });
+});
+
+describe("the store is never told what the console cannot support (10 Nov 2026, #97795)", () => {
+  const now = at("2026-11-10T09:45:00Z");
+  const alert = (template: string, fact = "report_shared"): ProposedAction => ({ desk: "STORE", action: "store_alert", params: { template, orderId: 1, storeId: 6, fact, detail: "x", at: now.toISOString() }, reason: "r", idemKey: `k:${template}` });
+  it("a report for an order not yet collected is held; after collection it goes", () => {
+    const upcoming = { orderStatus: "PHLEBO_ASSIGNED", appointmentTime: at("2026-11-10T10:20:00Z") };
+    assert.equal(aheadOfConsole("STORE_REPORT_SHARED", "report_shared", upcoming, now), true);
+    assert.equal(storeBound([alert("STORE_REPORT_SHARED")], SOP_A, upcoming, now).length, 0);
+    assert.equal(storeBound([alert("STORE_REPORT_SHARED")], SOP_A, { orderStatus: "SAMPLE_COLLECTED", appointmentTime: at("2026-11-09T03:00:00Z") }, now).length, 1);
+  });
+  it("'collected' for a visit over an hour away is held; LabStack's own changes always go", () => {
+    assert.equal(aheadOfConsole("STORE_COLLECTED", "sample_collected", { orderStatus: "ORDER_SCHEDULED", appointmentTime: at("2026-11-10T12:00:00Z") }, now), true);
+    assert.equal(aheadOfConsole("STORE_COLLECTED", "sample_collected", { orderStatus: "PHLEBO_STARTED", appointmentTime: at("2026-11-10T09:30:00Z") }, now), false);
+    assert.equal(aheadOfConsole("STORE_REPORT_SHARED", "console_report", { orderStatus: "ORDER_SCHEDULED", appointmentTime: at("2026-11-10T12:00:00Z") }, now), false);
+  });
+});
+
+describe("a plainly late visit is asked about whatever the console shows (10 Nov 2026)", () => {
+  it("Orange: 'phlebo started' after the slot holds the ask until slot + 20 + 30 min, then the lab is asked", () => {
+    const slotAt = at("2026-11-10T03:30:00Z"); // 9:00 am IST
+    const o = order({ labId: 4, appointmentTime: slotAt, orderStatus: "PHLEBO_STARTED", phleboName: "Ravi", statusUpdatedAt: at("2026-11-10T03:40:00Z") });
+    const early = step({ now: at("2026-11-10T04:05:00Z"), order: o, journey: null, checkpoints: [], events: [], sop: SOP_A, labTier: "A", timeZone: IST }); // +35
+    assert.ok(!early.actions.some((a) => a.desk === "LAB" && a.action === "ask"), JSON.stringify(acts(early)));
+    const late = step({ now: at("2026-11-10T04:22:00Z"), order: o, journey: early.journey, checkpoints: early.checkpoints, events: [], sop: SOP_A, labTier: "A", timeZone: IST }); // +52
+    const ask = late.actions.find((a) => a.desk === "LAB" && a.action === "ask");
+    assert.ok(ask, JSON.stringify(acts(late)));
+    assert.equal(ask!.params.intent, "STATUS");
   });
 });

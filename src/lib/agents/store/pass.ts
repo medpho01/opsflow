@@ -11,7 +11,7 @@ import { runStoreReader } from "./reader";
 import { runCoachReader } from "../brain/coach";
 import { runOpsReader } from "../ops/reader";
 import { sweepThreads } from "./threads";
-import { runAtRiskBatch } from "./atrisk";
+import { runAtRiskBatch, runLateBatch } from "./atrisk";
 
 export type StorePassResult = { read: number; linked: number; answered: number; tasks: number; review: number; opsTaken?: number; opsDone?: number; threadsClosed?: number; threadsReminded?: number; coached?: number; atRiskOrders?: number };
 
@@ -25,5 +25,7 @@ export async function runStorePass(now = new Date()): Promise<StorePassResult> {
   const threads = await sweepThreads(now).catch((e) => { console.error("[Agents] thread sweep failed:", e instanceof Error ? e.message : e); return { open: 0, closed: 0, reminded: 0, escalated: 0 }; });
   // Manual-lab visits the lab has not confirmed, told to the store an hour ahead (atrisk.ts), every 10 min.
   const atRisk = now.getMinutes() % 10 === 0 ? await runAtRiskBatch(now).catch((e) => { console.error("[Agents] at-risk batch failed:", e instanceof Error ? e.message : e); return null; }) : null;
-  return { ...r, atRiskOrders: atRisk?.orders, opsTaken: ops.taken, opsDone: ops.done, threadsClosed: threads.closed, threadsReminded: threads.reminded, coached: coach.lessons + coach.commands };
+  // Visits past their time with no collection, at any lab, told to the store before it asks — every 5 min.
+  const lateVisits = now.getMinutes() % 5 === 0 ? await runLateBatch(now).catch((e) => { console.error("[Agents] late batch failed:", e instanceof Error ? e.message : e); return null; }) : null;
+  return { ...r, atRiskOrders: (atRisk?.orders ?? 0) + (lateVisits?.orders ?? 0) || undefined, opsTaken: ops.taken, opsDone: ops.done, threadsClosed: threads.closed, threadsReminded: threads.reminded, coached: coach.lessons + coach.commands };
 }

@@ -70,6 +70,19 @@ async function attribute(
     // It names orders, just not this lab's: do not guess another one.
     return null;
   }
+  // A reply to a message that is not ours — a team member's, the lab's own — is about what THAT
+  // message names, never about whichever order we last asked of (10 Nov 2026: Orange's "Reports are
+  // shared again", quoting Veena's BLR… request, was read as #97795 and told to Plum as its report).
+  if (message.replyToWaId && !(await prisma.waOutbound.findFirst({ where: { sentWaMsgId: message.replyToWaId }, select: { id: true } }))) {
+    const quoted = await prisma.waMessage.findUnique({ where: { waMsgId: message.replyToWaId }, select: { orderIds: true, refIds: true, text: true, intent: true } }).catch(() => null);
+    if (quoted && quoted.intent !== "AUTOMATED") {
+      const refs = [...new Set([...quoted.refIds, ...labRefTokens(quoted.text ?? "").map((r) => r.ref)].map((r) => r.toUpperCase()))];
+      const named = quoted.orderIds.length || refs.length ? await labstackWorkerQuery<{ id: number }>(
+        `SELECT id FROM public."Order" WHERE "labId" = $2 AND (id = ANY($1::int[]) OR upper("labOrderId") = ANY($3::text[])) ORDER BY id LIMIT 2`, [quoted.orderIds, labId, refs]).catch(() => []) : [];
+      if (named.length === 1) return { orderId: named[0].id, via: "REPLY_TO", ruleId: await lastRuleFor(named[0].id), context: quoted.text };
+      return null;
+    }
+  }
   const recent = await prisma.labCommunication.findMany({
     where: {
       labId, orderId: { not: null },

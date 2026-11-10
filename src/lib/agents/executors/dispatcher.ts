@@ -196,6 +196,33 @@ export async function flushOutbox(now = new Date(), opts: { urgentOnly?: boolean
  * 2026 our team asked about BLR6366990 at 07:00, the lab answered RNR at 07:07, and the bot
  * asked "phlebo on time?" about the same order at 07:11.
  */
+/**
+ * Store requests bound for a lab that a person on our side is already handling: a team member spoke
+ * about the order in the store's group since the request, or named it (id or lab reference) in the
+ * lab's group in the last half hour. Returns the outbox item ids.
+ */
+async function teamTookRequest(labGroupJid: string | null, items: Array<{ id: string; orderId: number; createdAt: Date; payload: unknown }>, now: Date): Promise<Set<string>> {
+  const out = new Set<string>();
+  const { loadTeam, makeTeamMatcher } = await import("@/lib/wa/team");
+  const isTeam = makeTeamMatcher(await loadTeam());
+  const person = (m: { fromMe: boolean; intent: string | null; sender: string; senderJid: string | null }) => (m.fromMe ? m.intent !== "AUTOMATED" && m.intent !== "CONSOLE" : !!isTeam(m.sender, m.senderJid));
+  const labGroup = labGroupJid ? await prisma.waGroup.findUnique({ where: { jid: labGroupJid }, select: { id: true } }) : null;
+  const labMsgs = labGroup ? await prisma.waMessage.findMany({ where: { groupId: labGroup.id, ts: { gte: new Date(now.getTime() - 30 * 60_000) } }, select: { text: true, orderIds: true, fromMe: true, intent: true, sender: true, senderJid: true } }) : [];
+  const journeys = await prisma.agentJourney.findMany({ where: { orderId: { in: items.map((i) => i.orderId) } }, select: { orderId: true, storeId: true } });
+  const storeIds = [...new Set(journeys.map((j) => j.storeId).filter((x): x is number => x != null))];
+  const storeGroups = storeIds.length ? await prisma.waGroup.findMany({ where: { role: "SUPPORT", storeId: { in: storeIds }, archivedAt: null, active: true }, select: { id: true, storeId: true } }) : [];
+  for (const i of items) {
+    const ref = (i.payload as { line?: { labRef?: string | null } }).line?.labRef?.toUpperCase();
+    const names = (t: string | null) => !!t && (new RegExp(`(?<!\\d)${i.orderId}(?!\\d)`).test(t) || (!!ref && t.toUpperCase().includes(ref)));
+    if (labMsgs.some((m) => person(m) && (m.orderIds.includes(i.orderId) || names(m.text)))) { out.add(i.id); continue; }
+    const storeId = journeys.find((j) => j.orderId === i.orderId)?.storeId;
+    for (const g of storeGroups.filter((x) => x.storeId === storeId)) {
+      if (await humanSpokeAbout({ groupId: g.id, orderId: i.orderId, from: new Date(i.createdAt.getTime() - 2 * 60_000), to: now, isTeam })) { out.add(i.id); break; }
+    }
+  }
+  return out;
+}
+
 async function alreadyInHand(groupJid: string, items: Array<{ orderId: number; payload: unknown }>, now: Date, ask = ""): Promise<Set<number>> {
   const out = new Set<number>();
   const g = await prisma.waGroup.findUnique({ where: { jid: groupJid }, select: { id: true } });
@@ -322,6 +349,19 @@ async function flushGroup(key: string, queued: Item[], now: Date, batching: Batc
       await prisma.agentOutboxItem.updateMany({ where: { id: { in: group.filter((i) => answered.has(i.orderId)).map((i) => i.id) } }, data: { status: "DROPPED" } });
       console.log(`[Agents] ${counterparty} ${ask}: ${answered.size} order(s) already discussed or answered in the group — not asked again`);
       group = group.filter((i) => !answered.has(i.orderId));
+      if (!group.length) return { messages: 0, items: 0, held: 0 };
+    }
+  }
+  // A store's request a team member has already picked up is theirs: a second, slower ask from the
+  // desk confuses the lab (10 Nov 2026, #95454 — Veena was arranging the reschedule with Orange when
+  // the desk asked for it again, with a wrong time).
+  const requests = group.filter(storeRequest);
+  if (!toManager && requests.length) {
+    const taken = await teamTookRequest(config.waGroupJid ?? null, requests, now).catch(() => new Set<string>());
+    if (taken.size) {
+      await prisma.agentOutboxItem.updateMany({ where: { id: { in: [...taken] } }, data: { status: "DROPPED" } });
+      console.log(`[Agents] ${counterparty} ${ask}: ${taken.size} store request(s) already picked up by a team member — not asked again`);
+      group = group.filter((i) => !taken.has(i.id));
       if (!group.length) return { messages: 0, items: 0, held: 0 };
     }
   }

@@ -98,6 +98,8 @@ export const sopParamsSchema = z.object({
   ]),
   /** A visit that passed this recently with the console quiet is asked about now, not at the next slot (27 Oct 2026). */
   urgentAfterVisitMin: z.number().int().min(0).default(240),
+  /** Minutes past the lab's own "collected by" time (asks.sample_collected.dueOffsetMin) with no collection: the visit is late — the lab is asked whatever its console shows, and the store is told. */
+  lateAfterMin: z.number().int().min(0).default(30),
   /** A store request waiting on the lab / on our team is reminded after this long. */
   storeRemindLabMin: z.number().int().min(10).default(60),
   storeRemindOpsMin: z.number().int().min(10).default(45),

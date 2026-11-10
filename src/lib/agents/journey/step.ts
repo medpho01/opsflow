@@ -337,7 +337,44 @@ const STORE_RELAY: Record<string, string> = {
  *  - a day with no time ("tomorrow") is no time at all — never an invented 10 am;
  *  - otherwise the clock time written ("at 10:45 am", "tomorrow 8 am", "at 7").
  */
+const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+const DATE_NUMERIC = /(?<![\d:.])(\d{1,2})\s*[\/\-]\s*(\d{1,2})(?:\s*[\/\-]\s*(\d{2,4}))?(?![\d:])(?!\s*(?:am|pm|a\.m|p\.m)\b)/i;
+const DATE_WORDED = /(?<![\d:.])(\d{1,2})(?:st|nd|rd|th)?\s*(?:of\s+)?(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b|\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+(\d{1,2})(?:st|nd|rd|th)?\b|(?<![\d:.])(\d{1,2})(?:st|nd|rd|th)\b/i;
+
+/**
+ * A calendar day written in a store's message — "18/11", "18-11-26", "18th", "18 Nov" — as noon of that
+ * local day, and the text without it. A day number is never an hour: "reschedule to 18/11" reached
+ * Orange as "6:00 pm" (10 Nov 2026, #95454). A day already past this month means next month.
+ */
+export function requestedDay(text: string, at: Date, tz: string): { day: Date; rest: string } | null {
+  const today = at.toLocaleDateString("en-CA", { timeZone: tz }).split("-").map(Number);
+  let d: number | null = null; let mo: number | null = null; let y: number | null = null; let hit: RegExpExecArray | null;
+  if ((hit = DATE_NUMERIC.exec(text))) { d = Number(hit[1]); mo = Number(hit[2]); y = hit[3] ? Number(hit[3].length === 2 ? `20${hit[3]}` : hit[3]) : null; }
+  else if ((hit = DATE_WORDED.exec(text))) {
+    d = Number(hit[1] ?? hit[4] ?? hit[5]);
+    const name = (hit[2] ?? hit[3])?.toLowerCase();
+    mo = name ? MONTHS.indexOf(name) + 1 : null;
+  }
+  if (!hit || d == null || d < 1 || d > 31 || (mo != null && (mo < 1 || mo > 12))) return null;
+  if (mo == null) { mo = today[1]; y = today[0]; if (d < today[2]) { mo += 1; if (mo > 12) { mo = 1; y += 1; } } }
+  else if (y == null) { y = today[0]; if (mo < today[1] - 6) y += 1; } // "5/1" written in December
+  const day = new Date(Date.UTC(y, mo - 1, d, 6, 30)); // noon IST: safely inside the local day
+  if (Number.isNaN(day.getTime()) || day.getUTCDate() !== d) return null;
+  return { day, rest: `${text.slice(0, hit.index)} ${text.slice(hit.index + hit[0].length)}` };
+}
+
 export function requestedTime(text: string, at: Date, appointment: Date | null, tz: string): Date | null {
+  // A written date is taken out first, and the clock time (if any) is put on that day.
+  const dated = requestedDay(text, at, tz);
+  if (dated) {
+    if (dated.day.getTime() < at.getTime() - 24 * 60 * MIN) return null; // a day already past is not a request
+    const sameSlot = /\bsame (slot|time)\b/i.test(text) && appointment ? appointment : null;
+    const clock = sameSlot ?? requestedTime(dated.rest.replace(/\b(tomorrow|kal|next day)\b/gi, " "), at, null, tz);
+    if (!clock) return null;
+    const hm = clock.toLocaleTimeString("en-GB", { timeZone: tz, hour: "2-digit", minute: "2-digit", hour12: false }).split(":").map(Number);
+    const noon = dated.day.toLocaleTimeString("en-GB", { timeZone: tz, hour: "2-digit", minute: "2-digit", hour12: false }).split(":").map(Number);
+    return new Date(dated.day.getTime() + ((hm[0] % 24) * 60 + hm[1] - ((noon[0] % 24) * 60 + noon[1])) * MIN);
+  }
   const tomorrow = /\btomorrow\b|\bkal\b|\bnext day\b/i.test(text);
   if (/\bsame (slot|time)\b/i.test(text) && appointment) {
     const clock = appointment.toLocaleTimeString("en-IN", { timeZone: tz, hour: "numeric", minute: "2-digit" });
@@ -372,16 +409,32 @@ const A_REQUEST = /\b(please|kindly|pls|request(ed|s)?|wants?|asks?|asked)\b/i;
 const DIGESTED = new Set(["STORE_LAB_RESCHEDULED", "STORE_LAB_CANCELLED"]);
 
 /** What the store hears from this wake: curated, then lab-made changes held for the summary when the SOP says so. */
-export function storeBound(actions: ProposedAction[], sop: SopParams | null): ProposedAction[] {
+export function storeBound(actions: ProposedAction[], sop: SopParams | null, order?: Pick<OrderSnapshot, "orderStatus" | "appointmentTime"> | null, now?: Date): ProposedAction[] {
   const curated = curateStoreAlerts(actions);
   return curated.filter((a) => {
     if (a.desk !== "STORE") return true;
+    if (a.action === "store_alert" && order && aheadOfConsole(String(a.params.template), String(a.params.fact ?? ""), order, now ?? new Date())) return false;
     // A move the store itself asked for is the team's to confirm — never echoed back (29 Oct 2026: #95010, #94849).
     if (a.action === "ack" && a.params.template === "STORE_CONFIRMED_CHANGE") return false;
     if (a.action === "store_alert" && DIGESTED.has(String(a.params.template)) && (sop?.storeRelay?.consoleChanges ?? "digest") === "digest") return false;
     if (a.action === "store_alert" && a.params.template === "STORE_COLLECTED" && (sop?.storeRelay?.collected ?? "digest") === "digest") return false;
     return true;
   });
+}
+
+/**
+ * A lab's word the console cannot support yet is not told to the store (10 Nov 2026, #97795: "report
+ * shared" went to Plum for an order whose sample was due in half an hour — the lab was answering
+ * someone else about another order). A report needs a collected sample; a collection needs the visit
+ * to be at most an hour away. The fact stays on the order; only the store message is held.
+ */
+export function aheadOfConsole(template: string, fact: string, order: Pick<OrderSnapshot, "orderStatus" | "appointmentTime">, now: Date): boolean {
+  if (fact.startsWith("console_")) return false;
+  const collected = reached(order.orderStatus, "PATIENT_VISITED");
+  const visitAhead = order.appointmentTime != null && order.appointmentTime.getTime() - now.getTime() > 60 * MIN;
+  if (template === "STORE_REPORT_SHARED") return !collected && (order.appointmentTime == null || order.appointmentTime.getTime() > now.getTime() - 3 * 60 * MIN);
+  if (template === "STORE_COLLECTED") return !collected && visitAhead;
+  return false;
 }
 
 export function curateStoreAlerts(actions: ProposedAction[]): ProposedAction[] {
@@ -523,7 +576,7 @@ export function step(input: StepInput): StepOutput {
     if (!journey.closedAt) { newEvents.push({ kind: "closed", at: now, actor: "SYSTEM", payload: { reason } }); withdraw.push({ reason: reason.toLowerCase() }); }
     return {
       journey: { ...journey, closedAt: journey.closedAt ?? now, closeReason: reason, waitingFor: null, dueAt: null, dueSource: null, nextCheckAt: null, health: "ON_TRACK", plan: planOf(checkpoints, now, undefined, null) },
-      checkpoints, newEvents, actions: storeBound(actions, sop), withdraw, risk: null, caseworker: null,
+      checkpoints, newEvents, actions: storeBound(actions, sop, order, now), withdraw, risk: null, caseworker: null,
     };
   }
 
@@ -882,6 +935,8 @@ export function step(input: StepInput): StepOutput {
           const taskType = m.intent === "reschedule" ? "AGENT_RESCHEDULE" : m.intent === "cancel" ? "AGENT_CANCEL" : "AGENT_ORDER_CHANGE";
           const requested = requestedTime(m.text, m.at, order.appointmentTime, tz);
           const tomorrowOnly = !requested && /\btomorrow\b|\bkal\b|\bnext day\b/i.test(m.text);
+          const writtenDay = !requested ? requestedDay(m.text, m.at, tz)?.day ?? null : null;
+          const dayOnly = writtenDay && writtenDay.getTime() > m.at.getTime() - 12 * 60 * MIN ? writtenDay : null;
           actions.push({ desk: "STORE", action: "ack", params: { template: "STORE_NOTED", orderId: order.id, storeId: order.storeId, intent: m.intent, ...quote }, reason: `store asked to ${m.intent.replace("_", " ")}`, idemKey: `${key}:noted` });
           // Its own heading ("reschedule (1)", "cancel (1)"), not "quick check — collected?" (30 Oct 2026, #95448).
           // The lab hears it too, with the time, so it can confirm or push back before the
@@ -890,6 +945,7 @@ export function step(input: StepInput): StepOutput {
             const whenText = requested ? LABELS_TIME(requested, tz) + (requested.toDateString() !== now.toDateString() ? ` ${requested.toLocaleDateString("en-IN", { timeZone: tz, weekday: "short", day: "numeric", month: "short" })}` : "") : null;
             const sample = /\b(urine|stool|sputum|swab)\b/i.exec(m.text)?.[1]?.toLowerCase() ?? input.openRecollect ?? undefined;
             const note = m.intent === "cancel" ? "store asks to cancel — please stand down"
+              : dayOnly ? `${sample ? `${sample} re-collection` : "reschedule"} requested for ${dayOnly.toLocaleDateString("en-IN", { timeZone: tz, weekday: "short", day: "numeric", month: "short" })} — which slot?`
               : tomorrowOnly ? `${sample ? `${sample} re-collection` : "reschedule"} requested for tomorrow — which slot?`
               : `${sample ? `${sample} re-collection` : "reschedule"} requested${whenText ? ` at ${whenText}` : ""} — ok?`;
             const window = sendWindow(now, now, sop, { intent: "STATUS", leadMin: 0, graceMin: 480, urgentWithinMin: 0, nightBefore: false }, true, false, tz);
@@ -991,10 +1047,16 @@ export function step(input: StepInput): StepOutput {
     // An API lab whose webhook updated this order around the visit has told us where it is: no
     // WhatsApp ask for the visit checkpoints; ask only when the console has gone quiet (26 Oct 2026).
     const collectedAfterMin = sop?.asks.sample_collected?.dueOffsetMin ?? POST_VISIT_ANSWER_MIN;
-    const consoleAnswers = preVisit && consoleIsLive(order, input.labTier, now, sop?.consoleQuietMin, collectedAfterMin);
+    // …until the visit is plainly late: past the lab's usual collected-by time plus the SOP's
+    // lateAfterMin with no collection, "phlebo started" is not an answer (10 Nov 2026: 36 of 39 late
+    // Orange visits were never asked about because the console had moved).
+    // A phlebo who has reached the patient is not late — the console is only catching up.
+    const plainlyLate = preVisit && minutesToSlot != null && -minutesToSlot >= collectedAfterMin + (sop?.lateAfterMin ?? 30) && !reached(order.orderStatus, "PATIENT_VISITED");
+    const consoleAnswers = preVisit && !plainlyLate && consoleIsLive(order, input.labTier, now, sop?.consoleQuietMin, collectedAfterMin);
     if (consoleAnswers && order.statusUpdatedAt) wakeAt.push(order.statusUpdatedAt.getTime() + ((sop?.consoleQuietMin ?? CONSOLE_QUIET_MIN) + 1) * MIN);
     // …and half an hour after the visit, when an update from before it stops counting.
     if (consoleAnswers && slot && slot.getTime() + (collectedAfterMin + 1) * MIN > now.getTime()) wakeAt.push(slot.getTime() + (collectedAfterMin + 1) * MIN);
+    if (consoleAnswers && slot) wakeAt.push(slot.getTime() + (collectedAfterMin + (sop?.lateAfterMin ?? 30) + 1) * MIN);
     // An API lab is not asked about the visit between the visit and its own "collected by" time, quiet
     // console or not: Redcliffe's console shows collected at +45 on a normal day (30 Oct 2026 analysis).
     const apiPostVisitEarly = input.labTier != null && input.labTier !== "C" && preVisit && minutesToSlot != null && minutesToSlot < 0 && -minutesToSlot < collectedAfterMin;
@@ -1140,5 +1202,5 @@ export function step(input: StepInput): StepOutput {
     dueAt: next?.dueAt ?? null, dueSource: next ? (next.dueSource === "PROMISE" ? "PROMISE" : "POLICY") : null,
     nextCheckAt, health, plan: planOf(checkpoints, now, next, rungLabel),
   };
-  return { journey, checkpoints, newEvents, actions: storeBound(actions, sop), withdraw, risk, caseworker };
+  return { journey, checkpoints, newEvents, actions: storeBound(actions, sop, order, now), withdraw, risk, caseworker };
 }
